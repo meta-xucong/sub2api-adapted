@@ -12,6 +12,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 )
 
 const upstreamModelsBodyLimit int64 = 8 << 20
@@ -83,6 +84,17 @@ func (s *AccountTestService) FetchUpstreamSupportedModels(ctx context.Context, a
 
 	if account.Platform == PlatformAntigravity && account.Type != AccountTypeAPIKey {
 		return s.fetchAntigravityOAuthUpstreamModels(ctx, account)
+	}
+
+	if account.IsOpenAIOAuth() {
+		models := make([]string, 0)
+		for requestedModel := range account.GetModelMapping() {
+			models = append(models, requestedModel)
+		}
+		if len(models) == 0 {
+			models = openai.DefaultModelIDs()
+		}
+		return dedupeAndSortModelIDs(models), nil
 	}
 
 	if s.httpUpstream == nil {

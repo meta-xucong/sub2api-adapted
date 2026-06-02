@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -38,11 +39,13 @@ func setupAvailableModelsRouter(adminSvc service.AdminService) *gin.Engine {
 }
 
 type syncUpstreamHTTPUpstream struct {
-	resp *http.Response
-	err  error
+	resp              *http.Response
+	err               error
+	lastAuthorization string
 }
 
 func (u *syncUpstreamHTTPUpstream) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
+	u.lastAuthorization = req.Header.Get("Authorization")
 	if u.err != nil {
 		return nil, u.err
 	}
@@ -68,6 +71,40 @@ func setupSyncUpstreamModelsRouter(adminSvc service.AdminService, upstream servi
 	handler := NewAccountHandler(adminSvc, nil, nil, nil, nil, nil, nil, accountTestSvc, nil, nil, nil, nil, nil)
 	router.POST("/api/v1/admin/accounts/:id/models/sync-upstream", handler.SyncUpstreamModels)
 	return router
+}
+
+func TestAccountHandlerSyncUpstreamModels_OpenAIOAuthUsesLocalMapping(t *testing.T) {
+	svc := &availableModelsAdminService{
+		stubAdminService: newStubAdminService(),
+		account: service.Account{
+			ID:       46,
+			Name:     "openai-oauth",
+			Platform: service.PlatformOpenAI,
+			Type:     service.AccountTypeOAuth,
+			Status:   service.StatusActive,
+			Credentials: map[string]any{
+				"model_mapping": map[string]any{
+					"gpt-5.4":      "gpt-5.4",
+					"gpt-5.5":      "gpt-5.5",
+					"gpt-image-2":  "gpt-image-2",
+					"legacy-codex": "gpt-5.4",
+				},
+			},
+		},
+	}
+	upstream := &syncUpstreamHTTPUpstream{err: errors.New("upstream should not be called for OpenAI OAuth")}
+	router := setupSyncUpstreamModelsRouter(svc, upstream)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/46/models/sync-upstream", nil)
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Empty(t, upstream.lastAuthorization)
+	require.Contains(t, rec.Body.String(), "gpt-5.4")
+	require.Contains(t, rec.Body.String(), "gpt-5.5")
+	require.Contains(t, rec.Body.String(), "gpt-image-2")
+	require.Contains(t, rec.Body.String(), "legacy-codex")
 }
 
 func TestAccountHandlerGetAvailableModels_OpenAIOAuthUsesExplicitModelMapping(t *testing.T) {
