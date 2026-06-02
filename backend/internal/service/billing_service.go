@@ -253,6 +253,25 @@ func (s *BillingService) initFallbackPricing() {
 		SupportsCacheBreakdown:     false,
 	}
 
+	// Kimi K2.6（官方默认价格）
+	s.fallbackPrices["kimi-k2.6"] = &ModelPricing{
+		InputPricePerToken:         0.95e-6, // $0.95 per MTok cache miss/input
+		OutputPricePerToken:        4e-6,    // $4 per MTok
+		CacheCreationPricePerToken: 0.95e-6,
+		CacheReadPricePerToken:     0.16e-6, // $0.16 per MTok cache hit
+		SupportsCacheBreakdown:     false,
+	}
+	// Kimi Code 账号使用的内部模型名，按最新 K2.6 默认价格计费。
+	s.fallbackPrices["kimi-for-coding"] = s.fallbackPrices["kimi-k2.6"]
+	// Moonshot V1 官方价格：Input $2/MTok, Output $5/MTok。
+	s.fallbackPrices["moonshot-v1"] = &ModelPricing{
+		InputPricePerToken:         2e-6,
+		OutputPricePerToken:        5e-6,
+		CacheCreationPricePerToken: 2e-6,
+		CacheReadPricePerToken:     2e-6,
+		SupportsCacheBreakdown:     false,
+	}
+
 	// OpenAI GPT-5.4（业务指定价格）
 	s.fallbackPrices["gpt-5.4"] = &ModelPricing{
 		InputPricePerToken:             2.5e-6,  // $2.5 per MTok
@@ -341,6 +360,15 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 	}
 	if strings.Contains(modelLower, "gemini-3.1-pro") || strings.Contains(modelLower, "gemini-3-1-pro") {
 		return s.fallbackPrices["gemini-3.1-pro"]
+	}
+	if strings.Contains(modelLower, "kimi-for-coding") {
+		return s.fallbackPrices["kimi-for-coding"]
+	}
+	if strings.HasPrefix(modelLower, "kimi-") || strings.Contains(modelLower, "/kimi-") {
+		return s.fallbackPrices["kimi-k2.6"]
+	}
+	if strings.HasPrefix(modelLower, "moonshot-v1") || strings.Contains(modelLower, "/moonshot-v1") {
+		return s.fallbackPrices["moonshot-v1"]
 	}
 
 	// OpenAI 仅匹配已知 GPT-5/Codex 族，避免未知 OpenAI 型号误计价。

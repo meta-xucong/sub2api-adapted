@@ -23,6 +23,22 @@ gateway path and the Anthropic API key passthrough path.
 Keep this patch until upstream provides an equivalent Kimi-specific hard limit
 or the Kimi upstream no longer needs the cap.
 
+### `custom: add Kimi fallback billing`
+
+Adds fallback token pricing for Kimi/Moonshot models when LiteLLM pricing does
+not contain the production model alias. The production `kimi-for-coding` alias is
+charged with the current Kimi K2.6 default rate:
+
+- input/cache miss: `$0.95 / 1M tokens`
+- cache hit: `$0.16 / 1M tokens`
+- output: `$4.00 / 1M tokens`
+
+Moonshot V1 aliases fall back to `$2.00 / 1M input tokens` and `$5.00 / 1M
+output tokens`.
+
+Keep this patch until upstream includes equivalent Kimi/Moonshot pricing aliases
+or production switches to channel-level custom pricing for these models.
+
 ### `custom: add ops alert request thresholds`
 
 Adds `min_request_count` and `min_error_count` filters to ops alert evaluation.

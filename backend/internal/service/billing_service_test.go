@@ -114,6 +114,45 @@ func TestGetModelPricing_UnknownClaudeModelFallsBackToSonnet(t *testing.T) {
 	require.InDelta(t, 3e-6, pricing.InputPricePerToken, 1e-12)
 }
 
+func TestGetModelPricing_KimiFallback(t *testing.T) {
+	svc := newTestBillingService()
+
+	tests := []struct {
+		model          string
+		expectedInput  float64
+		expectedOutput float64
+		expectedCache  float64
+	}{
+		{"kimi-for-coding", 0.95e-6, 4e-6, 0.16e-6},
+		{"kimi-k2.6", 0.95e-6, 4e-6, 0.16e-6},
+		{"kimi-k2-thinking", 0.95e-6, 4e-6, 0.16e-6},
+		{"moonshot-v1-128k", 2e-6, 5e-6, 2e-6},
+	}
+
+	for _, tt := range tests {
+		pricing, err := svc.GetModelPricing(tt.model)
+		require.NoError(t, err, "model %s", tt.model)
+		require.InDelta(t, tt.expectedInput, pricing.InputPricePerToken, 1e-12)
+		require.InDelta(t, tt.expectedOutput, pricing.OutputPricePerToken, 1e-12)
+		require.InDelta(t, tt.expectedCache, pricing.CacheReadPricePerToken, 1e-12)
+	}
+}
+
+func TestCalculateCost_KimiForCodingFallback(t *testing.T) {
+	svc := newTestBillingService()
+
+	cost, err := svc.CalculateCost("kimi-for-coding", UsageTokens{
+		InputTokens:     1000,
+		OutputTokens:    500,
+		CacheReadTokens: 200,
+	}, 1.0)
+	require.NoError(t, err)
+	require.InDelta(t, 1000*0.95e-6, cost.InputCost, 1e-12)
+	require.InDelta(t, 500*4e-6, cost.OutputCost, 1e-12)
+	require.InDelta(t, 200*0.16e-6, cost.CacheReadCost, 1e-12)
+	require.Greater(t, cost.TotalCost, 0.0)
+}
+
 func TestGetModelPricing_UnknownOpenAIModelReturnsError(t *testing.T) {
 	svc := newTestBillingService()
 
