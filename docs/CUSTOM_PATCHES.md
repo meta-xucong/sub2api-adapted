@@ -46,6 +46,15 @@ This prevents low-sample false positives in production status alerts.
 
 Keep this patch until upstream supports equivalent alert threshold filters.
 
+### `custom: resolve skipped ops alert events`
+
+When an alert rule is skipped because request/error sample thresholds are no
+longer met, resolve any existing active event for that rule. Without this,
+low-traffic recovery windows can leave old `firing` events stuck even though the
+current success/error rate is healthy.
+
+Keep this patch together with the request-threshold alert filters.
+
 ### `custom: prefer latest OpenAI Codex models`
 
 Routes default OpenAI Messages Dispatch models away from retired/unsupported

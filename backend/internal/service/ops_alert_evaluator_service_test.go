@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/stretchr/testify/require"
 )
 
@@ -14,8 +15,13 @@ var _ OpsRepository = (*stubOpsRepo)(nil)
 
 type stubOpsRepo struct {
 	OpsRepository
-	overview *OpsDashboardOverview
-	err      error
+	overview       *OpsDashboardOverview
+	err            error
+	alertRules     []*OpsAlertRule
+	activeEvent    *OpsAlertEvent
+	updatedEventID int64
+	updatedStatus  string
+	resolvedAt     *time.Time
 }
 
 func (s *stubOpsRepo) GetDashboardOverview(ctx context.Context, filter *OpsDashboardFilter) (*OpsDashboardOverview, error) {
@@ -26,6 +32,29 @@ func (s *stubOpsRepo) GetDashboardOverview(ctx context.Context, filter *OpsDashb
 		return s.overview, nil
 	}
 	return &OpsDashboardOverview{}, nil
+}
+
+func (s *stubOpsRepo) GetLatestSystemMetrics(ctx context.Context, windowMinutes int) (*OpsSystemMetricsSnapshot, error) {
+	return &OpsSystemMetricsSnapshot{}, nil
+}
+
+func (s *stubOpsRepo) ListAlertRules(ctx context.Context) ([]*OpsAlertRule, error) {
+	return s.alertRules, nil
+}
+
+func (s *stubOpsRepo) GetActiveAlertEvent(ctx context.Context, ruleID int64) (*OpsAlertEvent, error) {
+	return s.activeEvent, nil
+}
+
+func (s *stubOpsRepo) UpdateAlertEventStatus(ctx context.Context, eventID int64, status string, resolvedAt *time.Time) error {
+	s.updatedEventID = eventID
+	s.updatedStatus = status
+	s.resolvedAt = resolvedAt
+	return nil
+}
+
+func (s *stubOpsRepo) UpsertJobHeartbeat(ctx context.Context, input *OpsUpsertJobHeartbeatInput) error {
+	return nil
 }
 
 func TestComputeGroupAvailableRatio(t *testing.T) {
@@ -293,4 +322,42 @@ func TestComputeRuleMetricRequestThresholdFilters(t *testing.T) {
 		require.True(t, ok)
 		require.InDelta(t, 15.0, value, 0.0001)
 	})
+}
+
+func TestEvaluateOnceResolvesActiveEventWhenRequestThresholdSkipsMetric(t *testing.T) {
+	repo := &stubOpsRepo{
+		overview: &OpsDashboardOverview{
+			RequestCountSLA: 10,
+			ErrorCountSLA:   0,
+			SLA:             1,
+		},
+		alertRules: []*OpsAlertRule{
+			{
+				ID:               2,
+				Enabled:          true,
+				Name:             "成功率过低",
+				Severity:         "P0",
+				MetricType:       "success_rate",
+				Operator:         "<",
+				Threshold:        95,
+				WindowMinutes:    5,
+				SustainedMinutes: 5,
+				Filters: map[string]any{
+					"min_error_count": 2,
+				},
+			},
+		},
+		activeEvent: &OpsAlertEvent{
+			ID:     283,
+			RuleID: 2,
+			Status: OpsAlertStatusFiring,
+		},
+	}
+	svc := NewOpsAlertEvaluatorService(nil, repo, nil, nil, &config.Config{Ops: config.OpsConfig{Enabled: true}})
+
+	svc.evaluateOnce(time.Minute)
+
+	require.Equal(t, int64(283), repo.updatedEventID)
+	require.Equal(t, OpsAlertStatusResolved, repo.updatedStatus)
+	require.NotNil(t, repo.resolvedAt)
 }

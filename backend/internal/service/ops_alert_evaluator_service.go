@@ -226,6 +226,19 @@ func (s *OpsAlertEvaluatorService) evaluateOnce(interval time.Duration) {
 		metricValue, ok := s.computeRuleMetric(ctx, rule, systemMetrics, windowStart, windowEnd, scopePlatform, scopeGroupID)
 		if !ok {
 			s.resetRuleState(rule.ID, now)
+			activeEvent, err := s.opsRepo.GetActiveAlertEvent(ctx, rule.ID)
+			if err != nil {
+				logger.LegacyPrintf("service.ops_alert_evaluator", "[OpsAlertEvaluator] get active event failed (rule=%d): %v", rule.ID, err)
+				continue
+			}
+			if activeEvent != nil {
+				resolvedAt := now
+				if err := s.opsRepo.UpdateAlertEventStatus(ctx, activeEvent.ID, OpsAlertStatusResolved, &resolvedAt); err != nil {
+					logger.LegacyPrintf("service.ops_alert_evaluator", "[OpsAlertEvaluator] resolve event failed (event=%d): %v", activeEvent.ID, err)
+				} else {
+					eventsResolved++
+				}
+			}
 			continue
 		}
 		rulesEvaluated++
