@@ -210,3 +210,87 @@ func TestComputeRuleMetricNewIndicators(t *testing.T) {
 		})
 	}
 }
+
+func TestComputeRuleMetricRequestThresholdFilters(t *testing.T) {
+	t.Parallel()
+
+	start := time.Now().UTC().Add(-5 * time.Minute)
+	end := time.Now().UTC()
+	ctx := context.Background()
+
+	t.Run("skip error rate when request volume below min_request_count", func(t *testing.T) {
+		t.Parallel()
+
+		svc := &OpsAlertEvaluatorService{
+			opsRepo: &stubOpsRepo{
+				overview: &OpsDashboardOverview{
+					RequestCountSLA: 11,
+					ErrorCountSLA:   1,
+					ErrorRate:       1.0 / 11.0,
+				},
+			},
+		}
+
+		rule := &OpsAlertRule{
+			MetricType: "error_rate",
+			Filters: map[string]any{
+				"min_request_count": 20,
+			},
+		}
+
+		value, ok := svc.computeRuleMetric(ctx, rule, nil, start, end, "", nil)
+		require.False(t, ok)
+		require.Equal(t, 0.0, value)
+	})
+
+	t.Run("skip success rate when error count below min_error_count", func(t *testing.T) {
+		t.Parallel()
+
+		svc := &OpsAlertEvaluatorService{
+			opsRepo: &stubOpsRepo{
+				overview: &OpsDashboardOverview{
+					RequestCountSLA: 11,
+					ErrorCountSLA:   1,
+					SLA:             10.0 / 11.0,
+				},
+			},
+		}
+
+		rule := &OpsAlertRule{
+			MetricType: "success_rate",
+			Filters: map[string]any{
+				"min_error_count": 2,
+			},
+		}
+
+		value, ok := svc.computeRuleMetric(ctx, rule, nil, start, end, "", nil)
+		require.False(t, ok)
+		require.Equal(t, 0.0, value)
+	})
+
+	t.Run("allow request metric when thresholds are met", func(t *testing.T) {
+		t.Parallel()
+
+		svc := &OpsAlertEvaluatorService{
+			opsRepo: &stubOpsRepo{
+				overview: &OpsDashboardOverview{
+					RequestCountSLA: 20,
+					ErrorCountSLA:   3,
+					ErrorRate:       0.15,
+				},
+			},
+		}
+
+		rule := &OpsAlertRule{
+			MetricType: "error_rate",
+			Filters: map[string]any{
+				"min_request_count": "10",
+				"min_error_count":   2.0,
+			},
+		}
+
+		value, ok := svc.computeRuleMetric(ctx, rule, nil, start, end, "", nil)
+		require.True(t, ok)
+		require.InDelta(t, 15.0, value, 0.0001)
+	})
+}

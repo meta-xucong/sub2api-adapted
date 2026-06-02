@@ -564,6 +564,14 @@ func (s *OpsAlertEvaluatorService) computeRuleMetric(
 		return 0, false
 	}
 
+	minRequestCount, minErrorCount := parseOpsAlertRuleRequestThresholds(rule.Filters)
+	if minRequestCount > 0 && overview.RequestCountSLA < minRequestCount {
+		return 0, false
+	}
+	if minErrorCount > 0 && overview.ErrorCountSLA < minErrorCount {
+		return 0, false
+	}
+
 	switch strings.TrimSpace(rule.MetricType) {
 	case "success_rate":
 		if overview.RequestCountSLA <= 0 {
@@ -583,6 +591,54 @@ func (s *OpsAlertEvaluatorService) computeRuleMetric(
 	default:
 		return 0, false
 	}
+}
+
+func parseOpsAlertRuleRequestThresholds(filters map[string]any) (minRequestCount int64, minErrorCount int64) {
+	if filters == nil {
+		return 0, 0
+	}
+	minRequestCount = parseOpsAlertRuleInt64Filter(filters["min_request_count"])
+	minErrorCount = parseOpsAlertRuleInt64Filter(filters["min_error_count"])
+	return minRequestCount, minErrorCount
+}
+
+func parseOpsAlertRuleInt64Filter(raw any) int64 {
+	switch v := raw.(type) {
+	case int:
+		if v > 0 {
+			return int64(v)
+		}
+	case int8:
+		if v > 0 {
+			return int64(v)
+		}
+	case int16:
+		if v > 0 {
+			return int64(v)
+		}
+	case int32:
+		if v > 0 {
+			return int64(v)
+		}
+	case int64:
+		if v > 0 {
+			return v
+		}
+	case float32:
+		if v > 0 {
+			return int64(v)
+		}
+	case float64:
+		if v > 0 {
+			return int64(v)
+		}
+	case string:
+		n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+		if err == nil && n > 0 {
+			return n
+		}
+	}
+	return 0
 }
 
 func compareMetric(value float64, operator string, threshold float64) bool {
