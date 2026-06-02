@@ -34,6 +34,87 @@ Demo credentials (shared demo environment; **not** created automatically for sel
 
 Sub2API is an AI API gateway platform designed to distribute and manage API quotas from AI product subscriptions. Users can access upstream AI services through platform-generated API Keys, while the platform handles authentication, billing, load balancing, and request forwarding.
 
+## Private Adapted Repository Workflow
+
+This private repository is not a plain mirror of `Wei-Shaw/sub2api`. It tracks
+official upstream releases on top of a durable custom patch layer for the
+production VPS.
+
+Use this workflow for every future update:
+
+1. Update locally from upstream:
+
+   ```powershell
+   git switch custom/main
+   .\scripts\update-upstream.ps1
+   ```
+
+   Resolve rebase conflicts only for custom patches that are still needed, then
+   rerun the targeted checks from the script. Never deploy raw `upstream/main`
+   directly to production.
+
+2. Verify the custom patch layer before pushing:
+
+   ```powershell
+   git log --oneline upstream/main..custom/main
+   pnpm --dir frontend test:run src/views/admin/__tests__/groupsMessagesDispatch.spec.ts src/composables/__tests__/useModelWhitelist.spec.ts
+   pnpm --dir frontend typecheck
+   ```
+
+   If Go is unavailable on the local machine, rely on the VPS Docker build as the
+   backend compile check. The production image build must complete successfully
+   before switching containers.
+
+3. Push the adapted branch:
+
+   ```powershell
+   git push origin custom/main
+   ```
+
+4. Deploy to the VPS with data preserved:
+
+   - Take backups before changing containers or database configuration.
+   - Do not recreate PostgreSQL or Redis containers.
+   - Preserve the existing app data mount at `/opt/sub2api/deploy/data:/app/data`.
+   - Build from a clean source directory, not the dirty live checkout:
+
+     ```bash
+     rm -rf /opt/sub2api-build-clean
+     mkdir -p /opt/sub2api-build-clean
+     tar -xf /tmp/sub2api-custom-main.tar -C /opt/sub2api-build-clean
+     cd /opt/sub2api-build-clean
+     docker build -t sub2api-adapted:custom-main --build-arg COMMIT=<commit> --build-arg VERSION=custom-main -f Dockerfile .
+     ```
+
+   - Recreate only the `sub2api` app container, keeping the same env, network,
+     port binding, and `/app/data` mount. Keep the old app container renamed as a
+     rollback point until the new one is verified.
+
+5. After deployment, verify all of the following:
+
+   ```bash
+   curl -fsS http://127.0.0.1:8080/health
+   docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
+   docker exec sub2api-postgres psql -U sub2api -d sub2api -tAc "select 'accounts=' || count(*) from accounts; select 'users=' || count(*) from users; select 'api_keys=' || count(*) from api_keys; select 'settings=' || count(*) from settings;"
+   ```
+
+   Also verify that the production binary contains the expected custom markers:
+
+   ```bash
+   docker exec sub2api sh -lc "grep -a -F 'Kimi hard limit applied' /app/sub2api >/dev/null && echo kimi=present"
+   docker exec sub2api sh -lc "grep -a -F 'min_request_count' /app/sub2api >/dev/null && echo ops_threshold=present"
+   docker exec sub2api sh -lc "grep -a -F 'gpt-5.4' /app/sub2api >/dev/null && echo codex_models=present"
+   ```
+
+6. Remove retired Codex model entrypoints from live configuration after each
+   upstream update if they reappear. Configuration tables should not contain
+   `gpt-5.2`, `gpt-5.3`, or `codex-auto-review` as active account/group/settings
+   entries. Historical `usage_logs` and `ops_*_logs` may still contain old model
+   names and should be left intact.
+
+Current custom patches are documented in
+[`docs/CUSTOM_PATCHES.md`](docs/CUSTOM_PATCHES.md).
+
 ## Features
 
 - **Multi-Account Management** - Support multiple upstream account types (OAuth, API Key)
