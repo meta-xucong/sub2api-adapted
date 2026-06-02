@@ -75,6 +75,8 @@ Use this workflow for every future update:
 
    - Take backups before changing containers or database configuration.
    - Do not recreate PostgreSQL or Redis containers.
+   - Never delete or overwrite `/opt/sub2api/deploy`. It contains the live bind
+     mounts for app data, PostgreSQL, and Redis.
    - Preserve the existing app data mount at `/opt/sub2api/deploy/data:/app/data`.
    - Build from a clean source directory, not the dirty live checkout:
 
@@ -89,6 +91,8 @@ Use this workflow for every future update:
    - Recreate only the `sub2api` app container, keeping the same env, network,
      port binding, and `/app/data` mount. Keep the old app container renamed as a
      rollback point until the new one is verified.
+   - If refreshing `/opt/sub2api` as a source snapshot, sync code paths only and
+     exclude `deploy/`; do not run `rm -rf /opt/sub2api/*`.
 
 5. After deployment, verify all of the following:
 
