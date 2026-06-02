@@ -59,6 +59,7 @@ const (
 	debugGatewayBodyEnv          = "SUB2API_DEBUG_GATEWAY_BODY"
 	// 上游错误体只需要提取错误 JSON/日志摘要，默认 512KiB 避免错误风暴叠加大请求体。
 	gatewayUpstreamErrorBodyReadLimit int64 = 512 << 10
+	kimiGatewayHardMaxTokens           = 1600
 )
 
 const (
@@ -1250,6 +1251,43 @@ func normalizeClaudeOAuthRequestBody(body []byte, modelID string, opts claudeOAu
 	}
 
 	return out, modelID
+}
+
+func isKimiGatewayTargetModel(model string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(model))
+	if normalized == "" {
+		return false
+	}
+	return strings.Contains(normalized, "kimi-for-coding") || strings.HasPrefix(normalized, "kimi-")
+}
+
+func shouldApplyKimiGatewayHardLimit(reqModel string, body []byte) bool {
+	if isKimiGatewayTargetModel(reqModel) {
+		return true
+	}
+
+	bodyModel := strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	if isKimiGatewayTargetModel(bodyModel) {
+		return true
+	}
+	return false
+}
+
+func enforceKimiGatewayHardLimit(reqModel string, body []byte) ([]byte, bool) {
+	if len(body) == 0 || !shouldApplyKimiGatewayHardLimit(reqModel, body) {
+		return body, false
+	}
+
+	current := gjson.GetBytes(body, "max_tokens")
+	if current.Exists() && current.Int() == kimiGatewayHardMaxTokens {
+		return body, false
+	}
+
+	next, ok := setJSONValueBytes(body, "max_tokens", kimiGatewayHardMaxTokens)
+	if !ok {
+		return body, false
+	}
+	return next, true
 }
 
 func (s *GatewayService) buildOAuthMetadataUserID(parsed *ParsedRequest, account *Account, fp *Fingerprint) string {
@@ -4611,6 +4649,15 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		logger.LegacyPrintf("service.gateway", "Model mapping applied: %s -> %s (account: %s, source=%s)", originalModel, mappedModel, account.Name, mappingSource)
 	}
 
+	if hardenedBody, changed := enforceKimiGatewayHardLimit(reqModel, body); changed {
+		body = hardenedBody
+		accountID := int64(0)
+		if account != nil {
+			accountID = account.ID
+		}
+		logger.LegacyPrintf("service.gateway", "Kimi hard limit applied: max_tokens=%d (account=%d model=%s)", kimiGatewayHardMaxTokens, accountID, reqModel)
+	}
+
 	if s.shouldInjectAnthropicCacheTTL1h(ctx, account) {
 		if err := replaceBody(injectAnthropicCacheControlTTL1h(body)); err != nil {
 			return nil, err
@@ -5164,12 +5211,22 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 	}
 	// Pre-filter: strip empty text blocks (including nested in tool_result) to prevent upstream 400.
 	input.Body = StripEmptyTextBlocks(input.Body)
+	if hardenedBody, changed := enforceKimiGatewayHardLimit(input.RequestModel, input.Body); changed {
+		input.Body = hardenedBody
+		accountID := int64(0)
+		if account != nil {
+			accountID = account.ID
+		}
+		logger.LegacyPrintf("service.gateway", "Kimi passthrough hard limit applied: max_tokens=%d (account=%d model=%s)", kimiGatewayHardMaxTokens, accountID, input.RequestModel)
+	}
 	if input.Parsed != nil {
 		// 透传分支也会改写实际 wire body，成功 usage hash 依赖这里同步当前 body。
 		if err := input.Parsed.ReplaceBody(input.Body); err != nil {
 			return nil, err
 		}
 	}
+	// 重试间复用同一请求体，避免每次 string(body) 产生额外分配。
+	setOpsUpstreamRequestBody(c, input.Body)
 
 	var resp *http.Response
 	retryStart := time.Now()
