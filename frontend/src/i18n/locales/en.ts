@@ -2203,7 +2203,7 @@ export default {
         opusModel: 'Opus Target Model',
         opusModelPlaceholder: 'e.g., gpt-5.4',
         sonnetModel: 'Sonnet Target Model',
-        sonnetModelPlaceholder: 'e.g., gpt-5.3-codex',
+        sonnetModelPlaceholder: 'e.g., gpt-5.4',
         haikuModel: 'Haiku Target Model',
         haikuModelPlaceholder: 'e.g., gpt-5.4-mini',
         exactMappingTitle: 'Exact Model Overrides',

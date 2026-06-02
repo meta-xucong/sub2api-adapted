@@ -848,8 +848,8 @@ func TestNormalizeCodexModel_Gpt53(t *testing.T) {
 		"gpt5.4-mini":               "gpt-5.4-mini",
 		"gpt5.4mini":                "gpt-5.4-mini",
 		"gpt 5.4 mini":              "gpt-5.4-mini",
-		"gpt-5.3":                   "gpt-5.3-codex",
-		"gpt5.3":                    "gpt-5.3-codex",
+		"gpt-5.3":                   "gpt-5.4",
+		"gpt5.3":                    "gpt-5.4",
 		"gpt-5.3-codex":             "gpt-5.3-codex",
 		"gpt5.3-codex":              "gpt-5.3-codex",
 		"gpt5.3codex":               "gpt-5.3-codex",
@@ -875,12 +875,12 @@ func TestNormalizeCodexModel_RemovedModelsFallbackToSupportedTargets(t *testing.
 		"gpt-5-mini":         "gpt-5.4",
 		"gpt-5-nano":         "gpt-5.4",
 		"gpt-5.1":            "gpt-5.4",
-		"gpt-5.1-codex":      "gpt-5.3-codex",
-		"gpt-5.1-codex-max":  "gpt-5.3-codex",
-		"gpt-5.1-codex-mini": "gpt-5.3-codex",
+		"gpt-5.1-codex":      "gpt-5.4",
+		"gpt-5.1-codex-max":  "gpt-5.4",
+		"gpt-5.1-codex-mini": "gpt-5.4-mini",
 		"gpt-5.2-codex":      "gpt-5.2",
-		"codex-mini-latest":  "gpt-5.3-codex",
-		"gpt-5-codex":        "gpt-5.3-codex",
+		"codex-mini-latest":  "gpt-5.4-mini",
+		"gpt-5-codex":        "gpt-5.4",
 	}
 
 	for input, expected := range cases {

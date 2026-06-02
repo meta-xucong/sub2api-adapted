@@ -2287,7 +2287,7 @@ export default {
         opusModel: 'Opus 映射模型',
         opusModelPlaceholder: '例如: gpt-5.4',
         sonnetModel: 'Sonnet 映射模型',
-        sonnetModelPlaceholder: '例如: gpt-5.3-codex',
+        sonnetModelPlaceholder: '例如: gpt-5.4',
         haikuModel: 'Haiku 映射模型',
         haikuModelPlaceholder: '例如: gpt-5.4-mini',
         exactMappingTitle: '精确模型覆盖',
