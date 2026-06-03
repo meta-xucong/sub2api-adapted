@@ -67,7 +67,12 @@ This preserves a stable primary egress IP per account while keeping automatic fa
 9. `systemctl enable --now jp-relay-watchdog.timer`
 10. `haproxy -c -f /etc/haproxy/haproxy.cfg`
 11. `systemctl restart haproxy`
-12. Verify:
+12. If `ufw` is enabled on the host, allow the docker bridge to reach every relay lane:
+   - `ufw allow proto tcp from 172.18.0.0/16 to 172.18.0.1 port 21080`
+   - `ufw allow proto tcp from 172.18.0.0/16 to 172.18.0.1 port 21081`
+   - `ufw allow proto tcp from 172.18.0.0/16 to 172.18.0.1 port 21082`
+   - `ufw allow proto tcp from 172.18.0.0/16 to 172.18.0.1 port 21083`
+13. Verify:
    - `curl --socks5-hostname 172.18.0.1:21081 https://api.ipify.org`
    - `curl --socks5-hostname 172.18.0.1:21082 https://api.ipify.org`
    - `curl --socks5-hostname 172.18.0.1:21083 https://api.ipify.org`
