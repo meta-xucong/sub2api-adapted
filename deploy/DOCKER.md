@@ -75,3 +75,4 @@ volumes:
 - [GitHub Repository](https://github.com/weishaw/sub2api)
 - [Documentation](https://github.com/weishaw/sub2api#readme)
 - [Production Queueing And Relay Notes](./PRODUCTION_QUEUEING_AND_RELAY.md)
+- [JP Relay Deployment Assets](./relay/README.md)

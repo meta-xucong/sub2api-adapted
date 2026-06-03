@@ -1,0 +1,14 @@
+[Unit]
+Description=SOCKS tunnel to JP relay 1 (primary via port 22022)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/ssh -NT -D 127.0.0.1:20081 -i /root/.ssh/jp-relay-1.key -p 22022 -o ExitOnForwardFailure=yes -o ConnectTimeout=8 -o ConnectionAttempts=1 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR root@141.11.138.77
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
