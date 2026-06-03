@@ -1,0 +1,12 @@
+[Unit]
+Description=Run JP relay functional health checks every minute
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+AccuracySec=10s
+Persistent=true
+Unit=jp-relay-watchdog.service
+
+[Install]
+WantedBy=timers.target

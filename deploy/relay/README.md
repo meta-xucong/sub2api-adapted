@@ -48,6 +48,11 @@ This preserves a stable primary egress IP per account while keeping automatic fa
 - `jp-relay-2-tunnel.service`
 - `jp-relay-3-tunnel.service`
   - systemd services that keep the host-side SSH dynamic forwarders alive.
+  - each service includes `RuntimeMaxSec=12h` so long-lived tunnels are periodically recycled instead of drifting for many days.
+- `check-jp-relay-tunnels.sh`
+- `jp-relay-watchdog.service`
+- `jp-relay-watchdog.timer`
+  - functional health checks that probe SOCKS egress instead of only checking whether the local port is listening.
 
 ## Restore Checklist
 
@@ -56,12 +61,30 @@ This preserves a stable primary egress IP per account while keeping automatic fa
 3. `systemctl daemon-reload`
 4. `systemctl enable --now jp-relay-1-tunnel.service jp-relay-2-tunnel.service jp-relay-3-tunnel.service`
 5. Copy `haproxy-jp-relays.cfg` into `/etc/haproxy/haproxy.cfg`
-6. `haproxy -c -f /etc/haproxy/haproxy.cfg`
-7. `systemctl restart haproxy`
-8. Verify:
+6. Copy `check-jp-relay-tunnels.sh` into `/usr/local/bin/` and `chmod +x /usr/local/bin/check-jp-relay-tunnels.sh`
+7. Copy `jp-relay-watchdog.service` and `jp-relay-watchdog.timer` into `/etc/systemd/system/`
+8. `systemctl daemon-reload`
+9. `systemctl enable --now jp-relay-watchdog.timer`
+10. `haproxy -c -f /etc/haproxy/haproxy.cfg`
+11. `systemctl restart haproxy`
+12. Verify:
    - `curl --socks5-hostname 172.18.0.1:21081 https://api.ipify.org`
    - `curl --socks5-hostname 172.18.0.1:21082 https://api.ipify.org`
    - `curl --socks5-hostname 172.18.0.1:21083 https://api.ipify.org`
+
+## Why the watchdog matters
+
+HAProxy's current TCP health checks only prove that the local SOCKS port is accepting TCP.
+They do not prove that the long-lived SSH dynamic forward can still complete outbound SOCKS requests.
+
+That means a tunnel can become "half-dead":
+
+- SSH process is still running
+- local port is still listening
+- HAProxy still marks the backend UP
+- real outbound requests time out
+
+The watchdog closes that gap by probing actual SOCKS egress. If the probe fails, it restarts the tunnel service, which drops the local port and allows HAProxy to move traffic to the backup line.
 
 ## Important Boundary
 

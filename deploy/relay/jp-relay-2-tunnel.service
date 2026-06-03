@@ -9,6 +9,7 @@ Type=simple
 ExecStart=/usr/bin/ssh -NT -D 127.0.0.1:20082 -i /root/.ssh/jp-relay-2.key -o ExitOnForwardFailure=yes -o ConnectTimeout=8 -o ConnectionAttempts=1 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR root@141.11.139.81
 Restart=always
 RestartSec=2
+RuntimeMaxSec=12h
 
 [Install]
 WantedBy=multi-user.target
