@@ -510,6 +510,18 @@ func (s *APIKeyService) GetByKey(ctx context.Context, key string) (*APIKey, erro
 	return apiKey, nil
 }
 
+// GetByKeyFresh bypasses auth cache and loads the latest auth view from storage.
+// Use this only on slow-path validation or cache-mismatch recovery paths.
+func (s *APIKeyService) GetByKeyFresh(ctx context.Context, key string) (*APIKey, error) {
+	apiKey, err := s.apiKeyRepo.GetByKeyForAuth(ctx, key)
+	if err != nil {
+		return nil, fmt.Errorf("get api key: %w", err)
+	}
+	apiKey.Key = key
+	s.compileAPIKeyIPRules(apiKey)
+	return apiKey, nil
+}
+
 // Update 更新API Key
 func (s *APIKeyService) Update(ctx context.Context, id int64, userID int64, req UpdateAPIKeyRequest) (*APIKey, error) {
 	apiKey, err := s.apiKeyRepo.GetByID(ctx, id)

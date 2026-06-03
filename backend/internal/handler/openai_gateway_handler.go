@@ -40,6 +40,28 @@ type OpenAIGatewayHandler struct {
 	cfg                      *config.Config
 }
 
+func (h *OpenAIGatewayHandler) groupAllowsImageGeneration(c *gin.Context, apiKey *service.APIKey) bool {
+	if service.GroupAllowsImageGeneration(apiKey.Group) {
+		return true
+	}
+	if h.apiKeyService == nil || apiKey == nil || strings.TrimSpace(apiKey.Key) == "" {
+		return false
+	}
+	freshAPIKey, err := h.apiKeyService.GetByKeyFresh(c.Request.Context(), apiKey.Key)
+	if err != nil || freshAPIKey == nil {
+		return false
+	}
+	if service.GroupAllowsImageGeneration(freshAPIKey.Group) {
+		c.Set(string(middleware2.ContextKeyAPIKey), freshAPIKey)
+		if service.IsGroupContextValid(freshAPIKey.Group) {
+			ctx := context.WithValue(c.Request.Context(), ctxkey.Group, freshAPIKey.Group)
+			c.Request = c.Request.WithContext(ctx)
+		}
+		return true
+	}
+	return false
+}
+
 func resolveOpenAIMessagesDispatchMappedModel(apiKey *service.APIKey, requestedModel string) string {
 	if apiKey == nil || apiKey.Group == nil {
 		return ""
@@ -224,7 +246,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	}
 
 	imageIntent := service.IsImageGenerationIntent("/v1/responses", reqModel, body)
-	if imageIntent && !service.GroupAllowsImageGeneration(apiKey.Group) {
+	if imageIntent && !h.groupAllowsImageGeneration(c, apiKey) {
 		h.errorResponse(c, http.StatusForbidden, "permission_error", service.ImageGenerationPermissionMessage())
 		return
 	}
@@ -1220,7 +1242,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		return
 	}
 
-	if service.IsImageGenerationIntent("/v1/responses", reqModel, firstMessage) && !service.GroupAllowsImageGeneration(apiKey.Group) {
+	if service.IsImageGenerationIntent("/v1/responses", reqModel, firstMessage) && !h.groupAllowsImageGeneration(c, apiKey) {
 		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, service.ImageGenerationPermissionMessage())
 		return
 	}
