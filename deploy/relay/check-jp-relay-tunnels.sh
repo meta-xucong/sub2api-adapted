@@ -4,6 +4,7 @@ set -euo pipefail
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-15}"
 OPENAI_PROBE_URL="${OPENAI_PROBE_URL:-https://chatgpt.com/backend-api/codex/responses}"
 IP_PROBE_URL="${IP_PROBE_URL:-https://api.ipify.org}"
+LOG_FILE="${LOG_FILE:-/var/log/jp-relay-watchdog.log}"
 
 services=(
   "jp-relay-1-tunnel.service|20081|141.11.138.77"
@@ -13,6 +14,7 @@ services=(
 
 log() {
   logger -t jp-relay-watchdog "$1"
+  printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')" "$1" >> "$LOG_FILE"
   echo "$1"
 }
 
