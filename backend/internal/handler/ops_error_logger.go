@@ -760,8 +760,10 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 			}
 		}
 
-		// Skip logging if the error should be filtered based on settings
-		if shouldSkipOpsErrorLog(c.Request.Context(), ops, parsed.Message, string(body), c.Request.URL.Path) {
+		// Skip logging if the error should be filtered based on settings.
+		// The client-facing fallback body may be intentionally generic, so include
+		// upstream context set by gateway services when applying text filters.
+		if shouldSkipOpsErrorLog(c.Request.Context(), ops, parsed.Message, string(body), c.Request.URL.Path, opsUpstreamFilterTexts(c)...) {
 			return
 		}
 
@@ -1339,7 +1341,7 @@ func strconvItoa(v int) string {
 
 // shouldSkipOpsErrorLog determines if an error should be skipped from logging based on settings.
 // Returns true for errors that should be filtered according to OpsAdvancedSettings.
-func shouldSkipOpsErrorLog(ctx context.Context, ops *service.OpsService, message, body, requestPath string) bool {
+func shouldSkipOpsErrorLog(ctx context.Context, ops *service.OpsService, message, body, requestPath string, extraTexts ...string) bool {
 	if ops == nil {
 		return false
 	}
@@ -1353,6 +1355,7 @@ func shouldSkipOpsErrorLog(ctx context.Context, ops *service.OpsService, message
 
 	msgLower := strings.ToLower(message)
 	bodyLower := strings.ToLower(body)
+	extraLower := strings.ToLower(strings.Join(extraTexts, "\n"))
 
 	// Check if count_tokens errors should be ignored
 	if settings.IgnoreCountTokensErrors && strings.Contains(requestPath, "/count_tokens") {
@@ -1361,7 +1364,7 @@ func shouldSkipOpsErrorLog(ctx context.Context, ops *service.OpsService, message
 
 	// Check if context canceled errors should be ignored (client disconnects)
 	if settings.IgnoreContextCanceled {
-		if strings.Contains(msgLower, opsErrContextCanceled) || strings.Contains(bodyLower, opsErrContextCanceled) {
+		if strings.Contains(msgLower, opsErrContextCanceled) || strings.Contains(bodyLower, opsErrContextCanceled) || strings.Contains(extraLower, opsErrContextCanceled) {
 			return true
 		}
 	}
@@ -1390,4 +1393,37 @@ func shouldSkipOpsErrorLog(ctx context.Context, ops *service.OpsService, message
 	}
 
 	return false
+}
+
+func opsUpstreamFilterTexts(c *gin.Context) []string {
+	if c == nil {
+		return nil
+	}
+	texts := make([]string, 0, 4)
+	if v, ok := c.Get(service.OpsUpstreamErrorMessageKey); ok {
+		if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
+			texts = append(texts, s)
+		}
+	}
+	if v, ok := c.Get(service.OpsUpstreamErrorDetailKey); ok {
+		if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
+			texts = append(texts, s)
+		}
+	}
+	if v, ok := c.Get(service.OpsUpstreamErrorsKey); ok {
+		if events, ok := v.([]*service.OpsUpstreamErrorEvent); ok {
+			for _, ev := range events {
+				if ev == nil {
+					continue
+				}
+				if strings.TrimSpace(ev.Message) != "" {
+					texts = append(texts, ev.Message)
+				}
+				if strings.TrimSpace(ev.Detail) != "" {
+					texts = append(texts, ev.Detail)
+				}
+			}
+		}
+	}
+	return texts
 }

@@ -3,6 +3,7 @@ package handler
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -117,6 +118,22 @@ func TestOpsCaptureWriterPool_ResetOnRelease(t *testing.T) {
 	defer releaseOpsCaptureWriter(reused)
 
 	require.Zero(t, reused.buf.Len(), "writer should be reset before reuse")
+}
+
+func TestOpsUpstreamFilterTextsIncludesUpstreamContext(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+
+	c.Set(service.OpsUpstreamErrorMessageKey, `Post "https://api.kimi.com/coding/v1/messages?beta=true": context canceled`)
+	c.Set(service.OpsUpstreamErrorsKey, []*service.OpsUpstreamErrorEvent{
+		{Message: "request failed", Detail: "context canceled while reading upstream response"},
+	})
+
+	texts := strings.Join(opsUpstreamFilterTexts(c), "\n")
+	require.Contains(t, texts, "api.kimi.com/coding/v1/messages")
+	require.Contains(t, texts, "context canceled")
 }
 
 func TestOpsErrorLoggerMiddleware_DoesNotBreakOuterMiddlewares(t *testing.T) {
