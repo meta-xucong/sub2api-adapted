@@ -3298,7 +3298,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		imageCount = result.imageCount
 		imageOutputSizes = result.imageOutputSizes
 	} else {
-		result, err := s.handleNonStreamingResponsePassthrough(ctx, resp, c, reqModel, upstreamPassthroughModel)
+		result, err := s.handleNonStreamingResponsePassthrough(ctx, resp, c, account, reqModel, upstreamPassthroughModel)
 		if err != nil {
 			return nil, err
 		}
@@ -3934,11 +3934,16 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 	ctx context.Context,
 	resp *http.Response,
 	c *gin.Context,
+	account *Account,
 	originalModel string,
 	mappedModel string,
 ) (*openaiNonStreamingResultPassthrough, error) {
 	body, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
 	if err != nil {
+		if !errors.Is(err, ErrUpstreamResponseBodyTooLarge) && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			msg := "OpenAI non-stream response read failed: " + sanitizeStreamError(err)
+			return nil, s.newOpenAIStreamFailoverError(c, account, true, strings.TrimSpace(resp.Header.Get("x-request-id")), nil, msg)
+		}
 		return nil, err
 	}
 
