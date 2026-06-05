@@ -709,6 +709,26 @@ func TestOpenAIGatewayServiceForwardImages_OAuthNonStreamModerationBlockedReturn
 	require.Contains(t, gjson.Get(rec.Body.String(), "error.message").String(), "safety system")
 }
 
+func TestOpenAIImagesUpstreamErrorRateLimitReturnsTooManyRequests(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := []byte("data: {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"code\":\"rate_limit_exceeded\",\"message\":\"Rate limit reached for gpt-image-2-codex on input-images per min. Please try again in 15ms.\"}}\n\n")
+
+	upstreamErr := extractOpenAIImagesUpstreamError(body)
+	require.NotNil(t, upstreamErr)
+	require.Equal(t, http.StatusTooManyRequests, upstreamErr.StatusCode)
+	require.Equal(t, 1, upstreamErr.RetryAfterSeconds)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+
+	require.True(t, writeOpenAIImagesUpstreamErrorResponse(c, upstreamErr))
+	require.Equal(t, http.StatusTooManyRequests, rec.Code)
+	require.Equal(t, "1", rec.Header().Get("Retry-After"))
+	require.Equal(t, "rate_limit_error", gjson.Get(rec.Body.String(), "error.type").String())
+	require.Equal(t, "rate_limit_exceeded", gjson.Get(rec.Body.String(), "error.code").String())
+}
+
 func TestOpenAIGatewayServiceForwardImages_APIKeyGenerationUsesConfiguredV1BaseURL(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	body := []byte(`{"model":"gpt-image-2","prompt":"draw a cat","response_format":"b64_json"}`)

@@ -110,6 +110,7 @@ Use this workflow for every future update:
    docker exec sub2api sh -lc "grep -a -F 'min_request_count' /app/sub2api >/dev/null && echo ops_threshold=present"
    docker exec sub2api sh -lc "grep -a -F 'gpt-5.4' /app/sub2api >/dev/null && echo codex_models=present"
    docker exec sub2api sh -lc "grep -a -F 'geminiCustomModelsListAllows' /app/sub2api >/dev/null && echo gemini_model_filter=present"
+   docker exec sub2api sh -lc "grep -a -F 'openAIImagesUpstreamErrorStatusCode' /app/sub2api >/dev/null && echo image_429=present"
    ```
 
    For Gemini free-tier/internal groups, verify that `/v1beta/models` exposes

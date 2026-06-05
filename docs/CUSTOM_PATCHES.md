@@ -97,6 +97,18 @@ after an upstream model sync.
 Keep this patch until upstream applies custom group model-list filtering to
 Gemini native routes.
 
+### `custom: classify OpenAI image rate limits as 429`
+
+OpenAI Responses-backed image generation can return SSE error payloads with
+`rate_limit_exceeded` even when the HTTP response itself is otherwise consumed
+through the image compatibility layer. Those errors are now returned to clients
+as `429 Too Many Requests` instead of the generic `502 Bad Gateway`, with a
+best-effort `Retry-After` header when the upstream message includes a retry
+delay.
+
+Keep this patch until upstream classifies OpenAI image rate-limit payloads as
+429 in the image compatibility layer.
+
 ## Update Workflow
 
 Run:

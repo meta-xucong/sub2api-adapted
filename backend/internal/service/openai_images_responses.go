@@ -35,6 +35,7 @@ type OpenAIImagesUpstreamError struct {
 	Code              string
 	Message           string
 	Param             string
+	RetryAfterSeconds int
 	UpstreamRequestID string
 }
 
@@ -562,10 +563,7 @@ func openAIImagesUpstreamErrorFromGJSON(errorObj gjson.Result, upstreamRequestID
 	errType := strings.TrimSpace(errorObj.Get("type").String())
 	message := strings.TrimSpace(errorObj.Get("message").String())
 	param := strings.TrimSpace(errorObj.Get("param").String())
-	statusCode := http.StatusBadGateway
-	if strings.EqualFold(code, "moderation_blocked") || strings.EqualFold(errType, "image_generation_user_error") {
-		statusCode = http.StatusBadRequest
-	}
+	statusCode := openAIImagesUpstreamErrorStatusCode(code, errType, message)
 	if message == "" {
 		message = "Upstream request failed"
 	}
@@ -575,8 +573,53 @@ func openAIImagesUpstreamErrorFromGJSON(errorObj gjson.Result, upstreamRequestID
 		Code:              code,
 		Message:           sanitizeUpstreamErrorMessage(message),
 		Param:             param,
+		RetryAfterSeconds: openAIImagesRetryAfterSeconds(message),
 		UpstreamRequestID: strings.TrimSpace(upstreamRequestID),
 	}
+}
+
+func openAIImagesUpstreamErrorStatusCode(code, errType, message string) int {
+	code = strings.ToLower(strings.TrimSpace(code))
+	errType = strings.ToLower(strings.TrimSpace(errType))
+	message = strings.ToLower(strings.TrimSpace(message))
+	if code == "rate_limit_exceeded" ||
+		code == "usage_limit_reached" ||
+		errType == "rate_limit_error" ||
+		errType == "rate_limit_exceeded" ||
+		errType == "usage_limit_reached" ||
+		strings.Contains(message, "rate limit") {
+		return http.StatusTooManyRequests
+	}
+	if code == "moderation_blocked" || errType == "image_generation_user_error" {
+		return http.StatusBadRequest
+	}
+	return http.StatusBadGateway
+}
+
+func openAIImagesRetryAfterSeconds(message string) int {
+	lower := strings.ToLower(strings.TrimSpace(message))
+	marker := "please try again in "
+	idx := strings.Index(lower, marker)
+	if idx < 0 {
+		return 0
+	}
+	rest := strings.TrimSpace(lower[idx+len(marker):])
+	if rest == "" {
+		return 0
+	}
+	token := strings.Trim(strings.Fields(rest)[0], ".,;")
+	if token == "" {
+		return 0
+	}
+	duration, err := time.ParseDuration(token)
+	if err != nil || duration <= 0 {
+		return 0
+	}
+	seconds := int((duration + time.Second - 1) / time.Second)
+	if seconds < 1 {
+		return 1
+	}
+	return seconds
 }
 
 func buildOpenAIImagesAPIResponse(
@@ -673,6 +716,9 @@ func writeOpenAIImagesUpstreamErrorResponse(c *gin.Context, err *OpenAIImagesUps
 	}
 	if param := strings.TrimSpace(err.Param); param != "" {
 		errorObj["param"] = param
+	}
+	if err.RetryAfterSeconds > 0 {
+		c.Header("Retry-After", fmt.Sprintf("%d", err.RetryAfterSeconds))
 	}
 	c.JSON(err.clientStatusCode(), gin.H{
 		"error": errorObj,
