@@ -109,7 +109,12 @@ Use this workflow for every future update:
    docker exec sub2api sh -lc "grep -a -F 'AnthropicAPIKeyUpstreamTimeoutSeconds' /app/sub2api >/dev/null && echo kimi_timeout=present"
    docker exec sub2api sh -lc "grep -a -F 'min_request_count' /app/sub2api >/dev/null && echo ops_threshold=present"
    docker exec sub2api sh -lc "grep -a -F 'gpt-5.4' /app/sub2api >/dev/null && echo codex_models=present"
+   docker exec sub2api sh -lc "grep -a -F 'geminiCustomModelsListAllows' /app/sub2api >/dev/null && echo gemini_model_filter=present"
    ```
+
+   For Gemini free-tier/internal groups, verify that `/v1beta/models` exposes
+   only the group's custom allowed models, and that a Pro/image model returns
+   `404 Model not found` through the same downstream API key.
 
 6. Remove retired Codex model entrypoints from live configuration after each
    upstream update if they reappear. Configuration tables should not contain

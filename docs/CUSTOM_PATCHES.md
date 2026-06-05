@@ -82,6 +82,17 @@ Codex targets and maps legacy Codex aliases to current supported targets:
 Keep this patch until upstream removes unsupported `gpt-5.3` defaults and legacy
 Codex alias routing.
 
+### `custom: filter Gemini native model list`
+
+Gemini native `/v1beta/models`, `/v1beta/models/{model}`, and
+`/v1beta/models/{model}:generateContent|streamGenerateContent` now honor a
+group's custom `models_list_config` when it is enabled. This keeps free-tier or
+internal Gemini groups from advertising or accepting upstream Pro/image models
+after an upstream model sync.
+
+Keep this patch until upstream applies custom group model-list filtering to
+Gemini native routes.
+
 ## Update Workflow
 
 Run:

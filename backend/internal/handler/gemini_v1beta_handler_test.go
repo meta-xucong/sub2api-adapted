@@ -167,3 +167,30 @@ func TestShouldFallbackGeminiModel_DelegatesScopeFallback(t *testing.T) {
 	}
 	require.True(t, shouldFallbackGeminiModel("gemini-future-model", res))
 }
+
+func TestGeminiModelIDsFromModelsListBody(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`{"models":[{"name":"models/gemini-2.5-flash"},{"name":"models/gemini-2.5-pro"},{"name":"models/gemini-2.5-flash-lite"}]}`)
+
+	require.Equal(t, []string{
+		"gemini-2.5-flash",
+		"gemini-2.5-pro",
+		"gemini-2.5-flash-lite",
+	}, geminiModelIDsFromModelsListBody(body))
+}
+
+func TestGeminiCustomModelsListAllows(t *testing.T) {
+	t.Parallel()
+
+	group := &service.Group{
+		ModelsListConfig: service.GroupModelsListConfig{
+			Enabled: true,
+			Models:  []string{"gemini-2.5-flash", "gemini-2.5-flash-lite"},
+		},
+	}
+
+	require.True(t, geminiCustomModelsListAllows(group, "gemini-2.5-flash"))
+	require.True(t, geminiCustomModelsListAllows(group, "models/gemini-2.5-flash-lite"))
+	require.False(t, geminiCustomModelsListAllows(group, "gemini-2.5-pro"))
+}

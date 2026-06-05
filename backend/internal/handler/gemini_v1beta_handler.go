@@ -72,8 +72,16 @@ func (h *GatewayHandler) GeminiV1BetaListModels(c *gin.Context) {
 		return
 	}
 	if shouldFallbackGeminiModels(res) {
+		if writeGeminiCustomModelsList(c, apiKey.Group, nil) {
+			return
+		}
 		c.JSON(http.StatusOK, gemini.FallbackModelsList())
 		return
+	}
+	if res != nil && res.StatusCode >= http.StatusOK && res.StatusCode < http.StatusMultipleChoices {
+		if writeGeminiCustomModelsList(c, apiKey.Group, res.Body) {
+			return
+		}
 	}
 	writeUpstreamResponse(c, res)
 }
@@ -96,6 +104,10 @@ func (h *GatewayHandler) GeminiV1BetaGetModel(c *gin.Context) {
 	modelName := strings.TrimSpace(c.Param("model"))
 	if modelName == "" {
 		googleError(c, http.StatusBadRequest, "Missing model in URL")
+		return
+	}
+	if forcePlatform != service.PlatformAntigravity && !geminiCustomModelsListAllows(apiKey.Group, modelName) {
+		googleError(c, http.StatusNotFound, "Model not found")
 		return
 	}
 
@@ -164,6 +176,10 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 	modelName, action, err := parseGeminiModelAction(strings.TrimPrefix(c.Param("modelAction"), "/"))
 	if err != nil {
 		googleError(c, http.StatusNotFound, err.Error())
+		return
+	}
+	if !middleware.HasForcePlatform(c) && !geminiCustomModelsListAllows(apiKey.Group, modelName) {
+		googleError(c, http.StatusNotFound, "Model not found")
 		return
 	}
 
@@ -689,6 +705,79 @@ func writeUpstreamResponse(c *gin.Context, res *service.UpstreamHTTPResult) {
 		contentType = "application/json"
 	}
 	c.Data(res.StatusCode, contentType, res.Body)
+}
+
+func writeGeminiCustomModelsList(c *gin.Context, group *service.Group, upstreamBody []byte) bool {
+	if group == nil || !group.CustomModelsListEnabled() {
+		return false
+	}
+
+	availableModels := geminiModelIDsFromModelsListBody(upstreamBody)
+	filtered := filterModelsByCustomList(availableModels, group.ModelsListConfig.Models, group.ModelsListConfig.Models)
+	models := make([]gemini.Model, 0, len(filtered))
+	for _, modelID := range filtered {
+		modelID = strings.TrimSpace(modelID)
+		if modelID == "" {
+			continue
+		}
+		if !strings.HasPrefix(modelID, "models/") {
+			modelID = "models/" + modelID
+		}
+		models = append(models, gemini.Model{
+			Name:                       modelID,
+			SupportedGenerationMethods: []string{"generateContent", "streamGenerateContent"},
+		})
+	}
+	c.JSON(http.StatusOK, gemini.ModelsListResponse{Models: models})
+	return true
+}
+
+func geminiModelIDsFromModelsListBody(body []byte) []string {
+	if len(body) == 0 {
+		return nil
+	}
+	var payload struct {
+		Models []struct {
+			Name string `json:"name"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil
+	}
+	ids := make([]string, 0, len(payload.Models))
+	for _, model := range payload.Models {
+		id := strings.TrimSpace(model.Name)
+		id = strings.TrimPrefix(id, "models/")
+		if id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+func geminiCustomModelsListAllows(group *service.Group, modelName string) bool {
+	if group == nil || !group.CustomModelsListEnabled() {
+		return true
+	}
+	modelName = strings.TrimSpace(modelName)
+	modelName = strings.TrimPrefix(modelName, "models/")
+	if modelName == "" {
+		return false
+	}
+	for _, model := range group.ModelsListConfig.Models {
+		model = strings.TrimSpace(model)
+		model = strings.TrimPrefix(model, "models/")
+		if model == "" {
+			continue
+		}
+		if model == modelName {
+			return true
+		}
+		if strings.HasSuffix(model, "*") && strings.HasPrefix(modelName, strings.TrimSuffix(model, "*")) {
+			return true
+		}
+	}
+	return false
 }
 
 func shouldFallbackGeminiModels(res *service.UpstreamHTTPResult) bool {
