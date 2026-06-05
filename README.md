@@ -106,6 +106,7 @@ Use this workflow for every future update:
 
    ```bash
    docker exec sub2api sh -lc "grep -a -F 'Kimi hard limit applied' /app/sub2api >/dev/null && echo kimi=present"
+   docker exec sub2api sh -lc "grep -a -F 'AnthropicAPIKeyUpstreamTimeoutSeconds' /app/sub2api >/dev/null && echo kimi_timeout=present"
    docker exec sub2api sh -lc "grep -a -F 'min_request_count' /app/sub2api >/dev/null && echo ops_threshold=present"
    docker exec sub2api sh -lc "grep -a -F 'gpt-5.4' /app/sub2api >/dev/null && echo codex_models=present"
    ```

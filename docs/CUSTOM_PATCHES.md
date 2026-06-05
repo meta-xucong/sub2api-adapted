@@ -23,6 +23,20 @@ gateway path and the Anthropic API key passthrough path.
 Keep this patch until upstream provides an equivalent Kimi-specific hard limit
 or the Kimi upstream no longer needs the cap.
 
+### `custom: detach Kimi passthrough upstream timeout`
+
+Anthropic API-key passthrough requests, including the production Kimi account,
+use a detached upstream context for non-streaming `/v1/messages` and
+`/v1/messages/count_tokens` calls. This prevents short client-side cancellations
+from immediately cancelling the Kimi upstream request.
+
+The non-streaming upstream budget is configurable through
+`GATEWAY_ANTHROPIC_APIKEY_UPSTREAM_TIMEOUT_SECONDS` and defaults to `60`.
+Streaming requests continue to use the existing stream idle-timeout logic.
+
+Keep this patch until upstream provides an equivalent Anthropic API-key
+passthrough upstream timeout/cancellation policy.
+
 ### `custom: add Kimi fallback billing`
 
 Adds fallback token pricing for Kimi/Moonshot models when LiteLLM pricing does
