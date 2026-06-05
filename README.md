@@ -116,6 +116,13 @@ Use this workflow for every future update:
    only the group's custom allowed models, and that a Pro/image model returns
    `404 Model not found` through the same downstream API key.
 
+   Production Kimi API-key accounts must also keep Anthropic passthrough enabled
+   so the detached upstream timeout patch is active:
+
+   ```bash
+   docker exec sub2api-postgres psql -U sub2api -d sub2api -tAc "select 'kimi_passthrough=' || coalesce(extra->>'anthropic_passthrough','false') from accounts where name='kimi' and platform='anthropic' and type='apikey' and deleted_at is null;"
+   ```
+
 6. Remove retired Codex model entrypoints from live configuration after each
    upstream update if they reappear. Configuration tables should not contain
    `gpt-5.2`, `gpt-5.3`, or `codex-auto-review` as active account/group/settings

@@ -34,6 +34,10 @@ The non-streaming upstream budget is configurable through
 `GATEWAY_ANTHROPIC_APIKEY_UPSTREAM_TIMEOUT_SECONDS` and defaults to `60`.
 Streaming requests continue to use the existing stream idle-timeout logic.
 
+Production Kimi accounts must also have `accounts.extra.anthropic_passthrough`
+set to `true`; otherwise they use the normal Anthropic API-key forwarding path
+and do not receive this detached upstream timeout behavior.
+
 Keep this patch until upstream provides an equivalent Anthropic API-key
 passthrough upstream timeout/cancellation policy.
 
