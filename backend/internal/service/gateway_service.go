@@ -59,7 +59,7 @@ const (
 	debugGatewayBodyEnv          = "SUB2API_DEBUG_GATEWAY_BODY"
 	// 上游错误体只需要提取错误 JSON/日志摘要，默认 512KiB 避免错误风暴叠加大请求体。
 	gatewayUpstreamErrorBodyReadLimit int64 = 512 << 10
-	kimiGatewayHardMaxTokens           = 1600
+	kimiGatewayHardMaxTokens                = 1600
 )
 
 const (
@@ -5226,12 +5226,18 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 		}
 	}
 	var resp *http.Response
+	var releaseRespCtx context.CancelFunc
+	defer func() {
+		if releaseRespCtx != nil {
+			releaseRespCtx()
+		}
+	}()
 	retryStart := time.Now()
 	for attempt := 1; attempt <= maxRetryAttempts; attempt++ {
-		upstreamCtx, releaseUpstreamCtx := detachStreamUpstreamContext(ctx, input.RequestStream)
+		upstreamCtx, releaseUpstreamCtx := s.anthropicAPIKeyUpstreamContext(ctx, input.RequestStream)
 		upstreamReq, wireBody, err := s.buildUpstreamRequestAnthropicAPIKeyPassthrough(upstreamCtx, c, account, input.Body, token)
-		releaseUpstreamCtx()
 		if err != nil {
+			releaseUpstreamCtx()
 			return nil, err
 		}
 		if input.Parsed != nil && !bytes.Equal(wireBody, input.Body) {
@@ -5244,6 +5250,7 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 
 		resp, err = s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
 		if err != nil {
+			releaseUpstreamCtx()
 			if resp != nil && resp.Body != nil {
 				_ = resp.Body.Close()
 			}
@@ -5288,6 +5295,7 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 
 				respBody, _ := s.readUpstreamErrorBody(resp)
 				_ = resp.Body.Close()
+				releaseUpstreamCtx()
 				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 					Platform:           account.Platform,
 					AccountID:          account.ID,
@@ -5312,9 +5320,11 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 				}
 				continue
 			}
+			releaseRespCtx = releaseUpstreamCtx
 			break
 		}
 
+		releaseRespCtx = releaseUpstreamCtx
 		break
 	}
 	if resp == nil || resp.Body == nil {
@@ -8738,6 +8748,26 @@ func detachUpstreamContext(ctx context.Context) (context.Context, context.Cancel
 	return context.WithoutCancel(ctx), func() {}
 }
 
+func (s *GatewayService) anthropicAPIKeyUpstreamContext(ctx context.Context, stream bool) (context.Context, context.CancelFunc) {
+	if stream {
+		return detachStreamUpstreamContext(ctx, true)
+	}
+
+	base := context.Background()
+	if ctx != nil {
+		base = context.WithoutCancel(ctx)
+	}
+
+	timeoutSeconds := 0
+	if s != nil && s.cfg != nil {
+		timeoutSeconds = s.cfg.Gateway.AnthropicAPIKeyUpstreamTimeoutSeconds
+	}
+	if timeoutSeconds <= 0 {
+		return base, func() {}
+	}
+	return context.WithTimeout(base, time.Duration(timeoutSeconds)*time.Second)
+}
+
 // billingDeps 扣费逻辑依赖的服务（由各 gateway service 提供）
 type billingDeps struct {
 	accountRepo           AccountRepository
@@ -9574,11 +9604,14 @@ func (s *GatewayService) forwardCountTokensAnthropicAPIKeyPassthrough(ctx contex
 		return fmt.Errorf("anthropic api key passthrough requires apikey token, got: %s", tokenType)
 	}
 
-	upstreamReq, err := s.buildCountTokensRequestAnthropicAPIKeyPassthrough(ctx, c, account, body, token)
+	upstreamCtx, releaseUpstreamCtx := s.anthropicAPIKeyUpstreamContext(ctx, false)
+	upstreamReq, err := s.buildCountTokensRequestAnthropicAPIKeyPassthrough(upstreamCtx, c, account, body, token)
 	if err != nil {
+		releaseUpstreamCtx()
 		s.countTokensError(c, http.StatusInternalServerError, "api_error", "Failed to build request")
 		return err
 	}
+	defer releaseUpstreamCtx()
 
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {

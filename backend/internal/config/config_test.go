@@ -207,6 +207,23 @@ func TestLoadOpenAIResponseHeaderTimeoutFromEnv(t *testing.T) {
 	require.Equal(t, 1800, cfg.Gateway.OpenAIResponseHeaderTimeout)
 }
 
+func TestLoadDefaultAnthropicAPIKeyUpstreamTimeout(t *testing.T) {
+	resetViperWithJWTSecret(t)
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.Equal(t, 60, cfg.Gateway.AnthropicAPIKeyUpstreamTimeoutSeconds)
+}
+
+func TestLoadAnthropicAPIKeyUpstreamTimeoutFromEnv(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	t.Setenv("GATEWAY_ANTHROPIC_APIKEY_UPSTREAM_TIMEOUT_SECONDS", "120")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.Equal(t, 120, cfg.Gateway.AnthropicAPIKeyUpstreamTimeoutSeconds)
+}
+
 func TestLoadOpenAIWSStickyTTLCompatibility(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	t.Setenv("GATEWAY_OPENAI_WS_STICKY_RESPONSE_ID_TTL_SECONDS", "0")
@@ -1273,6 +1290,11 @@ func TestValidateConfigErrors(t *testing.T) {
 			name:    "gateway openai response header timeout",
 			mutate:  func(c *Config) { c.Gateway.OpenAIResponseHeaderTimeout = -1 },
 			wantErr: "gateway.openai_response_header_timeout",
+		},
+		{
+			name:    "gateway anthropic apikey upstream timeout",
+			mutate:  func(c *Config) { c.Gateway.AnthropicAPIKeyUpstreamTimeoutSeconds = -1 },
+			wantErr: "gateway.anthropic_apikey_upstream_timeout_seconds",
 		},
 		{
 			name:    "gateway max idle conns",

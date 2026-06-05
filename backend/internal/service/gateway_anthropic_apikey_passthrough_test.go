@@ -28,6 +28,14 @@ type anthropicHTTPUpstreamRecorder struct {
 	err      error
 }
 
+type anthropicContextCheckingUpstream struct {
+	lastReq         *http.Request
+	ctxErr          error
+	deadlineSet     bool
+	deadlineSeconds int
+	resp            *http.Response
+}
+
 func newAnthropicAPIKeyAccountForTest() *Account {
 	return &Account{
 		ID:          201,
@@ -62,6 +70,23 @@ func (u *anthropicHTTPUpstreamRecorder) Do(req *http.Request, proxyURL string, a
 }
 
 func (u *anthropicHTTPUpstreamRecorder) DoWithTLS(req *http.Request, proxyURL string, accountID int64, accountConcurrency int, profile *tlsfingerprint.Profile) (*http.Response, error) {
+	return u.Do(req, proxyURL, accountID, accountConcurrency)
+}
+
+func (u *anthropicContextCheckingUpstream) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
+	u.lastReq = req
+	u.ctxErr = req.Context().Err()
+	if u.ctxErr != nil {
+		return nil, u.ctxErr
+	}
+	if deadline, ok := req.Context().Deadline(); ok {
+		u.deadlineSet = true
+		u.deadlineSeconds = int(time.Until(deadline).Round(time.Second) / time.Second)
+	}
+	return u.resp, nil
+}
+
+func (u *anthropicContextCheckingUpstream) DoWithTLS(req *http.Request, proxyURL string, accountID int64, accountConcurrency int, profile *tlsfingerprint.Profile) (*http.Response, error) {
 	return u.Do(req, proxyURL, accountID, accountConcurrency)
 }
 
@@ -188,6 +213,59 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardStreamPreservesBodyAnd
 	require.NotContains(t, rec.Body.String(), `"cache_read_input_tokens":7`, "透传输出不应被网关改写")
 	require.Equal(t, 7, result.Usage.CacheReadInputTokens, "计费 usage 解析应保留 cached_tokens 兼容")
 	require.Empty(t, rec.Header().Get("Set-Cookie"), "响应头应经过安全过滤")
+}
+
+func TestGatewayService_AnthropicAPIKeyPassthrough_NonStreamIgnoresClientCancelWithTimeout(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	parentCtx, cancel := context.WithCancel(req.Context())
+	cancel()
+	req = req.WithContext(parentCtx)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = req
+
+	upstream := &anthropicContextCheckingUpstream{
+		resp: &http.Response{
+			StatusCode: http.StatusOK,
+			Header: http.Header{
+				"Content-Type": []string{"application/json"},
+				"X-Request-Id": []string{"rid-detached"},
+			},
+			Body: io.NopCloser(strings.NewReader(`{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":4,"output_tokens":2}}`)),
+		},
+	}
+	svc := &GatewayService{
+		cfg: &config.Config{
+			Gateway: config.GatewayConfig{
+				AnthropicAPIKeyUpstreamTimeoutSeconds: 60,
+				MaxLineSize:                           defaultMaxLineSize,
+			},
+		},
+		responseHeaderFilter: compileResponseHeaderFilter(&config.Config{}),
+		httpUpstream:         upstream,
+		rateLimitService:     &RateLimitService{},
+		deferredService:      &DeferredService{},
+	}
+
+	parsed := &ParsedRequest{
+		Body:   NewRequestBodyRef([]byte(`{"model":"kimi-for-coding","stream":false,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)),
+		Model:  "kimi-for-coding",
+		Stream: false,
+	}
+
+	result, err := svc.Forward(parentCtx, c, newAnthropicAPIKeyAccountForTest(), parsed)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, "rid-detached", result.RequestID)
+	require.NotNil(t, upstream.lastReq)
+	require.NoError(t, upstream.ctxErr)
+	require.True(t, upstream.deadlineSet)
+	require.InDelta(t, 60, upstream.deadlineSeconds, 1)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Body.String(), `"text":"ok"`)
 }
 
 func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardCountTokensPreservesBody(t *testing.T) {
