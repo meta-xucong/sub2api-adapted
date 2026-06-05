@@ -1620,6 +1620,7 @@ func (s *RateLimitService) HandleTempUnschedulable(ctx context.Context, account 
 
 const upstreamModelNotFoundCooldown = 30 * time.Minute
 const upstreamModelNotFoundReason = "upstream_404_model_not_found"
+const upstreamModelCapabilityUnavailableReason = "upstream_model_capability_unavailable"
 const tempUnschedBodyMaxBytes = 64 << 10
 const tempUnschedMessageMaxBytes = 2048
 
@@ -1630,7 +1631,8 @@ func (s *RateLimitService) HandleUpstreamModelNotFound(ctx context.Context, acco
 	if !account.ShouldHandleErrorCode(statusCode) {
 		return false
 	}
-	if !isUpstreamModelNotFoundError(statusCode, responseBody) {
+	match, ok := classifyUpstreamModelUnavailableError(account, statusCode, responseBody)
+	if !ok {
 		return false
 	}
 	modelKey := modelRateLimitKeyForUpstreamModelNotFound(ctx, account, requestedModel)
@@ -1638,11 +1640,11 @@ func (s *RateLimitService) HandleUpstreamModelNotFound(ctx context.Context, acco
 		return false
 	}
 	resetAt := time.Now().Add(upstreamModelNotFoundCooldown)
-	if err := s.accountRepo.SetModelRateLimit(ctx, account.ID, modelKey, resetAt, upstreamModelNotFoundReason); err != nil {
-		slog.Warn("upstream_model_not_found_set_model_rate_limit_failed", "account_id", account.ID, "model", modelKey, "error", err)
+	if err := s.accountRepo.SetModelRateLimit(ctx, account.ID, modelKey, resetAt, match.reason); err != nil {
+		slog.Warn("upstream_model_unavailable_set_model_rate_limit_failed", "account_id", account.ID, "model", modelKey, "reason", match.reason, "error", err)
 		return true
 	}
-	slog.Info("upstream_model_not_found_model_rate_limited", "account_id", account.ID, "model", modelKey, "reset_at", resetAt)
+	slog.Info("upstream_model_unavailable_model_rate_limited", "account_id", account.ID, "model", modelKey, "reason", match.reason, "reset_at", resetAt)
 	return true
 }
 

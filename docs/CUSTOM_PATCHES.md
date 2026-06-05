@@ -109,6 +109,32 @@ delay.
 Keep this patch until upstream classifies OpenAI image rate-limit payloads as
 429 in the image compatibility layer.
 
+### `custom: fast-fail OpenAI OAuth account-state errors`
+
+OpenAI OAuth accounts can briefly keep being scheduled after ChatGPT/Codex login
+state has been revoked or kicked out, because the durable account status update
+may lag behind the first upstream error. Clear account-state errors now
+immediately add the account to the OpenAI runtime scheduling block and return a
+failover signal for the same request:
+
+- `401 token_invalidated` / `401 token_revoked`
+- `401 Unauthorized`-style OAuth failures
+- `400 ... not supported when using Codex with a ChatGPT account`
+
+The `gpt-5.4 ... not supported` Codex error is intentionally treated as an
+account-state problem, not as a durable `gpt-5.4` model ban, because this
+production failure mode has been observed when a ChatGPT account was kicked out
+even though the account normally supports the model.
+
+OpenAI image tool capability errors such as `Tool choice 'image_generation' not
+found in 'tools' parameter` are instead recorded as a model-level cooldown for
+the requested image model, so future image requests avoid that account while
+text models can still use it if they remain healthy.
+
+Keep this patch until upstream immediately failovers on deterministic OpenAI
+OAuth account-state errors and separates image-tool capability cooldowns from
+whole-account disablement.
+
 ## Update Workflow
 
 Run:

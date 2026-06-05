@@ -3,12 +3,14 @@ package service
 import (
 	"context"
 	"net/http"
+	"strings"
 	"time"
 )
 
 const (
 	openAIAccountStateUpdateTimeout       = 5 * time.Second
 	openAIOAuth429FallbackCooldown        = 5 * time.Second
+	openAIOAuthDeterministicErrorCooldown = 10 * time.Minute
 	openAIStopSchedulingBridgeCooldown    = 2 * time.Minute
 	openAIOAuth429StormWindow             = 10 * time.Second
 	openAIOAuth429StormThreshold          = 20
@@ -38,8 +40,13 @@ func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Cont
 	if statusCode == http.StatusTooManyRequests {
 		s.markOpenAIOAuth429RateLimited(stateCtx, account, headers, responseBody)
 	}
+	immediateBlock := false
+	if reason, ok := classifyOpenAIOAuthImmediateBlock(account, statusCode, responseBody); ok {
+		s.BlockAccountScheduling(account, time.Now().Add(openAIOAuthDeterministicErrorCooldown), reason)
+		immediateBlock = true
+	}
 	if s == nil || account == nil || s.rateLimitService == nil {
-		return false
+		return immediateBlock
 	}
 	if len(requestedModel) > 0 && s.rateLimitService.HandleUpstreamModelNotFound(stateCtx, account, requestedModel[0], statusCode, responseBody) {
 		return true
@@ -48,7 +55,43 @@ func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Cont
 	if shouldDisable {
 		s.BlockAccountScheduling(account, time.Time{}, "upstream_disable")
 	}
-	return shouldDisable
+	return shouldDisable || immediateBlock
+}
+
+func classifyOpenAIOAuthImmediateBlock(account *Account, statusCode int, responseBody []byte) (string, bool) {
+	if !isOpenAIOAuthAccount(account) {
+		return "", false
+	}
+	switch statusCode {
+	case http.StatusUnauthorized:
+		code := strings.ToLower(strings.TrimSpace(extractUpstreamErrorCode(responseBody)))
+		if code == "token_invalidated" || code == "token_revoked" {
+			return "oauth_token_revoked", true
+		}
+		normalized := normalizeOpenAIImmediateBlockBody(responseBody)
+		if strings.Contains(normalized, "invalidated oauth token") ||
+			strings.Contains(normalized, "token revoked") ||
+			strings.Contains(normalized, "token invalidated") ||
+			strings.Contains(normalized, "unauthorized") {
+			return "oauth_401", true
+		}
+	case http.StatusBadRequest:
+		if isOpenAIChatGPTAccountModelUnsupportedError(statusCode, responseBody) {
+			return "codex_model_not_supported", true
+		}
+	}
+	return "", false
+}
+
+func normalizeOpenAIImmediateBlockBody(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	msg := strings.TrimSpace(extractUpstreamErrorMessage(body))
+	raw := strings.TrimSpace(string(body))
+	normalized := strings.ToLower(strings.TrimSpace(msg + " " + raw))
+	normalized = strings.NewReplacer("\n", " ", "\r", " ", "\t", " ").Replace(normalized)
+	return strings.Join(strings.Fields(normalized), " ")
 }
 
 func (s *OpenAIGatewayService) markOpenAIOAuth429RateLimited(ctx context.Context, account *Account, headers http.Header, responseBody []byte) {

@@ -26,6 +26,37 @@ func TestOpenAI429FastPath_MarksOAuthAccountCoolingDown(t *testing.T) {
 	require.False(t, svc.isOpenAIAccountRuntimeBlocked(apiKeyAccount))
 }
 
+func TestOpenAIImmediateBlock_TokenRevokedTriggersFailover(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := &Account{ID: 48, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+
+	shouldDisable := svc.handleOpenAIAccountUpstreamError(
+		context.Background(),
+		account,
+		http.StatusUnauthorized,
+		http.Header{},
+		[]byte(`{"error":{"code":"token_revoked","message":"Token revoked"}}`),
+	)
+
+	require.True(t, shouldDisable)
+	require.True(t, svc.isOpenAIAccountRuntimeBlocked(account))
+}
+
+func TestOpenAIImmediateBlock_CodexModelUnsupportedTriggersOAuthFailover(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	oauthAccount := &Account{ID: 49, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+	apiKeyAccount := &Account{ID: 50, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+	body := []byte(`{"error":{"message":"The 'gpt-5.4' model is not supported when using Codex with a ChatGPT account.","type":"invalid_request_error"}}`)
+
+	oauthShouldDisable := svc.handleOpenAIAccountUpstreamError(context.Background(), oauthAccount, http.StatusBadRequest, http.Header{}, body, "gpt-5.4")
+	apiKeyShouldDisable := svc.handleOpenAIAccountUpstreamError(context.Background(), apiKeyAccount, http.StatusBadRequest, http.Header{}, body, "gpt-5.4")
+
+	require.True(t, oauthShouldDisable)
+	require.False(t, apiKeyShouldDisable)
+	require.True(t, svc.isOpenAIAccountRuntimeBlocked(oauthAccount))
+	require.False(t, svc.isOpenAIAccountRuntimeBlocked(apiKeyAccount))
+}
+
 func TestOpenAIRuntimeBlock_AppliesToOpenAIAPIKeyWhenRateLimitServiceStopsScheduling(t *testing.T) {
 	svc := &OpenAIGatewayService{}
 	account := &Account{ID: 44, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}

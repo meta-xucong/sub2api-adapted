@@ -106,6 +106,49 @@ func TestRateLimitService_HandleUpstreamError_Bare404KeepsTempUnschedulablePath(
 	require.Empty(t, repo.modelRateLimitCalls)
 }
 
+func TestRateLimitService_HandleUpstreamError_OpenAIImageToolUnavailableUsesModelRateLimit(t *testing.T) {
+	repo := &modelNotFoundAccountRepoStub{}
+	svc := &RateLimitService{accountRepo: repo}
+	account := openAIModelNotFoundTempAccount()
+
+	handled := svc.HandleUpstreamError(
+		context.Background(),
+		account,
+		http.StatusBadRequest,
+		http.Header{},
+		[]byte(`{"error":{"message":"Tool choice 'image_generation' not found in 'tools' parameter"}}`),
+		"gpt-image-2",
+	)
+
+	require.True(t, handled)
+	require.Zero(t, repo.tempCalls)
+	require.Len(t, repo.modelRateLimitCalls, 1)
+	call := repo.modelRateLimitCalls[0]
+	require.Equal(t, account.ID, call.accountID)
+	require.Equal(t, "gpt-image-2", call.scope)
+	require.Equal(t, upstreamModelCapabilityUnavailableReason, call.reason)
+	require.WithinDuration(t, time.Now().Add(upstreamModelNotFoundCooldown), call.resetAt, 5*time.Second)
+}
+
+func TestRateLimitService_HandleUpstreamError_CodexModelUnsupportedDoesNotSetModelRateLimit(t *testing.T) {
+	repo := &modelNotFoundAccountRepoStub{}
+	svc := &RateLimitService{accountRepo: repo}
+	account := openAIModelNotFoundTempAccount()
+
+	handled := svc.HandleUpstreamError(
+		context.Background(),
+		account,
+		http.StatusBadRequest,
+		http.Header{},
+		[]byte(`{"error":{"message":"The 'gpt-5.4' model is not supported when using Codex with a ChatGPT account."}}`),
+		"gpt-5.4",
+	)
+
+	require.False(t, handled)
+	require.Zero(t, repo.tempCalls)
+	require.Empty(t, repo.modelRateLimitCalls)
+}
+
 func openAIModelNotFoundTempAccount() *Account {
 	return &Account{
 		ID:          101,
