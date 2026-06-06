@@ -91,6 +91,24 @@ Before replacing the app container, inspect the current container and preserve:
 
 Do not run destructive commands such as `docker compose down -v`, `docker volume rm`, database resets, or data directory deletion unless the user explicitly asks for that operation.
 
+## Runtime Config Notes
+
+Runtime-only provider changes are not source code, but they still need a
+recoverable record.
+
+- Document production runtime provider settings in `docs/RUNTIME_CONFIGS.md`.
+- Do not store raw API keys, OAuth tokens, downstream keys, passwords, or other
+  secrets in the repository.
+- When changing group model whitelists, account `model_mapping`, pricing rules,
+  proxy choices, or provider-specific safety limits, record the intent, exact
+  non-secret model/config values, and verification status.
+- Prefer exposing only models that are both visible from the upstream model list
+  and verified through the intended API path. Do not advertise upstream-listed
+  models that return authorization or missing-endpoint errors until access is
+  confirmed.
+- Before making a provider group broadly available, confirm usage pricing is
+  recorded correctly; missing pricing can cause zero-cost usage accounting.
+
 ## Verification
 
 Minimum verification before deploy:
