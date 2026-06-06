@@ -17,6 +17,25 @@ When updating from the official upstream, keep the private adaptation workflow i
 4. Commit every retained custom patch to `origin/custom/main` before deploying.
 5. Do not treat production-only account data or runtime state as source code.
 
+## Patch Lifecycle
+
+Treat local changes as a private patch layer, not as permanent forks of upstream
+code.
+
+During every upstream update:
+
+1. List custom commits with `git log --oneline upstream/main..custom/main`.
+2. Compare upstream changes for equivalent fixes before preserving a custom
+   patch.
+3. Drop or shrink any custom patch that upstream has fully absorbed.
+4. Keep only patches that still solve a production-specific problem.
+5. Update `docs/CUSTOM_PATCHES.md` whenever a custom patch is added, removed,
+   split, narrowed, or made obsolete by upstream.
+6. Prefer deleting obsolete compatibility code over carrying duplicate logic.
+
+The goal is to keep `custom/main` close to official upstream while preserving
+the production behavior that upstream does not yet cover.
+
 ## Deployment Strategy
 
 Do not rebuild and reinstall everything from scratch unless the cache is broken or the source tree is unavailable.
