@@ -143,14 +143,64 @@ func (u OpenAIImagesUpload) ModerationDataURL() string {
 	if len(u.Data) == 0 {
 		return ""
 	}
-	contentType := strings.TrimSpace(u.ContentType)
-	if contentType == "" {
-		contentType = http.DetectContentType(u.Data)
-	}
-	if !strings.HasPrefix(strings.ToLower(contentType), "image/") {
+	contentType, err := normalizeOpenAIImagesUploadContentType(u.Data, u.ContentType, u.FileName)
+	if err != nil {
 		return ""
 	}
 	return fmt.Sprintf("data:%s;base64,%s", contentType, base64.StdEncoding.EncodeToString(u.Data))
+}
+
+func normalizeOpenAIImagesUploadContentType(data []byte, declaredContentType string, fileName string) (string, error) {
+	label := strings.TrimSpace(fileName)
+	if label == "" {
+		label = "image"
+	}
+	if len(data) == 0 {
+		return "", fmt.Errorf("upload %q is empty", label)
+	}
+	if detected := detectOpenAIImagesUploadContentType(data); detected != "" {
+		return detected, nil
+	}
+	declared := normalizeSupportedOpenAIImagesContentType(declaredContentType)
+	if declared != "" {
+		return "", fmt.Errorf("upload %q does not match declared image content type %s", label, declared)
+	}
+	return "", fmt.Errorf("upload %q is not a supported image file; use PNG, JPEG, or WebP", label)
+}
+
+func detectOpenAIImagesUploadContentType(data []byte) string {
+	if len(data) >= 8 && bytes.Equal(data[:8], []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}) {
+		return "image/png"
+	}
+	if len(data) >= 3 && data[0] == 0xff && data[1] == 0xd8 && data[2] == 0xff {
+		return "image/jpeg"
+	}
+	if len(data) >= 12 && string(data[:4]) == "RIFF" && string(data[8:12]) == "WEBP" {
+		return "image/webp"
+	}
+	return normalizeSupportedOpenAIImagesContentType(http.DetectContentType(data))
+}
+
+func normalizeSupportedOpenAIImagesContentType(contentType string) string {
+	contentType = strings.TrimSpace(strings.ToLower(contentType))
+	if contentType == "" {
+		return ""
+	}
+	if parsed, _, err := mime.ParseMediaType(contentType); err == nil {
+		contentType = strings.TrimSpace(strings.ToLower(parsed))
+	} else if idx := strings.Index(contentType, ";"); idx >= 0 {
+		contentType = strings.TrimSpace(contentType[:idx])
+	}
+	switch contentType {
+	case "image/png":
+		return "image/png"
+	case "image/jpeg", "image/jpg":
+		return "image/jpeg"
+	case "image/webp":
+		return "image/webp"
+	default:
+		return ""
+	}
 }
 
 func (r *OpenAIImagesRequest) IsEdits() bool {
@@ -340,29 +390,39 @@ func parseOpenAIImagesMultipartRequest(body []byte, contentType string, req *Ope
 		fileName := strings.TrimSpace(part.FileName())
 		if fileName != "" {
 			partContentType := strings.TrimSpace(part.Header.Get("Content-Type"))
-			if name == "mask" && len(data) > 0 {
+			if name == "mask" {
+				normalizedContentType, err := normalizeOpenAIImagesUploadContentType(data, partContentType, fileName)
+				if err != nil {
+					return err
+				}
 				req.HasMask = true
 				width, height := parseOpenAIImageDimensions(part.Header)
 				maskUpload := OpenAIImagesUpload{
 					FieldName:   name,
 					FileName:    fileName,
-					ContentType: partContentType,
+					ContentType: normalizedContentType,
 					Data:        data,
 					Width:       width,
 					Height:      height,
 				}
 				req.MaskUpload = &maskUpload
+				continue
 			}
 			if name == "image" || strings.HasPrefix(name, "image[") {
+				normalizedContentType, err := normalizeOpenAIImagesUploadContentType(data, partContentType, fileName)
+				if err != nil {
+					return err
+				}
 				width, height := parseOpenAIImageDimensions(part.Header)
 				req.Uploads = append(req.Uploads, OpenAIImagesUpload{
 					FieldName:   name,
 					FileName:    fileName,
-					ContentType: partContentType,
+					ContentType: normalizedContentType,
 					Data:        data,
 					Width:       width,
 					Height:      height,
 				})
+				continue
 			}
 			continue
 		}

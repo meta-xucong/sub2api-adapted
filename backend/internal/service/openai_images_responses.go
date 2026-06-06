@@ -274,9 +274,9 @@ func openAIImageUploadToDataURL(upload OpenAIImagesUpload) (string, error) {
 	if len(upload.Data) == 0 {
 		return "", fmt.Errorf("upload %q is empty", strings.TrimSpace(upload.FileName))
 	}
-	contentType := strings.TrimSpace(upload.ContentType)
-	if contentType == "" {
-		contentType = http.DetectContentType(upload.Data)
+	contentType, err := normalizeOpenAIImagesUploadContentType(upload.Data, upload.ContentType, upload.FileName)
+	if err != nil {
+		return "", err
 	}
 	return "data:" + contentType + ";base64," + base64.StdEncoding.EncodeToString(upload.Data), nil
 }
@@ -530,6 +530,15 @@ func collectOpenAIImagesFromResponsesBody(body []byte) ([]openAIResponsesImageRe
 }
 
 func extractOpenAIImagesUpstreamError(body []byte) *OpenAIImagesUpstreamError {
+	trimmed := bytes.TrimSpace(body)
+	if gjson.ValidBytes(trimmed) {
+		if errorObj := gjson.GetBytes(trimmed, "error"); errorObj.Exists() {
+			return openAIImagesUpstreamErrorFromGJSON(errorObj, gjson.GetBytes(trimmed, "id").String())
+		}
+		if upstreamErr := openAIImagesUpstreamErrorFromSSEPayload(trimmed); upstreamErr != nil {
+			return upstreamErr
+		}
+	}
 	var upstreamErr *OpenAIImagesUpstreamError
 	forEachOpenAISSEDataPayload(string(body), func(payload []byte) {
 		if upstreamErr != nil || !gjson.ValidBytes(payload) {
@@ -591,6 +600,9 @@ func openAIImagesUpstreamErrorStatusCode(code, errType, message string) int {
 		return http.StatusTooManyRequests
 	}
 	if code == "moderation_blocked" || errType == "image_generation_user_error" {
+		return http.StatusBadRequest
+	}
+	if code == "invalid_value" || errType == "invalid_request_error" {
 		return http.StatusBadRequest
 	}
 	return http.StatusBadGateway
@@ -1240,6 +1252,11 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 				ResponseBody:           respBody,
 				RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
 			}
+		}
+		if upstreamErr := extractOpenAIImagesUpstreamError(respBody); upstreamErr != nil {
+			setOpsUpstreamError(c, upstreamErr.clientStatusCode(), upstreamErr.clientMessage(), "")
+			writeOpenAIImagesUpstreamErrorResponse(c, upstreamErr)
+			return nil, upstreamErr
 		}
 		return s.handleErrorResponse(upstreamCtx, resp, c, account, responsesBody)
 	}
