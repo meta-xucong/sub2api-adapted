@@ -123,6 +123,21 @@ delay.
 Keep this patch until upstream classifies OpenAI image rate-limit payloads as
 429 in the image compatibility layer.
 
+### `custom: route OpenAI Responses image intent by image model`
+
+Codex can submit image-generation work through `/v1/responses` using a normal
+Responses text model, for example `gpt-5.4`, plus an `image_generation` tool.
+Account selection now uses the effective image model, usually `gpt-image-2`, for
+these image-intent requests while leaving the forwarded Responses payload
+unchanged.
+
+This lets account-level `model_mapping` act as an image capability whitelist:
+accounts that only support coding/text models are skipped automatically for
+image tasks, and later accounts with `gpt-image-2` support receive the request.
+
+Keep this patch until upstream routes Responses image-generation intents through
+image-model-aware account selection.
+
 ### `custom: fast-fail OpenAI OAuth account-state errors`
 
 OpenAI OAuth accounts can briefly keep being scheduled after ChatGPT/Codex login

@@ -250,6 +250,10 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		h.errorResponse(c, http.StatusForbidden, "permission_error", service.ImageGenerationPermissionMessage())
 		return
 	}
+	routingModel := reqModel
+	if imageIntent {
+		routingModel = service.ResolveOpenAIResponsesImageRoutingModel(reqModel, body)
+	}
 	var imageReleaseFunc func()
 	if imageIntent {
 		var imageAcquired bool
@@ -319,7 +323,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			apiKey.GroupID,
 			previousResponseID,
 			sessionHash,
-			reqModel,
+			routingModel,
 			failedAccountIDs,
 			service.OpenAIUpstreamTransportAny,
 			service.OpenAIEndpointCapabilityChatCompletions,
@@ -1242,9 +1246,14 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		return
 	}
 
-	if service.IsImageGenerationIntent("/v1/responses", reqModel, firstMessage) && !h.groupAllowsImageGeneration(c, apiKey) {
+	imageIntent := service.IsImageGenerationIntent("/v1/responses", reqModel, firstMessage)
+	if imageIntent && !h.groupAllowsImageGeneration(c, apiKey) {
 		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, service.ImageGenerationPermissionMessage())
 		return
+	}
+	routingModel := reqModel
+	if imageIntent {
+		routingModel = service.ResolveOpenAIResponsesImageRoutingModel(reqModel, firstMessage)
 	}
 
 	// 解析渠道级模型映射
@@ -1321,7 +1330,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			apiKey.GroupID,
 			previousResponseID,
 			sessionHash,
-			reqModel,
+			routingModel,
 			failedAccountIDs,
 			service.OpenAIUpstreamTransportResponsesWebsocketV2,
 			service.OpenAIEndpointCapabilityChatCompletions,

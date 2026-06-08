@@ -64,6 +64,52 @@ func TestIsImageGenerationIntent(t *testing.T) {
 	}
 }
 
+func TestResolveOpenAIResponsesImageRoutingModel(t *testing.T) {
+	tests := []struct {
+		name  string
+		model string
+		body  []byte
+		want  string
+	}{
+		{
+			name:  "text request keeps text model",
+			model: "gpt-5.4",
+			body:  []byte(`{"model":"gpt-5.4","input":"write code"}`),
+			want:  "gpt-5.4",
+		},
+		{
+			name:  "image tool without model routes by default image model",
+			model: "gpt-5.4",
+			body:  []byte(`{"model":"gpt-5.4","tools":[{"type":"image_generation"}]}`),
+			want:  "gpt-image-2",
+		},
+		{
+			name:  "image tool model wins",
+			model: "gpt-5.4",
+			body:  []byte(`{"model":"gpt-5.4","tools":[{"type":"image_generation","model":"gpt-image-1.5"}]}`),
+			want:  "gpt-image-1.5",
+		},
+		{
+			name:  "image model request keeps image model",
+			model: "gpt-image-2",
+			body:  []byte(`{"model":"gpt-image-2","prompt":"draw"}`),
+			want:  "gpt-image-2",
+		},
+		{
+			name:  "tool choice image routes by default image model",
+			model: "gpt-5.4",
+			body:  []byte(`{"model":"gpt-5.4","tool_choice":{"type":"image_generation"}}`),
+			want:  "gpt-image-2",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, ResolveOpenAIResponsesImageRoutingModel(tt.model, tt.body))
+		})
+	}
+}
+
 func TestResolveOpenAIResponsesImageBillingConfigUsesCurrentBodyModel(t *testing.T) {
 	imageModel, imageSize, err := resolveOpenAIResponsesImageBillingConfigFromBody(
 		[]byte(`{"model":"mapped-image-model","tools":[{"type":"image_generation","size":"1024x1024"}]}`),
