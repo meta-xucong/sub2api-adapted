@@ -48,11 +48,14 @@ This preserves a stable primary egress IP per account while keeping automatic fa
 - `jp-relay-2-tunnel.service`
 - `jp-relay-3-tunnel.service`
   - systemd services that keep the host-side SSH dynamic forwarders alive.
-  - each service includes `RuntimeMaxSec=12h` so long-lived tunnels are periodically recycled instead of drifting for many days.
+  - each service uses `RuntimeMaxSec=infinity` so systemd does not kill an
+    active GPT/Codex streaming request during a fixed recycle window.
 - `check-jp-relay-tunnels.sh`
 - `jp-relay-watchdog.service`
 - `jp-relay-watchdog.timer`
   - functional health checks that probe SOCKS egress instead of only checking whether the local port is listening.
+  - the watchdog restarts a tunnel only after sustained probe failures and
+    defers restarts while active/recent SOCKS traffic is present.
 
 ## Restore Checklist
 
@@ -90,6 +93,31 @@ That means a tunnel can become "half-dead":
 - real outbound requests time out
 
 The watchdog closes that gap by probing actual SOCKS egress. If the probe fails, it restarts the tunnel service, which drops the local port and allows HAProxy to move traffic to the backup line.
+
+The watchdog must not be too aggressive. OpenAI GPT/Codex requests can keep a
+stream open for 100-200 seconds. Restarting an SSH dynamic forward after a
+single transient probe miss can cut those streams and surface downstream as
+`unexpected EOF`.
+
+Current defaults:
+
+```text
+FAIL_THRESHOLD=3
+BUSY_DEFER_THRESHOLD=20
+RECENT_CONN_SECONDS=45
+```
+
+This means:
+
+- one-off probe failures are logged but do not restart the tunnel;
+- after sustained failures, the watchdog checks whether the local SOCKS port
+  has active or very recent traffic;
+- active traffic defers the restart for up to 20 watchdog runs, roughly 10
+  minutes with the default 30-second timer;
+- a healthy probe clears the failure state.
+
+If a tunnel is truly dead and no traffic is flowing, it is still restarted
+automatically.
 
 ## Important Boundary
 

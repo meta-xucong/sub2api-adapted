@@ -3,6 +3,44 @@
 This file records production runtime settings that live in the database or
 provider consoles rather than in source code. Do not store secrets here.
 
+## JP Relay Watchdog
+
+- Date updated: 2026-06-08
+- Production host: sub2api VPS
+- Source-controlled assets: `deploy/relay/`
+
+The OpenAI OAuth accounts use host-side SOCKS relay lanes through HAProxy:
+
+- `proxy_id=2` -> `172.18.0.1:21081` -> JP relay 1 primary
+- `proxy_id=3` -> `172.18.0.1:21082` -> JP relay 2 primary
+- `proxy_id=4` -> `172.18.0.1:21083` -> JP relay 3 primary
+
+On 2026-06-08, GPT-5.5 `unexpected EOF` failures aligned with a
+`jp-relay-1-tunnel.service` watchdog restart at `22:59:02 CST`. The watchdog
+had restarted the tunnel after a single failed functional probe, cutting active
+long-lived OpenAI/Codex streams.
+
+The host watchdog was changed to:
+
+- require `FAIL_THRESHOLD=3` consecutive probe failures before considering a
+  restart;
+- defer restarts while the SOCKS port has active or recent traffic
+  (`BUSY_DEFER_THRESHOLD=20`, `RECENT_CONN_SECONDS=45`);
+- keep per-tunnel transient state in `/run/jp-relay-watchdog`;
+- clear failure state after a healthy probe;
+- stop fixed 12-hour tunnel recycling by setting `RuntimeMaxSec=infinity`.
+
+The current source of truth for these files is under `deploy/relay/`. Reapply
+those files to the VPS relay layer after rebuilding or reprovisioning the host.
+
+Temporary account scheduling change:
+
+- Account `3` (`197286184@qq.com`) was lowered from `priority=1` to
+  `priority=5` on 2026-06-08 to prefer account `1` while account `3` was near
+  Codex 7-day quota and bound to the relay lane that had restarted mid-stream.
+- A systemd timer on the VPS restores account `3` to `priority=1` at
+  `2026-06-11 10:00:00 CST` and enqueues a scheduler outbox refresh.
+
 ## Volcengine Ark Free Lab
 
 - Date configured: 2026-06-07

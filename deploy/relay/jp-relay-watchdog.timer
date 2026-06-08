@@ -1,10 +1,10 @@
 [Unit]
-Description=Run JP relay functional health checks every minute
+Description=Run JP relay functional health checks every 30 seconds
 
 [Timer]
 OnBootSec=1min
 OnUnitActiveSec=30s
-AccuracySec=10s
+AccuracySec=5s
 Persistent=true
 Unit=jp-relay-watchdog.service
 
