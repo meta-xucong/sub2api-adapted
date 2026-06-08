@@ -14,7 +14,10 @@ provider consoles rather than in source code. Do not store secrets here.
 - Downstream test API key name: `volcengine-ark-free-lab-test`
 - Scheduling scope: isolated test group, not merged into the main OpenAI group
 - Image generation: disabled
-- Responses API: disabled for this account; force Chat Completions compatibility
+- OpenAI Chat Completions path: force Chat Completions compatibility
+- Anthropic Messages path: enabled for Claude Code fallback through the OpenAI
+  `/v1/messages` bridge; this path forwards to Ark Responses with a
+  provider-specific sanitizer
 - RPM limit: `10`
 
 ### Model Exposure Policy
@@ -54,6 +57,26 @@ ids. The following representative calls succeeded through sub2api
 
 The sub2api `/v1/models` response for the test key returned the 10 whitelisted
 models after refreshing the scheduler/model-list cache for group `6`.
+
+On 2026-06-08, Claude Code compatibility was enabled for group `6`:
+
+- `allow_messages_dispatch=true`
+- `messages_dispatch_model_config` maps the 10 whitelisted Ark model ids to
+  themselves
+- Claude-family fallback aliases map to Ark models:
+  - Opus -> `deepseek-v4-pro-260425`
+  - Sonnet -> `deepseek-v4-flash-260425`
+  - Haiku -> `deepseek-v3-2-251201`
+
+Ark Responses accepts the bridge request only after stripping OpenAI-specific
+request fields that Ark rejects:
+
+- `reasoning.summary`
+- `text.verbosity`
+
+This sanitizer is source-controlled in
+`backend/internal/service/openai_volcengine_ark.go` and is scoped to OpenAI
+API-key accounts with `extra.provider=volcengine_ark`.
 
 ### Models Not Exposed Yet
 
