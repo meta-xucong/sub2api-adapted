@@ -452,7 +452,8 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 	// accumulated delta events so the client receives the full content.
 	acc.SupplementResponseOutput(finalResponse)
 
-	anthropicResp := apicompat.ResponsesToAnthropic(finalResponse, originalModel)
+	responseModel := openAICompatAnthropicResponseModel(originalModel, upstreamModel)
+	anthropicResp := apicompat.ResponsesToAnthropic(finalResponse, responseModel)
 
 	if s.responseHeaderFilter != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
@@ -463,12 +464,19 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 		RequestID:     requestID,
 		ResponseID:    finalResponse.ID,
 		Usage:         usage,
-		Model:         originalModel,
+		Model:         responseModel,
 		BillingModel:  billingModel,
 		UpstreamModel: upstreamModel,
 		Stream:        false,
 		Duration:      time.Since(startTime),
 	}, nil
+}
+
+func openAICompatAnthropicResponseModel(originalModel, upstreamModel string) string {
+	if model := strings.TrimSpace(upstreamModel); model != "" {
+		return model
+	}
+	return originalModel
 }
 
 func isOpenAICompatResponsesTerminalEvent(eventType string) bool {
@@ -670,7 +678,8 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 	c.Writer.WriteHeader(http.StatusOK)
 
 	state := apicompat.NewResponsesEventToAnthropicState()
-	state.Model = originalModel
+	responseModel := openAICompatAnthropicResponseModel(originalModel, upstreamModel)
+	state.Model = responseModel
 	var usage OpenAIUsage
 	responseID := ""
 	var firstTokenMs *int
@@ -704,7 +713,7 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 			RequestID:     requestID,
 			ResponseID:    responseID,
 			Usage:         usage,
-			Model:         originalModel,
+			Model:         responseModel,
 			BillingModel:  billingModel,
 			UpstreamModel: upstreamModel,
 			Stream:        true,

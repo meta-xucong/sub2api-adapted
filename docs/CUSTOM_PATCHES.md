@@ -86,6 +86,20 @@ Codex targets and maps legacy Codex aliases to current supported targets:
 Keep this patch until upstream removes unsupported `gpt-5.3` defaults and legacy
 Codex alias routing.
 
+### `custom: show actual OpenAI model in Messages dispatch responses`
+
+OpenAI `/v1/messages` compatibility dispatch is used by Codex/Claude-code style
+clients that submit Anthropic model names while the real upstream is an OpenAI
+Responses model. The Anthropic-format response now reports the actual mapped
+OpenAI model, for example `gpt-5.4-mini`, instead of echoing the requested
+Anthropic model such as `claude-3-5-haiku-20241022`.
+
+Usage logs still retain `requested_model`, `upstream_model`, and
+`model_mapping_chain`, so diagnostics can distinguish the client-facing request
+from the real upstream model. Keep this patch until upstream exposes the mapped
+model in OpenAI Messages dispatch responses or provides an equivalent display
+policy.
+
 ### `custom: filter Gemini native model list`
 
 Gemini native `/v1beta/models`, `/v1beta/models/{model}`, and

@@ -231,13 +231,15 @@ func TestForwardAsAnthropic_MappedClaudeModelAcceptsChatUsageShape(t *testing.T)
 	result, err := svc.ForwardAsAnthropic(context.Background(), c, account, body, "", "gpt-5.5")
 	require.NoError(t, err)
 	require.NotNil(t, result)
-	require.Equal(t, "claude-opus-4-7", result.Model)
+	require.Equal(t, "gpt-5.5", result.Model)
 	require.Equal(t, "gpt-5.5", result.BillingModel)
 	require.Equal(t, "gpt-5.5", result.UpstreamModel)
 	require.Equal(t, 31, result.Usage.InputTokens)
 	require.Equal(t, 9, result.Usage.OutputTokens)
 	require.Equal(t, 11, result.Usage.CacheReadInputTokens)
 	require.Equal(t, "gpt-5.5", gjson.GetBytes(upstream.lastBody, "model").String())
+	require.Contains(t, rec.Body.String(), `"model":"gpt-5.5"`)
+	require.NotContains(t, rec.Body.String(), `"model":"claude-opus-4-7"`)
 }
 
 func TestForwardAsAnthropic_InjectsPromptCacheKeyForAPIKeyMessagesDispatch(t *testing.T) {
@@ -281,8 +283,10 @@ func TestForwardAsAnthropic_InjectsPromptCacheKeyForAPIKeyMessagesDispatch(t *te
 	result, err := svc.ForwardAsAnthropic(context.Background(), c, account, body, "stable-cache-key", "gpt-5.3-codex")
 	require.NoError(t, err)
 	require.NotNil(t, result)
+	require.Equal(t, "gpt-5.3-codex", result.Model)
 	require.Equal(t, "stable-cache-key", gjson.GetBytes(upstream.lastBody, "prompt_cache_key").String())
 	require.Equal(t, "gpt-5.3-codex", gjson.GetBytes(upstream.lastBody, "model").String())
+	require.Equal(t, "gpt-5.3-codex", gjson.GetBytes(rec.Body.Bytes(), "model").String())
 	require.Equal(t, 3, result.Usage.CacheReadInputTokens)
 }
 
