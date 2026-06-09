@@ -53,6 +53,12 @@ Preferred VPS workflow:
 
 If the persistent source checkout is not available, uploading a source tarball is allowed as a fallback, but avoid making that the default path.
 
+The Dockerfile relies on BuildKit cache mounts for pnpm, Go module downloads,
+and Go build cache. Always set `DOCKER_BUILDKIT=1` for production builds. Do
+not move volatile build args such as `COMMIT` or `DATE` above dependency
+download layers; doing so invalidates the cache and makes every deploy look
+like a clean rebuild.
+
 ## Cache Policy
 
 Build cache is valuable and should be preserved by default.
