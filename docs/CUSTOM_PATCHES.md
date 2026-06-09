@@ -138,6 +138,20 @@ image tasks, and later accounts with `gpt-image-2` support receive the request.
 Keep this patch until upstream routes Responses image-generation intents through
 image-model-aware account selection.
 
+### `custom: store OpenAI Codex 5h usage as used percent`
+
+OpenAI Codex quota response headers are normalized into account extra fields
+for admin display and scheduler decisions. The canonical
+`codex_5h_used_percent` field must store the upstream used percentage directly,
+clamped to `0..100`; it must not invert the value as `100 - raw`.
+
+This prevents accounts with fresh 5-hour quota, for example an upstream
+`x-codex-primary-used-percent: 0` and `x-codex-primary-window-minutes: 300`,
+from being misread as `100%` used and incorrectly treated as exhausted.
+
+Keep this patch until upstream has an equivalent Codex quota normalization rule
+and regression coverage for a `0%` 5-hour used snapshot.
+
 ### `custom: fast-fail OpenAI OAuth account-state errors`
 
 OpenAI OAuth accounts can briefly keep being scheduled after ChatGPT/Codex login
