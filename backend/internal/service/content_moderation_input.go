@@ -283,6 +283,10 @@ func normalizeModerationImages(images []string) []string {
 		if image == "" {
 			continue
 		}
+		if strings.HasPrefix(image, "data:") {
+			out = append(out, image)
+			continue
+		}
 		if _, ok := seen[image]; ok {
 			continue
 		}

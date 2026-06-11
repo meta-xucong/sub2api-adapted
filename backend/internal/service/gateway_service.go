@@ -51,7 +51,23 @@ const (
 	// to match real Claude CLI traffic as closely as possible. When we need a visual
 	// separator between system blocks, we add "\n\n" at concatenation time.
 	claudeCodeSystemPrompt = "You are Claude Code, Anthropic's official CLI for Claude."
-	maxCacheControlBlocks  = 4 // Anthropic API 允许的最大 cache_control 块数量
+	// claudeCodeSystemPromptExpansion 是真实 Claude Code 主系统提示词中"与具体工具无关"
+	// 的通用段落（身份/用途总述 + 安全声明 + URL 告警 + Tone and style），逐字取自真实
+	// CLI（2.1.x 一致）。伪装路径用它把 system 块数从 2 提升到 3、体量贴近真实 CC，同时
+	// 刻意排除 # Doing tasks / # Using your tools / # Executing actions 等会污染被代理
+	// 用户行为的工具专属指令。
+	claudeCodeSystemPromptExpansion = `You are an interactive agent that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.
+
+IMPORTANT: Assist with authorized security testing, defensive security, CTF challenges, and educational contexts. Refuse requests for destructive techniques, DoS attacks, mass targeting, supply chain compromise, or detection evasion for malicious purposes. Dual-use security tools (C2 frameworks, credential testing, exploit development) require clear authorization context: pentesting engagements, CTF competitions, security research, or defensive use cases.
+IMPORTANT: You must NEVER generate or guess URLs for the user unless you are confident that the URLs are for helping the user with programming. You may use URLs provided by the user in their messages or local files.
+
+# Tone and style
+ - Only use emojis if the user explicitly requests it. Avoid using emojis in all communication unless asked.
+ - Your responses should be short and concise.
+ - When referencing specific functions or pieces of code include the pattern file_path:line_number to allow the user to easily navigate to the source code location.
+ - When referencing GitHub issues or pull requests, use the owner/repo#123 format (e.g. anthropics/claude-code#100) so they render as clickable links.
+ - Do not use a colon before tool calls. Your tool calls may not be shown directly in the output, so text like "Let me read the file:" followed by a read tool call should just be "Let me read the file." with a period.`
+	maxCacheControlBlocks = 4 // Anthropic API 允许的最大 cache_control 块数量
 
 	defaultUserGroupRateCacheTTL = 30 * time.Second
 	defaultModelsListCacheTTL    = 15 * time.Second
@@ -1308,12 +1324,15 @@ func (s *GatewayService) buildOAuthMetadataUserID(parsed *ParsedRequest, account
 		userID = generateClientID()
 	}
 
-	sessionHash := s.GenerateSessionHash(parsed)
-	sessionID := uuid.NewString()
-	if sessionHash != "" {
-		seed := fmt.Sprintf("%d::%s", account.ID, sessionHash)
-		sessionID = generateSessionUUID(seed)
+	// session_id 用"会话级稳定种子"派生（账号 + 客户端区分因子 + 首条 user 文本）：
+	// 随对话在尾部追加 messages 时保持不变，贴近真实 CC 进程级稳定的 session_id。
+	// 不复用 GenerateSessionHash —— 后者是粘性路由键、按设计逐轮变化（见其测试）。
+	var firstUserText string
+	if parsed.Body != nil {
+		firstUserText = extractFirstUserText(parsed.Body.Bytes())
 	}
+	seed := buildStableSessionSeed(account.ID, sessionContextDiscriminator(parsed.SessionContext), firstUserText)
+	sessionID := generateSessionUUID(seed)
 
 	// 根据指纹 UA 版本选择输出格式
 	var uaVersion string
@@ -1428,10 +1447,14 @@ func (s *GatewayService) buildOAuthMetadataUserIDFromBody(
 		userID = generateClientID()
 	}
 
-	sessionID := uuid.NewString()
-	if hash := hashBodyForSessionSeed(body); hash != "" {
-		sessionID = generateSessionUUID(fmt.Sprintf("%d::%s", account.ID, hash))
+	// 与 buildOAuthMetadataUserID 一致：用会话级稳定种子，避免整 body 哈希导致
+	// 每轮（甚至每个 token 变化）都重算出不同的 session_id。
+	var clientDiscriminator string
+	if fp != nil {
+		clientDiscriminator = fp.ClientID
 	}
+	seed := buildStableSessionSeed(account.ID, clientDiscriminator, extractFirstUserText(body))
+	sessionID := generateSessionUUID(seed)
 
 	var uaVersion string
 	if fp != nil {
@@ -1441,14 +1464,31 @@ func (s *GatewayService) buildOAuthMetadataUserIDFromBody(
 	return FormatMetadataUserID(userID, accountUUID, sessionID, uaVersion)
 }
 
-// hashBodyForSessionSeed 为 sessionID 提供一个稳定但仅对本次请求特征化的种子。
-// 复用 SHA-256 + 截断，与 generateSessionUUID 的输入格式对齐。
-func hashBodyForSessionSeed(body []byte) string {
-	if len(body) == 0 {
+// buildStableSessionSeed 为伪装路径合成的 metadata.user_id session_id 生成"会话级稳定"种子。
+//
+// 真实 Claude Code 的 session_id 是进程级随机 UUID，在一段会话内跨请求保持不变。无状态代理
+// 无法恢复该值，这里用"会话内不变的锚点"近似：账号 ID + 客户端区分因子 + 首条 user 消息文本。
+// 对话在尾部追加 messages 时这三者都不变，因此 generateSessionUUID(seed) 跨轮稳定。
+//
+// 注意：粘性路由键 GenerateSessionHash 按设计逐轮变化（见其测试），本函数与之独立、互不影响。
+// accountID 恒存在，故 seed 永不为空 —— 输出始终是确定性 UUID，而非随机值。
+func buildStableSessionSeed(accountID int64, clientDiscriminator, firstUserText string) string {
+	var b strings.Builder
+	_, _ = b.WriteString(strconv.FormatInt(accountID, 10))
+	_, _ = b.WriteString("::")
+	_, _ = b.WriteString(clientDiscriminator)
+	_, _ = b.WriteString("::")
+	_, _ = b.WriteString(firstUserText)
+	return b.String()
+}
+
+// sessionContextDiscriminator 把请求上下文（客户端 IP / 归一化 UA / API Key ID）拼成
+// 一个跨客户端的区分因子，避免不同用户的相同首条消息派生出相同 session_id。
+func sessionContextDiscriminator(sc *SessionContext) string {
+	if sc == nil {
 		return ""
 	}
-	sum := sha256.Sum256(body)
-	return fmt.Sprintf("%x", sum[:16])
+	return sc.ClientIP + ":" + NormalizeSessionUserAgent(sc.UserAgent) + ":" + strconv.FormatInt(sc.APIKeyID, 10)
 }
 
 // GenerateSessionUUID creates a deterministic UUID4 from a seed string.
@@ -2359,14 +2399,16 @@ func (s *GatewayService) listSchedulableAccounts(ctx context.Context, groupID *i
 				"platform", platform,
 				"use_mixed", useMixed,
 				"count", len(accounts))
-			for _, acc := range accounts {
-				slog.Debug("account_scheduling_account_detail",
-					"account_id", acc.ID,
-					"name", acc.Name,
-					"platform", acc.Platform,
-					"type", acc.Type,
-					"status", acc.Status,
-					"tls_fingerprint", acc.IsTLSFingerprintEnabled())
+			if slog.Default().Enabled(ctx, slog.LevelDebug) {
+				for _, acc := range accounts {
+					slog.Debug("account_scheduling_account_detail",
+						"account_id", acc.ID,
+						"name", acc.Name,
+						"platform", acc.Platform,
+						"type", acc.Type,
+						"status", acc.Status,
+						"tls_fingerprint", acc.IsTLSFingerprintEnabled())
+				}
 			}
 		}
 		return accounts, useMixed, err
@@ -2402,14 +2444,16 @@ func (s *GatewayService) listSchedulableAccounts(ctx context.Context, groupID *i
 			"platform", platform,
 			"raw_count", len(accounts),
 			"filtered_count", len(filtered))
-		for _, acc := range filtered {
-			slog.Debug("account_scheduling_account_detail",
-				"account_id", acc.ID,
-				"name", acc.Name,
-				"platform", acc.Platform,
-				"type", acc.Type,
-				"status", acc.Status,
-				"tls_fingerprint", acc.IsTLSFingerprintEnabled())
+		if slog.Default().Enabled(ctx, slog.LevelDebug) {
+			for _, acc := range filtered {
+				slog.Debug("account_scheduling_account_detail",
+					"account_id", acc.ID,
+					"name", acc.Name,
+					"platform", acc.Platform,
+					"type", acc.Type,
+					"status", acc.Status,
+					"tls_fingerprint", acc.IsTLSFingerprintEnabled())
+			}
 		}
 		return filtered, useMixed, nil
 	}
@@ -2435,14 +2479,16 @@ func (s *GatewayService) listSchedulableAccounts(ctx context.Context, groupID *i
 		"group_id", derefGroupID(groupID),
 		"platform", platform,
 		"count", len(accounts))
-	for _, acc := range accounts {
-		slog.Debug("account_scheduling_account_detail",
-			"account_id", acc.ID,
-			"name", acc.Name,
-			"platform", acc.Platform,
-			"type", acc.Type,
-			"status", acc.Status,
-			"tls_fingerprint", acc.IsTLSFingerprintEnabled())
+	if slog.Default().Enabled(ctx, slog.LevelDebug) {
+		for _, acc := range accounts {
+			slog.Debug("account_scheduling_account_detail",
+				"account_id", acc.ID,
+				"name", acc.Name,
+				"platform", acc.Platform,
+				"type", acc.Type,
+				"status", acc.Status,
+				"tls_fingerprint", acc.IsTLSFingerprintEnabled())
+		}
 	}
 	return accounts, useMixed, nil
 }
@@ -4172,20 +4218,28 @@ func rewriteSystemForNonClaudeCode(body []byte, system any) []byte {
 		originalSystemText = strings.Join(parts, "\n\n")
 	}
 
-	// 2. 构造 system 数组，对齐真实 Claude Code CLI 的 2-block 形态：
+	// 2. 构造 system 数组，对齐真实 Claude Code CLI 的 3-block 形态：
 	//    [0] billing attribution block（cc_version={cliVer}.{fp}; cc_entrypoint=cli; cch=00000;）
-	//    [1] "You are Claude Code..." prompt block（带 cache_control 作为稳定缓存断点）
+	//    [1] "You are Claude Code..." 身份前缀 block（带 cache_control）
+	//    [2] 工具无关的通用提示词扩充 block（带 cache_control 作为稳定缓存断点）
+	//
+	//    真实 CC 的 system 在身份前缀之后还有大段提示词，仅有 2 块会在块数/体量上明显
+	//    区别于真实 CLI。这里注入 claudeCodeSystemPromptExpansion（中性段落）把形态做到
+	//    接近真实，同时不注入会污染被代理用户行为的工具专属指令。
 	//
 	//    billing block 的 cch=00000 是占位符，会被 buildUpstreamRequest 里的
 	//    signBillingHeaderCCH 替换成 xxhash64 签名。缺失 billing block 的系统 payload
 	//    是 Anthropic 判定第三方的关键信号之一（真实 CLI 每个请求都带）。
 	billingBlock, billingErr := buildBillingAttributionBlockJSON(body, claude.CLICurrentVersion)
-	ccPromptBlock, ccErr := marshalAnthropicSystemTextBlock(claudeCodeSystemPrompt, true)
-	if billingErr != nil || ccErr != nil {
-		logger.LegacyPrintf("service.gateway", "Warning: failed to build system blocks (billing=%v, cc=%v)", billingErr, ccErr)
+	// 身份块不带 cache_control；缓存断点统一落在最后一个静态块（扩充块）上，
+	// 使 billing+身份+扩充 整段静态前缀都被同一断点覆盖，且只消耗 1 个断点配额。
+	ccPromptBlock, ccErr := marshalAnthropicSystemTextBlock(claudeCodeSystemPrompt, false)
+	ccExpansionBlock, expErr := marshalAnthropicSystemTextBlock(claudeCodeSystemPromptExpansion, true)
+	if billingErr != nil || ccErr != nil || expErr != nil {
+		logger.LegacyPrintf("service.gateway", "Warning: failed to build system blocks (billing=%v, cc=%v, exp=%v)", billingErr, ccErr, expErr)
 		return body
 	}
-	out, ok := setJSONRawBytes(body, "system", buildJSONArrayRaw([][]byte{billingBlock, ccPromptBlock}))
+	out, ok := setJSONRawBytes(body, "system", buildJSONArrayRaw([][]byte{billingBlock, ccPromptBlock, ccExpansionBlock}))
 	if !ok {
 		logger.LegacyPrintf("service.gateway", "Warning: failed to set Claude Code system prompt")
 		return body
@@ -5876,15 +5930,24 @@ func writeAnthropicPassthroughResponseHeaders(dst http.Header, src http.Header, 
 }
 
 // ApplyBedrockCCCompat 应用 Bedrock CC 兼容转换（渠道级模型映射后调用）
-// 清理 Anthropic API 专有字段、注入 Bedrock 必需字段、修复 thinking/tool_use ID
-func (s *GatewayService) ApplyBedrockCCCompat(ctx context.Context, body []byte, model string, account *Account, groupID *int64) []byte {
-	if !s.isBedrockCCCompatEnabled(ctx, account, groupID) {
+// 清理 body 中 Anthropic API 专有字段、修复 thinking/tool_use ID、过滤 beta token，
+// 同时过滤 HTTP header 中的 anthropic-beta（防止 Passthrough 路径透传不支持的 token）。
+func (s *GatewayService) ApplyBedrockCCCompat(c *gin.Context, body []byte, model string, account *Account, groupID *int64) []byte {
+	if !s.isBedrockCCCompatEnabled(c.Request.Context(), account, groupID) {
 		return body
 	}
 	body = sanitizeBedrockCCFields(body)
 	body = sanitizeBedrockThinking(body, model)
 	body = sanitizeBedrockToolUseIDs(body)
 	body = sanitizeBedrockCCBetaTokens(body, model)
+	// 过滤 HTTP header 中的 anthropic-beta，只保留 Bedrock 支持的 token
+	if betaHeader := c.GetHeader("anthropic-beta"); betaHeader != "" {
+		if filtered := ResolveBedrockBetaTokens(betaHeader, body, model); len(filtered) > 0 {
+			c.Request.Header.Set("anthropic-beta", strings.Join(filtered, ", "))
+		} else {
+			c.Request.Header.Del("anthropic-beta")
+		}
+	}
 	return body
 }
 
@@ -7369,6 +7432,8 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 		return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: body}
 	}
 
+	MarkResponseCommitted(c)
+
 	// 记录上游错误响应体摘要便于排障（可选：由配置控制；不回显到客户端）
 	if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
 		logger.LegacyPrintf("service.gateway",
@@ -7492,6 +7557,7 @@ func (s *GatewayService) handleFailoverSideEffects(ctx context.Context, resp *ht
 // OAuth 403：标记账号异常
 // API Key 未配置错误码：仅返回错误，不标记账号
 func (s *GatewayService) handleRetryExhaustedError(ctx context.Context, resp *http.Response, c *gin.Context, account *Account) (*ForwardResult, error) {
+	MarkResponseCommitted(c)
 	// Capture upstream error body before side-effects consume the stream.
 	respBody, _ := s.readUpstreamErrorBody(resp)
 	_ = resp.Body.Close()
@@ -9038,8 +9104,11 @@ func (s *GatewayService) calculateRecordUsageCost(
 	imageMultiplier float64,
 	opts *recordUsageOpts,
 ) *CostBreakdown {
-	// 图片生成计费
+	// 图片生成：渠道定价为 token 计费时走 token 路径，否则走图片计费
 	if result.ImageCount > 0 {
+		if resolved := s.resolveChannelPricing(ctx, billingModel, apiKey); resolved != nil && resolved.Mode == BillingModeToken {
+			return s.calculateTokenCost(ctx, result, apiKey, billingModel, multiplier, opts)
+		}
 		return s.calculateImageCost(ctx, result, apiKey, billingModel, imageMultiplier)
 	}
 
@@ -9217,7 +9286,7 @@ func (s *GatewayService) buildRecordUsageLog(
 		SubscriptionID:        optionalSubscriptionID(subscription),
 		CreatedAt:             time.Now(),
 	}
-	if result.ImageCount > 0 {
+	if result.ImageCount > 0 && (cost == nil || cost.BillingMode != string(BillingModeToken)) {
 		usageLog.RateMultiplier = imageMultiplier
 	}
 	if cost != nil {

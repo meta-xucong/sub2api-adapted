@@ -352,7 +352,8 @@ func TestNormalizedCodexLimits_OnlySecondaryData(t *testing.T) {
 		t.Fatal("expected non-nil normalized")
 	}
 
-	// Legacy assumption: primary=7d, secondary=5h.
+	// Legacy assumption: primary=7d, secondary=5h
+	// So secondary goes to 5h
 	if normalized.Used5hPercent == nil || *normalized.Used5hPercent != 60.0 {
 		t.Errorf("expected Used5hPercent=60, got %v", normalized.Used5hPercent)
 	}
@@ -369,7 +370,7 @@ func TestNormalizedCodexLimits_BothDataNoWindowMinutes(t *testing.T) {
 	// Test when both have data but no window_minutes
 	pUsed := 100.0
 	pReset := 400000
-	sUsed := 30.0
+	sUsed := 50.0
 	sReset := 10000
 
 	snapshot := &OpenAICodexUsageSnapshot{
@@ -392,8 +393,8 @@ func TestNormalizedCodexLimits_BothDataNoWindowMinutes(t *testing.T) {
 	if normalized.Reset7dSeconds == nil || *normalized.Reset7dSeconds != 400000 {
 		t.Errorf("expected Reset7dSeconds=400000, got %v", normalized.Reset7dSeconds)
 	}
-	if normalized.Used5hPercent == nil || *normalized.Used5hPercent != 30.0 {
-		t.Errorf("expected Used5hPercent=30, got %v", normalized.Used5hPercent)
+	if normalized.Used5hPercent == nil || *normalized.Used5hPercent != 50.0 {
+		t.Errorf("expected Used5hPercent=50, got %v", normalized.Used5hPercent)
 	}
 	if normalized.Reset5hSeconds == nil || *normalized.Reset5hSeconds != 10000 {
 		t.Errorf("expected Reset5hSeconds=10000, got %v", normalized.Reset5hSeconds)
