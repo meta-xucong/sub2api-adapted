@@ -30,6 +30,37 @@ func TestLoadForBootstrapAllowsMissingJWTSecret(t *testing.T) {
 	}
 }
 
+func TestLoadVeyraDefaults(t *testing.T) {
+	resetViperWithJWTSecret(t)
+
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	require.False(t, cfg.Veyra.Enabled)
+	require.False(t, cfg.Veyra.PortalEnabled)
+	require.Equal(t, "https://alchemy.aiself.vip", cfg.Veyra.AlchemyBaseURL)
+	require.Empty(t, cfg.Veyra.InternalToken)
+	require.Equal(t, 120, cfg.Veyra.LoginTicketTTLSeconds)
+}
+
+func TestLoadVeyraFromEnvironment(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	t.Setenv("VEYRA_ENABLED", "true")
+	t.Setenv("VEYRA_PORTAL_ENABLED", "true")
+	t.Setenv("VEYRA_ALCHEMY_BASE_URL", "http://127.0.0.1:8094")
+	t.Setenv("VEYRA_INTERNAL_TOKEN", "local-secret")
+	t.Setenv("VEYRA_LOGIN_TICKET_TTL_SECONDS", "60")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	require.True(t, cfg.Veyra.Enabled)
+	require.True(t, cfg.Veyra.PortalEnabled)
+	require.Equal(t, "http://127.0.0.1:8094", cfg.Veyra.AlchemyBaseURL)
+	require.Equal(t, "local-secret", cfg.Veyra.InternalToken)
+	require.Equal(t, 60, cfg.Veyra.LoginTicketTTLSeconds)
+}
+
 func TestNormalizeRunMode(t *testing.T) {
 	tests := []struct {
 		input    string

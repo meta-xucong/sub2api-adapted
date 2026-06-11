@@ -93,6 +93,7 @@ type Config struct {
 	Gemini                  GeminiConfig                  `mapstructure:"gemini"`
 	Update                  UpdateConfig                  `mapstructure:"update"`
 	Idempotency             IdempotencyConfig             `mapstructure:"idempotency"`
+	Veyra                   VeyraConfig                   `mapstructure:"veyra"`
 }
 
 type LogConfig struct {
@@ -173,6 +174,14 @@ type IdempotencyConfig struct {
 	CleanupIntervalSeconds int `mapstructure:"cleanup_interval_seconds"`
 	// CleanupBatchSize 每次清理的最大记录数。
 	CleanupBatchSize int `mapstructure:"cleanup_batch_size"`
+}
+
+type VeyraConfig struct {
+	Enabled               bool   `mapstructure:"enabled"`
+	PortalEnabled         bool   `mapstructure:"portal_enabled"`
+	AlchemyBaseURL        string `mapstructure:"alchemy_base_url"`
+	InternalToken         string `mapstructure:"internal_token"`
+	LoginTicketTTLSeconds int    `mapstructure:"login_ticket_ttl_seconds"`
 }
 
 type LinuxDoConnectConfig struct {
@@ -1790,6 +1799,13 @@ func setDefaults() {
 	viper.SetDefault("idempotency.max_stored_response_len", 64*1024)
 	viper.SetDefault("idempotency.cleanup_interval_seconds", 60)
 	viper.SetDefault("idempotency.cleanup_batch_size", 500)
+
+	// Veyra Extension (disabled by default; custom/main patch layer only)
+	viper.SetDefault("veyra.enabled", false)
+	viper.SetDefault("veyra.portal_enabled", false)
+	viper.SetDefault("veyra.alchemy_base_url", "https://alchemy.aiself.vip")
+	viper.SetDefault("veyra.internal_token", "")
+	viper.SetDefault("veyra.login_ticket_ttl_seconds", 120)
 
 	// Gateway
 	viper.SetDefault("gateway.response_header_timeout", 600) // 600秒(10分钟)等待上游响应头，LLM高负载时可能排队较久

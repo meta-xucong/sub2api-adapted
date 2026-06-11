@@ -1,190 +1,192 @@
 <template>
-  <AuthLayout>
-    <div class="space-y-6">
-      <!-- Title -->
-      <div class="text-center">
-        <h2 class="text-2xl font-bold text-gray-900 dark:text-white">
-          {{ t('auth.welcomeBack') }}
-        </h2>
-        <p class="mt-2 text-sm text-gray-500 dark:text-dark-400">
-          {{ t('auth.signInToAccount') }}
+  <div class="veyra-login-page">
+    <header class="veyra-login-header">
+      <a class="veyra-brand" href="/" aria-label="Veyra Agent">
+        <strong>Veyra Agent</strong>
+        <span>Unified console</span>
+      </a>
+      <a class="veyra-back-link" href="/">返回首页</a>
+    </header>
+
+    <main class="veyra-login-main">
+      <section class="veyra-login-copy" aria-labelledby="veyraLoginTitle">
+        <p class="veyra-eyebrow">Veyra Account</p>
+        <h1 id="veyraLoginTitle">登录后进入你的 Agent 工具矩阵。</h1>
+        <p>
+          一个账号连接聚合平台与 Alchemy Media Agent。登录后会按入口自动回到对应应用。
         </p>
-      </div>
-      <!-- Login Form -->
-      <form @submit.prevent="handleLogin" class="space-y-5">
-        <!-- Email Input -->
-        <div>
-          <label for="email" class="input-label">
-            {{ t('auth.emailLabel') }}
-          </label>
-          <div class="relative">
-            <div class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3.5">
-              <Icon name="mail" size="md" class="text-gray-400 dark:text-dark-500" />
-            </div>
-            <input
-              id="email"
-              v-model="formData.email"
-              type="email"
-              required
-              autofocus
-              autocomplete="email"
-              :disabled="authActionDisabled"
-              class="input pl-11"
-              :class="{ 'input-error': errors.email }"
-              :placeholder="t('auth.emailPlaceholder')"
-            />
-          </div>
+        <div class="veyra-login-notes" aria-label="账户能力">
+          <span>聚合平台</span>
+          <span>Alchemy</span>
+          <span>统一余额</span>
+        </div>
+      </section>
+
+      <section class="veyra-login-panel" aria-label="登录表单">
+        <div class="veyra-panel-head">
+          <p class="veyra-eyebrow">Sign in</p>
+          <h2>{{ t('auth.welcomeBack') }}</h2>
+          <span>{{ t('auth.signInToAccount') }}</span>
         </div>
 
-        <!-- Password Input -->
-        <div>
-          <label for="password" class="input-label">
-            {{ t('auth.passwordLabel') }}
-          </label>
-          <div class="relative">
-            <div class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3.5">
-              <Icon name="lock" size="md" class="text-gray-400 dark:text-dark-500" />
+        <form @submit.prevent="handleLogin" class="veyra-form">
+          <label class="veyra-field" for="email">
+            <span>{{ t('auth.emailLabel') }}</span>
+            <div class="veyra-input-wrap">
+              <Icon name="mail" size="md" class="veyra-input-icon" />
+              <input
+                id="email"
+                v-model="formData.email"
+                type="email"
+                required
+                autofocus
+                autocomplete="email"
+                :disabled="authActionDisabled"
+                class="veyra-input"
+                :class="{ 'veyra-input-error': errors.email }"
+                :placeholder="t('auth.emailPlaceholder')"
+              />
             </div>
-            <input
-              id="password"
-              v-model="formData.password"
-              :type="showPassword ? 'text' : 'password'"
-              required
-              autocomplete="current-password"
-              :disabled="authActionDisabled"
-              class="input pl-11 pr-11"
-              :class="{ 'input-error': errors.password }"
-              :placeholder="t('auth.passwordPlaceholder')"
-            />
-            <button
-              type="button"
-              @click="showPassword = !showPassword"
-              :disabled="authActionDisabled"
-              class="absolute inset-y-0 right-0 flex items-center pr-3.5 text-gray-400 transition-colors hover:text-gray-600 dark:hover:text-dark-300"
-            >
-              <Icon v-if="showPassword" name="eyeOff" size="md" />
-              <Icon v-else name="eye" size="md" />
-            </button>
-          </div>
-          <div class="mt-1 flex items-center justify-between">
+          </label>
+
+          <label class="veyra-field" for="password">
+            <span>{{ t('auth.passwordLabel') }}</span>
+            <div class="veyra-input-wrap">
+              <Icon name="lock" size="md" class="veyra-input-icon" />
+              <input
+                id="password"
+                v-model="formData.password"
+                :type="showPassword ? 'text' : 'password'"
+                required
+                autocomplete="current-password"
+                :disabled="authActionDisabled"
+                class="veyra-input veyra-input-password"
+                :class="{ 'veyra-input-error': errors.password }"
+                :placeholder="t('auth.passwordPlaceholder')"
+              />
+              <button
+                type="button"
+                @click="showPassword = !showPassword"
+                :disabled="authActionDisabled"
+                class="veyra-password-toggle"
+                :aria-label="showPassword ? '隐藏密码' : '显示密码'"
+              >
+                <Icon v-if="showPassword" name="eyeOff" size="md" />
+                <Icon v-else name="eye" size="md" />
+              </button>
+            </div>
+          </label>
+
+          <div class="veyra-form-row">
             <span></span>
             <router-link
               v-if="passwordResetEnabled && !backendModeEnabled"
               to="/forgot-password"
-              class="text-sm font-medium text-primary-600 transition-colors hover:text-primary-500 dark:text-primary-400 dark:hover:text-primary-300"
+              class="veyra-text-link"
             >
               {{ t('auth.forgotPassword') }}
             </router-link>
           </div>
-        </div>
 
-        <!-- Turnstile Widget -->
-        <div v-if="turnstileEnabled && turnstileSiteKey">
-          <TurnstileWidget
-            ref="turnstileRef"
-            :site-key="turnstileSiteKey"
-            @verify="onTurnstileVerify"
-            @expire="onTurnstileExpire"
-            @error="onTurnstileError"
-          />
-        </div>
+          <p v-if="errorMessage" class="veyra-error" role="alert">{{ errorMessage }}</p>
 
-        <!-- Submit Button -->
-        <button
-          type="submit"
-          :disabled="authActionDisabled || (turnstileEnabled && !turnstileToken)"
-          class="btn btn-primary w-full"
-        >
-          <svg
-            v-if="isLoading"
-            class="-ml-1 mr-2 h-4 w-4 animate-spin text-white"
-            fill="none"
-            viewBox="0 0 24 24"
-          >
-            <circle
-              class="opacity-25"
-              cx="12"
-              cy="12"
-              r="10"
-              stroke="currentColor"
-              stroke-width="4"
-            ></circle>
-            <path
-              class="opacity-75"
-              fill="currentColor"
-              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-            ></path>
-          </svg>
-          <Icon v-else name="login" size="md" class="mr-2" />
-          {{ isLoading ? t('auth.signingIn') : t('auth.signIn') }}
-        </button>
-
-        <LoginAgreementPrompt
-          v-if="loginAgreementEnabled"
-          :accepted="agreementAccepted"
-          :documents="loginAgreementDocuments"
-          :mode="loginAgreementMode"
-          :updated-at="loginAgreementUpdatedAt"
-          :visible="showAgreementModal"
-          @accept="acceptLoginAgreement"
-          @reject="rejectLoginAgreement"
-          @open="showAgreementModal = true"
-        />
-
-        <div v-if="showOAuthLogin" class="space-y-3 pt-1">
-          <div class="flex items-center gap-3">
-            <div class="h-px flex-1 bg-gray-200 dark:bg-dark-700"></div>
-            <span class="text-xs text-gray-500 dark:text-dark-400">
-              {{ t('auth.oauthOrContinue') }}
-            </span>
-            <div class="h-px flex-1 bg-gray-200 dark:bg-dark-700"></div>
+          <div v-if="turnstileEnabled && turnstileSiteKey" class="veyra-turnstile">
+            <TurnstileWidget
+              ref="turnstileRef"
+              :site-key="turnstileSiteKey"
+              @verify="onTurnstileVerify"
+              @expire="onTurnstileExpire"
+              @error="onTurnstileError"
+            />
           </div>
 
-          <EmailOAuthButtons
-            :disabled="authActionDisabled"
-            :github-enabled="githubOAuthEnabled"
-            :google-enabled="googleOAuthEnabled"
-            :show-divider="false"
+          <button
+            type="submit"
+            :disabled="authActionDisabled || (turnstileEnabled && !turnstileToken)"
+            class="veyra-submit"
+          >
+            <svg
+              v-if="isLoading"
+              class="veyra-spinner"
+              fill="none"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+            >
+              <circle
+                class="opacity-25"
+                cx="12"
+                cy="12"
+                r="10"
+                stroke="currentColor"
+                stroke-width="4"
+              ></circle>
+              <path
+                class="opacity-75"
+                fill="currentColor"
+                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+              ></path>
+            </svg>
+            <Icon v-else name="login" size="md" />
+            {{ isLoading ? t('auth.signingIn') : t('auth.signIn') }}
+          </button>
+
+          <LoginAgreementPrompt
+            v-if="loginAgreementEnabled"
+            :accepted="agreementAccepted"
+            :documents="loginAgreementDocuments"
+            :mode="loginAgreementMode"
+            :updated-at="loginAgreementUpdatedAt"
+            :visible="showAgreementModal"
+            @accept="acceptLoginAgreement"
+            @reject="rejectLoginAgreement"
+            @open="showAgreementModal = true"
           />
 
-          <LinuxDoOAuthSection
-            v-if="linuxdoOAuthEnabled"
-            :disabled="authActionDisabled"
-            :show-divider="false"
-          />
-          <DingTalkOAuthSection
-            v-if="dingtalkOAuthEnabled"
-            :disabled="authActionDisabled"
-            :show-divider="false"
-          />
-          <WechatOAuthSection
-            v-if="wechatOAuthEnabled"
-            :disabled="authActionDisabled"
-            :show-divider="false"
-          />
-          <OidcOAuthSection
-            v-if="oidcOAuthEnabled"
-            :disabled="authActionDisabled"
-            :provider-name="oidcOAuthProviderName"
-            :show-divider="false"
-          />
-        </div>
-      </form>
-    </div>
+          <div v-if="showOAuthLogin" class="veyra-oauth-block">
+            <div class="veyra-divider">
+              <span>{{ t('auth.oauthOrContinue') }}</span>
+            </div>
 
-    <!-- Footer -->
-    <template v-if="!backendModeEnabled" #footer>
-      <p class="text-gray-500 dark:text-dark-400">
-        {{ t('auth.dontHaveAccount') }}
-        <router-link
-          to="/register"
-          class="font-medium text-primary-600 transition-colors hover:text-primary-500 dark:text-primary-400 dark:hover:text-primary-300"
-        >
-          {{ t('auth.signUp') }}
-        </router-link>
-      </p>
-    </template>
-  </AuthLayout>
+            <EmailOAuthButtons
+              :disabled="authActionDisabled"
+              :github-enabled="githubOAuthEnabled"
+              :google-enabled="googleOAuthEnabled"
+              :show-divider="false"
+            />
+
+            <LinuxDoOAuthSection
+              v-if="linuxdoOAuthEnabled"
+              :disabled="authActionDisabled"
+              :show-divider="false"
+            />
+            <DingTalkOAuthSection
+              v-if="dingtalkOAuthEnabled"
+              :disabled="authActionDisabled"
+              :show-divider="false"
+            />
+            <WechatOAuthSection
+              v-if="wechatOAuthEnabled"
+              :disabled="authActionDisabled"
+              :show-divider="false"
+            />
+            <OidcOAuthSection
+              v-if="oidcOAuthEnabled"
+              :disabled="authActionDisabled"
+              :provider-name="oidcOAuthProviderName"
+              :show-divider="false"
+            />
+          </div>
+        </form>
+
+        <p v-if="!backendModeEnabled" class="veyra-login-footer">
+          {{ t('auth.dontHaveAccount') }}
+          <router-link to="/register" class="veyra-text-link">
+            {{ t('auth.signUp') }}
+          </router-link>
+        </p>
+      </section>
+    </main>
+  </div>
 
   <!-- 2FA Modal -->
   <TotpLoginModal
@@ -201,7 +203,6 @@
 import { computed, ref, reactive, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { AuthLayout } from '@/components/layout'
 import LinuxDoOAuthSection from '@/components/auth/LinuxDoOAuthSection.vue'
 import DingTalkOAuthSection from '@/components/auth/DingTalkOAuthSection.vue'
 import OidcOAuthSection from '@/components/auth/OidcOAuthSection.vue'
@@ -261,6 +262,18 @@ const turnstileToken = ref<string>('')
 const show2FAModal = ref<boolean>(false)
 const totpTempToken = ref<string>('')
 const totpUserEmailMasked = ref<string>('')
+
+function resolveLoginRedirect(): string {
+  return (router.currentRoute.value.query.redirect as string) || '/dashboard'
+}
+
+async function applyLoginRedirect(redirectTo: string): Promise<void> {
+  if (redirectTo.startsWith('/_veyra/return')) {
+    window.location.assign(redirectTo)
+    return
+  }
+  await router.push(redirectTo)
+}
 const totpModalRef = ref<InstanceType<typeof TotpLoginModal> | null>(null)
 
 const formData = reactive({
@@ -497,9 +510,7 @@ async function handleLogin(): Promise<void> {
     clearAllAffiliateReferralCodes()
     appStore.showSuccess(t('auth.loginSuccess'))
 
-    // Redirect to dashboard or intended route
-    const redirectTo = (router.currentRoute.value.query.redirect as string) || '/dashboard'
-    await router.push(redirectTo)
+    await applyLoginRedirect(resolveLoginRedirect())
   } catch (error: unknown) {
     // Reset Turnstile on error
     if (turnstileRef.value) {
@@ -531,9 +542,7 @@ async function handle2FAVerify(code: string): Promise<void> {
     clearAllAffiliateReferralCodes()
     appStore.showSuccess(t('auth.loginSuccess'))
 
-    // Redirect to dashboard or intended route
-    const redirectTo = (router.currentRoute.value.query.redirect as string) || '/dashboard'
-    await router.push(redirectTo)
+    await applyLoginRedirect(resolveLoginRedirect())
   } catch (error: unknown) {
     const err = error as { message?: string; response?: { data?: { message?: string } } }
     const message = err.response?.data?.message || err.message || t('profile.totp.loginFailed')
@@ -553,14 +562,329 @@ function handle2FACancel(): void {
 </script>
 
 <style scoped>
-.fade-enter-active,
-.fade-leave-active {
-  transition: all 0.3s ease;
+.veyra-login-page {
+  min-height: 100vh;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  color: #171512;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.64), rgba(244, 238, 224, 0.48)),
+    #fbfaf7;
 }
 
-.fade-enter-from,
-.fade-leave-to {
-  opacity: 0;
-  transform: translateY(-8px);
+.veyra-login-header {
+  min-height: 72px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 22px clamp(18px, 4vw, 52px);
+}
+
+.veyra-brand {
+  color: inherit;
+  text-decoration: none;
+}
+
+.veyra-brand strong {
+  display: block;
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: 22px;
+  line-height: 1;
+  font-weight: 400;
+}
+
+.veyra-brand span,
+.veyra-eyebrow {
+  color: #777066;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.veyra-eyebrow {
+  margin: 0;
+  text-transform: uppercase;
+}
+
+.veyra-back-link,
+.veyra-text-link {
+  color: #496f5a;
+  font-size: 13px;
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.veyra-back-link {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 13px;
+  border: 1px solid rgba(73, 111, 90, 0.2);
+  border-radius: 999px;
+  background: rgba(255, 255, 252, 0.68);
+}
+
+.veyra-login-main {
+  width: min(1120px, calc(100% - 32px));
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(360px, 440px);
+  align-items: center;
+  gap: clamp(30px, 6vw, 86px);
+  margin: 0 auto;
+  padding: 34px 0 76px;
+}
+
+.veyra-login-copy h1 {
+  max-width: 660px;
+  margin: 12px 0 18px;
+  font-size: clamp(42px, 6vw, 78px);
+  line-height: 1.02;
+  font-weight: 300;
+  letter-spacing: 0;
+}
+
+.veyra-login-copy p:not(.veyra-eyebrow) {
+  max-width: 560px;
+  margin: 0;
+  color: #6f685f;
+  font-size: 16px;
+  line-height: 1.8;
+}
+
+.veyra-login-notes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 26px;
+}
+
+.veyra-login-notes span {
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 12px;
+  border: 1px solid rgba(130, 143, 121, 0.22);
+  border-radius: 999px;
+  color: #4d6b58;
+  background: rgba(130, 143, 121, 0.1);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.veyra-login-panel {
+  padding: 28px;
+  border: 1px solid rgba(33, 31, 27, 0.1);
+  border-radius: 18px;
+  background: rgba(255, 255, 252, 0.82);
+  box-shadow: 0 26px 70px rgba(66, 58, 45, 0.12);
+  backdrop-filter: blur(18px);
+}
+
+.veyra-panel-head {
+  padding-bottom: 22px;
+  border-bottom: 1px solid rgba(33, 31, 27, 0.09);
+}
+
+.veyra-panel-head h2 {
+  margin: 8px 0 6px;
+  color: #171512;
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: 30px;
+  line-height: 1.1;
+  font-weight: 400;
+}
+
+.veyra-panel-head span {
+  color: #777066;
+  font-size: 14px;
+}
+
+.veyra-form {
+  display: grid;
+  gap: 16px;
+  padding-top: 22px;
+}
+
+.veyra-field {
+  display: grid;
+  gap: 8px;
+  color: #4f4a43;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.veyra-input-wrap {
+  position: relative;
+}
+
+.veyra-input-icon {
+  position: absolute;
+  top: 50%;
+  left: 14px;
+  width: 18px;
+  height: 18px;
+  color: #8b8378;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.veyra-input {
+  width: 100%;
+  min-height: 48px;
+  padding: 0 14px 0 44px;
+  border: 1px solid rgba(33, 31, 27, 0.14);
+  border-radius: 12px;
+  outline: none;
+  color: #171512;
+  background: rgba(255, 255, 255, 0.78);
+  font-size: 15px;
+  transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
+}
+
+.veyra-input:focus {
+  border-color: rgba(73, 111, 90, 0.52);
+  background: #fff;
+  box-shadow: 0 0 0 4px rgba(73, 111, 90, 0.1);
+}
+
+.veyra-input-error {
+  border-color: rgba(173, 73, 55, 0.58);
+}
+
+.veyra-input-password {
+  padding-right: 48px;
+}
+
+.veyra-password-toggle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 46px;
+  height: 48px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  color: #777066;
+  background: transparent;
+  cursor: pointer;
+}
+
+.veyra-form-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 18px;
+}
+
+.veyra-error {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(173, 73, 55, 0.22);
+  border-radius: 10px;
+  color: #93392c;
+  background: rgba(173, 73, 55, 0.08);
+  font-size: 13px;
+}
+
+.veyra-turnstile {
+  overflow: hidden;
+}
+
+.veyra-submit {
+  min-height: 48px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 12px;
+  color: #fff;
+  background: #2f5a45;
+  font-size: 15px;
+  font-weight: 750;
+  cursor: pointer;
+  transition: transform 160ms ease, opacity 160ms ease, background 160ms ease;
+}
+
+.veyra-submit:not(:disabled):hover {
+  background: #274c3b;
+  transform: translateY(-1px);
+}
+
+.veyra-submit:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.veyra-spinner {
+  width: 18px;
+  height: 18px;
+  animation: veyra-spin 1s linear infinite;
+}
+
+.veyra-oauth-block {
+  display: grid;
+  gap: 12px;
+  padding-top: 2px;
+}
+
+.veyra-divider {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 10px;
+  color: #8b8378;
+  font-size: 12px;
+}
+
+.veyra-divider::before,
+.veyra-divider::after {
+  height: 1px;
+  content: '';
+  background: rgba(33, 31, 27, 0.12);
+}
+
+.veyra-login-footer {
+  margin: 18px 0 0;
+  color: #777066;
+  font-size: 14px;
+  text-align: center;
+}
+
+@keyframes veyra-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 900px) {
+  .veyra-login-main {
+    grid-template-columns: 1fr;
+    align-items: start;
+    gap: 28px;
+    padding-top: 18px;
+  }
+
+  .veyra-login-copy h1 {
+    font-size: clamp(38px, 12vw, 58px);
+  }
+}
+
+@media (max-width: 560px) {
+  .veyra-login-header {
+    padding: 18px 16px;
+  }
+
+  .veyra-login-main {
+    width: calc(100% - 24px);
+    padding-bottom: 38px;
+  }
+
+  .veyra-login-panel {
+    padding: 20px;
+    border-radius: 14px;
+  }
 }
 </style>

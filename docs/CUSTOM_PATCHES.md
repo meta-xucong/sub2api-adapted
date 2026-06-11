@@ -15,6 +15,108 @@ survive upstream updates.
 
 ## Current Custom Patches
 
+## Upstream Update And Replay Workflow
+
+The Veyra layer is intentionally kept as a small overlay on top of upstream
+sub2api. When upstream is updated:
+
+1. Fetch and merge upstream into `custom/main`.
+2. Resolve conflicts without moving Veyra code into unrelated upstream modules.
+3. Keep the editable portal source in `extensions/veyra/portal`.
+4. Rebuild the embedded runtime copy with:
+
+```powershell
+./scripts/reapply-veyra-overlay.ps1
+```
+
+The script verifies the required Veyra overlay paths, syncs portal assets into
+`backend/internal/veyra/portal_dist`, and runs focused Go tests for the Veyra,
+config, server, and cmd/server packages.
+
+Do not deploy directly from upstream/main. Production should deploy only from
+`custom/main` after the overlay replay and tests pass.
+
+### `custom: add Veyra portal extension`
+
+Adds the first stage of the Veyra Extension layer. The portal assets live under
+`extensions/veyra/portal`, while the Go-embedded runtime copy lives under
+`backend/internal/veyra/portal_dist`.
+
+The only core hook for this stage is a Veyra portal middleware registered before
+the embedded upstream frontend middleware. It is disabled by default and only
+serves:
+
+- `/` when `veyra.enabled=true` and `veyra.portal_enabled=true`
+- `/_veyra/*` portal assets
+
+It deliberately passes through `/api/*`, `/v1/*`, `/v1beta/*`, gateway routes,
+setup routes, and all other upstream routes. Keep this patch as the isolated
+home-page entry point for the Veyra Agent product shell.
+
+The portal frontend uses the existing sub2api browser login state:
+
+- reads `localStorage.auth_token` and `localStorage.auth_user`;
+- sends `Authorization: Bearer <auth_token>` to `POST /api/veyra/login-ticket`
+  when launching Alchemy;
+- redirects unauthenticated clicks to `/login?redirect=/_veyra/return?...`;
+- serves `/_veyra/return` through the same portal bundle so login can return to
+  the product shell and continue the user's original target.
+
+The only upstream frontend hook for this login-return flow is in
+`frontend/src/views/auth/LoginView.vue`: after a successful normal or 2FA login,
+redirects beginning with `/_veyra/return` use `window.location.assign(...)` so
+the browser reloads the server-served Veyra portal instead of staying inside the
+Vue SPA router. Regular sub2api login redirects still use the original
+`router.push(...)` path.
+
+### `custom: add Veyra session and login-ticket extension`
+
+Adds an isolated Veyra session adapter and login-ticket API under
+`backend/internal/veyra`. This layer reuses sub2api's existing JWT validation
+and authenticated user context instead of creating a parallel account system.
+
+The only core hook for the API layer is a pair of route registration calls in
+`backend/internal/server/router.go`. Both registrations share the same ticket
+store and debit ledger. Routes are registered only when `veyra.enabled=true`.
+
+The versioned routes are kept for sub2api-side compatibility:
+
+- `GET /api/v1/veyra/portal/config`
+  - public portal runtime config
+  - returns `alchemy_base_url`, sourced from `veyra.alchemy_base_url`
+- `POST /api/v1/veyra/login-ticket`
+  - protected by the existing sub2api JWT middleware
+  - issues a short-lived one-time ticket for an intent such as `home`,
+    `sub2api`, or `alchemy`
+- `POST /api/v1/veyra/internal/login-ticket/exchange`
+  - protected by `X-Veyra-Internal-Token`
+  - consumes the ticket exactly once and returns the sub2api user id plus intent
+- `GET /api/v1/veyra/internal/users/:user_id/account`
+  - protected by `X-Veyra-Internal-Token`
+  - returns a minimal account projection for external products: user id, email,
+    role, balance, status, and concurrency
+- `POST /api/v1/veyra/internal/billing/debit`
+  - protected by `X-Veyra-Internal-Token`
+  - checks the user's current balance before mutating it
+  - rejects insufficient balance with HTTP 402
+  - requires `idempotency_key` so external retries do not double-charge
+
+Alchemy should call the non-versioned Veyra extension aliases:
+
+- `GET /api/veyra/portal/config`
+- `POST /api/veyra/internal/login-ticket/exchange`
+- `GET /api/veyra/internal/users/:user_id/account`
+- `POST /api/veyra/internal/billing/debit`
+
+This keeps the Alchemy V2 backend from depending on `/api/v1/*` or `/v1/*`
+paths while preserving the sub2api-side route compatibility layer.
+
+The extension is disabled by default. Production must set
+`veyra.internal_token` before enabling Alchemy ticket exchange.
+The current local verification layer uses an in-process Veyra debit ledger; for
+multi-instance production deployments, replace that ledger with a DB or Redis
+implementation while keeping the HTTP contract unchanged.
+
 ### `custom: cap Kimi gateway max tokens`
 
 For Kimi gateway requests, force `max_tokens` to `1600` on both the standard
