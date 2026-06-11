@@ -2,9 +2,14 @@ package repository
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"net/http"
 	"sort"
 	"strings"
 	"time"
@@ -767,6 +772,176 @@ func (r *userRepository) DeductBalance(ctx context.Context, id int64, amount flo
 		return service.ErrUserNotFound
 	}
 	return nil
+}
+
+func (r *userRepository) DebitBalanceIfSufficient(ctx context.Context, input service.UserBalanceDebitInput) (*service.UserBalanceDebitResult, error) {
+	if r == nil || r.sql == nil {
+		return nil, errors.New("user repository sql executor is not configured")
+	}
+	input.IdempotencyKey = strings.TrimSpace(input.IdempotencyKey)
+	input.RequestFingerprint = strings.TrimSpace(input.RequestFingerprint)
+	if input.UserID <= 0 || input.Amount <= 0 || math.IsNaN(input.Amount) || math.IsInf(input.Amount, 0) || input.IdempotencyKey == "" {
+		return nil, service.ErrUsageBillingRequestIDRequired
+	}
+	if input.RequestFingerprint == "" {
+		input.RequestFingerprint = input.IdempotencyKey
+	}
+	fingerprint := veyraDebitFingerprint(input.RequestFingerprint)
+	keyHash := veyraDebitKeyHash(input.IdempotencyKey)
+
+	db, ok := r.sql.(*sql.DB)
+	if !ok {
+		return nil, errors.New("user repository atomic debit requires *sql.DB")
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if tx != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	var recordID int64
+	err = tx.QueryRowContext(ctx, `
+		INSERT INTO idempotency_records (
+			scope,
+			idempotency_key_hash,
+			request_fingerprint,
+			status,
+			response_status,
+			locked_until,
+			expires_at
+		)
+		VALUES ($1, $2, $3, $4, $5, NULL, NOW() + INTERVAL '30 days')
+		ON CONFLICT (scope, idempotency_key_hash) DO NOTHING
+		RETURNING id
+	`, "veyra.billing.debit", keyHash, fingerprint, service.IdempotencyStatusProcessing, http.StatusOK).Scan(&recordID)
+	if errors.Is(err, sql.ErrNoRows) {
+		result, replayErr := replayVeyraDebit(ctx, tx, keyHash, fingerprint)
+		if replayErr != nil {
+			return nil, replayErr
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
+		tx = nil
+		return result, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	var newBalance float64
+	err = tx.QueryRowContext(ctx, `
+		UPDATE users
+		SET balance = balance - $1,
+			updated_at = NOW()
+		WHERE id = $2
+			AND deleted_at IS NULL
+			AND status = $3
+			AND balance >= $1
+		RETURNING balance
+	`, input.Amount, input.UserID, service.StatusActive).Scan(&newBalance)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, classifyVeyraDebitMiss(ctx, tx, input.UserID, input.Amount)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	result := &service.UserBalanceDebitResult{
+		UserID:       input.UserID,
+		Amount:       input.Amount,
+		BalanceAfter: newBalance,
+	}
+	body, err := json.Marshal(result)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE idempotency_records
+		SET status = $2,
+			response_status = $3,
+			response_body = $4,
+			error_reason = NULL,
+			locked_until = NULL,
+			expires_at = NOW() + INTERVAL '30 days',
+			updated_at = NOW()
+		WHERE id = $1
+	`, recordID, service.IdempotencyStatusSucceeded, http.StatusOK, string(body)); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	tx = nil
+	return result, nil
+}
+
+func classifyVeyraDebitMiss(ctx context.Context, tx *sql.Tx, userID int64, amount float64) error {
+	var (
+		status  string
+		balance float64
+	)
+	err := tx.QueryRowContext(ctx, `
+		SELECT status, balance
+		FROM users
+		WHERE id = $1 AND deleted_at IS NULL
+	`, userID).Scan(&status, &balance)
+	if errors.Is(err, sql.ErrNoRows) {
+		return service.ErrUserNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(status) != service.StatusActive {
+		return service.ErrInsufficientPerms
+	}
+	if balance+1e-9 < amount {
+		return service.ErrInsufficientBalance
+	}
+	return errors.New("atomic debit did not update user balance")
+}
+
+func replayVeyraDebit(ctx context.Context, tx *sql.Tx, keyHash, fingerprint string) (*service.UserBalanceDebitResult, error) {
+	var (
+		existingFingerprint string
+		status              string
+		responseBody        sql.NullString
+	)
+	err := tx.QueryRowContext(ctx, `
+		SELECT request_fingerprint, status, response_body
+		FROM idempotency_records
+		WHERE scope = $1 AND idempotency_key_hash = $2
+		FOR UPDATE
+	`, "veyra.billing.debit", keyHash).Scan(&existingFingerprint, &status, &responseBody)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(existingFingerprint) != strings.TrimSpace(fingerprint) {
+		return nil, service.ErrUsageBillingRequestConflict
+	}
+	if status != service.IdempotencyStatusSucceeded || !responseBody.Valid || strings.TrimSpace(responseBody.String) == "" {
+		return nil, service.ErrIdempotencyInProgress
+	}
+	var result service.UserBalanceDebitResult
+	if err := json.Unmarshal([]byte(responseBody.String), &result); err != nil {
+		return nil, err
+	}
+	result.Replayed = true
+	return &result, nil
+}
+
+func veyraDebitKeyHash(key string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(key)))
+	return hex.EncodeToString(sum[:])
+}
+
+func veyraDebitFingerprint(raw string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(raw)))
+	return hex.EncodeToString(sum[:])
 }
 
 func (r *userRepository) UpdateConcurrency(ctx context.Context, id int64, amount int) error {

@@ -113,9 +113,29 @@ paths while preserving the sub2api-side route compatibility layer.
 
 The extension is disabled by default. Production must set
 `veyra.internal_token` before enabling Alchemy ticket exchange.
-The current local verification layer uses an in-process Veyra debit ledger; for
-multi-instance production deployments, replace that ledger with a DB or Redis
-implementation while keeping the HTTP contract unchanged.
+
+### `custom: persist Veyra billing debit idempotency`
+
+Veyra billing now uses a production-safe debit path when the registered account
+service supports `DebitBalanceIfSufficient`.
+
+The persistent path:
+
+- stores Alchemy debit idempotency in the existing `idempotency_records` table
+  under scope `veyra.billing.debit`;
+- hashes the external idempotency key and request fingerprint before storage;
+- uses a single PostgreSQL transaction to claim the idempotency key, apply
+  `UPDATE users SET balance = balance - amount WHERE balance >= amount`, and
+  persist the replay response;
+- returns a replayed response for identical retries and rejects conflicting
+  idempotency-key reuse;
+- invalidates both sub2api auth cache and balance cache after a successful
+  debit.
+
+The in-process `MemoryDebitLedger` remains only as a local/fallback helper for
+tests or non-production wiring. Production sub2api must run through
+`service.UserService.DebitBalanceIfSufficient`, which preserves the same Veyra
+HTTP contract without adding a parallel account system or a new billing table.
 
 ### `custom: cap Kimi gateway max tokens`
 

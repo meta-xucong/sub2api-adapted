@@ -122,6 +122,24 @@ type UserRepository interface {
 	DisableTotp(ctx context.Context, userID int64) error
 }
 
+type UserBalanceDebitInput struct {
+	UserID             int64
+	Amount             float64
+	IdempotencyKey     string
+	RequestFingerprint string
+}
+
+type UserBalanceDebitResult struct {
+	UserID       int64
+	Amount       float64
+	BalanceAfter float64
+	Replayed     bool
+}
+
+type userBalanceDebitRepository interface {
+	DebitBalanceIfSufficient(ctx context.Context, input UserBalanceDebitInput) (*UserBalanceDebitResult, error)
+}
+
 type UserAuthIdentityRecord struct {
 	ProviderType    string
 	ProviderKey     string
@@ -1071,21 +1089,42 @@ func (s *UserService) UpdateBalance(ctx context.Context, userID int64, amount fl
 	if s.authCacheInvalidator != nil {
 		s.authCacheInvalidator.InvalidateAuthCacheByUserID(ctx, userID)
 	}
-	if s.billingCache != nil {
-		go func() {
-			defer func() {
-				if r := recover(); r != nil {
-					slog.Error("panic in balance cache invalidation", "user_id", userID, "recover", r)
-				}
-			}()
-			cacheCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if err := s.billingCache.InvalidateUserBalance(cacheCtx, userID); err != nil {
-				slog.Error("invalidate user balance cache failed", "user_id", userID, "error", err)
+	s.invalidateUserBalanceCache(userID)
+	return nil
+}
+
+func (s *UserService) DebitBalanceIfSufficient(ctx context.Context, input UserBalanceDebitInput) (*UserBalanceDebitResult, error) {
+	repo, ok := s.userRepo.(userBalanceDebitRepository)
+	if !ok || repo == nil {
+		return nil, fmt.Errorf("user repository does not support atomic debit")
+	}
+	result, err := repo.DebitBalanceIfSufficient(ctx, input)
+	if err != nil {
+		return nil, err
+	}
+	if s.authCacheInvalidator != nil {
+		s.authCacheInvalidator.InvalidateAuthCacheByUserID(ctx, result.UserID)
+	}
+	s.invalidateUserBalanceCache(result.UserID)
+	return result, nil
+}
+
+func (s *UserService) invalidateUserBalanceCache(userID int64) {
+	if s.billingCache == nil || userID <= 0 {
+		return
+	}
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("panic in balance cache invalidation", "user_id", userID, "recover", r)
 			}
 		}()
-	}
-	return nil
+		cacheCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := s.billingCache.InvalidateUserBalance(cacheCtx, userID); err != nil {
+			slog.Error("invalidate user balance cache failed", "user_id", userID, "error", err)
+		}
+	}()
 }
 
 // UpdateConcurrency 更新用户并发数（管理员功能）

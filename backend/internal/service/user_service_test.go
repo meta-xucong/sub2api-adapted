@@ -25,6 +25,7 @@ import (
 type mockUserRepo struct {
 	updateBalanceErr        error
 	updateBalanceFn         func(ctx context.Context, id int64, amount float64) error
+	debitBalanceFn          func(ctx context.Context, input UserBalanceDebitInput) (*UserBalanceDebitResult, error)
 	getByIDUser             *User
 	getByIDErr              error
 	identities              []UserAuthIdentityRecord
@@ -187,6 +188,16 @@ func (m *mockUserRepo) UpdateBalance(ctx context.Context, id int64, amount float
 		return m.updateBalanceFn(ctx, id, amount)
 	}
 	return m.updateBalanceErr
+}
+func (m *mockUserRepo) DebitBalanceIfSufficient(ctx context.Context, input UserBalanceDebitInput) (*UserBalanceDebitResult, error) {
+	if m.debitBalanceFn != nil {
+		return m.debitBalanceFn(ctx, input)
+	}
+	return &UserBalanceDebitResult{
+		UserID:       input.UserID,
+		Amount:       input.Amount,
+		BalanceAfter: 8.75,
+	}, nil
 }
 func (m *mockUserRepo) UpdateUserLastActiveAt(_ context.Context, userID int64, activeAt time.Time) error {
 	m.updateLastActiveUserIDs = append(m.updateLastActiveUserIDs, userID)
@@ -365,6 +376,32 @@ func TestUpdateBalance_Success(t *testing.T) {
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
 	require.Equal(t, []int64{42}, cache.invalidatedUserIDs, "应对 userID=42 失效缓存")
+}
+
+func TestDebitBalanceIfSufficient_InvalidatesAuthAndBillingCaches(t *testing.T) {
+	repo := &mockUserRepo{}
+	auth := &mockAuthCacheInvalidator{}
+	cache := &mockBillingCache{}
+	svc := NewUserService(repo, nil, auth, cache)
+
+	result, err := svc.DebitBalanceIfSufficient(context.Background(), UserBalanceDebitInput{
+		UserID:         42,
+		Amount:         1.25,
+		IdempotencyKey: "alchemy-run-1",
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 8.75, result.BalanceAfter)
+	auth.mu.Lock()
+	require.Equal(t, []int64{42}, auth.invalidatedUserIDs)
+	auth.mu.Unlock()
+
+	require.Eventually(t, func() bool {
+		return cache.invalidateCallCount.Load() == 1
+	}, 2*time.Second, 10*time.Millisecond, "应异步调用 InvalidateUserBalance")
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	require.Equal(t, []int64{42}, cache.invalidatedUserIDs)
 }
 
 func TestGetProfileIdentitySummaries_AllowsUnbindWhenAnotherLoginMethodRemains(t *testing.T) {

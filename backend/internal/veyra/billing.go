@@ -27,6 +27,10 @@ type BalanceAccountService interface {
 	UpdateBalance(ctx context.Context, userID int64, amount float64) error
 }
 
+type AtomicBalanceDebitService interface {
+	DebitBalanceIfSufficient(ctx context.Context, input service.UserBalanceDebitInput) (*service.UserBalanceDebitResult, error)
+}
+
 type DebitInput struct {
 	UserID         int64
 	Amount         float64
@@ -104,6 +108,26 @@ func DebitBalance(ctx context.Context, accounts BalanceAccountService, ledger De
 	if accounts == nil || ledger == nil {
 		return nil, ErrDebitAccountUnavailable
 	}
+	if atomicAccounts, ok := accounts.(AtomicBalanceDebitService); ok && atomicAccounts != nil {
+		result, err := atomicAccounts.DebitBalanceIfSufficient(ctx, service.UserBalanceDebitInput{
+			UserID:             input.UserID,
+			Amount:             input.Amount,
+			IdempotencyKey:     input.IdempotencyKey,
+			RequestFingerprint: debitFingerprint(input),
+		})
+		if err != nil {
+			return nil, translateAtomicDebitError(err)
+		}
+		return &DebitResult{
+			UserID:         result.UserID,
+			Amount:         result.Amount,
+			BalanceAfter:   result.BalanceAfter,
+			IdempotencyKey: input.IdempotencyKey,
+			Source:         input.Source,
+			ReferenceID:    input.ReferenceID,
+			Replayed:       result.Replayed,
+		}, nil
+	}
 	return ledger.Execute(ctx, input, func() (*DebitResult, error) {
 		user, err := accounts.GetByID(ctx, input.UserID)
 		if err != nil || user == nil {
@@ -127,6 +151,23 @@ func DebitBalance(ctx context.Context, accounts BalanceAccountService, ledger De
 			ReferenceID:  input.ReferenceID,
 		}, nil
 	})
+}
+
+func translateAtomicDebitError(err error) error {
+	switch {
+	case errors.Is(err, service.ErrUserNotFound):
+		return ErrDebitUserNotFound
+	case errors.Is(err, service.ErrInsufficientBalance):
+		return ErrDebitInsufficientBalance
+	case errors.Is(err, service.ErrInsufficientPerms):
+		return ErrDebitInactiveUser
+	case errors.Is(err, service.ErrUsageBillingRequestConflict):
+		return ErrDebitIdempotencyConflict
+	case errors.Is(err, service.ErrIdempotencyInProgress):
+		return ErrDebitIdempotencyConflict
+	default:
+		return err
+	}
 }
 
 func debitFingerprint(input DebitInput) string {

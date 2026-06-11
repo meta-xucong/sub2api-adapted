@@ -395,7 +395,7 @@ func TestEvaluateOnceResolvesActiveEventWhenRequestThresholdSkipsMetric(t *testi
 			Status: OpsAlertStatusFiring,
 		},
 	}
-	svc := NewOpsAlertEvaluatorService(nil, repo, nil, nil, &config.Config{Ops: config.OpsConfig{Enabled: true}})
+	svc := NewOpsAlertEvaluatorService(nil, repo, nil, nil, &config.Config{Ops: config.OpsConfig{Enabled: true}}, nil)
 
 	svc.evaluateOnce(time.Minute)
 

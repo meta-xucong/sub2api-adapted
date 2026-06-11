@@ -85,3 +85,61 @@ func TestDebitBalanceRejectsIdempotencyConflict(t *testing.T) {
 	require.ErrorIs(t, err, ErrDebitIdempotencyConflict)
 	require.Equal(t, 1, accounts.updateCalls)
 }
+
+func TestDebitBalanceUsesAtomicServiceWhenAvailable(t *testing.T) {
+	accounts := &atomicBalanceAccountStub{
+		result: &service.UserBalanceDebitResult{
+			UserID:       42,
+			Amount:       2.5,
+			BalanceAfter: 7.5,
+			Replayed:     true,
+		},
+	}
+
+	result, err := DebitBalance(context.Background(), accounts, NewMemoryDebitLedger(), DebitInput{
+		UserID:         42,
+		Amount:         2.5,
+		IdempotencyKey: "run-atomic",
+		Source:         "alchemy:v2",
+		ReferenceID:    "job-1",
+	})
+
+	require.NoError(t, err)
+	require.Len(t, accounts.inputs, 1)
+	require.Equal(t, "run-atomic", accounts.inputs[0].IdempotencyKey)
+	require.NotEmpty(t, accounts.inputs[0].RequestFingerprint)
+	require.Equal(t, 0, accounts.updateCalls)
+	require.True(t, result.Replayed)
+	require.Equal(t, 7.5, result.BalanceAfter)
+}
+
+type atomicBalanceAccountStub struct {
+	updateCalls int
+	result      *service.UserBalanceDebitResult
+	err         error
+	inputs      []service.UserBalanceDebitInput
+}
+
+func (s *atomicBalanceAccountStub) GetByID(context.Context, int64) (*service.User, error) {
+	return &service.User{ID: 42, Status: service.StatusActive, Balance: 10}, nil
+}
+
+func (s *atomicBalanceAccountStub) UpdateBalance(context.Context, int64, float64) error {
+	s.updateCalls++
+	return nil
+}
+
+func (s *atomicBalanceAccountStub) DebitBalanceIfSufficient(_ context.Context, input service.UserBalanceDebitInput) (*service.UserBalanceDebitResult, error) {
+	s.inputs = append(s.inputs, input)
+	if s.err != nil {
+		return nil, s.err
+	}
+	if s.result != nil {
+		return s.result, nil
+	}
+	return &service.UserBalanceDebitResult{
+		UserID:       input.UserID,
+		Amount:       input.Amount,
+		BalanceAfter: 7.5,
+	}, nil
+}
