@@ -153,6 +153,43 @@ func TestForwardAsRawChatCompletions_PreservesDeepSeekReasoningContentNonStreami
 	require.Equal(t, "final answer", gjson.Get(rec.Body.String(), "choices.0.message.content").String())
 }
 
+func TestForwardAsRawChatCompletions_KimiCodingUsesCodingAgentHeadersAndHardLimit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{"model":"kimi-for-coding","messages":[{"role":"user","content":"hello"}],"max_tokens":4096,"stream":false}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Request.Header.Set("User-Agent", "OpenAI/NodeJS/4.0.0")
+
+	upstreamJSON := `{"id":"chatcmpl_kimi","object":"chat.completion","model":"kimi-for-coding","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4}}`
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_kimi_coding"}},
+		Body:       io.NopCloser(strings.NewReader(upstreamJSON)),
+	}}
+
+	svc := &OpenAIGatewayService{
+		cfg:          rawChatCompletionsTestConfig(),
+		httpUpstream: upstream,
+	}
+	account := rawChatCompletionsTestAccount()
+	account.Name = "kimi-openai-coding"
+	account.Credentials["base_url"] = "https://api.kimi.com/coding/v1"
+
+	result, err := svc.forwardAsRawChatCompletions(context.Background(), c, account, body, "")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, upstream.lastReq)
+	require.Equal(t, "https://api.kimi.com/coding/v1/chat/completions", upstream.lastReq.URL.String())
+	require.Equal(t, kimiCodingOpenAIUserAgent, upstream.lastReq.Header.Get("User-Agent"))
+	require.Equal(t, int64(kimiGatewayHardMaxTokens), gjson.GetBytes(upstream.lastBody, "max_tokens").Int())
+	require.Equal(t, "kimi-for-coding", gjson.GetBytes(upstream.lastBody, "model").String())
+	require.Equal(t, 3, result.Usage.InputTokens)
+	require.Equal(t, 1, result.Usage.OutputTokens)
+}
+
 func TestForwardAsRawChatCompletions_PreservesDeepSeekReasoningContentStreaming(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

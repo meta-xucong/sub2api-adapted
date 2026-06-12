@@ -40,6 +40,8 @@ var openaiCCRawAllowedHeaders = map[string]bool{
 	"user-agent":      true,
 }
 
+const kimiCodingOpenAIUserAgent = "claude-cli/1.0.43 (external, cli)"
+
 // forwardAsRawChatCompletions 直转客户端的 Chat Completions 请求到上游
 // `{base_url}/v1/chat/completions`，**不**做 CC↔Responses 协议转换。
 //
@@ -86,6 +88,13 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	upstreamBody := body
 	if upstreamModel != originalModel {
 		upstreamBody = ReplaceModelInBody(body, upstreamModel)
+	}
+	kimiCodingOpenAI := isKimiCodingOpenAIBaseURL(account.GetOpenAIBaseURL())
+	if kimiCodingOpenAI {
+		if hardenedBody, changed := enforceKimiGatewayHardLimit(upstreamModel, upstreamBody); changed {
+			upstreamBody = hardenedBody
+			logger.LegacyPrintf("service.openai_gateway", "Kimi OpenAI raw hard limit applied: max_tokens=%d (account=%d model=%s)", kimiGatewayHardMaxTokens, account.ID, upstreamModel)
+		}
 	}
 
 	// 4. Apply OpenAI fast policy on the CC body
@@ -158,6 +167,9 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	if customUA != "" {
 		upstreamReq.Header.Set("user-agent", customUA)
 	}
+	if kimiCodingOpenAI {
+		upstreamReq.Header.Set("user-agent", kimiCodingOpenAIUserAgent)
+	}
 
 	// 6. Send request
 	proxyURL := ""
@@ -223,6 +235,11 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 		return s.streamRawChatCompletions(c, resp, account, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime, len(body))
 	}
 	return s.bufferRawChatCompletions(c, resp, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
+}
+
+func isKimiCodingOpenAIBaseURL(baseURL string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(baseURL))
+	return strings.Contains(normalized, "api.kimi.com/coding")
 }
 
 // streamRawChatCompletions 透传上游 CC SSE 流到客户端，并提取 usage（包括
