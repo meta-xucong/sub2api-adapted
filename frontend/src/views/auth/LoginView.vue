@@ -264,7 +264,7 @@ const totpTempToken = ref<string>('')
 const totpUserEmailMasked = ref<string>('')
 
 function resolveLoginRedirect(): string {
-  return (router.currentRoute.value.query.redirect as string) || '/dashboard'
+  return sanitizeLoginRedirect(router.currentRoute.value.query.redirect as string)
 }
 
 async function applyLoginRedirect(redirectTo: string): Promise<void> {
@@ -273,6 +273,16 @@ async function applyLoginRedirect(redirectTo: string): Promise<void> {
     return
   }
   await router.push(redirectTo)
+}
+
+function sanitizeLoginRedirect(path: string | undefined): string {
+  if (!path || !path.startsWith('/') || path.startsWith('//')) {
+    return '/dashboard'
+  }
+  if (path.includes('://') || path.includes('\n') || path.includes('\r')) {
+    return '/dashboard'
+  }
+  return path
 }
 const totpModalRef = ref<InstanceType<typeof TotpLoginModal> | null>(null)
 
