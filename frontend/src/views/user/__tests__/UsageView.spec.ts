@@ -211,9 +211,9 @@ describe('user UsageView tooltip', () => {
     expect(text).toContain('Rate')
     expect(text).toContain('1.00x')
     expect(text).toContain('Billed')
-    expect(text).toContain('$0.092883')
-    expect(text).toContain('$5.0000 / 1M tokens')
-    expect(text).toContain('$30.0000 / 1M tokens')
+    expect(text).toContain('⭐️0.092883')
+    expect(text).toContain('⭐️5.0000 / 1M tokens')
+    expect(text).toContain('⭐️30.0000 / 1M tokens')
   })
 
   it('exports csv with input and output unit price columns', async () => {

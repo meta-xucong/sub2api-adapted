@@ -343,13 +343,13 @@ const eventDisplayMeta: Record<string, EventDisplayMeta> = {
     categoryLabel: "订阅",
   },
   "balance.low": {
-    label: "余额不足提醒",
-    timing: "用户余额低于全局或个人配置的提醒阈值时发送。",
+    label: "积分不足提醒",
+    timing: "用户积分低于全局或个人配置的提醒阈值时发送。",
     categoryLabel: "计费",
   },
   "balance.recharge_success": {
-    label: "余额充值成功",
-    timing: "余额充值订单支付完成并入账后发送。",
+    label: "积分购买成功",
+    timing: "积分购买订单支付完成并入账后发送。",
     categoryLabel: "计费",
   },
   "account.quota_alert": {
@@ -406,13 +406,13 @@ const eventDisplayMetaEn: Record<string, EventDisplayMeta> = {
     categoryLabel: "Subscription",
   },
   "balance.low": {
-    label: "Low Balance Alert",
-    timing: "Sent when a user's balance drops below the global or personal reminder threshold.",
+    label: "Low Points Alert",
+    timing: "Sent when a user's points drop below the global or personal reminder threshold.",
     categoryLabel: "Billing",
   },
   "balance.recharge_success": {
-    label: "Balance Recharge Success",
-    timing: "Sent after a balance recharge order is paid and credited.",
+    label: "Points Purchase Success",
+    timing: "Sent after a points purchase order is paid and credited.",
     categoryLabel: "Billing",
   },
   "account.quota_alert": {

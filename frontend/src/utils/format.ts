@@ -5,6 +5,8 @@
 
 import { i18n, getLocale } from '@/i18n'
 
+export const POINTS_SYMBOL = '⭐️'
+
 /**
  * 格式化相对时间
  * @param date 日期字符串或 Date 对象
@@ -53,25 +55,21 @@ export function formatNumber(num: number | null | undefined): string {
 }
 
 /**
- * 格式化货币金额
- * @param amount 金额
- * @param currency 货币代码，默认 USD
- * @returns 格式化后的字符串，如 "$1.25"
+ * 格式化积分数。底层数值仍沿用原 USD 计费刻度，展示层统一显示为积分。
+ * @param amount 积分数
+ * @param currency 保留兼容旧调用，不影响展示
+ * @returns 格式化后的字符串，如 "⭐️1.25"
  */
-export function formatCurrency(amount: number | null | undefined, currency: string = 'USD'): string {
-  if (amount === null || amount === undefined) return '$0.00'
-
-  const locale = getLocale()
-
+export function formatCurrency(amount: number | null | undefined, _currency: string = 'USD'): string {
+  if (amount === null || amount === undefined) return `${POINTS_SYMBOL}0.00`
   // For very small amounts, show more decimals
   const fractionDigits = amount > 0 && amount < 0.01 ? 6 : 2
-
-  return new Intl.NumberFormat(locale, {
-    style: 'currency',
-    currency: currency,
+  const formatted = new Intl.NumberFormat(getLocale(), {
+    style: 'decimal',
     minimumFractionDigits: fractionDigits,
     maximumFractionDigits: fractionDigits
   }).format(amount)
+  return `${POINTS_SYMBOL}${formatted}`
 }
 
 /**

@@ -45,5 +45,5 @@ export function formatTokenPricePerMillion(
 
   const fractionDigits = options.fractionDigits ?? 4
   const formatted = pricePerMillion.toFixed(fractionDigits)
-  return options.withCurrencySymbol == false ? formatted : `$${formatted}`
+  return options.withCurrencySymbol == false ? formatted : `⭐️${formatted}`
 }

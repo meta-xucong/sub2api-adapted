@@ -23,13 +23,13 @@
             {{ formatTokens(user.total_tokens) }}
           </td>
           <td class="py-1 text-right text-green-600 dark:text-green-400">
-            ${{ formatCost(user.actual_cost) }}
+            ⭐️{{ formatCost(user.actual_cost) }}
           </td>
           <td class="py-1 text-right text-orange-500 dark:text-orange-400">
-            ${{ formatCost(user.account_cost) }}
+            ⭐️{{ formatCost(user.account_cost) }}
           </td>
           <td class="py-1 pr-1 text-right text-gray-400 dark:text-gray-500">
-            ${{ formatCost(user.cost) }}
+            ⭐️{{ formatCost(user.cost) }}
           </td>
         </tr>
       </tbody>
@@ -56,7 +56,8 @@ const formatTokens = (value: number): string => {
   return value.toLocaleString()
 }
 
-const formatCost = (value: number): string => {
+const formatCost = (value: number | null | undefined): string => {
+  if (value == null || !Number.isFinite(value)) return '0.00'
   if (value >= 1000) return (value / 1000).toFixed(2) + 'K'
   if (value >= 1) return value.toFixed(2)
   if (value >= 0.01) return value.toFixed(3)

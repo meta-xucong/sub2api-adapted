@@ -18,7 +18,7 @@
         <div class="veyra-login-notes" aria-label="账户能力">
           <span>聚合平台</span>
           <span>Alchemy</span>
-          <span>统一余额</span>
+          <span>统一积分</span>
         </div>
       </section>
 

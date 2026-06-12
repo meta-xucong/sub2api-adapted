@@ -558,8 +558,8 @@ describe('AccountUsageCell', () => {
 
 		expect(wrapper.text()).toContain('1.0M req')
 		expect(wrapper.text()).toContain('1.0B')
-		expect(wrapper.text()).toContain('A $12.35')
-		expect(wrapper.text()).toContain('U $6.79')
+		expect(wrapper.text()).toContain('A ⭐️12.35')
+		expect(wrapper.text()).toContain('U ⭐️6.79')
 
 		const badges = wrapper.findAll('span[title]')
 		expect(badges.some(node => node.attributes('title') === 'usage.accountBilled')).toBe(true)
@@ -652,7 +652,7 @@ describe('AccountUsageCell', () => {
 
 		expect(wrapper.text()).toContain('0 req')
 		expect(wrapper.text()).toContain('0')
-		expect(wrapper.text()).toContain('A $0.00')
-		expect(wrapper.text()).toContain('U $0.00')
+		expect(wrapper.text()).toContain('A ⭐️0.00')
+		expect(wrapper.text()).toContain('U ⭐️0.00')
   })
 })

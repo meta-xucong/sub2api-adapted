@@ -28,12 +28,12 @@
       <div class="min-w-0 flex-1">
         <p class="text-xs font-medium text-gray-500">{{ t('usage.totalCost') }}</p>
         <p class="text-xl font-bold text-green-600">
-          ${{ (stats?.total_actual_cost || 0).toFixed(4) }}
+          ⭐️{{ (stats?.total_actual_cost || 0).toFixed(4) }}
         </p>
         <p class="text-xs text-gray-400">
-          <span class="text-orange-500">{{ t('usage.accountCost') }} ${{ (stats?.total_account_cost || 0).toFixed(4) }}</span>
+          <span class="text-orange-500">{{ t('usage.accountCost') }} ⭐️{{ (stats?.total_account_cost || 0).toFixed(4) }}</span>
           <span> · </span>
-          <span>{{ t('usage.standardCost') }} ${{ (stats?.total_cost || 0).toFixed(4) }}</span>
+          <span>{{ t('usage.standardCost') }} ⭐️{{ (stats?.total_cost || 0).toFixed(4) }}</span>
         </p>
       </div>
     </div>

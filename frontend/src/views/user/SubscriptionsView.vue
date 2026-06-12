@@ -101,7 +101,7 @@
                   {{ t('userSubscriptions.daily') }}
                 </span>
                 <span class="text-sm text-gray-500 dark:text-dark-400">
-                  ${{ (subscription.daily_usage_usd || 0).toFixed(2) }} / ${{
+                  ⭐️{{ (subscription.daily_usage_usd || 0).toFixed(2) }} / ⭐️{{
                     subscription.group.daily_limit_usd.toFixed(2)
                   }}
                 </span>
@@ -138,7 +138,7 @@
                   {{ t('userSubscriptions.weekly') }}
                 </span>
                 <span class="text-sm text-gray-500 dark:text-dark-400">
-                  ${{ (subscription.weekly_usage_usd || 0).toFixed(2) }} / ${{
+                  ⭐️{{ (subscription.weekly_usage_usd || 0).toFixed(2) }} / ⭐️{{
                     subscription.group.weekly_limit_usd.toFixed(2)
                   }}
                 </span>
@@ -179,7 +179,7 @@
                   {{ t('userSubscriptions.monthly') }}
                 </span>
                 <span class="text-sm text-gray-500 dark:text-dark-400">
-                  ${{ (subscription.monthly_usage_usd || 0).toFixed(2) }} / ${{
+                  ⭐️{{ (subscription.monthly_usage_usd || 0).toFixed(2) }} / ⭐️{{
                     subscription.group.monthly_limit_usd.toFixed(2)
                   }}
                 </span>
