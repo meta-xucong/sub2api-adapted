@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
@@ -100,4 +101,63 @@ func sanitizeVolcengineArkImagesRequest(account *Account, body []byte, contentTy
 		}
 	}
 	return rewritten, contentType, nil
+}
+
+func adaptVolcengineArkImagesToGeneration(account *Account, parsed *OpenAIImagesRequest) ([]byte, string, string, bool, error) {
+	if !isVolcengineArkOpenAIAccount(account) || parsed == nil || !isVolcengineArkImageModel(parsed.Model) {
+		return nil, "", "", false, nil
+	}
+	if parsed.HasMask || parsed.MaskUpload != nil || strings.TrimSpace(parsed.MaskImageURL) != "" {
+		return nil, "", "", false, openAIImagesUnsupportedVolcengineArkFailoverError()
+	}
+	if !parsed.IsEdits() && len(parsed.InputImageURLs) == 0 && len(parsed.Uploads) == 0 {
+		return nil, "", "", false, nil
+	}
+
+	images := make([]string, 0, len(parsed.InputImageURLs)+len(parsed.Uploads))
+	for _, imageURL := range parsed.InputImageURLs {
+		if trimmed := strings.TrimSpace(imageURL); trimmed != "" {
+			images = append(images, trimmed)
+		}
+	}
+	for _, upload := range parsed.Uploads {
+		dataURL, err := openAIImageUploadToDataURL(upload)
+		if err != nil {
+			return nil, "", "", false, err
+		}
+		images = append(images, dataURL)
+	}
+	if len(images) == 0 {
+		if parsed.IsEdits() {
+			return nil, "", "", false, openAIImagesUnsupportedVolcengineArkFailoverError()
+		}
+		return nil, "", "", false, nil
+	}
+
+	payload := []byte(`{"model":"","prompt":"","image":[]}`)
+	payload, _ = sjson.SetBytes(payload, "model", strings.TrimSpace(parsed.Model))
+	payload, _ = sjson.SetBytes(payload, "prompt", strings.TrimSpace(parsed.Prompt))
+	payload, _ = sjson.SetRawBytes(payload, "image", []byte(`[]`))
+	for _, image := range images {
+		payload, _ = sjson.SetBytes(payload, "image.-1", image)
+	}
+	if parsed.N > 0 {
+		payload, _ = sjson.SetBytes(payload, "n", parsed.N)
+	}
+	if size := strings.TrimSpace(parsed.Size); size != "" {
+		payload, _ = sjson.SetBytes(payload, "size", size)
+	}
+	if responseFormat := strings.TrimSpace(parsed.ResponseFormat); responseFormat != "" {
+		payload, _ = sjson.SetBytes(payload, "response_format", responseFormat)
+	} else {
+		payload, _ = sjson.SetBytes(payload, "response_format", "b64_json")
+	}
+	return payload, "application/json", openAIImagesGenerationsEndpoint, true, nil
+}
+
+func openAIImagesUnsupportedVolcengineArkFailoverError() error {
+	return &UpstreamFailoverError{
+		StatusCode:   http.StatusBadRequest,
+		ResponseBody: []byte(`{"error":{"message":"Volcengine Ark image models do not support this OpenAI image edit shape; trying the next image-capable account.","type":"invalid_request_error","code":"unsupported_image_edit_shape"}}`),
+	}
 }

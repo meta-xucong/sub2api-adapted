@@ -3,7 +3,9 @@ package service
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -159,4 +161,105 @@ func TestForwardImagesVolcengineArkUsesImagesBaseURL(t *testing.T) {
 	require.Equal(t, "b64_json", gjson.GetBytes(upstream.lastBody, "response_format").String())
 	require.False(t, gjson.GetBytes(upstream.lastBody, "quality").Exists())
 	require.False(t, gjson.GetBytes(upstream.lastBody, "background").Exists())
+}
+
+func TestForwardImagesVolcengineArkEditUsesGenerationImageField(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	require.NoError(t, writer.WriteField("model", "doubao-seedream-4-0-250828"))
+	require.NoError(t, writer.WriteField("prompt", "use the uploaded reference"))
+	require.NoError(t, writer.WriteField("n", "2"))
+	require.NoError(t, writer.WriteField("size", "2K"))
+	imagePart, err := writer.CreateFormFile("image", "reference.png")
+	require.NoError(t, err)
+	_, err = imagePart.Write(openAIImageTestPNGBytes(t))
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/edits", bytes.NewReader(body.Bytes()))
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = req
+	c.Set("api_key", &APIKey{ID: 42})
+
+	svc := &OpenAIGatewayService{cfg: &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false}}}}
+	parsed, err := svc.ParseOpenAIImagesRequest(c, body.Bytes())
+	require.NoError(t, err)
+
+	upstream := &httpUpstreamRecorder{
+		resp: &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"created":1710000001,"data":[{"b64_json":"ZG91YmFvMQ=="},{"b64_json":"ZG91YmFvMg=="}]}`)),
+		},
+	}
+	svc.httpUpstream = upstream
+
+	account := &Account{
+		ID:          6,
+		Name:        "volcengine-ark",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"api_key": "ark-test", "base_url": "https://ark.cn-beijing.volces.com/api/coding/v3"},
+		Extra:       map[string]any{"provider": "volcengine_ark"},
+	}
+
+	result, err := svc.ForwardImages(context.Background(), c, account, body.Bytes(), parsed, "")
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 2, result.ImageCount)
+	require.Equal(t, "https://ark.cn-beijing.volces.com/api/v3/images/generations", upstream.lastReq.URL.String())
+	require.Equal(t, "application/json", upstream.lastReq.Header.Get("Content-Type"))
+	require.Equal(t, "doubao-seedream-4-0-250828", gjson.GetBytes(upstream.lastBody, "model").String())
+	require.Equal(t, "use the uploaded reference", gjson.GetBytes(upstream.lastBody, "prompt").String())
+	require.Equal(t, int64(2), gjson.GetBytes(upstream.lastBody, "n").Int())
+	require.Equal(t, "2K", gjson.GetBytes(upstream.lastBody, "size").String())
+	require.True(t, strings.HasPrefix(gjson.GetBytes(upstream.lastBody, "image.0").String(), "data:image/png;base64,"))
+}
+
+func TestForwardImagesVolcengineArkMaskEditReturnsFailoverError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	require.NoError(t, writer.WriteField("model", "doubao-seedream-4-0-250828"))
+	require.NoError(t, writer.WriteField("prompt", "masked edit"))
+	imagePart, err := writer.CreateFormFile("image", "reference.png")
+	require.NoError(t, err)
+	_, err = imagePart.Write(openAIImageTestPNGBytes(t))
+	require.NoError(t, err)
+	maskPart, err := writer.CreateFormFile("mask", "mask.png")
+	require.NoError(t, err)
+	_, err = maskPart.Write(openAIImageTestPNGBytes(t))
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/edits", bytes.NewReader(body.Bytes()))
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = req
+
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+	parsed, err := svc.ParseOpenAIImagesRequest(c, body.Bytes())
+	require.NoError(t, err)
+
+	account := &Account{
+		ID:          6,
+		Name:        "volcengine-ark",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"api_key": "ark-test"},
+		Extra:       map[string]any{"provider": "volcengine_ark"},
+	}
+
+	_, err = svc.ForwardImages(context.Background(), c, account, body.Bytes(), parsed, "")
+
+	var failoverErr *UpstreamFailoverError
+	require.True(t, errors.As(err, &failoverErr), "err=%v", err)
+	require.Equal(t, http.StatusBadRequest, failoverErr.StatusCode)
 }

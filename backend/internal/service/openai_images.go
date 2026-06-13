@@ -668,6 +668,13 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 		forwardContentType = adaptedContentType
 		upstreamParsed.Endpoint = adaptedEndpoint
 	}
+	if adaptedBody, adaptedContentType, adaptedEndpoint, adapted, adaptErr := adaptVolcengineArkImagesToGeneration(account, &upstreamParsed); adaptErr != nil {
+		return nil, adaptErr
+	} else if adapted {
+		forwardBody = adaptedBody
+		forwardContentType = adaptedContentType
+		upstreamParsed.Endpoint = adaptedEndpoint
+	}
 	forwardBody, forwardContentType, err = sanitizeVolcengineArkImagesRequest(account, forwardBody, forwardContentType, &upstreamParsed)
 	if err != nil {
 		return nil, err
