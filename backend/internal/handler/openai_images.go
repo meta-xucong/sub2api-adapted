@@ -90,8 +90,52 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 		h.errorResponse(c, contentModerationStatus(decision), contentModerationErrorCode(decision), decision.Message)
 		return
 	}
+
+	var (
+		imageCacheEntry *openAIImagesCacheEntry
+		imageCacheOwner bool
+		imageCacheKey   = openAIImagesRequestCacheKey(apiKey, subject, parsed, body)
+		originalWriter  gin.ResponseWriter
+		bufferedWriter  *openAIImagesBufferedWriter
+	)
+	if imageCacheKey != "" && h.imageRequestCache != nil {
+		entry, owner, cached := h.imageRequestCache.begin(imageCacheKey, time.Now())
+		imageCacheEntry = entry
+		imageCacheOwner = owner
+		if cached != nil {
+			reqLog.Info("openai.images.idempotency_cache_hit")
+			cached.writeTo(c)
+			return
+		}
+		if !owner {
+			reqLog.Info("openai.images.idempotency_wait_for_inflight")
+			if cached, ok := h.imageRequestCache.wait(c.Request.Context(), entry); ok && cached != nil {
+				cached.writeTo(c)
+				return
+			}
+			h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "Image generation is still in progress, please retry later", streamStarted)
+			return
+		}
+		originalWriter = c.Writer
+		bufferedWriter = newOpenAIImagesBufferedWriter(c.Writer)
+		c.Writer = bufferedWriter
+	}
+	if imageCacheOwner {
+		defer func() {
+			if imageCacheEntry != nil && !imageCacheEntry.isCompleted() {
+				h.imageRequestCache.finishError(imageCacheEntry)
+			}
+			c.Writer = originalWriter
+			if bufferedWriter != nil && bufferedWriter.Written() {
+				bufferedWriter.flushTo(originalWriter)
+			}
+		}()
+	}
 	imageReleaseFunc, acquired := h.acquireImageGenerationSlot(c, streamStarted)
 	if !acquired {
+		if imageCacheOwner {
+			h.imageRequestCache.finishError(imageCacheEntry)
+		}
 		return
 	}
 	if imageReleaseFunc != nil {
@@ -198,13 +242,17 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
 		forwardStart := time.Now()
 		writerSizeBeforeForward := c.Writer.Size()
+		forwardCtx := requestCtx
+		if imageCacheOwner && !parsed.Stream {
+			forwardCtx = context.WithoutCancel(requestCtx)
+		}
 		result, err := func() (*service.OpenAIForwardResult, error) {
 			defer func() {
 				if accountReleaseFunc != nil {
 					accountReleaseFunc()
 				}
 			}()
-			return h.gatewayService.ForwardImages(requestCtx, c, account, body, parsed, channelMapping.MappedModel)
+			return h.gatewayService.ForwardImages(forwardCtx, c, account, body, parsed, channelMapping.MappedModel)
 		}()
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
 		upstreamLatencyMs, _ := getContextInt64(c, service.OpsUpstreamLatencyMsKey)
@@ -226,6 +274,9 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 			} else {
 				var imageUpstreamErr *service.OpenAIImagesUpstreamError
 				if errors.As(err, &imageUpstreamErr) {
+					if imageCacheOwner {
+						h.imageRequestCache.finishError(imageCacheEntry)
+					}
 					h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, nil)
 					reqLog.Warn("openai.images.upstream_user_error",
 						zap.Int64("account_id", account.ID),
@@ -261,11 +312,17 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 					failedAccountIDs[account.ID] = struct{}{}
 					lastFailoverErr = failoverErr
 					if switchCount >= maxAccountSwitches {
+						if imageCacheOwner {
+							h.imageRequestCache.finishError(imageCacheEntry)
+						}
 						h.handleFailoverExhausted(c, failoverErr, streamStarted)
 						return
 					}
 					switchCount++
 					if h.gatewayService.ShouldStopOpenAIOAuth429Failover(account, failoverErr.StatusCode, switchCount) {
+						if imageCacheOwner {
+							h.imageRequestCache.finishError(imageCacheEntry)
+						}
 						h.handleFailoverExhausted(c, failoverErr, streamStarted)
 						return
 					}
@@ -290,8 +347,14 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 					zap.Error(err),
 				}
 				if shouldLogOpenAIForwardFailureAsWarn(c, wroteFallback) {
+					if imageCacheOwner {
+						h.imageRequestCache.finishError(imageCacheEntry)
+					}
 					reqLog.Warn("openai.images.forward_failed", fields...)
 					return
+				}
+				if imageCacheOwner {
+					h.imageRequestCache.finishError(imageCacheEntry)
 				}
 				reqLog.Error("openai.images.forward_failed", fields...)
 				return
@@ -344,6 +407,14 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 				).Error("openai.images.record_usage_failed", zap.Error(err))
 			}
 		})
+
+		if imageCacheOwner && bufferedWriter != nil {
+			cached := bufferedWriter.cachedResponse()
+			h.imageRequestCache.finishSuccess(imageCacheEntry, cached, time.Now())
+			c.Writer = originalWriter
+			cached.writeTo(c)
+			bufferedWriter = nil
+		}
 
 		reqLog.Debug("openai.images.request_completed",
 			zap.Int64("account_id", account.ID),

@@ -132,22 +132,34 @@
       </div>
 
       <div v-if="generatedImages.length > 0" class="space-y-2">
-        <div class="text-xs font-medium text-gray-600 dark:text-gray-300">
-          {{ t('admin.accounts.imagePreview') }}
+        <div class="flex items-center justify-between gap-3">
+          <div class="text-xs font-medium text-gray-600 dark:text-gray-300">
+            {{ t('admin.accounts.imagePreview') }}
+          </div>
+          <div class="text-xs text-gray-400 dark:text-gray-500">
+            {{ generatedImages.length }}
+          </div>
         </div>
-        <div class="flex flex-wrap justify-center gap-3">
+        <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           <div
             v-for="(image, index) in generatedImages"
             :key="`${image.url}-${index}`"
-            class="group/img relative cursor-pointer overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm transition hover:border-primary-300 hover:shadow-md dark:border-dark-500 dark:bg-dark-700"
-            @click="previewImageUrl = image.url"
+            class="group/img relative cursor-pointer overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm transition hover:border-primary-300 hover:shadow-md dark:border-dark-500 dark:bg-dark-700"
+            @click="openImagePreview(index)"
           >
-            <img :src="image.url" :alt="`test-image-${index + 1}`" class="max-h-[360px] w-full object-contain" />
+            <div class="flex aspect-square items-center justify-center bg-gray-50 dark:bg-dark-800">
+              <img
+                :src="image.url"
+                :alt="`test-image-${index + 1}`"
+                class="h-full w-full object-contain"
+              />
+            </div>
             <div class="absolute inset-0 flex items-center justify-center bg-black/0 transition-colors group-hover/img:bg-black/20">
               <Icon name="eye" size="lg" class="text-white opacity-0 drop-shadow-lg transition-opacity group-hover/img:opacity-100" :stroke-width="2" />
             </div>
-            <div class="border-t border-gray-100 px-3 py-1.5 text-xs text-gray-500 dark:border-dark-500 dark:text-gray-300">
-              {{ image.mimeType || 'image/*' }}
+            <div class="flex items-center justify-between gap-2 border-t border-gray-100 px-3 py-1.5 text-xs text-gray-500 dark:border-dark-500 dark:text-gray-300">
+              <span>{{ image.mimeType || 'image/*' }}</span>
+              <span>{{ index + 1 }}/{{ generatedImages.length }}</span>
             </div>
           </div>
         </div>
@@ -157,21 +169,38 @@
       <Teleport to="body">
         <Transition name="fade">
           <div
-            v-if="previewImageUrl"
+            v-if="previewImage"
             class="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 p-4"
-            @click.self="previewImageUrl = ''"
+            @click.self="closeImagePreview"
           >
             <button
               class="absolute right-4 top-4 rounded-full bg-black/50 p-2 text-white transition-colors hover:bg-black/70"
-              @click="previewImageUrl = ''"
+              @click="closeImagePreview"
             >
               <Icon name="x" size="lg" :stroke-width="2" />
             </button>
+            <button
+              v-if="generatedImages.length > 1"
+              class="absolute left-4 top-1/2 -translate-y-1/2 rounded-full bg-black/50 p-2 text-white transition-colors hover:bg-black/70"
+              @click.stop="showPreviousImage"
+            >
+              <Icon name="chevronLeft" size="lg" :stroke-width="2" />
+            </button>
             <img
-              :src="previewImageUrl"
+              :src="previewImage.url"
               alt="preview"
               class="max-h-[90vh] max-w-[90vw] rounded-lg object-contain shadow-2xl"
             />
+            <button
+              v-if="generatedImages.length > 1"
+              class="absolute right-4 top-1/2 -translate-y-1/2 rounded-full bg-black/50 p-2 text-white transition-colors hover:bg-black/70"
+              @click.stop="showNextImage"
+            >
+              <Icon name="chevronRight" size="lg" :stroke-width="2" />
+            </button>
+            <div class="absolute bottom-4 rounded-full bg-black/60 px-3 py-1 text-xs text-white">
+              {{ previewImageIndex + 1 }}/{{ generatedImages.length }}
+            </div>
           </div>
         </Transition>
       </Teleport>
@@ -291,7 +320,8 @@ const openAITestModeOptions = computed(() => [
   { value: 'default', label: t('admin.accounts.openai.testModeDefault') },
   { value: 'compact', label: t('admin.accounts.openai.testModeCompact') }
 ])
-const previewImageUrl = ref('')
+const previewImageIndex = ref(-1)
+const previewImage = computed(() => previewImageIndex.value >= 0 ? generatedImages.value[previewImageIndex.value] : null)
 const prioritizedGeminiModels = ['gemini-3.1-flash-image', 'gemini-2.5-flash-image', 'gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-3-flash-preview', 'gemini-3-pro-preview', 'gemini-2.0-flash']
 const supportsGeminiImageTest = computed(() => {
   const modelID = selectedModelId.value.toLowerCase()
@@ -376,7 +406,7 @@ const resetState = () => {
   streamingContent.value = ''
   errorMessage.value = ''
   generatedImages.value = []
-  previewImageUrl.value = ''
+  previewImageIndex.value = -1
 }
 
 const handleClose = () => {
@@ -401,6 +431,25 @@ const scrollToBottom = async () => {
   if (terminalRef.value) {
     terminalRef.value.scrollTop = terminalRef.value.scrollHeight
   }
+}
+
+const openImagePreview = (index: number) => {
+  if (index < 0 || index >= generatedImages.value.length) return
+  previewImageIndex.value = index
+}
+
+const closeImagePreview = () => {
+  previewImageIndex.value = -1
+}
+
+const showPreviousImage = () => {
+  if (generatedImages.value.length === 0) return
+  previewImageIndex.value = (previewImageIndex.value - 1 + generatedImages.value.length) % generatedImages.value.length
+}
+
+const showNextImage = () => {
+  if (generatedImages.value.length === 0) return
+  previewImageIndex.value = (previewImageIndex.value + 1) % generatedImages.value.length
 }
 
 const startTest = async () => {

@@ -36,6 +36,7 @@ type OpenAIGatewayHandler struct {
 	contentModerationService *service.ContentModerationService
 	concurrencyHelper        *ConcurrencyHelper
 	imageLimiter             *imageConcurrencyLimiter
+	imageRequestCache        *openAIImagesRequestCache
 	maxAccountSwitches       int
 	cfg                      *config.Config
 }
@@ -146,6 +147,7 @@ func NewOpenAIGatewayHandler(
 		contentModerationService: contentModerationService,
 		concurrencyHelper:        NewConcurrencyHelper(concurrencyService, SSEPingFormatComment, pingInterval),
 		imageLimiter:             &imageConcurrencyLimiter{},
+		imageRequestCache:        newOpenAIImagesRequestCache(),
 		maxAccountSwitches:       maxAccountSwitches,
 		cfg:                      cfg,
 	}
