@@ -1179,6 +1179,60 @@ func TestOpenAIGatewayServiceForwardImages_AIAIAPIKeyEditUsesGenerationImageURLs
 	require.Equal(t, "YWlhaTE=", gjson.Get(rec.Body.String(), "data.0.b64_json").String())
 }
 
+func TestOpenAIGatewayServiceForwardImages_AIAIURLResponseNormalizedToBase64(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	imageBytes := openAIImageTestPNGBytes(t)
+	assetServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/asset", r.URL.Path)
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(imageBytes)
+	}))
+	defer assetServer.Close()
+
+	body := []byte(`{"model":"gpt-image-2","prompt":"draw a cat","response_format":"b64_json"}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = req
+
+	upstream := &httpUpstreamRecorder{
+		resp: &http.Response{
+			StatusCode: http.StatusOK,
+			Header: http.Header{
+				"Content-Type": []string{"application/json"},
+				"X-Request-Id": []string{"req_img_aiai_url"},
+			},
+			Body: io.NopCloser(strings.NewReader(fmt.Sprintf(`{"created":1710000010,"data":[{"url":%q,"revised_prompt":"draw a cat"}]}`, assetServer.URL+"/asset"))),
+		},
+	}
+	svc := &OpenAIGatewayService{
+		cfg:          &config.Config{},
+		httpUpstream: upstream,
+	}
+	parsed, err := svc.ParseOpenAIImagesRequest(c, body)
+	require.NoError(t, err)
+
+	account := &Account{
+		ID:       12,
+		Name:     "aiai-gpt-image-2",
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key":  "test-aiai-key",
+			"base_url": "https://aiai.ac/api/v1",
+		},
+	}
+
+	result, err := svc.ForwardImages(context.Background(), c, account, body, parsed, "")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 1, result.ImageCount)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, base64.StdEncoding.EncodeToString(imageBytes), gjson.Get(rec.Body.String(), "data.0.b64_json").String())
+	require.False(t, gjson.Get(rec.Body.String(), "data.0.url").Exists())
+}
+
 func TestOpenAIGatewayServiceForwardImages_OAuthStreamingTransformsEvents(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	body := []byte(`{"model":"gpt-image-2","prompt":"draw a cat","stream":true,"response_format":"url"}`)

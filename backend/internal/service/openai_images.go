@@ -783,7 +783,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 			ImageOutputSizes: imageOutputSizes,
 		}, nil
 	} else {
-		nonStreamUsage, nonStreamCount, nonStreamSizes, err := s.handleOpenAIImagesNonStreamingResponse(resp, c)
+		nonStreamUsage, nonStreamCount, nonStreamSizes, err := s.handleOpenAIImagesNonStreamingResponse(resp, c, parsed.ResponseFormat)
 		if err != nil {
 			return nil, err
 		}
@@ -997,10 +997,17 @@ func cloneMultipartHeader(src textproto.MIMEHeader) textproto.MIMEHeader {
 	return dst
 }
 
-func (s *OpenAIGatewayService) handleOpenAIImagesNonStreamingResponse(resp *http.Response, c *gin.Context) (OpenAIUsage, int, []string, error) {
+func (s *OpenAIGatewayService) handleOpenAIImagesNonStreamingResponse(resp *http.Response, c *gin.Context, responseFormat string) (OpenAIUsage, int, []string, error) {
 	body, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
 	if err != nil {
 		return OpenAIUsage{}, 0, nil, err
+	}
+	if shouldNormalizeOpenAIImagesResponseToBase64(responseFormat, body) {
+		if normalizedBody, normalizeErr := s.normalizeOpenAIImagesResponseURLsToBase64(c.Request.Context(), c.Request.Header, body); normalizeErr != nil {
+			return OpenAIUsage{}, 0, nil, normalizeErr
+		} else if len(normalizedBody) > 0 {
+			body = normalizedBody
+		}
 	}
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	contentType := "application/json"
@@ -1013,6 +1020,59 @@ func (s *OpenAIGatewayService) handleOpenAIImagesNonStreamingResponse(resp *http
 
 	usage, _ := extractOpenAIUsageFromJSONBytes(body)
 	return usage, extractOpenAIImageCountFromJSONBytes(body), collectOpenAIResponseImageOutputSizesFromJSONBytes(body), nil
+}
+
+func shouldNormalizeOpenAIImagesResponseToBase64(responseFormat string, body []byte) bool {
+	if strings.ToLower(strings.TrimSpace(responseFormat)) != "b64_json" || len(body) == 0 || !gjson.ValidBytes(body) {
+		return false
+	}
+	items := collectOpenAIImagePointers(body)
+	if len(items) == 0 {
+		return false
+	}
+	for _, item := range items {
+		if normalizeOpenAIImageBase64(item.B64JSON) == "" {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *OpenAIGatewayService) normalizeOpenAIImagesResponseURLsToBase64(ctx context.Context, headers http.Header, body []byte) ([]byte, error) {
+	items := collectOpenAIImagePointers(body)
+	if len(items) == 0 {
+		return body, nil
+	}
+	client := req.C()
+	errorBodyReadLimit := openAIUpstreamErrorBodyReadLimitForConfig(s.cfg)
+	rewritten := body
+	for i, item := range items {
+		if normalizeOpenAIImageBase64(item.B64JSON) != "" {
+			continue
+		}
+		imageBytes, err := resolveOpenAIImageBytes(ctx, client, headers, "", item, errorBodyReadLimit)
+		if err != nil {
+			return nil, err
+		}
+		b64 := base64.StdEncoding.EncodeToString(imageBytes)
+		if path := item.JSONPath; path != "" {
+			var setErr error
+			rewritten, setErr = sjson.SetBytes(rewritten, path+".b64_json", b64)
+			if setErr != nil {
+				return nil, setErr
+			}
+			rewritten, _ = sjson.DeleteBytes(rewritten, path+".url")
+			rewritten, _ = sjson.DeleteBytes(rewritten, path+".image_url")
+			rewritten, _ = sjson.DeleteBytes(rewritten, path+".download_url")
+			continue
+		}
+		var setErr error
+		rewritten, setErr = sjson.SetBytes(rewritten, fmt.Sprintf("data.%d.b64_json", i), b64)
+		if setErr != nil {
+			return nil, setErr
+		}
+	}
+	return rewritten, nil
 }
 
 func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
@@ -1287,6 +1347,7 @@ type openAIImagePointerInfo struct {
 	B64JSON     string
 	MimeType    string
 	Prompt      string
+	JSONPath    string
 }
 
 func collectOpenAIImagePointers(body []byte) []openAIImagePointerInfo {
@@ -1468,11 +1529,11 @@ func collectOpenAIImageInlineAssets(body []byte, fallbackPrompt string) []openAI
 		return nil
 	}
 	var out []openAIImagePointerInfo
-	walkOpenAIImageInlineAssets(decoded, strings.TrimSpace(fallbackPrompt), &out)
+	walkOpenAIImageInlineAssets(decoded, strings.TrimSpace(fallbackPrompt), nil, &out)
 	return out
 }
 
-func walkOpenAIImageInlineAssets(node any, prompt string, out *[]openAIImagePointerInfo) {
+func walkOpenAIImageInlineAssets(node any, prompt string, path []string, out *[]openAIImagePointerInfo) {
 	switch value := node.(type) {
 	case map[string]any:
 		localPrompt := prompt
@@ -1488,22 +1549,40 @@ func walkOpenAIImageInlineAssets(node any, prompt string, out *[]openAIImagePoin
 			DownloadURL: firstNonEmptyString(value["download_url"], value["url"], value["image_url"]),
 			B64JSON:     firstNonEmptyString(value["b64_json"], value["base64"], value["image_base64"]),
 			MimeType:    firstNonEmptyString(value["mime_type"], value["mimeType"], value["content_type"]),
+			JSONPath:    currentJSONPath(path),
 		}
 		switch {
 		case strings.HasPrefix(strings.TrimSpace(item.Pointer), "file-service://"),
 			strings.HasPrefix(strings.TrimSpace(item.Pointer), "sediment://"),
 			isLikelyOpenAIImageDownloadURL(item.DownloadURL),
+			isOpenAIImagesDataItemPath(item.JSONPath) && isHTTPURL(item.DownloadURL),
 			normalizeOpenAIImageBase64(item.B64JSON) != "":
 			*out = append(*out, item)
 		}
-		for _, child := range value {
-			walkOpenAIImageInlineAssets(child, localPrompt, out)
+		for key, child := range value {
+			walkOpenAIImageInlineAssets(child, localPrompt, append(path, key), out)
 		}
 	case []any:
-		for _, child := range value {
-			walkOpenAIImageInlineAssets(child, prompt, out)
+		for idx, child := range value {
+			walkOpenAIImageInlineAssets(child, prompt, append(path, strconv.Itoa(idx)), out)
 		}
 	}
+}
+
+func currentJSONPath(path []string) string {
+	if len(path) == 0 {
+		return ""
+	}
+	return strings.Join(path, ".")
+}
+
+func isOpenAIImagesDataItemPath(path string) bool {
+	parts := strings.Split(strings.TrimSpace(path), ".")
+	if len(parts) < 2 || parts[0] != "data" {
+		return false
+	}
+	_, err := strconv.Atoi(parts[1])
+	return err == nil
 }
 
 func firstNonEmptyString(values ...any) string {
@@ -1523,7 +1602,7 @@ func isLikelyOpenAIImageDownloadURL(raw string) bool {
 	if strings.HasPrefix(strings.ToLower(raw), "data:image/") {
 		return true
 	}
-	if !strings.HasPrefix(strings.ToLower(raw), "http://") && !strings.HasPrefix(strings.ToLower(raw), "https://") {
+	if !isHTTPURL(raw) {
 		return false
 	}
 	lower := strings.ToLower(raw)
@@ -1532,6 +1611,11 @@ func isLikelyOpenAIImageDownloadURL(raw string) bool {
 		strings.Contains(lower, ".jpg") ||
 		strings.Contains(lower, ".jpeg") ||
 		strings.Contains(lower, ".webp")
+}
+
+func isHTTPURL(raw string) bool {
+	raw = strings.ToLower(strings.TrimSpace(raw))
+	return strings.HasPrefix(raw, "http://") || strings.HasPrefix(raw, "https://")
 }
 
 func fetchOpenAIImageDownloadURL(
