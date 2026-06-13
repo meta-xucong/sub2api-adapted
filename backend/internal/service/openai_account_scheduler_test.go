@@ -377,6 +377,73 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_DefaultDisabled_Require
 	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
 }
 
+func TestOpenAIGatewayService_SelectAccountWithSchedulerForImages_UsesPriorityOrder(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	ctx := context.Background()
+	groupID := int64(101081)
+	accounts := []Account{
+		{
+			ID:          36101,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    1,
+			Credentials: map[string]any{
+				"api_key":  "primary-image-key",
+				"base_url": "https://image-primary.example/v1",
+				"model_mapping": map[string]any{
+					"gpt-image-2": "gpt-image-2",
+				},
+			},
+		},
+		{
+			ID:          36102,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeOAuth,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    2,
+			Credentials: map[string]any{
+				"model_mapping": map[string]any{
+					"gpt-image-2": "gpt-image-2",
+				},
+			},
+		},
+	}
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.LBTopK = 2
+	cfg.Gateway.Scheduling.LoadBatchEnabled = false
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:              &schedulerTestGatewayCache{},
+		cfg:                cfg,
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+
+	for i := 0; i < 20; i++ {
+		selection, decision, err := svc.SelectAccountWithSchedulerForImages(
+			ctx,
+			&groupID,
+			"",
+			"gpt-image-2",
+			nil,
+			OpenAIImagesCapabilityNative,
+		)
+		require.NoError(t, err)
+		require.NotNil(t, selection)
+		require.NotNil(t, selection.Account)
+		require.Equal(t, int64(36101), selection.Account.ID)
+		require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+		if selection.ReleaseFunc != nil {
+			selection.ReleaseFunc()
+		}
+	}
+}
+
 func TestOpenAIGatewayService_SelectAccountWithScheduler_DefaultDisabled_RequiredWSV2_NoAvailableAccount(t *testing.T) {
 	resetOpenAIAdvancedSchedulerSettingCacheForTest()
 
