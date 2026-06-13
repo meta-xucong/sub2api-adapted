@@ -873,8 +873,11 @@ func adaptAIAIImagesEditToGeneration(account *Account, parsed *OpenAIImagesReque
 	if !isAIAIImageAccount(account) || parsed == nil || !parsed.IsEdits() {
 		return nil, "", "", false, nil
 	}
-	if parsed.HasMask || parsed.MaskUpload != nil || strings.TrimSpace(parsed.MaskImageURL) != "" {
-		return nil, "", "", false, nil
+	if parsed.HasMask || parsed.MaskUpload != nil || strings.TrimSpace(parsed.MaskImageURL) != "" || len(parsed.InputImageURLs) > 0 || len(parsed.Uploads) > 0 {
+		return nil, "", "", false, &UpstreamFailoverError{
+			StatusCode:   http.StatusBadRequest,
+			ResponseBody: []byte(`{"error":{"message":"AIAI GPT Image 2 ignores reference images on edits; fail over to a native image-edit account","type":"invalid_request_error","code":"unsupported_reference_image"}}`),
+		}
 	}
 
 	imageURLs := make([]string, 0, len(parsed.InputImageURLs)+len(parsed.Uploads))

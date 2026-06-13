@@ -1110,7 +1110,7 @@ func TestOpenAIGatewayServiceForwardImages_APIKeyEditUsesConfiguredV1BaseURL(t *
 	require.Equal(t, "ZWRpdGVk", gjson.Get(rec.Body.String(), "data.0.b64_json").String())
 }
 
-func TestOpenAIGatewayServiceForwardImages_AIAIAPIKeyEditUsesGenerationImageURLs(t *testing.T) {
+func TestOpenAIGatewayServiceForwardImages_AIAIAPIKeyEditFailsOverForReferenceImages(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	var body bytes.Buffer
@@ -1160,23 +1160,12 @@ func TestOpenAIGatewayServiceForwardImages_AIAIAPIKeyEditUsesGenerationImageURLs
 	}
 
 	result, err := svc.ForwardImages(context.Background(), c, account, body.Bytes(), parsed, "")
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	require.Equal(t, 2, result.ImageCount)
-
-	require.NotNil(t, upstream.lastReq)
-	require.Equal(t, "https://aiai.ac/api/v1/images/generations", upstream.lastReq.URL.String())
-	require.Equal(t, "Bearer test-aiai-key", upstream.lastReq.Header.Get("Authorization"))
-	require.Equal(t, "application/json", upstream.lastReq.Header.Get("Content-Type"))
-	require.Equal(t, "gpt-image-2", gjson.GetBytes(upstream.lastBody, "model").String())
-	require.Equal(t, "keep the reference pose", gjson.GetBytes(upstream.lastBody, "prompt").String())
-	require.Equal(t, int64(2), gjson.GetBytes(upstream.lastBody, "n").Int())
-	require.Equal(t, "1024x1024", gjson.GetBytes(upstream.lastBody, "size").String())
-	require.Equal(t, "b64_json", gjson.GetBytes(upstream.lastBody, "response_format").String())
-	imageURL := gjson.GetBytes(upstream.lastBody, "image_urls.0").String()
-	require.True(t, strings.HasPrefix(imageURL, "data:image/png;base64,"), imageURL)
-	require.Equal(t, http.StatusOK, rec.Code)
-	require.Equal(t, "YWlhaTE=", gjson.Get(rec.Body.String(), "data.0.b64_json").String())
+	require.Nil(t, result)
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Equal(t, http.StatusBadRequest, failoverErr.StatusCode)
+	require.Contains(t, string(failoverErr.ResponseBody), "unsupported_reference_image")
+	require.Nil(t, upstream.lastReq)
 }
 
 func TestOpenAIGatewayServiceForwardImages_AIAIURLResponseNormalizedToBase64(t *testing.T) {
