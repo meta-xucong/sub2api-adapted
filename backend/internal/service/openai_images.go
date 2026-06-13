@@ -40,6 +40,8 @@ const (
 	openAIImageMaxDownloadBytes    = 20 << 20 // 20MB per image download
 	openAIImageMaxUploadPartSize   = 20 << 20 // 20MB per multipart upload part
 	openAIImagesResponsesMainModel = "gpt-5.4-mini"
+	aiaiImagesPollInterval         = 5 * time.Second
+	aiaiImagesPollTimeout          = 3 * time.Minute
 )
 
 type OpenAIImagesCapability string
@@ -661,12 +663,14 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 	}
 	upstreamParsed := *parsed
 	upstreamParsed.Model = upstreamModel
-	if adaptedBody, adaptedContentType, adaptedEndpoint, adapted, adaptErr := adaptAIAIImagesEditToGeneration(account, &upstreamParsed); adaptErr != nil {
+	aiaiAsync := false
+	if adaptedBody, adaptedContentType, adaptedEndpoint, adapted, async, adaptErr := adaptAIAIImagesEditToGeneration(account, &upstreamParsed); adaptErr != nil {
 		return nil, adaptErr
 	} else if adapted {
 		forwardBody = adaptedBody
 		forwardContentType = adaptedContentType
 		upstreamParsed.Endpoint = adaptedEndpoint
+		aiaiAsync = async
 	}
 	if adaptedBody, adaptedContentType, adaptedEndpoint, adapted, adaptErr := adaptVolcengineArkImagesToGeneration(account, &upstreamParsed); adaptErr != nil {
 		return nil, adaptErr
@@ -737,6 +741,14 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 			}
 		}
 		return s.handleOpenAIImagesErrorResponse(upstreamCtx, resp, c, account, upstreamModel)
+	}
+	if aiaiAsync {
+		polledResp, pollErr := s.pollAIAIImagesAsyncResponse(upstreamCtx, account, resp, token)
+		_ = resp.Body.Close()
+		if pollErr != nil {
+			return nil, pollErr
+		}
+		resp = polledResp
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -861,6 +873,114 @@ func buildOpenAIImagesURL(base string, endpoint string) string {
 	return buildOpenAIEndpointURL(base, endpoint)
 }
 
+func (s *OpenAIGatewayService) pollAIAIImagesAsyncResponse(
+	ctx context.Context,
+	account *Account,
+	submitResp *http.Response,
+	token string,
+) (*http.Response, error) {
+	if submitResp == nil {
+		return nil, fmt.Errorf("aiai image async response missing")
+	}
+	body, err := io.ReadAll(submitResp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read AIAI image async response: %w", err)
+	}
+	if submitResp.StatusCode >= 400 {
+		return &http.Response{
+			StatusCode: submitResp.StatusCode,
+			Header:     submitResp.Header.Clone(),
+			Body:       io.NopCloser(bytes.NewReader(body)),
+		}, nil
+	}
+	taskID := strings.TrimSpace(gjson.GetBytes(body, "task_id").String())
+	if taskID == "" {
+		return &http.Response{
+			StatusCode: submitResp.StatusCode,
+			Header:     submitResp.Header.Clone(),
+			Body:       io.NopCloser(bytes.NewReader(body)),
+		}, nil
+	}
+	baseURL := strings.TrimRight(strings.TrimSpace(account.GetOpenAIBaseURL()), "/")
+	if baseURL == "" {
+		baseURL = "https://aiai.ac/api/v1"
+	}
+	pollURL := baseURL + "/images/" + taskID
+	proxyURL := ""
+	if account.ProxyID != nil && account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+	deadline := time.Now().Add(aiaiImagesPollTimeout)
+	var lastBody []byte
+	var lastHeader http.Header
+	var lastStatus int
+	for attempt := 0; ; attempt++ {
+		if attempt > 0 {
+			wait := aiaiImagesPollInterval
+			if remaining := time.Until(deadline); remaining < wait {
+				wait = remaining
+			}
+			if wait <= 0 {
+				break
+			}
+			timer := time.NewTimer(wait)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, ctx.Err()
+			case <-timer.C:
+			}
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, pollURL, nil)
+		if err != nil {
+			return nil, err
+		}
+		req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := s.httpUpstream.Do(req, proxyURL, account.ID, account.Concurrency)
+		if err != nil {
+			return nil, fmt.Errorf("poll AIAI image task failed: %w", err)
+		}
+		lastStatus = resp.StatusCode
+		lastHeader = resp.Header.Clone()
+		lastBody, err = io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("read AIAI image task response: %w", err)
+		}
+		status := strings.ToLower(strings.TrimSpace(gjson.GetBytes(lastBody, "task_status").String()))
+		if status == "failed" || status == "error" {
+			return nil, &UpstreamFailoverError{
+				StatusCode:   http.StatusBadGateway,
+				ResponseBody: lastBody,
+			}
+		}
+		if resp.StatusCode >= 400 || status == "succeed" || status == "completed" {
+			return &http.Response{
+				StatusCode: resp.StatusCode,
+				Header:     lastHeader,
+				Body:       io.NopCloser(bytes.NewReader(lastBody)),
+			}, nil
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+	}
+	if lastStatus == 0 {
+		lastStatus = http.StatusGatewayTimeout
+	}
+	if lastHeader == nil {
+		lastHeader = http.Header{"Content-Type": []string{"application/json"}}
+	}
+	if len(lastBody) == 0 {
+		lastBody = []byte(`{"error":{"message":"AIAI image task timed out","type":"server_error","code":"aiai_image_timeout"}}`)
+	}
+	return nil, &UpstreamFailoverError{
+		StatusCode:   http.StatusGatewayTimeout,
+		ResponseBody: lastBody,
+	}
+}
+
 func isAIAIImageAccount(account *Account) bool {
 	if account == nil || !account.IsOpenAIApiKey() {
 		return false
@@ -869,14 +989,14 @@ func isAIAIImageAccount(account *Account) bool {
 	return strings.Contains(baseURL, "aiai.ac")
 }
 
-func adaptAIAIImagesEditToGeneration(account *Account, parsed *OpenAIImagesRequest) ([]byte, string, string, bool, error) {
-	if !isAIAIImageAccount(account) || parsed == nil || !parsed.IsEdits() {
-		return nil, "", "", false, nil
+func adaptAIAIImagesEditToGeneration(account *Account, parsed *OpenAIImagesRequest) ([]byte, string, string, bool, bool, error) {
+	if !isAIAIImageAccount(account) || parsed == nil || (!parsed.IsEdits() && len(parsed.InputImageURLs) == 0 && len(parsed.Uploads) == 0) {
+		return nil, "", "", false, false, nil
 	}
-	if parsed.HasMask || parsed.MaskUpload != nil || strings.TrimSpace(parsed.MaskImageURL) != "" || len(parsed.InputImageURLs) > 0 || len(parsed.Uploads) > 0 {
-		return nil, "", "", false, &UpstreamFailoverError{
+	if parsed.HasMask || parsed.MaskUpload != nil || strings.TrimSpace(parsed.MaskImageURL) != "" {
+		return nil, "", "", false, false, &UpstreamFailoverError{
 			StatusCode:   http.StatusBadRequest,
-			ResponseBody: []byte(`{"error":{"message":"AIAI GPT Image 2 ignores reference images on edits; fail over to a native image-edit account","type":"invalid_request_error","code":"unsupported_reference_image"}}`),
+			ResponseBody: []byte(`{"error":{"message":"AIAI GPT Image 2 does not support mask edits; fail over to a native image-edit account","type":"invalid_request_error","code":"unsupported_mask_edit"}}`),
 		}
 	}
 
@@ -889,20 +1009,20 @@ func adaptAIAIImagesEditToGeneration(account *Account, parsed *OpenAIImagesReque
 	for _, upload := range parsed.Uploads {
 		dataURL, err := openAIImageUploadToDataURL(upload)
 		if err != nil {
-			return nil, "", "", false, err
+			return nil, "", "", false, false, err
 		}
 		imageURLs = append(imageURLs, dataURL)
 	}
 	if len(imageURLs) == 0 {
-		return nil, "", "", false, nil
+		return nil, "", "", false, false, nil
 	}
 
-	payload := []byte(`{"model":"","prompt":"","image_urls":[]}`)
+	payload := []byte(`{"model":"","prompt":"","image":[],"async":true}`)
 	payload, _ = sjson.SetBytes(payload, "model", strings.TrimSpace(parsed.Model))
 	payload, _ = sjson.SetBytes(payload, "prompt", strings.TrimSpace(parsed.Prompt))
-	payload, _ = sjson.SetRawBytes(payload, "image_urls", []byte(`[]`))
+	payload, _ = sjson.SetRawBytes(payload, "image", []byte(`[]`))
 	for _, imageURL := range imageURLs {
-		payload, _ = sjson.SetBytes(payload, "image_urls.-1", imageURL)
+		payload, _ = sjson.SetBytes(payload, "image.-1", imageURL)
 	}
 	if parsed.N > 0 {
 		payload, _ = sjson.SetBytes(payload, "n", parsed.N)
@@ -910,8 +1030,15 @@ func adaptAIAIImagesEditToGeneration(account *Account, parsed *OpenAIImagesReque
 	if size := strings.TrimSpace(parsed.Size); size != "" {
 		payload, _ = sjson.SetBytes(payload, "size", size)
 	}
-	payload, _ = sjson.SetBytes(payload, "response_format", "b64_json")
-	return payload, "application/json", openAIImagesGenerationsEndpoint, true, nil
+	if responseFormat := strings.TrimSpace(parsed.ResponseFormat); responseFormat != "" {
+		payload, _ = sjson.SetBytes(payload, "response_format", responseFormat)
+	} else {
+		payload, _ = sjson.SetBytes(payload, "response_format", "b64_json")
+	}
+	if outputFormat := strings.TrimSpace(parsed.OutputFormat); outputFormat != "" {
+		payload, _ = sjson.SetBytes(payload, "output_format", outputFormat)
+	}
+	return payload, "application/json", openAIImagesGenerationsEndpoint, true, true, nil
 }
 
 func rewriteOpenAIImagesModel(body []byte, contentType string, model string) ([]byte, string, error) {

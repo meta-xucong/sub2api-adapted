@@ -1110,7 +1110,7 @@ func TestOpenAIGatewayServiceForwardImages_APIKeyEditUsesConfiguredV1BaseURL(t *
 	require.Equal(t, "ZWRpdGVk", gjson.Get(rec.Body.String(), "data.0.b64_json").String())
 }
 
-func TestOpenAIGatewayServiceForwardImages_AIAIAPIKeyEditFailsOverForReferenceImages(t *testing.T) {
+func TestOpenAIGatewayServiceForwardImages_AIAIAPIKeyEditUsesAsyncImageField(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	var body bytes.Buffer
@@ -1132,13 +1132,23 @@ func TestOpenAIGatewayServiceForwardImages_AIAIAPIKeyEditFailsOverForReferenceIm
 	c.Request = req
 
 	upstream := &httpUpstreamRecorder{
-		resp: &http.Response{
-			StatusCode: http.StatusOK,
-			Header: http.Header{
-				"Content-Type": []string{"application/json"},
-				"X-Request-Id": []string{"req_img_aiai_edit"},
+		responses: []*http.Response{
+			{
+				StatusCode: http.StatusOK,
+				Header: http.Header{
+					"Content-Type": []string{"application/json"},
+					"X-Request-Id": []string{"req_img_aiai_submit"},
+				},
+				Body: io.NopCloser(strings.NewReader(`{"task_id":"task_aiai_edit"}`)),
 			},
-			Body: io.NopCloser(strings.NewReader(`{"created":1710000009,"data":[{"b64_json":"YWlhaTE="},{"b64_json":"YWlhaTI="}]}`)),
+			{
+				StatusCode: http.StatusOK,
+				Header: http.Header{
+					"Content-Type": []string{"application/json"},
+					"X-Request-Id": []string{"req_img_aiai_poll"},
+				},
+				Body: io.NopCloser(strings.NewReader(`{"created":1710000009,"task_status":"succeed","data":[{"b64_json":"YWlhaTE="},{"b64_json":"YWlhaTI="}]}`)),
+			},
 		},
 	}
 	svc := &OpenAIGatewayService{
@@ -1160,12 +1170,18 @@ func TestOpenAIGatewayServiceForwardImages_AIAIAPIKeyEditFailsOverForReferenceIm
 	}
 
 	result, err := svc.ForwardImages(context.Background(), c, account, body.Bytes(), parsed, "")
-	require.Nil(t, result)
-	var failoverErr *UpstreamFailoverError
-	require.ErrorAs(t, err, &failoverErr)
-	require.Equal(t, http.StatusBadRequest, failoverErr.StatusCode)
-	require.Contains(t, string(failoverErr.ResponseBody), "unsupported_reference_image")
-	require.Nil(t, upstream.lastReq)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 2, result.ImageCount)
+	require.Len(t, upstream.requests, 2)
+	require.Equal(t, "https://aiai.ac/api/v1/images/generations", upstream.requests[0].URL.String())
+	require.Equal(t, "https://aiai.ac/api/v1/images/task_aiai_edit", upstream.requests[1].URL.String())
+	require.Equal(t, "gpt-image-2", gjson.GetBytes(upstream.bodies[0], "model").String())
+	require.Equal(t, "keep the reference pose", gjson.GetBytes(upstream.bodies[0], "prompt").String())
+	require.True(t, gjson.GetBytes(upstream.bodies[0], "async").Bool())
+	require.True(t, strings.HasPrefix(gjson.GetBytes(upstream.bodies[0], "image.0").String(), "data:image/png;base64,"))
+	require.False(t, gjson.GetBytes(upstream.bodies[0], "image_urls").Exists())
+	require.Equal(t, "YWlhaTE=", gjson.Get(rec.Body.String(), "data.0.b64_json").String())
 }
 
 func TestOpenAIGatewayServiceForwardImages_AIAIURLResponseNormalizedToBase64(t *testing.T) {
