@@ -1172,6 +1172,7 @@ func TestOpenAIGatewayServiceForwardImages_AIAIAPIKeyEditUsesGenerationImageURLs
 	require.Equal(t, "keep the reference pose", gjson.GetBytes(upstream.lastBody, "prompt").String())
 	require.Equal(t, int64(2), gjson.GetBytes(upstream.lastBody, "n").Int())
 	require.Equal(t, "1024x1024", gjson.GetBytes(upstream.lastBody, "size").String())
+	require.Equal(t, "b64_json", gjson.GetBytes(upstream.lastBody, "response_format").String())
 	imageURL := gjson.GetBytes(upstream.lastBody, "image_urls.0").String()
 	require.True(t, strings.HasPrefix(imageURL, "data:image/png;base64,"), imageURL)
 	require.Equal(t, http.StatusOK, rec.Code)

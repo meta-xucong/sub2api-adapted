@@ -907,9 +907,7 @@ func adaptAIAIImagesEditToGeneration(account *Account, parsed *OpenAIImagesReque
 	if size := strings.TrimSpace(parsed.Size); size != "" {
 		payload, _ = sjson.SetBytes(payload, "size", size)
 	}
-	if responseFormat := strings.TrimSpace(parsed.ResponseFormat); responseFormat != "" {
-		payload, _ = sjson.SetBytes(payload, "response_format", responseFormat)
-	}
+	payload, _ = sjson.SetBytes(payload, "response_format", "b64_json")
 	return payload, "application/json", openAIImagesGenerationsEndpoint, true, nil
 }
 
