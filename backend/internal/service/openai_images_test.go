@@ -1110,6 +1110,74 @@ func TestOpenAIGatewayServiceForwardImages_APIKeyEditUsesConfiguredV1BaseURL(t *
 	require.Equal(t, "ZWRpdGVk", gjson.Get(rec.Body.String(), "data.0.b64_json").String())
 }
 
+func TestOpenAIGatewayServiceForwardImages_AIAIAPIKeyEditUsesGenerationImageURLs(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	require.NoError(t, writer.WriteField("model", "gpt-image-2"))
+	require.NoError(t, writer.WriteField("prompt", "keep the reference pose"))
+	require.NoError(t, writer.WriteField("n", "2"))
+	require.NoError(t, writer.WriteField("size", "1024x1024"))
+	imagePart, err := writer.CreateFormFile("image", "reference.png")
+	require.NoError(t, err)
+	_, err = imagePart.Write(openAIImageTestPNGBytes(t))
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/edits", bytes.NewReader(body.Bytes()))
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = req
+
+	upstream := &httpUpstreamRecorder{
+		resp: &http.Response{
+			StatusCode: http.StatusOK,
+			Header: http.Header{
+				"Content-Type": []string{"application/json"},
+				"X-Request-Id": []string{"req_img_aiai_edit"},
+			},
+			Body: io.NopCloser(strings.NewReader(`{"created":1710000009,"data":[{"b64_json":"YWlhaTE="},{"b64_json":"YWlhaTI="}]}`)),
+		},
+	}
+	svc := &OpenAIGatewayService{
+		cfg:          &config.Config{},
+		httpUpstream: upstream,
+	}
+	parsed, err := svc.ParseOpenAIImagesRequest(c, body.Bytes())
+	require.NoError(t, err)
+
+	account := &Account{
+		ID:       12,
+		Name:     "aiai-gpt-image-2",
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key":  "test-aiai-key",
+			"base_url": "https://aiai.ac/api/v1",
+		},
+	}
+
+	result, err := svc.ForwardImages(context.Background(), c, account, body.Bytes(), parsed, "")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 2, result.ImageCount)
+
+	require.NotNil(t, upstream.lastReq)
+	require.Equal(t, "https://aiai.ac/api/v1/images/generations", upstream.lastReq.URL.String())
+	require.Equal(t, "Bearer test-aiai-key", upstream.lastReq.Header.Get("Authorization"))
+	require.Equal(t, "application/json", upstream.lastReq.Header.Get("Content-Type"))
+	require.Equal(t, "gpt-image-2", gjson.GetBytes(upstream.lastBody, "model").String())
+	require.Equal(t, "keep the reference pose", gjson.GetBytes(upstream.lastBody, "prompt").String())
+	require.Equal(t, int64(2), gjson.GetBytes(upstream.lastBody, "n").Int())
+	require.Equal(t, "1024x1024", gjson.GetBytes(upstream.lastBody, "size").String())
+	imageURL := gjson.GetBytes(upstream.lastBody, "image_urls.0").String()
+	require.True(t, strings.HasPrefix(imageURL, "data:image/png;base64,"), imageURL)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, "YWlhaTE=", gjson.Get(rec.Body.String(), "data.0.b64_json").String())
+}
+
 func TestOpenAIGatewayServiceForwardImages_OAuthStreamingTransformsEvents(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	body := []byte(`{"model":"gpt-image-2","prompt":"draw a cat","stream":true,"response_format":"url"}`)

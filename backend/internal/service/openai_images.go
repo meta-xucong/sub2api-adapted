@@ -661,6 +661,13 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 	}
 	upstreamParsed := *parsed
 	upstreamParsed.Model = upstreamModel
+	if adaptedBody, adaptedContentType, adaptedEndpoint, adapted, adaptErr := adaptAIAIImagesEditToGeneration(account, &upstreamParsed); adaptErr != nil {
+		return nil, adaptErr
+	} else if adapted {
+		forwardBody = adaptedBody
+		forwardContentType = adaptedContentType
+		upstreamParsed.Endpoint = adaptedEndpoint
+	}
 	forwardBody, forwardContentType, err = sanitizeVolcengineArkImagesRequest(account, forwardBody, forwardContentType, &upstreamParsed)
 	if err != nil {
 		return nil, err
@@ -672,7 +679,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 	if err != nil {
 		return nil, err
 	}
-	upstreamReq, err := s.buildOpenAIImagesRequest(upstreamCtx, c, account, forwardBody, forwardContentType, token, parsed.Endpoint)
+	upstreamReq, err := s.buildOpenAIImagesRequest(upstreamCtx, c, account, forwardBody, forwardContentType, token, upstreamParsed.Endpoint)
 	if err != nil {
 		return nil, err
 	}
@@ -845,6 +852,58 @@ func (s *OpenAIGatewayService) buildOpenAIImagesRequest(
 
 func buildOpenAIImagesURL(base string, endpoint string) string {
 	return buildOpenAIEndpointURL(base, endpoint)
+}
+
+func isAIAIImageAccount(account *Account) bool {
+	if account == nil || !account.IsOpenAIApiKey() {
+		return false
+	}
+	baseURL := strings.ToLower(strings.TrimSpace(account.GetOpenAIBaseURL()))
+	return strings.Contains(baseURL, "aiai.ac")
+}
+
+func adaptAIAIImagesEditToGeneration(account *Account, parsed *OpenAIImagesRequest) ([]byte, string, string, bool, error) {
+	if !isAIAIImageAccount(account) || parsed == nil || !parsed.IsEdits() {
+		return nil, "", "", false, nil
+	}
+	if parsed.HasMask || parsed.MaskUpload != nil || strings.TrimSpace(parsed.MaskImageURL) != "" {
+		return nil, "", "", false, nil
+	}
+
+	imageURLs := make([]string, 0, len(parsed.InputImageURLs)+len(parsed.Uploads))
+	for _, imageURL := range parsed.InputImageURLs {
+		if trimmed := strings.TrimSpace(imageURL); trimmed != "" {
+			imageURLs = append(imageURLs, trimmed)
+		}
+	}
+	for _, upload := range parsed.Uploads {
+		dataURL, err := openAIImageUploadToDataURL(upload)
+		if err != nil {
+			return nil, "", "", false, err
+		}
+		imageURLs = append(imageURLs, dataURL)
+	}
+	if len(imageURLs) == 0 {
+		return nil, "", "", false, nil
+	}
+
+	payload := []byte(`{"model":"","prompt":"","image_urls":[]}`)
+	payload, _ = sjson.SetBytes(payload, "model", strings.TrimSpace(parsed.Model))
+	payload, _ = sjson.SetBytes(payload, "prompt", strings.TrimSpace(parsed.Prompt))
+	payload, _ = sjson.SetRawBytes(payload, "image_urls", []byte(`[]`))
+	for _, imageURL := range imageURLs {
+		payload, _ = sjson.SetBytes(payload, "image_urls.-1", imageURL)
+	}
+	if parsed.N > 0 {
+		payload, _ = sjson.SetBytes(payload, "n", parsed.N)
+	}
+	if size := strings.TrimSpace(parsed.Size); size != "" {
+		payload, _ = sjson.SetBytes(payload, "size", size)
+	}
+	if responseFormat := strings.TrimSpace(parsed.ResponseFormat); responseFormat != "" {
+		payload, _ = sjson.SetBytes(payload, "response_format", responseFormat)
+	}
+	return payload, "application/json", openAIImagesGenerationsEndpoint, true, nil
 }
 
 func rewriteOpenAIImagesModel(body []byte, contentType string, model string) ([]byte, string, error) {
