@@ -178,7 +178,10 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 		return
 	}
 
-	sessionHash := h.gatewayService.GenerateExplicitSessionHash(c, body)
+	// Image requests are stateless from an upstream routing perspective. Explicit
+	// session headers may be reused by clients such as image editors, but stale
+	// sticky bindings must not override the current image-provider priority.
+	sessionHash := ""
 	requestCtx := service.WithOpenAIImageGenerationIntent(c.Request.Context())
 
 	maxAccountSwitches := h.maxAccountSwitches
