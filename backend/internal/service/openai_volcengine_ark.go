@@ -26,8 +26,8 @@ func sanitizeVolcengineArkResponsesRequest(account *Account, req *apicompat.Resp
 		return false
 	}
 	changed := false
-	if req.Reasoning != nil && strings.TrimSpace(req.Reasoning.Summary) != "" {
-		req.Reasoning.Summary = ""
+	if req.Reasoning != nil {
+		req.Reasoning = nil
 		changed = true
 	}
 	if req.Text != nil {

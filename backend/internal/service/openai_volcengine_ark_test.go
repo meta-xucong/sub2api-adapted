@@ -37,8 +37,7 @@ func TestSanitizeVolcengineArkResponsesRequest(t *testing.T) {
 	changed := sanitizeVolcengineArkResponsesRequest(account, req)
 
 	require.True(t, changed)
-	require.Equal(t, "medium", req.Reasoning.Effort)
-	require.Empty(t, req.Reasoning.Summary)
+	require.Nil(t, req.Reasoning)
 	require.Nil(t, req.Text)
 }
 
