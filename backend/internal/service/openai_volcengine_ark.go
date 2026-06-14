@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
@@ -48,6 +49,113 @@ func configureVolcengineArkMessagesUpstream(c *gin.Context, account *Account, re
 		req.Model = restored
 	}
 	return true
+}
+
+func summarizeVolcengineArkAnthropicRequest(req *apicompat.AnthropicRequest) map[string]any {
+	summary := map[string]any{}
+	if req == nil {
+		return summary
+	}
+	summary["messages"] = len(req.Messages)
+	summary["tools"] = len(req.Tools)
+	summary["stream"] = req.Stream
+	summary["max_tokens"] = req.MaxTokens
+	summary["has_thinking"] = req.Thinking != nil
+	summary["has_output_config"] = req.OutputConfig != nil
+	summary["has_temperature"] = req.Temperature != nil
+	summary["has_top_p"] = req.TopP != nil
+	if len(req.ToolChoice) > 0 {
+		summary["tool_choice_type"] = strings.TrimSpace(gjson.GetBytes(req.ToolChoice, "type").String())
+	}
+	summary["system_shape"] = summarizeAnthropicSystemShape(req.System)
+
+	roleCounts := map[string]int{}
+	blockCounts := map[string]int{}
+	imageMediaCounts := map[string]int{}
+	imageBytes := make([]int, 0, 4)
+	for _, msg := range req.Messages {
+		roleCounts[msg.Role]++
+		var blocks []apicompat.AnthropicContentBlock
+		if err := json.Unmarshal(msg.Content, &blocks); err == nil {
+			for _, block := range blocks {
+				blockCounts[block.Type]++
+				if block.Type == "image" && block.Source != nil {
+					mediaType := strings.TrimSpace(block.Source.MediaType)
+					if mediaType == "" {
+						mediaType = "image/png"
+					}
+					imageMediaCounts[mediaType]++
+					if block.Source.Data != "" {
+						imageBytes = append(imageBytes, decodedBase64ApproxBytes(block.Source.Data))
+					}
+				}
+				if block.Type == "tool_result" && len(block.Content) > 0 {
+					var nested []apicompat.AnthropicContentBlock
+					if err := json.Unmarshal(block.Content, &nested); err == nil {
+						for _, nestedBlock := range nested {
+							blockCounts["tool_result."+nestedBlock.Type]++
+							if nestedBlock.Type == "image" && nestedBlock.Source != nil {
+								mediaType := strings.TrimSpace(nestedBlock.Source.MediaType)
+								if mediaType == "" {
+									mediaType = "image/png"
+								}
+								imageMediaCounts[mediaType]++
+								if nestedBlock.Source.Data != "" {
+									imageBytes = append(imageBytes, decodedBase64ApproxBytes(nestedBlock.Source.Data))
+								}
+							}
+						}
+					}
+				}
+			}
+		} else {
+			var text string
+			if err := json.Unmarshal(msg.Content, &text); err == nil {
+				blockCounts["plain_text"]++
+			} else {
+				blockCounts["unparsed"]++
+			}
+		}
+	}
+	summary["role_counts"] = roleCounts
+	summary["block_counts"] = blockCounts
+	summary["image_media_counts"] = imageMediaCounts
+	sort.Ints(imageBytes)
+	summary["image_count"] = len(imageBytes)
+	summary["image_decoded_bytes"] = imageBytes
+	return summary
+}
+
+func summarizeAnthropicSystemShape(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return "empty"
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		if strings.TrimSpace(text) == "" {
+			return "empty_string"
+		}
+		return "string"
+	}
+	var blocks []apicompat.AnthropicContentBlock
+	if err := json.Unmarshal(raw, &blocks); err == nil {
+		return fmt.Sprintf("blocks:%d", len(blocks))
+	}
+	return "unknown"
+}
+
+func decodedBase64ApproxBytes(value string) int {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	padding := 0
+	if strings.HasSuffix(value, "==") {
+		padding = 2
+	} else if strings.HasSuffix(value, "=") {
+		padding = 1
+	}
+	return len(value)*3/4 - padding
 }
 
 func responsesRequestHasInputImage(req *apicompat.ResponsesRequest) bool {

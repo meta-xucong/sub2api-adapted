@@ -113,6 +113,16 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	}
 	volcengineArkResponsesSanitized := sanitizeVolcengineArkResponsesRequest(account, responsesReq)
 	volcengineArkMultimodalBaseURLOverridden := configureVolcengineArkMessagesUpstream(c, account, responsesReq)
+	if isVolcengineArkOpenAIAccount(account) && responsesRequestHasInputImage(responsesReq) {
+		logger.L().Warn("volcengine ark messages: anthropic request shape",
+			zap.Int64("account_id", account.ID),
+			zap.String("account_name", account.Name),
+			zap.String("original_model", originalModel),
+			zap.String("upstream_model", upstreamModel),
+			zap.Int("body_bytes", len(body)),
+			zap.Any("anthropic_shape", summarizeVolcengineArkAnthropicRequest(&anthropicReq)),
+		)
+	}
 
 	logFields := []zap.Field{
 		zap.Int64("account_id", account.ID),
