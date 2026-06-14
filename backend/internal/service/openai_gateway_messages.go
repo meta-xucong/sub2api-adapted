@@ -111,14 +111,19 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	if compatReplayGuardEnabled && account.Type != AccountTypeOAuth {
 		appendOpenAICompatClaudeCodeTodoGuard(responsesReq)
 	}
+	volcengineArkHasInputImage := responsesRequestHasInputImage(responsesReq)
 	volcengineArkResponsesSanitized := sanitizeVolcengineArkResponsesRequest(account, responsesReq)
-	volcengineArkMultimodalBaseURLOverridden := configureVolcengineArkMessagesUpstream(c, account, responsesReq)
-	if isVolcengineArkOpenAIAccount(account) && responsesRequestHasInputImage(responsesReq) {
+	volcengineArkEndpointModelRestored := configureVolcengineArkMessagesUpstream(c, account, responsesReq)
+	if isVolcengineArkOpenAIAccount(account) {
 		logger.L().Warn("volcengine ark messages: anthropic request shape",
 			zap.Int64("account_id", account.ID),
 			zap.String("account_name", account.Name),
 			zap.String("original_model", originalModel),
 			zap.String("upstream_model", upstreamModel),
+			zap.String("final_model", responsesReq.Model),
+			zap.Bool("has_input_image", volcengineArkHasInputImage),
+			zap.Bool("responses_sanitized", volcengineArkResponsesSanitized),
+			zap.Bool("endpoint_model_restored", volcengineArkEndpointModelRestored),
 			zap.Int("body_bytes", len(body)),
 			zap.Any("anthropic_shape", summarizeVolcengineArkAnthropicRequest(&anthropicReq)),
 		)
@@ -156,8 +161,8 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	if volcengineArkResponsesSanitized {
 		logFields = append(logFields, zap.Bool("volcengine_ark_responses_sanitized", true))
 	}
-	if volcengineArkMultimodalBaseURLOverridden {
-		logFields = append(logFields, zap.Bool("volcengine_ark_multimodal_base_url_overridden", true))
+	if volcengineArkEndpointModelRestored {
+		logFields = append(logFields, zap.Bool("volcengine_ark_endpoint_model_restored", true))
 	}
 	logger.L().Debug("openai messages: model mapping applied", logFields...)
 

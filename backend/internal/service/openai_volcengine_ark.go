@@ -42,13 +42,17 @@ func sanitizeVolcengineArkResponsesRequest(account *Account, req *apicompat.Resp
 }
 
 func configureVolcengineArkMessagesUpstream(c *gin.Context, account *Account, req *apicompat.ResponsesRequest) bool {
-	if !isVolcengineArkOpenAIAccount(account) || !responsesRequestHasInputImage(req) {
+	if !isVolcengineArkOpenAIAccount(account) || req == nil {
 		return false
 	}
 	if restored := volcengineArkMultimodalEndpointModel(account, req.Model); restored != "" {
+		if restored == req.Model {
+			return false
+		}
 		req.Model = restored
+		return true
 	}
-	return true
+	return false
 }
 
 func summarizeVolcengineArkAnthropicRequest(req *apicompat.AnthropicRequest) map[string]any {
@@ -73,12 +77,20 @@ func summarizeVolcengineArkAnthropicRequest(req *apicompat.AnthropicRequest) map
 	blockCounts := map[string]int{}
 	imageMediaCounts := map[string]int{}
 	imageBytes := make([]int, 0, 4)
+	messageTextChars := make([]int, 0, len(req.Messages))
+	totalTextChars := 0
 	for _, msg := range req.Messages {
 		roleCounts[msg.Role]++
+		msgTextChars := 0
 		var blocks []apicompat.AnthropicContentBlock
 		if err := json.Unmarshal(msg.Content, &blocks); err == nil {
 			for _, block := range blocks {
 				blockCounts[block.Type]++
+				if block.Type == "text" {
+					textChars := len([]rune(block.Text))
+					msgTextChars += textChars
+					totalTextChars += textChars
+				}
 				if block.Type == "image" && block.Source != nil {
 					mediaType := strings.TrimSpace(block.Source.MediaType)
 					if mediaType == "" {
@@ -94,6 +106,11 @@ func summarizeVolcengineArkAnthropicRequest(req *apicompat.AnthropicRequest) map
 					if err := json.Unmarshal(block.Content, &nested); err == nil {
 						for _, nestedBlock := range nested {
 							blockCounts["tool_result."+nestedBlock.Type]++
+							if nestedBlock.Type == "text" {
+								textChars := len([]rune(nestedBlock.Text))
+								msgTextChars += textChars
+								totalTextChars += textChars
+							}
 							if nestedBlock.Type == "image" && nestedBlock.Source != nil {
 								mediaType := strings.TrimSpace(nestedBlock.Source.MediaType)
 								if mediaType == "" {
@@ -112,13 +129,19 @@ func summarizeVolcengineArkAnthropicRequest(req *apicompat.AnthropicRequest) map
 			var text string
 			if err := json.Unmarshal(msg.Content, &text); err == nil {
 				blockCounts["plain_text"]++
+				textChars := len([]rune(text))
+				msgTextChars += textChars
+				totalTextChars += textChars
 			} else {
 				blockCounts["unparsed"]++
 			}
 		}
+		messageTextChars = append(messageTextChars, msgTextChars)
 	}
 	summary["role_counts"] = roleCounts
 	summary["block_counts"] = blockCounts
+	summary["total_text_chars"] = totalTextChars
+	summary["message_text_chars"] = messageTextChars
 	summary["image_media_counts"] = imageMediaCounts
 	sort.Ints(imageBytes)
 	summary["image_count"] = len(imageBytes)
