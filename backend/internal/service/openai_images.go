@@ -990,14 +990,8 @@ func isAIAIImageAccount(account *Account) bool {
 }
 
 func adaptAIAIImagesEditToGeneration(account *Account, parsed *OpenAIImagesRequest) ([]byte, string, string, bool, bool, error) {
-	if !isAIAIImageAccount(account) || parsed == nil || (!parsed.IsEdits() && len(parsed.InputImageURLs) == 0 && len(parsed.Uploads) == 0) {
+	if !isAIAIImageAccount(account) || parsed == nil || (!parsed.IsEdits() && len(parsed.InputImageURLs) == 0 && len(parsed.Uploads) == 0 && strings.TrimSpace(parsed.MaskImageURL) == "" && parsed.MaskUpload == nil) {
 		return nil, "", "", false, false, nil
-	}
-	if parsed.HasMask || parsed.MaskUpload != nil || strings.TrimSpace(parsed.MaskImageURL) != "" {
-		return nil, "", "", false, false, &UpstreamFailoverError{
-			StatusCode:   http.StatusBadRequest,
-			ResponseBody: []byte(`{"error":{"message":"AIAI GPT Image 2 does not support mask edits; fail over to a native image-edit account","type":"invalid_request_error","code":"unsupported_mask_edit"}}`),
-		}
 	}
 
 	imageURLs := make([]string, 0, len(parsed.InputImageURLs)+len(parsed.Uploads))
@@ -1016,6 +1010,14 @@ func adaptAIAIImagesEditToGeneration(account *Account, parsed *OpenAIImagesReque
 	if len(imageURLs) == 0 {
 		return nil, "", "", false, false, nil
 	}
+	maskURL := strings.TrimSpace(parsed.MaskImageURL)
+	if parsed.MaskUpload != nil {
+		dataURL, err := openAIImageUploadToDataURL(*parsed.MaskUpload)
+		if err != nil {
+			return nil, "", "", false, false, err
+		}
+		maskURL = dataURL
+	}
 
 	payload := []byte(`{"model":"","prompt":"","image":[],"async":true}`)
 	payload, _ = sjson.SetBytes(payload, "model", strings.TrimSpace(parsed.Model))
@@ -1023,6 +1025,9 @@ func adaptAIAIImagesEditToGeneration(account *Account, parsed *OpenAIImagesReque
 	payload, _ = sjson.SetRawBytes(payload, "image", []byte(`[]`))
 	for _, imageURL := range imageURLs {
 		payload, _ = sjson.SetBytes(payload, "image.-1", imageURL)
+	}
+	if maskURL != "" {
+		payload, _ = sjson.SetBytes(payload, "mask", maskURL)
 	}
 	if parsed.N > 0 {
 		payload, _ = sjson.SetBytes(payload, "n", parsed.N)

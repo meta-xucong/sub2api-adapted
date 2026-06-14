@@ -1123,6 +1123,10 @@ func TestOpenAIGatewayServiceForwardImages_AIAIAPIKeyEditUsesAsyncImageField(t *
 	require.NoError(t, err)
 	_, err = imagePart.Write(openAIImageTestPNGBytes(t))
 	require.NoError(t, err)
+	maskPart, err := writer.CreateFormFile("mask", "mask.png")
+	require.NoError(t, err)
+	_, err = maskPart.Write(openAIImageTestPNGBytes(t))
+	require.NoError(t, err)
 	require.NoError(t, writer.Close())
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/images/edits", bytes.NewReader(body.Bytes()))
@@ -1180,6 +1184,7 @@ func TestOpenAIGatewayServiceForwardImages_AIAIAPIKeyEditUsesAsyncImageField(t *
 	require.Equal(t, "keep the reference pose", gjson.GetBytes(upstream.bodies[0], "prompt").String())
 	require.True(t, gjson.GetBytes(upstream.bodies[0], "async").Bool())
 	require.True(t, strings.HasPrefix(gjson.GetBytes(upstream.bodies[0], "image.0").String(), "data:image/png;base64,"))
+	require.True(t, strings.HasPrefix(gjson.GetBytes(upstream.bodies[0], "mask").String(), "data:image/png;base64,"))
 	require.False(t, gjson.GetBytes(upstream.bodies[0], "image_urls").Exists())
 	require.Equal(t, "YWlhaTE=", gjson.Get(rec.Body.String(), "data.0.b64_json").String())
 }
