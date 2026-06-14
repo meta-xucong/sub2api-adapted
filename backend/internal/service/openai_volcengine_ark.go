@@ -15,7 +15,6 @@ import (
 const openAIProviderVolcengineArk = "volcengine_ark"
 
 const defaultVolcengineArkImagesBaseURL = "https://ark.cn-beijing.volces.com/api/v3"
-const defaultVolcengineArkMultimodalBaseURL = "https://ark.cn-beijing.volces.com/api/v3"
 const openAIUpstreamBaseURLOverrideContextKey = "openai_upstream_base_url_override"
 
 func isVolcengineArkOpenAIAccount(account *Account) bool {
@@ -48,7 +47,6 @@ func configureVolcengineArkMessagesUpstream(c *gin.Context, account *Account, re
 	if restored := volcengineArkMultimodalEndpointModel(account, req.Model); restored != "" {
 		req.Model = restored
 	}
-	setOpenAIUpstreamBaseURLOverride(c, volcengineArkMultimodalBaseURL(account))
 	return true
 }
 
@@ -87,18 +85,6 @@ func jsonValueContainsInputImage(value any) bool {
 func isVolcengineArkImageModel(model string) bool {
 	model = strings.ToLower(strings.TrimSpace(model))
 	return strings.HasPrefix(model, "doubao-seedream-") || strings.HasPrefix(model, "seedream-")
-}
-
-func volcengineArkMultimodalBaseURL(account *Account) string {
-	if !isVolcengineArkOpenAIAccount(account) {
-		return ""
-	}
-	for _, key := range []string{"openai_multimodal_base_url", "multimodal_base_url"} {
-		if value := strings.TrimSpace(account.GetExtraString(key)); value != "" {
-			return value
-		}
-	}
-	return defaultVolcengineArkMultimodalBaseURL
 }
 
 func volcengineArkMultimodalEndpointModel(account *Account, model string) string {

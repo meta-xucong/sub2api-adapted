@@ -64,7 +64,7 @@ func TestSanitizeVolcengineArkResponsesRequestLeavesOtherProvidersUntouched(t *t
 	require.NotNil(t, req.Text)
 }
 
-func TestConfigureVolcengineArkMessagesUpstreamUsesMultimodalBaseURLForImages(t *testing.T) {
+func TestConfigureVolcengineArkMessagesUpstreamRestoresEndpointModelForImages(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -88,7 +88,7 @@ func TestConfigureVolcengineArkMessagesUpstreamUsesMultimodalBaseURLForImages(t 
 	changed := configureVolcengineArkMessagesUpstream(c, account, req)
 
 	require.True(t, changed)
-	require.Equal(t, defaultVolcengineArkMultimodalBaseURL, openAIUpstreamBaseURLOverride(c))
+	require.Empty(t, openAIUpstreamBaseURLOverride(c))
 	require.Equal(t, "doubao-seed-2-0-lite-260428", req.Model)
 }
 
