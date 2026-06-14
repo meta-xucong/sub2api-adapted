@@ -723,6 +723,9 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 	firstChunk := true
 	clientDisconnected := false
 	clientOutputStarted := false
+	seenEventTypes := make([]string, 0, 16)
+	seenFrameCount := 0
+	seenDoneSentinel := false
 
 	scanner := bufio.NewScanner(resp.Body)
 	maxLineSize := defaultMaxLineSize
@@ -776,6 +779,10 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 				zap.String("request_id", requestID),
 			)
 			return false
+		}
+		seenFrameCount++
+		if eventType := strings.TrimSpace(event.Type); eventType != "" && len(seenEventTypes) < 32 {
+			seenEventTypes = append(seenEventTypes, eventType)
 		}
 
 		isTerminalEvent := isOpenAICompatResponsesTerminalEvent(event.Type)
@@ -862,6 +869,18 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 			return result, fmt.Errorf("stream usage incomplete: missing terminal event")
 		}
 		message := "OpenAI messages stream ended before a terminal event"
+		logger.L().Warn("openai messages stream: missing terminal event",
+			zap.Int64("account_id", account.ID),
+			zap.String("account_name", account.Name),
+			zap.String("provider", account.GetExtraString("provider")),
+			zap.String("request_id", requestID),
+			zap.String("original_model", originalModel),
+			zap.String("upstream_model", upstreamModel),
+			zap.Int("seen_frame_count", seenFrameCount),
+			zap.Strings("seen_event_types", seenEventTypes),
+			zap.Bool("seen_done_sentinel", seenDoneSentinel),
+			zap.Bool("client_output_started", clientOutputStarted),
+		)
 		if !clientOutputStarted {
 			return result, s.newOpenAIStreamFailoverError(c, account, false, requestID, nil, message)
 		}
@@ -885,6 +904,7 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 		for scanner.Scan() {
 			line := scanner.Text()
 			if isOpenAICompatDoneSentinelLine(line) {
+				seenDoneSentinel = true
 				return missingTerminalErr()
 			}
 			frame, ok := parser.AddLine(line)
@@ -960,6 +980,7 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 				// Upstream closed
 				if frame, ok := parser.Finish(); ok {
 					if strings.TrimSpace(frame.Data) == "[DONE]" {
+						seenDoneSentinel = true
 						return missingTerminalErr()
 					}
 					if processFrame(frame) {
@@ -975,6 +996,7 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 			lastDataAt = time.Now()
 			line := ev.line
 			if isOpenAICompatDoneSentinelLine(line) {
+				seenDoneSentinel = true
 				return missingTerminalErr()
 			}
 			frame, ok := parser.AddLine(line)
