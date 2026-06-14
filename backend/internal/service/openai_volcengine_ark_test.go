@@ -64,6 +64,77 @@ func TestSanitizeVolcengineArkResponsesRequestLeavesOtherProvidersUntouched(t *t
 	require.NotNil(t, req.Text)
 }
 
+func TestConfigureVolcengineArkMessagesUpstreamUsesMultimodalBaseURLForImages(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Extra: map[string]any{
+			"provider": "volcengine_ark",
+		},
+	}
+	req := &apicompat.ResponsesRequest{
+		Model: "doubao-seed-2.0-lite",
+		Input: []byte(`[
+			{"type":"message","role":"user","content":[
+				{"type":"input_text","text":"describe"},
+				{"type":"input_image","image_url":"data:image/png;base64,abc"}
+			]}
+		]`),
+	}
+
+	changed := configureVolcengineArkMessagesUpstream(c, account, req)
+
+	require.True(t, changed)
+	require.Equal(t, defaultVolcengineArkMultimodalBaseURL, openAIUpstreamBaseURLOverride(c))
+	require.Equal(t, "doubao-seed-2-0-lite-260428", req.Model)
+}
+
+func TestConfigureVolcengineArkMessagesUpstreamLeavesTextOnlyOnCodingBaseURL(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Extra: map[string]any{
+			"provider": "volcengine_ark",
+		},
+	}
+	req := &apicompat.ResponsesRequest{
+		Input: []byte(`[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}]`),
+	}
+
+	changed := configureVolcengineArkMessagesUpstream(c, account, req)
+
+	require.False(t, changed)
+	require.Empty(t, openAIUpstreamBaseURLOverride(c))
+}
+
+func TestBuildUpstreamRequestUsesBaseURLOverride(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{}`))
+	setOpenAIUpstreamBaseURLOverride(c, "https://ark.cn-beijing.volces.com/api/v3")
+
+	svc := &OpenAIGatewayService{cfg: &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false}}}}
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"base_url": "https://ark.cn-beijing.volces.com/api/coding/v3",
+		},
+	}
+
+	req, err := svc.buildUpstreamRequest(context.Background(), c, account, []byte(`{"model":"doubao"}`), "ark-test", true, "", false)
+
+	require.NoError(t, err)
+	require.Equal(t, "https://ark.cn-beijing.volces.com/api/v3/responses", req.URL.String())
+}
+
 func TestVolcengineArkImageModelValidation(t *testing.T) {
 	account := &Account{
 		Platform: PlatformOpenAI,

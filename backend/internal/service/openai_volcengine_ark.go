@@ -1,11 +1,13 @@
 package service
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
+	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -13,6 +15,8 @@ import (
 const openAIProviderVolcengineArk = "volcengine_ark"
 
 const defaultVolcengineArkImagesBaseURL = "https://ark.cn-beijing.volces.com/api/v3"
+const defaultVolcengineArkMultimodalBaseURL = "https://ark.cn-beijing.volces.com/api/v3"
+const openAIUpstreamBaseURLOverrideContextKey = "openai_upstream_base_url_override"
 
 func isVolcengineArkOpenAIAccount(account *Account) bool {
 	if account == nil || !account.IsOpenAIApiKey() {
@@ -37,9 +41,85 @@ func sanitizeVolcengineArkResponsesRequest(account *Account, req *apicompat.Resp
 	return changed
 }
 
+func configureVolcengineArkMessagesUpstream(c *gin.Context, account *Account, req *apicompat.ResponsesRequest) bool {
+	if !isVolcengineArkOpenAIAccount(account) || !responsesRequestHasInputImage(req) {
+		return false
+	}
+	if restored := volcengineArkMultimodalEndpointModel(account, req.Model); restored != "" {
+		req.Model = restored
+	}
+	setOpenAIUpstreamBaseURLOverride(c, volcengineArkMultimodalBaseURL(account))
+	return true
+}
+
+func responsesRequestHasInputImage(req *apicompat.ResponsesRequest) bool {
+	if req == nil || len(req.Input) == 0 {
+		return false
+	}
+	var decoded any
+	if err := json.Unmarshal(req.Input, &decoded); err != nil {
+		return false
+	}
+	return jsonValueContainsInputImage(decoded)
+}
+
+func jsonValueContainsInputImage(value any) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		if strings.TrimSpace(firstNonEmptyString(typed["type"])) == "input_image" {
+			return true
+		}
+		for _, child := range typed {
+			if jsonValueContainsInputImage(child) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if jsonValueContainsInputImage(child) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func isVolcengineArkImageModel(model string) bool {
 	model = strings.ToLower(strings.TrimSpace(model))
 	return strings.HasPrefix(model, "doubao-seedream-") || strings.HasPrefix(model, "seedream-")
+}
+
+func volcengineArkMultimodalBaseURL(account *Account) string {
+	if !isVolcengineArkOpenAIAccount(account) {
+		return ""
+	}
+	for _, key := range []string{"openai_multimodal_base_url", "multimodal_base_url"} {
+		if value := strings.TrimSpace(account.GetExtraString(key)); value != "" {
+			return value
+		}
+	}
+	return defaultVolcengineArkMultimodalBaseURL
+}
+
+func volcengineArkMultimodalEndpointModel(account *Account, model string) string {
+	if !isVolcengineArkOpenAIAccount(account) {
+		return ""
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return ""
+	}
+	for _, key := range []string{"openai_multimodal_model", "multimodal_model"} {
+		if value := strings.TrimSpace(account.GetExtraString(key)); value != "" {
+			return value
+		}
+	}
+	switch model {
+	case "doubao-seed-2.0-lite":
+		return "doubao-seed-2-0-lite-260428"
+	default:
+		return ""
+	}
 }
 
 func volcengineArkImagesBaseURL(account *Account) string {
@@ -160,4 +240,26 @@ func openAIImagesUnsupportedVolcengineArkFailoverError() error {
 		StatusCode:   http.StatusBadRequest,
 		ResponseBody: []byte(`{"error":{"message":"Volcengine Ark image models do not support this OpenAI image edit shape; trying the next image-capable account.","type":"invalid_request_error","code":"unsupported_image_edit_shape"}}`),
 	}
+}
+
+func setOpenAIUpstreamBaseURLOverride(c *gin.Context, baseURL string) {
+	if c == nil || strings.TrimSpace(baseURL) == "" {
+		return
+	}
+	c.Set(openAIUpstreamBaseURLOverrideContextKey, strings.TrimSpace(baseURL))
+}
+
+func openAIUpstreamBaseURLOverride(c *gin.Context) string {
+	if c == nil {
+		return ""
+	}
+	value, ok := c.Get(openAIUpstreamBaseURLOverrideContextKey)
+	if !ok {
+		return ""
+	}
+	baseURL, ok := value.(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(baseURL)
 }

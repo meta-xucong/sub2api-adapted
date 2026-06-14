@@ -112,6 +112,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 		appendOpenAICompatClaudeCodeTodoGuard(responsesReq)
 	}
 	volcengineArkResponsesSanitized := sanitizeVolcengineArkResponsesRequest(account, responsesReq)
+	volcengineArkMultimodalBaseURLOverridden := configureVolcengineArkMessagesUpstream(c, account, responsesReq)
 
 	logFields := []zap.Field{
 		zap.Int64("account_id", account.ID),
@@ -144,6 +145,9 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	}
 	if volcengineArkResponsesSanitized {
 		logFields = append(logFields, zap.Bool("volcengine_ark_responses_sanitized", true))
+	}
+	if volcengineArkMultimodalBaseURLOverridden {
+		logFields = append(logFields, zap.Bool("volcengine_ark_multimodal_base_url_overridden", true))
 	}
 	logger.L().Debug("openai messages: model mapping applied", logFields...)
 
