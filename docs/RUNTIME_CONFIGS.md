@@ -3,6 +3,80 @@
 This file records production runtime settings that live in the database or
 provider consoles rather than in source code. Do not store secrets here.
 
+## Veyra Portal VPS Network And Nginx Tuning
+
+- Date updated: 2026-06-20
+- Production host: sub2api VPS
+- Goal: improve connection stability and repeat-visit latency without
+  restarting the sub2api app container or changing account/data state.
+
+### Nginx Hot-Reload Settings
+
+The production Nginx host config was hot-reloaded after `nginx -t` passed.
+Backups were stored under `/root/nginx-config-backups/`.
+
+`/etc/nginx/nginx.conf` now includes:
+
+- `tcp_nodelay on`
+- `keepalive_timeout 65`
+- `keepalive_requests 1000`
+- gzip coverage includes `application/wasm`
+
+`/etc/nginx/sites-enabled/sub2api.conf` now has a Veyra static asset location:
+
+- matches `/_veyra/*.(js|css|png|jpg|jpeg|webp|ico)`
+- forwards to the local sub2api app on `127.0.0.1:8080`
+- sets `Cache-Control: public, max-age=600`
+- deliberately does not cache Veyra HTML or `/_veyra/return`
+
+This reduces repeated fetches of the portal JS/CSS while keeping login-return
+state and homepage HTML fresh.
+
+### TCP Congestion Control
+
+The host kernel supports BBR after loading `tcp_bbr`.
+
+Hot-applied and persisted:
+
+- `/etc/modules-load.d/veyra-tcp-bbr.conf`
+  - `tcp_bbr`
+- `/etc/sysctl.d/99-veyra-network.conf`
+  - `net.core.default_qdisc = fq`
+  - `net.ipv4.tcp_congestion_control = bbr`
+
+Verification after applying:
+
+- `sysctl net.ipv4.tcp_congestion_control` -> `bbr`
+- `sysctl net.core.default_qdisc` -> `fq`
+- `curl http://127.0.0.1:8080/health` -> OK
+- `docker inspect sub2api` -> `healthy`, `restart=0`
+
+### DNS Observation
+
+Authoritative DNS for `aiself.vip` is served by `ns1.dyna-ns.net` and
+`ns2.dyna-ns.net`; NS/SOA TTL was observed as `300`. Local resolver A-record
+TTL can fluctuate and was observed as both `1` and higher values. Do not change
+VPS code to solve this; adjust the DNS provider record TTL in the external DNS
+panel if repeated resolver checks confirm the authoritative A record is set too
+low.
+
+### Blue-Green Deployment Note
+
+The current deploy script force-recreates the single app container after a new
+image is built and verified. That is safer than the old manual flow, but it can
+still create a short upstream gap because Nginx points directly at
+`127.0.0.1:8080`.
+
+Do not blindly run two full `sub2api` containers against the same database as a
+blue-green fix until the app's background workers, schedulers, outbox handling,
+and migrations are audited for multi-instance safety. A safer future path is:
+
+- add a deploy mode that starts the candidate app on a different host port;
+- disable or isolate background workers in the candidate when possible;
+- run HTTP health and Veyra portal smoke checks against the candidate port;
+- switch Nginx upstream only after the candidate is healthy;
+- keep the old app container alive as rollback until post-switch checks pass.
+
 ## JP Relay Watchdog
 
 - Date updated: 2026-06-08
