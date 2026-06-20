@@ -36,6 +36,24 @@ config, server, and cmd/server packages.
 Do not deploy directly from upstream/main. Production should deploy only from
 `custom/main` after the overlay replay and tests pass.
 
+Production deployment should use:
+
+```powershell
+./scripts/deploy-vps.ps1
+```
+
+The deploy script treats Veyra as a production overlay, not just a build
+artifact. It fetches `origin/custom/main`, builds a unique
+`sub2api-adapted:custom-main-<commit>` image, retags it as
+`sub2api-adapted:custom-main`, force-recreates only the app container, waits for
+health, and verifies that `/` serves the Veyra homepage while
+`/_veyra/app.js` contains the Veyra login-return behavior. On production
+machines that use Docker named volumes for `/app/data`, the script also checks
+the active volume `config.yaml` and copies in the Veyra config block from
+`deploy/data/config.yaml` when it is missing. This avoids the common failure mode
+where source and host config are updated but the running container still loads a
+volume-backed config without `veyra.enabled=true`.
+
 ### `custom: add Veyra portal extension`
 
 Adds the first stage of the Veyra Extension layer. The portal assets live under
