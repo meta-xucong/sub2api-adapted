@@ -1,6 +1,7 @@
 package veyra
 
 import (
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -56,6 +57,19 @@ func TestPortalMiddlewareServesVeyraReturnWhenEnabled(t *testing.T) {
 	require.Contains(t, rec.Header().Get("Content-Type"), "text/html")
 	require.Contains(t, rec.Body.String(), "Veyra Agent")
 	require.Contains(t, rec.Body.String(), "/_veyra/app.js")
+}
+
+func TestPortalAppDefaultsLoginReturnToHome(t *testing.T) {
+	subFS, err := fs.Sub(portalFS, "portal_dist")
+	require.NoError(t, err)
+	content, err := fs.ReadFile(subFS, "app.js")
+	require.NoError(t, err)
+	script := string(content)
+
+	require.Contains(t, script, `home: "/_veyra/return?target=home"`)
+	require.Contains(t, script, `target === "home"`)
+	require.Contains(t, script, `state.authenticated ? "/" : loginUrl(routeTargets.home)`)
+	require.NotContains(t, script, `state.authenticated ? "/dashboard" : loginUrl(routeTargets.home)`)
 }
 
 func TestPortalMiddlewareServesAssetsWhenEnabled(t *testing.T) {

@@ -42,6 +42,15 @@
     }
   }
 
+  function readAuthTokenExpiresAt() {
+    try {
+      const value = Number(localStorage.getItem(authTokenExpiresKey) || "0");
+      return Number.isFinite(value) ? value : 0;
+    } catch {
+      return 0;
+    }
+  }
+
   function readStoredUser() {
     try {
       const raw = localStorage.getItem(authUserKey);
@@ -65,7 +74,7 @@
     }
     if (loginLink) {
       loginLink.textContent = state.authenticated ? "账户" : "登录";
-      loginLink.setAttribute("href", state.authenticated ? "/dashboard" : loginUrl(routeTargets.home));
+      loginLink.setAttribute("href", state.authenticated ? "/" : loginUrl(routeTargets.home));
     }
     if (logoutButton) {
       logoutButton.hidden = !state.authenticated;
@@ -87,6 +96,11 @@
 
   async function refreshSession() {
     const token = readAuthToken();
+    const expiresAt = readAuthTokenExpiresAt();
+    if (token && expiresAt > 0 && expiresAt <= Date.now()) {
+      clearStoredSession();
+      return;
+    }
     state.authenticated = Boolean(token);
     state.user = readStoredUser();
     renderSession();
@@ -170,7 +184,7 @@
       return;
     }
     if (route === "login") {
-      window.location.href = state.authenticated ? "/dashboard" : loginUrl(routeTargets.home);
+      window.location.href = state.authenticated ? "/" : loginUrl(routeTargets.home);
       return;
     }
     if (route === "sub2api-console") {
@@ -194,7 +208,7 @@
   function targetFromReturnUrl() {
     if (window.location.pathname !== "/_veyra/return") return "";
     const target = new URLSearchParams(window.location.search).get("target") || "home";
-    if (target === "alchemy" || target === "alchemy-mobile" || target === "sub2api-console") return target;
+    if (target === "home" || target === "alchemy" || target === "alchemy-mobile" || target === "sub2api-console") return target;
     return "home";
   }
 

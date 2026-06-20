@@ -62,6 +62,14 @@ The portal frontend uses the existing sub2api browser login state:
 - serves `/_veyra/return` through the same portal bundle so login can return to
   the product shell and continue the user's original target.
 
+The portal treats a direct header login click as a neutral home intent:
+
+- direct login uses `/login?redirect=/_veyra/return?target=home`;
+- `target=home` returns to `/` instead of `/dashboard`;
+- expired `localStorage.token_expires_at` clears the stale browser session
+  before routing, so a stale token does not make the portal jump to the
+  sub2api console by default.
+
 The only upstream frontend hook for this login-return flow is in
 `frontend/src/views/auth/LoginView.vue`: after a successful normal or 2FA login,
 redirects beginning with `/_veyra/return` use `window.location.assign(...)` so
