@@ -15,6 +15,38 @@ survive upstream updates.
 
 ## Current Custom Patches
 
+### `custom: preserve sticky primary and honor configured sticky TTL`
+
+This patch keeps the OpenAI scheduler aligned with the production routing goal:
+prefer the cheaper primary account for fresh work, but do not permanently
+overwrite its sticky binding just because one in-flight attempt had to fall back
+to a secondary account.
+
+It currently contains two still-needed deltas beyond `upstream/main`:
+
+- when a request carries a sticky account and that account is present in
+  `ExcludedIDs`, mark `PreserveStickyBinding=true` before load-balanced fallback;
+- replace the remaining hard-coded `openaiStickySessionTTL` call sites in
+  `openai_gateway_service.go` with `openAIWSSessionStickyTTL()` so the runtime
+  config value is honored consistently.
+
+Why this stays in the overlay:
+
+- without the sticky-preservation branch, a temporary fallback can rewrite the
+  sticky binding to the secondary account, so later "new small tasks" keep
+  starting on the more expensive fallback path;
+- without the TTL helper replacement, a custom
+  `gateway.openai_ws.sticky_session_ttl_seconds` value is only applied on some
+  sticky-session paths and silently ignored on others.
+
+Files:
+
+- `backend/internal/service/openai_account_scheduler.go`
+- `backend/internal/service/openai_gateway_service.go`
+- `backend/internal/service/openai_account_scheduler_test.go`
+
+Drop this patch when upstream includes both behaviors in an equivalent form.
+
 ## Upstream Update And Replay Workflow
 
 The Veyra layer is intentionally kept as a small overlay on top of upstream

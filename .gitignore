@@ -135,6 +135,12 @@ docs/*
 !docs/legal/*.md
 .serena/
 .codex/
+.codex-longrun/
 frontend/coverage/
 aicodex
 output/
+.tmp-runtime-config.yaml
+.tmpcfg/
+tmp_check*.go
+backend/tmp_check*.go
+backend/.tmp_check*.go

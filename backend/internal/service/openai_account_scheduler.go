@@ -314,6 +314,11 @@ func (s *defaultOpenAIAccountScheduler) Select(
 		decision.SelectedAccountType = selection.Account.Type
 		return selection, decision, nil
 	}
+	if req.StickyAccountID > 0 && req.SessionHash != "" && req.ExcludedIDs != nil {
+		if _, excluded := req.ExcludedIDs[req.StickyAccountID]; excluded {
+			req.PreserveStickyBinding = true
+		}
+	}
 	if escapedSticky {
 		req.PreserveStickyBinding = true
 	}
