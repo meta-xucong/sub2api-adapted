@@ -70,6 +70,8 @@ const (
 const (
 	openAIImageRateLimitDefaultCooldown = time.Minute
 	openAIImageRateLimitReason          = "openai_image_rate_limited"
+	openAIImageForbiddenCooldown        = 10 * time.Minute
+	openAIImageForbiddenReason          = "openai_image_forbidden"
 )
 
 var openAIImageTryAgainPattern = regexp.MustCompile(`(?i)try again in\s+([0-9]+(?:\.[0-9]+)?)\s*(ms|s|sec|secs|second|seconds|m|min|mins|minute|minutes)`)
@@ -1647,6 +1649,39 @@ func (s *RateLimitService) HandleOpenAIImageRateLimit(ctx context.Context, accou
 		return true
 	}
 	slog.Info("openai_image_rate_limited", "account_id", account.ID, "scope", openAIImageGenerationRateLimitKey, "reset_at", resetAt, "reset_in", time.Until(resetAt).Truncate(time.Second))
+	return true
+}
+
+func (s *RateLimitService) HandleOpenAIImageForbidden(ctx context.Context, account *Account, statusCode int, responseBody []byte, requestedModel string) bool {
+	if s == nil || account == nil || s.accountRepo == nil {
+		return false
+	}
+	if account.Platform != PlatformOpenAI || statusCode != http.StatusForbidden {
+		return false
+	}
+	model := strings.TrimSpace(requestedModel)
+	if !isOpenAIImageModel(model) {
+		return false
+	}
+	if !account.ShouldHandleErrorCode(statusCode) {
+		slog.Info("openai_image_forbidden_skipped_by_error_code_policy", "account_id", account.ID, "status_code", statusCode, "model", model)
+		return false
+	}
+
+	resetAt := time.Now().Add(openAIImageForbiddenCooldown)
+	if err := s.accountRepo.SetModelRateLimit(ctx, account.ID, openAIImageGenerationRateLimitKey, resetAt, openAIImageForbiddenReason); err != nil {
+		slog.Warn("openai_image_forbidden_set_model_rate_limit_failed", "account_id", account.ID, "scope", openAIImageGenerationRateLimitKey, "error", err)
+		return true
+	}
+	slog.Warn(
+		"openai_image_forbidden_rate_limited",
+		"account_id", account.ID,
+		"scope", openAIImageGenerationRateLimitKey,
+		"model", model,
+		"reset_at", resetAt,
+		"reset_in", time.Until(resetAt).Truncate(time.Second),
+		"error_code", strings.TrimSpace(extractUpstreamErrorCode(responseBody)),
+	)
 	return true
 }
 

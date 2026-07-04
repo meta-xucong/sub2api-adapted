@@ -15,6 +15,42 @@ survive upstream updates.
 
 ## Current Custom Patches
 
+### `custom: soften transient OpenAI image flaps and auto-probe image edits`
+
+This patch keeps transient OpenAI image lanes from being disabled permanently
+when the real provider is merely flapping.
+
+It adds three production behaviors:
+
+- OpenAI image `403` now cools only the model-scoped image capability for
+  10 minutes instead of escalating the whole account into `error`.
+- Scheduled tests accept `gpt-image-2#edits`, which runs an in-memory
+  `/v1/images/edits` probe using a tiny embedded PNG instead of a plain
+  text-to-image probe.
+- The admin Scheduled Tests panel exposes an `edit probe` option for image
+  models so operators can enable `auto_recover` without inserting rows by hand.
+
+Why this stays in the overlay:
+
+- some low-cost image providers intermittently return a provider-side `403`
+  wrapped as outward `502` / `503`, and the generic OpenAI auth handler is too
+  aggressive for that failure mode;
+- generation-only health checks are too weak because these lanes often recover
+  text-to-image before image-to-image becomes stable again.
+
+Files:
+
+- `backend/internal/service/openai_account_runtime_block_fastpath.go`
+- `backend/internal/service/ratelimit_service.go`
+- `backend/internal/service/account_test_service.go`
+- `backend/internal/service/account_test_service_openai_image_test.go`
+- `frontend/src/components/admin/account/ScheduledTestsPanel.vue`
+- `docs/OPENAI_IMAGE_LANE_RECOVERY.md`
+- `deploy/sql/openai_image_lane_recovery.example.sql`
+
+Drop this patch when upstream gains equivalent image-only cooldown handling and
+scheduled edit probes.
+
 ### `custom: preserve sticky primary and honor configured sticky TTL`
 
 This patch keeps the OpenAI scheduler aligned with the production routing goal:

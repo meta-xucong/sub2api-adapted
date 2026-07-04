@@ -75,6 +75,39 @@ func TestOpenAIGatewayService_HandleOpenAIAccountUpstreamError_ImageRateLimitDoe
 	require.False(t, wholeAccountBlocked)
 }
 
+func TestRateLimitService_HandleOpenAIImageForbidden_CoolsImageCapability(t *testing.T) {
+	repo := &modelNotFoundAccountRepoStub{}
+	svc := &RateLimitService{accountRepo: repo}
+	account := &Account{ID: 205, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+	body := []byte(`{"error":{"type":"permission_error","message":"forbidden"}}`)
+
+	before := time.Now()
+	handled := svc.HandleOpenAIImageForbidden(context.Background(), account, http.StatusForbidden, body, "gpt-image-2")
+
+	require.True(t, handled)
+	require.Len(t, repo.modelRateLimitCalls, 1)
+	call := repo.modelRateLimitCalls[0]
+	require.Equal(t, account.ID, call.accountID)
+	require.Equal(t, openAIImageGenerationRateLimitKey, call.scope)
+	require.Equal(t, openAIImageForbiddenReason, call.reason)
+	require.WithinDuration(t, before.Add(openAIImageForbiddenCooldown), call.resetAt, time.Second)
+}
+
+func TestOpenAIGatewayService_HandleOpenAIAccountUpstreamError_ImageForbiddenReturnsFailoverWithoutWholeAccountBlock(t *testing.T) {
+	repo := &modelNotFoundAccountRepoStub{}
+	svc := &OpenAIGatewayService{rateLimitService: &RateLimitService{accountRepo: repo}}
+	account := &Account{ID: 206, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+	body := []byte(`{"error":{"type":"permission_error","message":"forbidden"}}`)
+
+	disabled := svc.handleOpenAIAccountUpstreamError(context.Background(), account, http.StatusForbidden, http.Header{}, body, "gpt-image-2")
+
+	require.True(t, disabled)
+	require.Len(t, repo.modelRateLimitCalls, 1)
+	require.Equal(t, openAIImageGenerationRateLimitKey, repo.modelRateLimitCalls[0].scope)
+	_, wholeAccountBlocked := svc.openaiAccountRuntimeBlockUntil.Load(account.ID)
+	require.False(t, wholeAccountBlocked)
+}
+
 func TestOpenAIGatewayServiceForwardImages_ImageRateLimitReturnsFailoverAndCoolsCapability(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	repo := &modelNotFoundAccountRepoStub{}

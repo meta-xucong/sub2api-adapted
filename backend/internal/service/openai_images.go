@@ -14,6 +14,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -851,6 +852,9 @@ func (s *OpenAIGatewayService) buildOpenAIImagesRequest(
 	}
 	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
 	req.Header.Set("Authorization", "Bearer "+token)
+	if hostHeader := account.GetOpenAIHostHeader(); hostHeader != "" {
+		req.Host = hostHeader
+	}
 	for key, values := range c.Request.Header {
 		if !openaiPassthroughAllowedHeaders[strings.ToLower(key)] {
 			continue
@@ -937,6 +941,9 @@ func (s *OpenAIGatewayService) pollAIAIImagesAsyncResponse(
 		}
 		req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
 		req.Header.Set("Authorization", "Bearer "+token)
+		if hostHeader := account.GetOpenAIHostHeader(); hostHeader != "" {
+			req.Host = hostHeader
+		}
 		resp, err := s.httpUpstream.Do(req, proxyURL, account.ID, account.Concurrency)
 		if err != nil {
 			return nil, fmt.Errorf("poll AIAI image task failed: %w", err)
@@ -985,8 +992,20 @@ func isAIAIImageAccount(account *Account) bool {
 	if account == nil || !account.IsOpenAIApiKey() {
 		return false
 	}
-	baseURL := strings.ToLower(strings.TrimSpace(account.GetOpenAIBaseURL()))
-	return strings.Contains(baseURL, "aiai.ac")
+	return isAIAIImageBaseURL(account.GetOpenAIBaseURL())
+}
+
+func isAIAIImageBaseURL(baseURL string) bool {
+	trimmed := strings.ToLower(strings.TrimSpace(baseURL))
+	if trimmed == "" {
+		return false
+	}
+	host := trimmed
+	if parsed, err := url.Parse(trimmed); err == nil && parsed.Hostname() != "" {
+		host = strings.ToLower(parsed.Hostname())
+	}
+	host = strings.TrimPrefix(host, "www.")
+	return host == "aiai.ac" || host == "llmtoken.shop" || strings.HasSuffix(host, ".llmtoken.shop")
 }
 
 func adaptAIAIImagesEditToGeneration(account *Account, parsed *OpenAIImagesRequest) ([]byte, string, string, bool, bool, error) {

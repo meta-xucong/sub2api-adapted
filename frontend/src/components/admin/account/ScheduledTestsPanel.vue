@@ -35,9 +35,9 @@
             </label>
             <Select
               v-model="newPlan.model_id"
-              :options="modelOptions"
+              :options="scheduledTestModelOptions"
               :placeholder="t('admin.scheduledTests.model')"
-              :searchable="modelOptions.length > 5"
+              :searchable="scheduledTestModelOptions.length > 5"
             />
           </div>
           <div>
@@ -159,7 +159,7 @@
               <!-- Model -->
               <div class="min-w-0">
                 <div class="text-sm font-medium text-gray-900 dark:text-gray-100">
-                  {{ plan.model_id }}
+                  {{ scheduledTestModelLabel(plan.model_id) }}
                 </div>
                 <div class="mt-0.5 font-mono text-xs text-gray-500 dark:text-gray-400">
                   {{ plan.cron_expression }}
@@ -245,9 +245,9 @@
                 </label>
                 <Select
                   v-model="editForm.model_id"
-                  :options="modelOptions"
+                  :options="scheduledTestModelOptions"
                   :placeholder="t('admin.scheduledTests.model')"
-                  :searchable="modelOptions.length > 5"
+                  :searchable="scheduledTestModelOptions.length > 5"
                 />
               </div>
               <div>
@@ -463,7 +463,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, watch } from 'vue'
+import { computed, ref, reactive, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
@@ -489,6 +489,34 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'close'): void
 }>()
+
+const imageEditProbeSuffix = '#edits'
+const scheduledTestModelOptions = computed<SelectOption[]>(() => {
+  const options = props.modelOptions.map((option) => ({ ...option }))
+  const seen = new Set(options.map((option) => String(option.value)))
+  for (const option of props.modelOptions) {
+    const value = String(option.value ?? '').trim()
+    if (!value.toLowerCase().startsWith('gpt-image-')) {
+      continue
+    }
+    const editProbeValue = `${value}${imageEditProbeSuffix}`
+    if (seen.has(editProbeValue)) {
+      continue
+    }
+    options.push({
+      ...option,
+      value: editProbeValue,
+      label: `${option.label} (edit probe)`
+    })
+    seen.add(editProbeValue)
+  }
+  return options
+})
+
+const scheduledTestModelLabel = (modelId: string) => {
+  const matched = scheduledTestModelOptions.value.find((option) => String(option.value) === modelId)
+  return matched?.label || modelId
+}
 
 // State
 const loading = ref(false)

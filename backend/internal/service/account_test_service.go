@@ -5,14 +5,17 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"regexp"
 	"strings"
 	"time"
@@ -51,14 +54,53 @@ type TestEvent struct {
 }
 
 const (
-	defaultGeminiTextTestPrompt  = "hi"
-	defaultGeminiImageTestPrompt = "Generate a cute orange cat astronaut sticker on a clean pastel background."
-	defaultOpenAIImageTestPrompt = "Generate a cute orange cat astronaut sticker on a clean pastel background."
+	defaultGeminiTextTestPrompt   = "hi"
+	defaultGeminiImageTestPrompt  = "Generate a cute orange cat astronaut sticker on a clean pastel background."
+	defaultOpenAIImageTestPrompt  = "Generate a cute orange cat astronaut sticker on a clean pastel background."
+	defaultOpenAIImageEditPrompt  = "Add a thin blue border around the provided image."
+	openAIImageTestEditsSuffix    = "#edits"
+	openAIImageTestProbePNGBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
 )
+
+type openAIImageTestVariant string
+
+const (
+	openAIImageTestVariantGeneration openAIImageTestVariant = "generation"
+	openAIImageTestVariantEdits      openAIImageTestVariant = "edits"
+)
+
+var openAIImageTestProbePNGBytes = decodeOpenAIImageTestProbePNG()
 
 // isOpenAIImageModel checks if the model is an OpenAI image generation model (e.g. gpt-image-2).
 func isOpenAIImageModel(model string) bool {
 	return isOpenAIImageGenerationModel(model) || isVolcengineArkImageModel(model)
+}
+
+func decodeOpenAIImageTestProbePNG() []byte {
+	data, err := base64.StdEncoding.DecodeString(openAIImageTestProbePNGBase64)
+	if err != nil {
+		panic("invalid openai image test probe PNG: " + err.Error())
+	}
+	return data
+}
+
+func splitOpenAIImageTestModelSelector(model string) (string, openAIImageTestVariant) {
+	trimmed := strings.TrimSpace(model)
+	lower := strings.ToLower(trimmed)
+	if strings.HasSuffix(lower, openAIImageTestEditsSuffix) {
+		base := strings.TrimSpace(trimmed[:len(trimmed)-len(openAIImageTestEditsSuffix)])
+		return base, openAIImageTestVariantEdits
+	}
+	return trimmed, openAIImageTestVariantGeneration
+}
+
+func openAIImageTestProbeUpload() OpenAIImagesUpload {
+	return OpenAIImagesUpload{
+		FieldName:   "image",
+		FileName:    "probe.png",
+		ContentType: "image/png",
+		Data:        append([]byte(nil), openAIImageTestProbePNGBytes...),
+	}
 }
 
 // AccountTestService handles account testing operations
@@ -495,9 +537,10 @@ func (s *AccountTestService) testBedrockAccountConnection(c *gin.Context, ctx co
 func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account *Account, modelID string, prompt string, mode string) error {
 	ctx := c.Request.Context()
 	mode = normalizeAccountTestMode(mode)
+	requestedModelID, imageVariant := splitOpenAIImageTestModelSelector(modelID)
 
 	// Default to openai.DefaultTestModel for OpenAI testing
-	testModelID := modelID
+	testModelID := requestedModelID
 	if testModelID == "" {
 		testModelID = openai.DefaultTestModel
 	}
@@ -505,21 +548,26 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 	// Align test routing with gateway behavior: OpenAI accounts apply normal
 	// account model mapping, and compact mode applies compact-only mapping on top.
 	testModelID = account.GetMappedModel(testModelID)
-	if mode == AccountTestModeCompact {
+	isImageProbe := imageVariant == openAIImageTestVariantEdits || isOpenAIImageModel(requestedModelID) || isOpenAIImageModel(testModelID)
+	if mode == AccountTestModeCompact && !isImageProbe {
 		testModelID = resolveOpenAICompactForwardModel(account, testModelID)
 		return s.testOpenAICompactConnection(c, account, testModelID)
 	}
 
 	// Route to image generation test if an image model is selected
-	if isOpenAIImageModel(testModelID) {
+	if isImageProbe {
 		imagePrompt := strings.TrimSpace(prompt)
 		if imagePrompt == "" {
-			imagePrompt = defaultOpenAIImageTestPrompt
+			if imageVariant == openAIImageTestVariantEdits {
+				imagePrompt = defaultOpenAIImageEditPrompt
+			} else {
+				imagePrompt = defaultOpenAIImageTestPrompt
+			}
 		}
 		if account.Type == "apikey" {
-			return s.testOpenAIImageAPIKey(c, ctx, account, testModelID, imagePrompt)
+			return s.testOpenAIImageAPIKey(c, ctx, account, testModelID, imagePrompt, imageVariant)
 		}
-		return s.testOpenAIImageOAuth(c, ctx, account, testModelID, imagePrompt)
+		return s.testOpenAIImageOAuth(c, ctx, account, testModelID, imagePrompt, imageVariant)
 	}
 
 	// Determine authentication method and API URL
@@ -1470,69 +1518,41 @@ func (s *AccountTestService) processOpenAIStream(c *gin.Context, body io.Reader)
 	}
 }
 
-// testOpenAIImageAPIKey tests OpenAI image generation using an API Key account.
-func (s *AccountTestService) testOpenAIImageAPIKey(c *gin.Context, ctx context.Context, account *Account, modelID, prompt string) error {
-	authToken := account.GetOpenAIApiKey()
-	if authToken == "" {
-		return s.sendErrorAndEnd(c, "No API key available")
+func buildOpenAIImageEditTestMultipartBody(modelID, prompt string, upload OpenAIImagesUpload) ([]byte, string, error) {
+	var buffer bytes.Buffer
+	writer := multipart.NewWriter(&buffer)
+
+	for _, field := range []struct {
+		name  string
+		value string
+	}{
+		{name: "model", value: modelID},
+		{name: "prompt", value: prompt},
+		{name: "n", value: "1"},
+		{name: "response_format", value: "b64_json"},
+	} {
+		if err := writer.WriteField(field.name, field.value); err != nil {
+			return nil, "", err
+		}
 	}
 
-	baseURL := account.GetOpenAIBaseURL()
-	if baseURL == "" {
-		baseURL = "https://api.openai.com"
-	}
-	normalizedBaseURL, err := s.validateUpstreamBaseURL(baseURL)
+	header := textproto.MIMEHeader{}
+	header.Set("Content-Disposition", fmt.Sprintf(`form-data; name="%s"; filename="%s"`, upload.FieldName, upload.FileName))
+	header.Set("Content-Type", upload.ContentType)
+	part, err := writer.CreatePart(header)
 	if err != nil {
-		return s.sendErrorAndEnd(c, fmt.Sprintf("Invalid base URL: %s", err.Error()))
+		return nil, "", err
 	}
-	apiURL := buildOpenAIImagesURL(normalizedBaseURL, openAIImagesGenerationsEndpoint)
-
-	// Set SSE headers
-	c.Writer.Header().Set("Content-Type", "text/event-stream")
-	c.Writer.Header().Set("Cache-Control", "no-cache")
-	c.Writer.Header().Set("Connection", "keep-alive")
-	c.Writer.Header().Set("X-Accel-Buffering", "no")
-	c.Writer.Flush()
-
-	s.sendEvent(c, TestEvent{Type: "test_start", Model: modelID})
-
-	payload := map[string]any{
-		"model":           modelID,
-		"prompt":          prompt,
-		"n":               1,
-		"response_format": "b64_json",
+	if _, err := part.Write(upload.Data); err != nil {
+		return nil, "", err
 	}
-	payloadBytes, _ := json.Marshal(payload)
-
-	req, err := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewReader(payloadBytes))
-	if err != nil {
-		return s.sendErrorAndEnd(c, "Failed to create request")
+	if err := writer.Close(); err != nil {
+		return nil, "", err
 	}
-	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+authToken)
+	return buffer.Bytes(), writer.FormDataContentType(), nil
+}
 
-	proxyURL := ""
-	if account.ProxyID != nil && account.Proxy != nil {
-		proxyURL = account.Proxy.URL()
-	}
-
-	resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
-	if err != nil {
-		return s.sendErrorAndEnd(c, fmt.Sprintf("Request failed: %s", err.Error()))
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return s.sendErrorAndEnd(c, fmt.Sprintf("Failed to read response: %s", err.Error()))
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return s.sendErrorAndEnd(c, fmt.Sprintf("API returned %d: %s", resp.StatusCode, string(body)))
-	}
-
-	// Parse {"data": [{"b64_json": "...", "revised_prompt": "..."}]}
+func (s *AccountTestService) sendOpenAIImageJSONTestResults(c *gin.Context, body []byte) error {
 	var result struct {
 		Data []struct {
 			B64JSON       string `json:"b64_json"`
@@ -1564,8 +1584,85 @@ func (s *AccountTestService) testOpenAIImageAPIKey(c *gin.Context, ctx context.C
 	return nil
 }
 
+// testOpenAIImageAPIKey tests OpenAI image generation using an API Key account.
+func (s *AccountTestService) testOpenAIImageAPIKey(c *gin.Context, ctx context.Context, account *Account, modelID, prompt string, variant openAIImageTestVariant) error {
+	authToken := account.GetOpenAIApiKey()
+	if authToken == "" {
+		return s.sendErrorAndEnd(c, "No API key available")
+	}
+
+	baseURL := account.GetOpenAIBaseURL()
+	if baseURL == "" {
+		baseURL = "https://api.openai.com"
+	}
+	normalizedBaseURL, err := s.validateUpstreamBaseURL(baseURL)
+	if err != nil {
+		return s.sendErrorAndEnd(c, fmt.Sprintf("Invalid base URL: %s", err.Error()))
+	}
+	endpoint := openAIImagesGenerationsEndpoint
+	contentType := "application/json"
+	payloadBytes := []byte(nil)
+	if variant == openAIImageTestVariantEdits {
+		endpoint = openAIImagesEditsEndpoint
+		payloadBytes, contentType, err = buildOpenAIImageEditTestMultipartBody(modelID, prompt, openAIImageTestProbeUpload())
+		if err != nil {
+			return s.sendErrorAndEnd(c, fmt.Sprintf("Failed to build image edit request: %s", err.Error()))
+		}
+	} else {
+		payload := map[string]any{
+			"model":           modelID,
+			"prompt":          prompt,
+			"n":               1,
+			"response_format": "b64_json",
+		}
+		payloadBytes, _ = json.Marshal(payload)
+	}
+	apiURL := buildOpenAIImagesURL(normalizedBaseURL, endpoint)
+
+	// Set SSE headers
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.Header().Set("X-Accel-Buffering", "no")
+	c.Writer.Flush()
+
+	s.sendEvent(c, TestEvent{Type: "test_start", Model: modelID})
+
+	req, err := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewReader(payloadBytes))
+	if err != nil {
+		return s.sendErrorAndEnd(c, "Failed to create request")
+	}
+	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
+	req.Header.Set("Content-Type", contentType)
+	req.Header.Set("Authorization", "Bearer "+authToken)
+	if customUA := strings.TrimSpace(account.GetOpenAIUserAgent()); customUA != "" {
+		req.Header.Set("User-Agent", customUA)
+	}
+
+	proxyURL := ""
+	if account.ProxyID != nil && account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+
+	resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
+	if err != nil {
+		return s.sendErrorAndEnd(c, fmt.Sprintf("Request failed: %s", err.Error()))
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return s.sendErrorAndEnd(c, fmt.Sprintf("Failed to read response: %s", err.Error()))
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return s.sendErrorAndEnd(c, fmt.Sprintf("API returned %d: %s", resp.StatusCode, string(body)))
+	}
+	return s.sendOpenAIImageJSONTestResults(c, body)
+}
+
 // testOpenAIImageOAuth tests OpenAI image generation using an OAuth account via Codex /responses API.
-func (s *AccountTestService) testOpenAIImageOAuth(c *gin.Context, ctx context.Context, account *Account, modelID, prompt string) error {
+func (s *AccountTestService) testOpenAIImageOAuth(c *gin.Context, ctx context.Context, account *Account, modelID, prompt string, variant openAIImageTestVariant) error {
 	authToken := account.GetOpenAIAccessToken()
 	if authToken == "" {
 		return s.sendErrorAndEnd(c, "No access token available")
@@ -1579,12 +1676,23 @@ func (s *AccountTestService) testOpenAIImageOAuth(c *gin.Context, ctx context.Co
 	c.Writer.Flush()
 
 	s.sendEvent(c, TestEvent{Type: "test_start", Model: modelID})
-	s.sendEvent(c, TestEvent{Type: "content", Text: "Calling Codex /responses image tool...\n"})
+	if variant == openAIImageTestVariantEdits {
+		s.sendEvent(c, TestEvent{Type: "content", Text: "Calling Codex /responses image edit tool...\n"})
+	} else {
+		s.sendEvent(c, TestEvent{Type: "content", Text: "Calling Codex /responses image tool...\n"})
+	}
 
+	endpoint := openAIImagesGenerationsEndpoint
+	uploads := []OpenAIImagesUpload(nil)
+	if variant == openAIImageTestVariantEdits {
+		endpoint = openAIImagesEditsEndpoint
+		uploads = []OpenAIImagesUpload{openAIImageTestProbeUpload()}
+	}
 	parsed := &OpenAIImagesRequest{
-		Endpoint: openAIImagesGenerationsEndpoint,
+		Endpoint: endpoint,
 		Model:    strings.TrimSpace(modelID),
 		Prompt:   prompt,
+		Uploads:  uploads,
 	}
 	applyOpenAIImagesDefaults(parsed)
 

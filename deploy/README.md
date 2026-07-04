@@ -25,6 +25,17 @@ This directory contains files for deploying Sub2API on Linux servers.
 | `DATAMANAGEMENTD_CN.md` | datamanagementd 部署与联动说明（中文） |
 | `config.example.yaml` | Example configuration file |
 
+## Codex Responses Chain
+
+For chained Sub2API deployments that front Codex/OpenAI Responses traffic:
+
+- replay notes: `docs/CODEX_STREAMING_CHAIN_TUNING.md`
+- transient OpenAI image recovery: `docs/OPENAI_IMAGE_LANE_RECOVERY.md`
+- nginx example: `deploy/nginx/codex-streaming-location.conf.example`
+- SQL replay template: `deploy/sql/openai_responses_codex_tuning.example.sql`
+- image lane replay template: `deploy/sql/openai_image_lane_recovery.example.sql`
+- same-source upstream guard rails: keep cheap primary/failover lanes on conservative account concurrency and 429/502 cooldown rules instead of letting all lanes run at the default `10`
+
 ---
 
 ## Docker Deployment (Recommended)

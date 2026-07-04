@@ -870,8 +870,9 @@ func TestOpenAIGatewayServiceForwardImages_APIKeyGenerationUsesConfiguredV1BaseU
 		Platform: PlatformOpenAI,
 		Type:     AccountTypeAPIKey,
 		Credentials: map[string]any{
-			"api_key":  "test-api-key",
-			"base_url": "https://image-upstream.example/v1",
+			"api_key":     "test-api-key",
+			"base_url":    "https://image-upstream.example/v1",
+			"host_header": "aiai.ac",
 		},
 	}
 
@@ -886,6 +887,7 @@ func TestOpenAIGatewayServiceForwardImages_APIKeyGenerationUsesConfiguredV1BaseU
 	require.True(t, ok)
 	require.NotNil(t, upstream.lastReq)
 	require.Equal(t, "https://image-upstream.example/v1/images/generations", upstream.lastReq.URL.String())
+	require.Equal(t, "aiai.ac", upstream.lastReq.Host)
 	require.Equal(t, "Bearer test-api-key", upstream.lastReq.Header.Get("Authorization"))
 	require.Equal(t, "application/json", upstream.lastReq.Header.Get("Content-Type"))
 	require.Equal(t, "gpt-image-2", gjson.GetBytes(upstream.lastBody, "model").String())
@@ -1168,8 +1170,9 @@ func TestOpenAIGatewayServiceForwardImages_AIAIAPIKeyEditUsesAsyncImageField(t *
 		Platform: PlatformOpenAI,
 		Type:     AccountTypeAPIKey,
 		Credentials: map[string]any{
-			"api_key":  "test-aiai-key",
-			"base_url": "https://aiai.ac/api/v1",
+			"api_key":     "test-aiai-key",
+			"base_url":    "https://aiai.ac/api/v1",
+			"host_header": "aiai.ac",
 		},
 	}
 
@@ -1180,6 +1183,8 @@ func TestOpenAIGatewayServiceForwardImages_AIAIAPIKeyEditUsesAsyncImageField(t *
 	require.Len(t, upstream.requests, 2)
 	require.Equal(t, "https://aiai.ac/api/v1/images/generations", upstream.requests[0].URL.String())
 	require.Equal(t, "https://aiai.ac/api/v1/images/task_aiai_edit", upstream.requests[1].URL.String())
+	require.Equal(t, "aiai.ac", upstream.requests[0].Host)
+	require.Equal(t, "aiai.ac", upstream.requests[1].Host)
 	require.Equal(t, "gpt-image-2", gjson.GetBytes(upstream.bodies[0], "model").String())
 	require.Equal(t, "keep the reference pose", gjson.GetBytes(upstream.bodies[0], "prompt").String())
 	require.True(t, gjson.GetBytes(upstream.bodies[0], "async").Bool())
@@ -1241,6 +1246,14 @@ func TestOpenAIGatewayServiceForwardImages_AIAIURLResponseNormalizedToBase64(t *
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Equal(t, base64.StdEncoding.EncodeToString(imageBytes), gjson.Get(rec.Body.String(), "data.0.b64_json").String())
 	require.False(t, gjson.Get(rec.Body.String(), "data.0.url").Exists())
+}
+
+func TestIsAIAIImageBaseURLRecognizesCurrentAIAIEndpoints(t *testing.T) {
+	require.True(t, isAIAIImageBaseURL("https://aiai.ac/api/v1"))
+	require.True(t, isAIAIImageBaseURL("https://www.llmtoken.shop/api/v1"))
+	require.True(t, isAIAIImageBaseURL("https://api.llmtoken.shop/api/v1"))
+	require.False(t, isAIAIImageBaseURL("https://not-llmtoken.shop.evil/api/v1"))
+	require.False(t, isAIAIImageBaseURL("https://example.com/api/v1"))
 }
 
 func TestOpenAIGatewayServiceForwardImages_OAuthStreamingTransformsEvents(t *testing.T) {

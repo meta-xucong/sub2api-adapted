@@ -1112,6 +1112,17 @@ func (a *Account) GetOpenAIUserAgent() string {
 	return a.GetCredential("user_agent")
 }
 
+func (a *Account) GetOpenAIHostHeader() string {
+	if !a.IsOpenAIApiKey() {
+		return ""
+	}
+	host := strings.TrimSpace(a.GetCredential("host_header"))
+	if host == "" || strings.Contains(host, "://") || strings.ContainsAny(host, " \t\r\n/\\") {
+		return ""
+	}
+	return host
+}
+
 func (a *Account) GetChatGPTAccountID() string {
 	if !a.IsOpenAIOAuth() {
 		return ""
