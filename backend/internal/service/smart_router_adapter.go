@@ -2,6 +2,8 @@ package service
 
 import (
 	"encoding/json"
+	"net"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -84,7 +86,7 @@ func smartRouterLaneSnapshot(account *Account, loadInfo *AccountLoadInfo, errorR
 	}
 	sourceGroup := strings.TrimSpace(extra.SourceGroup)
 	if sourceGroup == "" {
-		sourceGroup = "account:" + strconv.FormatInt(account.ID, 10)
+		sourceGroup = smartRouterAutoSourceGroup(account)
 	}
 	baseWeight := extra.BaseWeight
 	if baseWeight <= 0 {
@@ -104,6 +106,11 @@ func smartRouterLaneSnapshot(account *Account, loadInfo *AccountLoadInfo, errorR
 		waitingCount = loadInfo.WaitingCount
 		loadRate = loadInfo.LoadRate
 	}
+	maxConcurrency = smartRouterAdaptiveMaxConcurrency(maxConcurrency, errorRate, currentConcurrency, waitingCount, loadRate)
+	sourceGroupMaxConcurrency := extra.SourceGroupMaxConcurrency
+	if sourceGroupMaxConcurrency <= 0 {
+		sourceGroupMaxConcurrency = smartRouterAutoSourceGroupMaxConcurrency(sourceGroup, maxConcurrency, errorRate)
+	}
 	latency := 0.0
 	if hasTTFT && ttft > 0 {
 		latency = ttft
@@ -119,7 +126,7 @@ func smartRouterLaneSnapshot(account *Account, loadInfo *AccountLoadInfo, errorR
 		CostMultiplier:            costMultiplier,
 		BaseWeight:                baseWeight,
 		MaxConcurrency:            maxConcurrency,
-		SourceGroupMaxConcurrency: extra.SourceGroupMaxConcurrency,
+		SourceGroupMaxConcurrency: sourceGroupMaxConcurrency,
 		CurrentConcurrency:        currentConcurrency,
 		CurrentWaiting:            waitingCount,
 		LoadRate:                  loadRate,
@@ -137,7 +144,111 @@ func smartRouterSourceGroup(account *Account) string {
 	if group := strings.TrimSpace(extra.SourceGroup); group != "" {
 		return group
 	}
+	return smartRouterAutoSourceGroup(account)
+}
+
+func smartRouterAutoSourceGroup(account *Account) string {
+	if account == nil {
+		return ""
+	}
+	if key := smartRouterLongNumericNameKey(account.Name); key != "" {
+		return "name-key:" + key
+	}
+	if host := smartRouterBaseURLHost(account); host != "" {
+		return "host:" + host
+	}
 	return "account:" + strconv.FormatInt(account.ID, 10)
+}
+
+func smartRouterLongNumericNameKey(name string) string {
+	longest := ""
+	current := strings.Builder{}
+	flush := func() {
+		if current.Len() >= 6 && current.Len() > len(longest) {
+			longest = current.String()
+		}
+		current.Reset()
+	}
+	for _, r := range name {
+		if r >= '0' && r <= '9' {
+			current.WriteRune(r)
+			continue
+		}
+		flush()
+	}
+	flush()
+	return longest
+}
+
+func smartRouterBaseURLHost(account *Account) string {
+	if account == nil {
+		return ""
+	}
+	raw := strings.TrimSpace(account.GetCredential("base_url"))
+	if raw == "" {
+		return ""
+	}
+	if !strings.Contains(raw, "://") {
+		raw = "https://" + raw
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	host := strings.ToLower(strings.TrimSpace(parsed.Host))
+	if host == "" {
+		return ""
+	}
+	if splitHost, _, err := net.SplitHostPort(host); err == nil {
+		host = splitHost
+	}
+	host = strings.TrimPrefix(host, "www.")
+	return strings.Trim(host, ".")
+}
+
+func smartRouterAdaptiveMaxConcurrency(base int, errorRate float64, currentConcurrency int, waitingCount int, loadRate int) int {
+	if base <= 0 {
+		return 0
+	}
+	limit := base
+	switch {
+	case errorRate >= 0.60:
+		limit = minPositiveInt(limit, 1)
+	case errorRate >= 0.35:
+		limit = minPositiveInt(limit, 2)
+	case errorRate >= 0.20:
+		limit = minPositiveInt(limit, ceilDivInt(base, 2))
+	}
+	if loadRate >= 95 {
+		limit = minPositiveInt(limit, ceilDivInt(base, 4))
+	} else if loadRate >= 85 {
+		limit = minPositiveInt(limit, ceilDivInt(base, 2))
+	}
+	if waitingCount > 0 {
+		switch {
+		case currentConcurrency <= 1:
+			limit = minPositiveInt(limit, 1)
+		default:
+			limit = minPositiveInt(limit, currentConcurrency)
+		}
+	}
+	if limit <= 0 {
+		return 1
+	}
+	return limit
+}
+
+func smartRouterAutoSourceGroupMaxConcurrency(sourceGroup string, maxConcurrency int, errorRate float64) int {
+	if maxConcurrency <= 0 || !strings.HasPrefix(sourceGroup, "name-key:") {
+		return 0
+	}
+	if errorRate >= 0.35 {
+		return 1
+	}
+	if maxConcurrency <= 2 {
+		return maxConcurrency
+	}
+	return 2
 }
 
 func smartRouterGroupID(groupID *int64) string {
@@ -304,4 +415,27 @@ func smartRouterBool(value any) (bool, bool) {
 		}
 	}
 	return false, false
+}
+
+func ceilDivInt(value int, divisor int) int {
+	if divisor <= 0 {
+		return value
+	}
+	if value <= 0 {
+		return 0
+	}
+	return (value + divisor - 1) / divisor
+}
+
+func minPositiveInt(left int, right int) int {
+	if left <= 0 {
+		return right
+	}
+	if right <= 0 {
+		return left
+	}
+	if left < right {
+		return left
+	}
+	return right
 }

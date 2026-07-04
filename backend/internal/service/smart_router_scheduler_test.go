@@ -174,6 +174,76 @@ func TestOpenAIGatewayService_SmartRouterHonorsExtraMaxConcurrency(t *testing.T)
 	}
 }
 
+func TestOpenAIGatewayService_SmartRouterAutoProtectsUnconfiguredBusyLane(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+	ctx := context.Background()
+	groupID := int64(7251)
+	cheapRate := 0.2
+	fallbackRate := 1.0
+	accounts := []Account{
+		{
+			ID:             72501,
+			Name:           "chatgpt-7646881-plus",
+			Platform:       PlatformOpenAI,
+			Type:           AccountTypeAPIKey,
+			Status:         StatusActive,
+			Schedulable:    true,
+			Concurrency:    10,
+			Priority:       1,
+			RateMultiplier: &cheapRate,
+		},
+		{
+			ID:             72502,
+			Name:           "stable-new-provider",
+			Platform:       PlatformOpenAI,
+			Type:           AccountTypeAPIKey,
+			Status:         StatusActive,
+			Schedulable:    true,
+			Concurrency:    10,
+			Priority:       50,
+			RateMultiplier: &fallbackRate,
+		},
+	}
+	concurrencyCache := schedulerTestConcurrencyCache{
+		loadMap: map[int64]*AccountLoadInfo{
+			72501: {AccountID: 72501, CurrentConcurrency: 1, WaitingCount: 1, LoadRate: 95},
+			72502: {AccountID: 72502, CurrentConcurrency: 0, LoadRate: 10},
+		},
+		acquireResults: map[int64]bool{72502: true},
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:              &schedulerTestGatewayCache{},
+		cfg:                newSmartRouterSchedulerTestConfig(),
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(concurrencyCache),
+		openaiAccountStats: newOpenAIAccountRuntimeStats(),
+	}
+	for i := 0; i < 5; i++ {
+		svc.openaiAccountStats.report(72501, false, nil)
+	}
+
+	selection, decision, err := svc.SelectAccountWithScheduler(
+		ctx,
+		&groupID,
+		"",
+		"",
+		"gpt-5.5",
+		nil,
+		OpenAIUpstreamTransportAny,
+		false,
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, int64(72502), selection.Account.ID)
+	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
 func TestSmartRouterLaneSnapshotParsesAccountExtra(t *testing.T) {
 	account := &Account{
 		ID:          73001,
@@ -192,9 +262,9 @@ func TestSmartRouterLaneSnapshotParsesAccountExtra(t *testing.T) {
 
 	lane, ok := smartRouterLaneSnapshot(account, &AccountLoadInfo{
 		CurrentConcurrency: 1,
-		WaitingCount:       2,
+		WaitingCount:       0,
 		LoadRate:           30,
-	}, 0.25, 1200, true)
+	}, 0.10, 1200, true)
 
 	require.True(t, ok)
 	require.Equal(t, "configured-lane", lane.LaneID)
@@ -206,8 +276,48 @@ func TestSmartRouterLaneSnapshotParsesAccountExtra(t *testing.T) {
 	require.True(t, lane.Capabilities["image_generation"])
 	require.True(t, lane.Capabilities["image_edit"])
 	require.Equal(t, 1, lane.CurrentConcurrency)
-	require.Equal(t, 2, lane.CurrentWaiting)
+	require.Equal(t, 0, lane.CurrentWaiting)
 	require.Equal(t, 30, lane.LoadRate)
-	require.Equal(t, 0.25, lane.ErrorRateEWMA)
+	require.Equal(t, 0.10, lane.ErrorRateEWMA)
 	require.Equal(t, 1200.0, lane.LatencyEWMAms)
+}
+
+func TestSmartRouterLaneSnapshotAutoInfersSourceGroupAndConcurrency(t *testing.T) {
+	account := &Account{
+		ID:          73002,
+		Name:        "404token chatgpt-7646881 plus",
+		Concurrency: 10,
+		Credentials: map[string]any{
+			"base_url": "https://example.invalid/api/v1",
+		},
+	}
+
+	lane, ok := smartRouterLaneSnapshot(account, &AccountLoadInfo{
+		CurrentConcurrency: 1,
+		WaitingCount:       1,
+		LoadRate:           95,
+	}, 0.70, 0, false)
+
+	require.True(t, ok)
+	require.Equal(t, "name-key:7646881", lane.SourceGroup)
+	require.Equal(t, 1, lane.MaxConcurrency)
+	require.Equal(t, 1, lane.SourceGroupMaxConcurrency)
+}
+
+func TestSmartRouterLaneSnapshotAutoInfersHostWhenNoNameKey(t *testing.T) {
+	account := &Account{
+		ID:          73003,
+		Name:        "new-provider-plus",
+		Concurrency: 4,
+		Credentials: map[string]any{
+			"base_url": "https://www.vendor.example:8443/openai",
+		},
+	}
+
+	lane, ok := smartRouterLaneSnapshot(account, nil, 0, 0, false)
+
+	require.True(t, ok)
+	require.Equal(t, "host:vendor.example", lane.SourceGroup)
+	require.Equal(t, 4, lane.MaxConcurrency)
+	require.Equal(t, 0, lane.SourceGroupMaxConcurrency)
 }

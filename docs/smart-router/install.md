@@ -78,3 +78,18 @@ gateway:
    - 单线路并发
    - source group 是否被连续打穿
 4. 稳定后再扩大到更多线路。
+## Zero-config new lane behavior
+
+New accounts do not need a mandatory `extra.smart_router` block. When Smart
+Router is enabled, the Sub2API adapter creates a default lane for every
+eligible account and infers:
+
+- `source_group` from a long numeric key in the account name, such as
+  `7646881`, then from the upstream `base_url` host, then from `account:<id>`.
+- effective lane concurrency from account concurrency, recent error EWMA,
+  current concurrency, waiting queue, and load rate.
+- source-group concurrency for inferred long numeric source groups, with an
+  automatic cap of `2`, or `1` after elevated recent failures.
+
+Operators can still override `source_group`, `max_concurrency`, and
+`source_group_max_concurrency` in `extra.smart_router`, but this is optional.

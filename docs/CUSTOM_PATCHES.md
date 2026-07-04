@@ -28,6 +28,13 @@ enhances the OpenAI load-balance layer with lane/source-group abstraction,
 cost-aware weighted top-K ordering, per-lane concurrency guards, source-group
 retry suppression, and request attempt budgets.
 
+New lanes are protected without mandatory per-account JSON. If
+`extra.smart_router` is absent, the Sub2API adapter infers a source group from a
+long numeric key in the account name, then from the upstream host, then from the
+account id. It also lowers the effective scheduling concurrency automatically
+when recent error EWMA, load rate, current concurrency, or waiting queue show
+that the lane cannot sustain the configured concurrency.
+
 Why this stays in the overlay:
 
 - low-cost lanes should stay preferred without receiving 100% of traffic;
