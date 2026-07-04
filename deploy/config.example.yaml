@@ -328,6 +328,36 @@ gateway:
     sticky_escape_ttft_ms: 15000
     # 错误率 EWMA 超过该阈值时跳过 sticky，默认 0.5，仅在明显降级时触发
     sticky_escape_error_rate: 0.5
+  # Smart Router modular lane scheduler. Default disabled: when disabled, the
+  # existing OpenAI scheduler behavior is unchanged.
+  # Smart Router 模块化多线路智能调度。默认关闭；关闭时不改变现有 OpenAI 调度。
+  smart_router:
+    enabled: false
+    # Weighted top-K candidate pool used only when Smart Router is enabled.
+    # 启用后参与加权选择的候选池大小。
+    top_k: 5
+    # Max lane attempts for one image request across failover loops.
+    # 单个图片请求在 failover 中最多尝试的线路数。
+    max_attempts_image: 2
+    # Max lane attempts for chat/responses requests.
+    # chat/responses 请求最多尝试的线路数。
+    max_attempts_chat: 3
+    max_attempts_default: 3
+    # Default same-source attempts per request. Set to 1 to avoid plus/pro/fallback
+    # from the same provider being hit one after another.
+    # 同源线路每个请求默认最多尝试次数；1 可避免同源 plus/pro/兜底连续打穿。
+    same_source_group_attempts: 1
+    # Maximum scheduling advantage from a lower cost_multiplier.
+    # 低成本倍率带来的最大调度加成，避免便宜线路永久垄断。
+    cost_bias_max: 3.0
+    scoring:
+      priority: 0.8
+      cost: 1.0
+      health: 1.2
+      load: 1.0
+      queue: 0.6
+      latency: 0.4
+      recovery: 0.8
   # OpenAI HTTP upstream protocol strategy.
   # OpenAI HTTP 上游协议策略（默认 HTTP/2；代理明确不兼容时可临时回退 HTTP/1.1）。
   openai_http2:

@@ -15,6 +15,46 @@ survive upstream updates.
 
 ## Current Custom Patches
 
+### `custom: add modular Sub2API Smart Router`
+
+Adds a provider-neutral Smart Router module for OpenAI-compatible account
+scheduling. The module lives under `backend/internal/smartrouter` and is
+designed to be reusable by a future sidecar gateway; the Sub2API integration is
+kept as a thin adapter in the service scheduler.
+
+It is disabled by default through `gateway.smart_router.enabled=false`, so
+deploying the patch alone does not change production behavior. When enabled, it
+enhances the OpenAI load-balance layer with lane/source-group abstraction,
+cost-aware weighted top-K ordering, per-lane concurrency guards, source-group
+retry suppression, and request attempt budgets.
+
+Why this stays in the overlay:
+
+- low-cost lanes should stay preferred without receiving 100% of traffic;
+- plus/pro/fallback lanes from the same upstream need source-group protection;
+- image and Codex/chat routes need a shared pluggable routing primitive before
+  the policy can be commercialized for arbitrary Sub2API users;
+- the first implementation must remain safe to replay after upstream updates
+  and easy to disable in production.
+
+Files:
+
+- `backend/internal/smartrouter/`
+- `backend/internal/config/config.go`
+- `backend/internal/config/config_test.go`
+- `backend/internal/service/openai_account_scheduler.go`
+- `backend/internal/service/smart_router_adapter.go`
+- `backend/internal/service/smart_router_scheduler_test.go`
+- `backend/internal/handler/openai_images.go`
+- `docs/SMART_ROUTER_DESIGN.md`
+- `docs/SMART_ROUTER_DEVELOPMENT.md`
+- `docs/smart-router/`
+- `deploy/smart_router_policy.example.json`
+- `deploy/config.example.yaml`
+
+Drop this patch only when upstream gains an equivalent modular smart-routing
+layer with source-group protection and policy-driven lane scoring.
+
 ### `custom: soften transient OpenAI image flaps and auto-probe image edits`
 
 This patch keeps transient OpenAI image lanes from being disabled permanently
@@ -24,6 +64,11 @@ It adds three production behaviors:
 
 - OpenAI image `403` now cools only the model-scoped image capability for
   10 minutes instead of escalating the whole account into `error`.
+- OpenAI image edit transient account failures (`403`, `408`, `500`, `502`,
+  `503`, `504`) now apply a short per-account scheduling cooldown via
+  `gateway.image_edit_transient_cooldown_seconds` (default `12`) before
+  failover, so a flapping image-to-image fallback account is not immediately
+  reselected by the next user request.
 - Scheduled tests accept `gpt-image-2#edits`, which runs an in-memory
   `/v1/images/edits` probe using a tiny embedded PNG instead of a plain
   text-to-image probe.
@@ -37,10 +82,18 @@ Why this stays in the overlay:
   aggressive for that failure mode;
 - generation-only health checks are too weak because these lanes often recover
   text-to-image before image-to-image becomes stable again.
+- image-to-image fallback accounts can fail with intermittent `500` while still
+  passing a later probe, so they need a short cooling window rather than a
+  permanent disable.
 
 Files:
 
+- `backend/internal/config/config.go`
+- `backend/internal/config/config_test.go`
+- `backend/internal/handler/openai_images.go`
 - `backend/internal/service/openai_account_runtime_block_fastpath.go`
+- `backend/internal/service/openai_image_edit_transient_cooldown.go`
+- `backend/internal/service/openai_image_edit_transient_cooldown_test.go`
 - `backend/internal/service/ratelimit_service.go`
 - `backend/internal/service/account_test_service.go`
 - `backend/internal/service/account_test_service_openai_image_test.go`

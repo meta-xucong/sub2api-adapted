@@ -192,13 +192,14 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 
 	for {
 		reqLog.Debug("openai.images.account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
-		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForImages(
+		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForImageOperation(
 			requestCtx,
 			apiKey.GroupID,
 			sessionHash,
 			requestModel,
 			failedAccountIDs,
 			parsed.RequiredCapability,
+			parsed.IsEdits(),
 		)
 		if err != nil {
 			reqLog.Warn("openai.images.account_select_failed",
@@ -310,6 +311,9 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 							}
 							continue
 						}
+					}
+					if parsed.IsEdits() {
+						h.gatewayService.TempUnscheduleImageEditTransientError(requestCtx, account, failoverErr)
 					}
 					h.gatewayService.RecordOpenAIAccountSwitch()
 					failedAccountIDs[account.ID] = struct{}{}

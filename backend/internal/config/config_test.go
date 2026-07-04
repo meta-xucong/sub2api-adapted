@@ -1437,6 +1437,34 @@ func TestValidateConfigErrors(t *testing.T) {
 			wantErr: "gateway.image_stream_data_interval_timeout must be non-negative",
 		},
 		{
+			name:    "gateway image edit transient cooldown negative",
+			mutate:  func(c *Config) { c.Gateway.ImageEditTransientCooldownSeconds = -1 },
+			wantErr: "gateway.image_edit_transient_cooldown_seconds must be non-negative",
+		},
+		{
+			name:    "gateway smart router top k negative",
+			mutate:  func(c *Config) { c.Gateway.SmartRouter.TopK = -1 },
+			wantErr: "gateway.smart_router.top_k must be non-negative",
+		},
+		{
+			name:    "gateway smart router image attempts negative",
+			mutate:  func(c *Config) { c.Gateway.SmartRouter.MaxAttemptsImage = -1 },
+			wantErr: "gateway.smart_router.max_attempts_image must be non-negative",
+		},
+		{
+			name:    "gateway smart router scoring negative",
+			mutate:  func(c *Config) { c.Gateway.SmartRouter.Scoring.Cost = -0.1 },
+			wantErr: "gateway.smart_router.scoring.* must be non-negative",
+		},
+		{
+			name: "gateway smart router enabled all weights zero",
+			mutate: func(c *Config) {
+				c.Gateway.SmartRouter.Enabled = true
+				c.Gateway.SmartRouter.Scoring = GatewaySmartRouterScoringConfig{}
+			},
+			wantErr: "gateway.smart_router.scoring must not all be zero when smart_router is enabled",
+		},
+		{
 			name:    "gateway image concurrency max negative",
 			mutate:  func(c *Config) { c.Gateway.ImageConcurrency.MaxConcurrentRequests = -1 },
 			wantErr: "gateway.image_concurrency.max_concurrent_requests must be non-negative",
@@ -1966,6 +1994,27 @@ func TestLoad_DefaultGatewayImageStreamConfig(t *testing.T) {
 	}
 	if cfg.Gateway.ImageStreamKeepaliveInterval != 10 {
 		t.Fatalf("image_stream_keepalive_interval = %d, want 10", cfg.Gateway.ImageStreamKeepaliveInterval)
+	}
+	if cfg.Gateway.ImageEditTransientCooldownSeconds != 12 {
+		t.Fatalf("image_edit_transient_cooldown_seconds = %d, want 12", cfg.Gateway.ImageEditTransientCooldownSeconds)
+	}
+	if cfg.Gateway.SmartRouter.Enabled {
+		t.Fatalf("smart_router.enabled = true, want false")
+	}
+	if cfg.Gateway.SmartRouter.TopK != 5 {
+		t.Fatalf("smart_router.top_k = %d, want 5", cfg.Gateway.SmartRouter.TopK)
+	}
+	if cfg.Gateway.SmartRouter.MaxAttemptsImage != 2 {
+		t.Fatalf("smart_router.max_attempts_image = %d, want 2", cfg.Gateway.SmartRouter.MaxAttemptsImage)
+	}
+	if cfg.Gateway.SmartRouter.MaxAttemptsChat != 3 {
+		t.Fatalf("smart_router.max_attempts_chat = %d, want 3", cfg.Gateway.SmartRouter.MaxAttemptsChat)
+	}
+	if cfg.Gateway.SmartRouter.SameSourceGroupAttempts != 1 {
+		t.Fatalf("smart_router.same_source_group_attempts = %d, want 1", cfg.Gateway.SmartRouter.SameSourceGroupAttempts)
+	}
+	if cfg.Gateway.SmartRouter.CostBiasMax != 3 {
+		t.Fatalf("smart_router.cost_bias_max = %v, want 3", cfg.Gateway.SmartRouter.CostBiasMax)
 	}
 	if cfg.Gateway.ImageConcurrency.Enabled {
 		t.Fatalf("image_concurrency.enabled = true, want false")

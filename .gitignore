@@ -128,6 +128,10 @@ deploy/docker-compose.override.yml
 .gocache/
 vite.config.js
 docs/*
+!docs/smart-router/
+!docs/smart-router/*.md
+!docs/SMART_ROUTER_DEVELOPMENT.md
+!docs/SMART_ROUTER_DESIGN.md
 !docs/PAYMENT.md
 !docs/PAYMENT_CN.md
 !docs/ADMIN_PAYMENT_INTEGRATION_API.md
