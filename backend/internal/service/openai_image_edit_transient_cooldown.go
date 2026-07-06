@@ -7,11 +7,19 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	smartrouter "github.com/Wei-Shaw/sub2api/internal/smartrouter/core"
 	"go.uber.org/zap"
 )
 
 const defaultOpenAIImageEditTransientCooldown = 12 * time.Second
+
+const (
+	openAIImageEditTransientReasonPrefix = "openai image edit transient cooldown"
+	openAIImageEditCapacityRetryPadding  = 750 * time.Millisecond
+	openAIImageEditCapacityRetryMax      = 30 * time.Second
+)
 
 func (s *OpenAIGatewayService) TempUnscheduleImageEditTransientError(ctx context.Context, account *Account, failoverErr *UpstreamFailoverError) {
 	if s == nil || account == nil || failoverErr == nil {
@@ -74,6 +82,123 @@ func (s *OpenAIGatewayService) openAIImageEditTransientCooldown() time.Duration 
 		return 0
 	}
 	return time.Duration(seconds) * time.Second
+}
+
+func (s *OpenAIGatewayService) OpenAIImageEditTransientRetryAfterSeconds() int {
+	cooldown := s.openAIImageEditTransientCooldown()
+	if cooldown <= 0 {
+		return 0
+	}
+	if cooldown > openAIImageEditCapacityRetryMax {
+		cooldown = openAIImageEditCapacityRetryMax
+	}
+	return durationCeilSeconds(cooldown + openAIImageEditCapacityRetryPadding)
+}
+
+func (s *OpenAIGatewayService) OpenAIImageEditCapacityRetryDelay(ctx context.Context, groupID *int64, requestedModel string) time.Duration {
+	cooldown := s.openAIImageEditTransientCooldown()
+	if cooldown <= 0 {
+		return 0
+	}
+	until, ok := s.nextOpenAIImageEditTransientCapacityTime(ctx, groupID, requestedModel)
+	if !ok {
+		return 0
+	}
+	delay := time.Until(until) + openAIImageEditCapacityRetryPadding
+	if delay <= 0 {
+		delay = openAIImageEditCapacityRetryPadding
+	}
+	if delay > openAIImageEditCapacityRetryMax {
+		delay = openAIImageEditCapacityRetryMax
+	}
+	return delay
+}
+
+func (s *OpenAIGatewayService) nextOpenAIImageEditTransientCapacityTime(ctx context.Context, groupID *int64, requestedModel string) (time.Time, bool) {
+	accounts, err := s.listOpenAIImageEditCapacityAccounts(ctx, groupID)
+	if err != nil || len(accounts) == 0 {
+		return time.Time{}, false
+	}
+
+	now := time.Now()
+	candidateCount := 0
+	blockedCount := 0
+	var earliest time.Time
+	for i := range accounts {
+		account := &accounts[i]
+		if !isOpenAIImageEditCapacityCandidate(account, requestedModel, now) {
+			continue
+		}
+		candidateCount++
+		until, ok := openAIImageEditTransientBlockedUntil(account, now)
+		if !ok {
+			return time.Time{}, false
+		}
+		blockedCount++
+		if earliest.IsZero() || until.Before(earliest) {
+			earliest = until
+		}
+	}
+	if candidateCount == 0 || blockedCount != candidateCount || earliest.IsZero() {
+		return time.Time{}, false
+	}
+	return earliest, true
+}
+
+func (s *OpenAIGatewayService) listOpenAIImageEditCapacityAccounts(ctx context.Context, groupID *int64) ([]Account, error) {
+	if s == nil || s.accountRepo == nil {
+		return nil, nil
+	}
+	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
+		return s.accountRepo.ListByPlatform(ctx, PlatformOpenAI)
+	}
+	if groupID != nil {
+		return s.accountRepo.ListByGroup(ctx, *groupID)
+	}
+	return s.accountRepo.ListByPlatform(ctx, PlatformOpenAI)
+}
+
+func isOpenAIImageEditCapacityCandidate(account *Account, requestedModel string, now time.Time) bool {
+	if account == nil || !account.IsOpenAI() || !account.IsActive() || !account.Schedulable {
+		return false
+	}
+	if account.AutoPauseOnExpired && account.ExpiresAt != nil && !now.Before(*account.ExpiresAt) {
+		return false
+	}
+	if account.OverloadUntil != nil && now.Before(*account.OverloadUntil) {
+		return false
+	}
+	if account.RateLimitResetAt != nil && now.Before(*account.RateLimitResetAt) {
+		return false
+	}
+	if !account.IsModelSupported(requestedModel) {
+		return false
+	}
+	if !account.SupportsOpenAIImageCapability(OpenAIImagesCapabilityBasic) {
+		return false
+	}
+	extra := parseSmartRouterAccountExtra(account)
+	if len(extra.Capabilities) > 0 && !extra.Capabilities[smartrouter.CapabilityImageEdit] {
+		return false
+	}
+	return true
+}
+
+func openAIImageEditTransientBlockedUntil(account *Account, now time.Time) (time.Time, bool) {
+	if account == nil || account.TempUnschedulableUntil == nil || !now.Before(*account.TempUnschedulableUntil) {
+		return time.Time{}, false
+	}
+	if !strings.Contains(account.TempUnschedulableReason, openAIImageEditTransientReasonPrefix) {
+		return time.Time{}, false
+	}
+	return *account.TempUnschedulableUntil, true
+}
+
+func durationCeilSeconds(value time.Duration) int {
+	if value <= 0 {
+		return 0
+	}
+	return int((value + time.Second - time.Nanosecond) / time.Second)
 }
 
 func isOpenAIImageEditTransientStatus(statusCode int) bool {

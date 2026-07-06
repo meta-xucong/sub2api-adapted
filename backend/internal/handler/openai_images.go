@@ -189,6 +189,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 	failedAccountIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
 	var lastFailoverErr *service.UpstreamFailoverError
+	imageEditCapacityWaited := false
 
 	for {
 		reqLog.Debug("openai.images.account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
@@ -206,11 +207,31 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 				zap.Error(err),
 				zap.Int("excluded_account_count", len(failedAccountIDs)),
 			)
+			if parsed.IsEdits() && len(failedAccountIDs) == 0 && !imageEditCapacityWaited {
+				if wait := h.gatewayService.OpenAIImageEditCapacityRetryDelay(requestCtx, apiKey.GroupID, requestModel); wait > 0 {
+					imageEditCapacityWaited = true
+					reqLog.Warn("openai.images.image_edit_capacity_wait",
+						zap.Duration("wait", wait),
+						zap.Error(err),
+					)
+					select {
+					case <-requestCtx.Done():
+						if imageCacheOwner {
+							h.imageRequestCache.finishError(imageCacheEntry)
+						}
+						return
+					case <-time.After(wait):
+					}
+					continue
+				}
+			}
 			if len(failedAccountIDs) == 0 {
 				markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
+				h.setImageEditTransientRetryAfter(c, parsed)
 				h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available compatible accounts", streamStarted)
 				return
 			}
+			h.setImageEditTransientRetryAfter(c, parsed)
 			if lastFailoverErr != nil {
 				h.handleFailoverExhausted(c, lastFailoverErr, streamStarted)
 			} else {
@@ -220,6 +241,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 		}
 		if selection == nil || selection.Account == nil {
 			markOpsRoutingCapacityLimited(c)
+			h.setImageEditTransientRetryAfter(c, parsed)
 			h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available compatible accounts", streamStarted)
 			return
 		}
@@ -322,6 +344,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 						if imageCacheOwner {
 							h.imageRequestCache.finishError(imageCacheEntry)
 						}
+						h.setImageEditTransientRetryAfter(c, parsed)
 						h.handleFailoverExhausted(c, failoverErr, streamStarted)
 						return
 					}
@@ -330,6 +353,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 						if imageCacheOwner {
 							h.imageRequestCache.finishError(imageCacheEntry)
 						}
+						h.setImageEditTransientRetryAfter(c, parsed)
 						h.handleFailoverExhausted(c, failoverErr, streamStarted)
 						return
 					}
@@ -433,4 +457,15 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 
 func isMultipartImagesContentType(contentType string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(contentType)), "multipart/form-data")
+}
+
+func (h *OpenAIGatewayHandler) setImageEditTransientRetryAfter(c *gin.Context, parsed *service.OpenAIImagesRequest) {
+	if h == nil || h.gatewayService == nil || c == nil || parsed == nil || !parsed.IsEdits() {
+		return
+	}
+	seconds := h.gatewayService.OpenAIImageEditTransientRetryAfterSeconds()
+	if seconds <= 0 {
+		return
+	}
+	c.Header("Retry-After", strconv.Itoa(seconds))
 }

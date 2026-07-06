@@ -97,6 +97,47 @@ func TestOrder_CostBiasPrefersCheapButKeepsFallbackCandidate(t *testing.T) {
 	require.ElementsMatch(t, []string{"cheap", "fallback"}, plan.OrderedLaneIDs)
 }
 
+func TestOrder_RestrictsRoutingToCurrentPriorityLayer(t *testing.T) {
+	policy := DefaultPolicy()
+	policy.Enabled = true
+	policy.CostBiasMax = 10
+	plan := Order(RouteRequest{Capability: CapabilityImageEdit, Seed: 17}, []LaneSnapshot{
+		{LaneID: "k12-a", AccountID: 1, CostMultiplier: 3, BaseWeight: 1, Priority: 1},
+		{LaneID: "k12-b", AccountID: 2, CostMultiplier: 2, BaseWeight: 1, Priority: 1},
+		{LaneID: "cheap-fallback", AccountID: 3, CostMultiplier: 0.1, BaseWeight: 1, Priority: 2},
+		{LaneID: "last-resort", AccountID: 4, CostMultiplier: 0.1, BaseWeight: 1, Priority: 3},
+	}, policy)
+
+	require.Len(t, plan.Candidates, 2)
+	require.ElementsMatch(t, []string{"k12-a", "k12-b"}, plan.OrderedLaneIDs)
+	for _, candidate := range plan.Candidates {
+		require.NotEqual(t, "cheap-fallback", candidate.LaneID)
+		require.NotEqual(t, "last-resort", candidate.LaneID)
+	}
+}
+
+func TestOrder_AdvancesPriorityLayerAfterCurrentLayerExcluded(t *testing.T) {
+	policy := DefaultPolicy()
+	policy.Enabled = true
+	plan := Order(RouteRequest{
+		Capability: CapabilityImageEdit,
+		Seed:       19,
+		ExcludedLaneIDs: map[string]struct{}{
+			"k12-a": {},
+			"k12-b": {},
+		},
+	}, []LaneSnapshot{
+		{LaneID: "k12-a", AccountID: 1, Priority: 1},
+		{LaneID: "k12-b", AccountID: 2, Priority: 1},
+		{LaneID: "fallback", AccountID: 3, Priority: 2},
+		{LaneID: "last-resort", AccountID: 4, Priority: 3},
+	}, policy)
+
+	require.Equal(t, []string{"fallback"}, plan.OrderedLaneIDs)
+	require.Len(t, plan.Candidates, 1)
+	require.Equal(t, "fallback", plan.Candidates[0].LaneID)
+}
+
 func TestClassifyFailure(t *testing.T) {
 	require.Equal(t, FailureTransientForbidden, ClassifyFailure(http.StatusForbidden, CapabilityImageEdit, false))
 	require.Equal(t, FailureAuthForbidden, ClassifyFailure(http.StatusForbidden, CapabilityChat, false))

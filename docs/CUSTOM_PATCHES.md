@@ -28,6 +28,13 @@ enhances the OpenAI load-balance layer with lane/source-group abstraction,
 cost-aware weighted top-K ordering, per-lane concurrency guards, source-group
 retry suppression, and request attempt budgets.
 
+Routing is priority-layered: Smart Router first restricts candidates to the
+lowest currently available account priority, then performs health/load/cost
+weighted routing only inside that priority layer. If every account in that
+layer is excluded, cooling, overloaded, or fails during failover, the next
+priority layer becomes eligible. This keeps business ordering explicit while
+still allowing intelligent balancing among equivalent lanes.
+
 New lanes are protected without mandatory per-account JSON. If
 `extra.smart_router` is absent, the Sub2API adapter infers a source group from a
 long numeric key in the account name, then from the upstream host, then from the
@@ -38,6 +45,8 @@ that the lane cannot sustain the configured concurrency.
 Why this stays in the overlay:
 
 - low-cost lanes should stay preferred without receiving 100% of traffic;
+- operators need strict cost/stability layers such as K12 before upstream
+  aggregators before expensive fallback providers;
 - plus/pro/fallback lanes from the same upstream need source-group protection;
 - image and Codex/chat routes need a shared pluggable routing primitive before
   the policy can be commercialized for arbitrary Sub2API users;
@@ -50,6 +59,8 @@ Files:
 - `backend/internal/config/config.go`
 - `backend/internal/config/config_test.go`
 - `backend/internal/service/openai_account_scheduler.go`
+- `backend/internal/service/openai_images_responses.go`
+- `backend/internal/service/openai_images_failover_test.go`
 - `backend/internal/service/smart_router_adapter.go`
 - `backend/internal/service/smart_router_scheduler_test.go`
 - `backend/internal/handler/openai_images.go`
@@ -60,7 +71,8 @@ Files:
 - `deploy/config.example.yaml`
 
 Drop this patch only when upstream gains an equivalent modular smart-routing
-layer with source-group protection and policy-driven lane scoring.
+layer with source-group protection, strict priority-layer routing, policy-driven
+lane scoring, and OpenAI images wrapped-upstream-error failover.
 
 ### `custom: soften transient OpenAI image flaps and auto-probe image edits`
 

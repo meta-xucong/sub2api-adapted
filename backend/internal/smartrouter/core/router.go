@@ -69,6 +69,7 @@ func Order(req RouteRequest, lanes []LaneSnapshot, policy Policy) RoutePlan {
 	if len(filtered) == 0 {
 		return plan
 	}
+	filtered = filterLowestPriorityLayer(filtered)
 
 	minPriority, maxPriority := filtered[0].Priority, filtered[0].Priority
 	minLatency, maxLatency := 0.0, 0.0
@@ -144,6 +145,25 @@ func Order(req RouteRequest, lanes []LaneSnapshot, policy Policy) RoutePlan {
 		plan.OrderedLaneIDs = append(plan.OrderedLaneIDs, candidate.LaneID)
 	}
 	return plan
+}
+
+func filterLowestPriorityLayer(lanes []LaneSnapshot) []LaneSnapshot {
+	if len(lanes) <= 1 {
+		return lanes
+	}
+	minPriority := lanes[0].Priority
+	for _, lane := range lanes[1:] {
+		if lane.Priority < minPriority {
+			minPriority = lane.Priority
+		}
+	}
+	out := lanes[:0]
+	for _, lane := range lanes {
+		if lane.Priority == minPriority {
+			out = append(out, lane)
+		}
+	}
+	return out
 }
 
 func scoreLane(lane LaneSnapshot, policy Policy, minPriority int, maxPriority int, minLatency float64, maxLatency float64, hasLatency bool) float64 {

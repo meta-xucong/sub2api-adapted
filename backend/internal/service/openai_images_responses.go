@@ -802,11 +802,34 @@ func (s *OpenAIGatewayService) handleOpenAIImagesErrorResponse(
 			RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
 		}
 	}
+	if shouldFailoverOpenAIImagesWrappedUpstreamError(resp.StatusCode, body) {
+		return nil, &UpstreamFailoverError{
+			StatusCode:             resp.StatusCode,
+			ResponseBody:           body,
+			RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
+		}
+	}
 
 	// Surface the real upstream error to the client.
 	upErr := openAIImagesUpstreamErrorFromHTTP(resp.StatusCode, resp.Header, body)
 	writeOpenAIImagesUpstreamErrorResponse(c, upErr)
 	return nil, upErr
+}
+
+func shouldFailoverOpenAIImagesWrappedUpstreamError(statusCode int, body []byte) bool {
+	if statusCode != http.StatusBadRequest || len(body) == 0 || !gjson.ValidBytes(body) {
+		return false
+	}
+	errObj := gjson.GetBytes(body, "error")
+	if !errObj.Exists() {
+		return false
+	}
+	code := strings.ToLower(strings.TrimSpace(errObj.Get("code").String()))
+	errType := strings.ToLower(strings.TrimSpace(errObj.Get("type").String()))
+	message := strings.ToLower(strings.TrimSpace(errObj.Get("message").String()))
+	return code == "bad_response_status_code" &&
+		errType == "bad_response_status_code" &&
+		message == "openai_error"
 }
 
 func buildOpenAIImagesAPIResponse(
