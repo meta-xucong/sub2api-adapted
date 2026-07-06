@@ -3,6 +3,73 @@
 This file records production runtime settings that live in the database or
 provider consoles rather than in source code. Do not store secrets here.
 
+## aiself.vip OpenAI Image Smart Router Runtime
+
+- Date updated: 2026-07-07
+- Production host: aiself.vip downstream Sub2API VPS
+- Runtime config file: `/app/data/config.yaml`
+- Host volume path:
+  `/var/lib/docker/volumes/deploy_sub2api_data/_data/config.yaml`
+- Backup before update:
+  `/var/lib/docker/volumes/deploy_sub2api_data/_data/config.yaml.bak_codex_20260707-005106`
+- Deployed code commit:
+  `f87c82ab` (`Stabilize OpenAI image fallback routing`)
+- Goal: keep native OAuth/K12 image accounts preferred while allowing
+  lower-priority 404token and aiai image accounts to take over after transient
+  native image failures.
+
+### Image Routing Shape
+
+The production image lanes are intentionally layered by priority:
+
+- priority `1`: native OAuth/K12 image-capable accounts, concurrency `2`
+- priority `2`: 404token image account, concurrency `1`
+- priority `3`: aiai image account, concurrency `4`
+
+All lanes that can serve image edits should expose only image-capable models
+and capabilities such as `image_generation` / `image_edit`. Chat-only accounts
+should not be mixed into the image lane.
+
+### Smart Router Settings
+
+The active production config values are:
+
+- `gateway.smart_router.enabled=true`
+- `gateway.smart_router.top_k=8`
+- `gateway.smart_router.max_attempts_image=6`
+- `gateway.smart_router.max_attempts_chat=3`
+- `gateway.smart_router.max_attempts_default=3`
+- `gateway.smart_router.same_source_group_attempts=1`
+- `gateway.smart_router.cost_bias_max=3`
+- `gateway.image_edit_transient_cooldown_seconds=30`
+
+Scoring weights:
+
+- `priority=0.8`
+- `cost=1.0`
+- `health=1.2`
+- `load=1.0`
+- `queue=0.6`
+- `latency=0.4`
+- `recovery=0.8`
+
+### Incident Note
+
+Before this update, the live Docker volume still had
+`gateway.smart_router.max_attempts_image=2`. Complex `/v1/images/edits`
+requests could consume both attempts on two native OAuth/K12 accounts after
+OpenAI returned a completed response with no image output. The request then
+failed with no account available before lower-priority fallback lanes were
+selected.
+
+Code commit `f87c82ab` adds a fresh database retry when image selection fails
+from a stale scheduler snapshot, so newly available fallback lanes are not
+hidden by the in-memory snapshot. It also sanitizes no-output image failover
+errors before they enter short cooldown reasons.
+
+Reapply this runtime section after rebuilding or upgrading from upstream
+Sub2API, because these values live in production config rather than source.
+
 ## Veyra Portal VPS Network And Nginx Tuning
 
 - Date updated: 2026-06-20
