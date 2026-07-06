@@ -70,6 +70,57 @@ errors before they enter short cooldown reasons.
 Reapply this runtime section after rebuilding or upgrading from upstream
 Sub2API, because these values live in production config rather than source.
 
+## 404token OpenAI Image Smart Router Runtime
+
+- Date updated: 2026-07-07
+- Production host: 404token / Philippines upstream Sub2API VPS
+- Deploy directory: `/opt/sub2api-deploy`
+- Runtime data mount: `/opt/sub2api-deploy/data` -> `/app/data`
+- Backup before update:
+  `/opt/sub2api-deploy/backups/smart-router-sync-20260707-014436`
+- Deployed image tag:
+  `sub2api-adapted:custom-main-0ab7da53`
+- Source package used for build:
+  local `custom/main` archive from commit `0ab7da53`
+
+### Image Routing Shape
+
+The active image lanes are:
+
+- `aicodexvip生图`: priority `1`, concurrency `2`, model
+  `gpt-image-2`
+- `7646881-生图`: priority `1`, concurrency `10`, model
+  `gpt-image-2`
+
+These two lanes are peers in the same priority layer, so Smart Router can avoid
+hammering the same lane after a transient image failure. Downstream aiself.vip
+still keeps aiai as the lower-priority fallback layer.
+
+### Smart Router Environment
+
+The deployment `docker-compose.yml` sets these app environment defaults:
+
+- `GATEWAY_SMART_ROUTER_ENABLED=true`
+- `GATEWAY_SMART_ROUTER_TOP_K=8`
+- `GATEWAY_SMART_ROUTER_MAX_ATTEMPTS_IMAGE=6`
+- `GATEWAY_SMART_ROUTER_MAX_ATTEMPTS_CHAT=3`
+- `GATEWAY_SMART_ROUTER_MAX_ATTEMPTS_DEFAULT=3`
+- `GATEWAY_SMART_ROUTER_SAME_SOURCE_GROUP_ATTEMPTS=1`
+- `GATEWAY_SMART_ROUTER_COST_BIAS_MAX=3`
+- `GATEWAY_IMAGE_EDIT_TRANSIENT_COOLDOWN_SECONDS=30`
+
+Before this update, the host already had Smart Router enabled, but used
+`TOP_K=5` and `MAX_ATTEMPTS_IMAGE=3`, and it was still running an older image
+without the fresh database retry added for stale scheduler snapshots.
+
+Verification after applying:
+
+- `sub2api` container healthy
+- `/health` returned OK
+- running image id matched `sub2api-adapted:custom-main-0ab7da53`
+- image lanes were schedulable and had no active temporary cooldown, rate
+  reset, or overload window
+
 ## Veyra Portal VPS Network And Nginx Tuning
 
 - Date updated: 2026-06-20
