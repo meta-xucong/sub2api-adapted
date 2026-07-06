@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"net/http"
 	"testing"
 
@@ -18,4 +19,13 @@ func TestShouldFailoverOpenAIImagesWrappedUpstreamErrorRejectsUserBadRequest(t *
 
 	require.False(t, shouldFailoverOpenAIImagesWrappedUpstreamError(http.StatusBadRequest, body))
 	require.False(t, shouldFailoverOpenAIImagesWrappedUpstreamError(http.StatusForbidden, body))
+}
+
+func TestNewOpenAIImagesNoOutputFailoverError(t *testing.T) {
+	err := error(newOpenAIImagesNoOutputFailoverError(nil))
+
+	var failoverErr *UpstreamFailoverError
+	require.True(t, errors.As(err, &failoverErr))
+	require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
+	require.Contains(t, string(failoverErr.ResponseBody), "image_output_missing")
 }

@@ -83,6 +83,10 @@ It adds three production behaviors:
 
 - OpenAI image `403` now cools only the model-scoped image capability for
   10 minutes instead of escalating the whole account into `error`.
+- OpenAI images responses that finish without any image output now return a
+  failover signal instead of a terminal generic `502`, so any `gpt-image-*`
+  account can be skipped temporarily when its upstream task silently produces
+  no image.
 - OpenAI image edit transient account failures (`403`, `408`, `500`, `502`,
   `503`, `504`) now apply a short per-account scheduling cooldown via
   `gateway.image_edit_transient_cooldown_seconds` (default `12`) before
@@ -104,6 +108,9 @@ Why this stays in the overlay:
 - image-to-image fallback accounts can fail with intermittent `500` while still
   passing a later probe, so they need a short cooling window rather than a
   permanent disable.
+- web/OAuth image providers can occasionally return a completed response with
+  usage metadata but no image payload; that should be treated as an upstream
+  lane failure and routed onward, not as a final user-facing error.
 
 Files:
 
@@ -113,6 +120,9 @@ Files:
 - `backend/internal/service/openai_account_runtime_block_fastpath.go`
 - `backend/internal/service/openai_image_edit_transient_cooldown.go`
 - `backend/internal/service/openai_image_edit_transient_cooldown_test.go`
+- `backend/internal/service/openai_images_responses.go`
+- `backend/internal/service/openai_images_failover_test.go`
+- `backend/internal/service/openai_images_test.go`
 - `backend/internal/service/ratelimit_service.go`
 - `backend/internal/service/account_test_service.go`
 - `backend/internal/service/account_test_service_openai_image_test.go`

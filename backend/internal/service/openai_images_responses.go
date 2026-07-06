@@ -832,6 +832,16 @@ func shouldFailoverOpenAIImagesWrappedUpstreamError(statusCode int, body []byte)
 		message == "openai_error"
 }
 
+func newOpenAIImagesNoOutputFailoverError(body []byte) *UpstreamFailoverError {
+	if len(body) == 0 {
+		body = []byte(`{"error":{"message":"upstream did not return image output","type":"upstream_error","code":"image_output_missing"}}`)
+	}
+	return &UpstreamFailoverError{
+		StatusCode:   http.StatusBadGateway,
+		ResponseBody: body,
+	}
+}
+
 func buildOpenAIImagesAPIResponse(
 	results []openAIResponsesImageResult,
 	createdAt int64,
@@ -998,7 +1008,7 @@ func (s *OpenAIGatewayService) handleOpenAIImagesOAuthNonStreamingResponse(
 			writeOpenAIImagesUpstreamErrorResponse(c, upstreamErr)
 			return OpenAIUsage{}, 0, nil, upstreamErr
 		}
-		return OpenAIUsage{}, 0, nil, fmt.Errorf("upstream did not return image output")
+		return OpenAIUsage{}, 0, nil, newOpenAIImagesNoOutputFailoverError(body)
 	}
 	if strings.TrimSpace(firstMeta.Model) == "" {
 		firstMeta.Model = strings.TrimSpace(fallbackModel)
