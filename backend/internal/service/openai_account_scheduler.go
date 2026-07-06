@@ -3,6 +3,7 @@ package service
 import (
 	"container/heap"
 	"context"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"log/slog"
@@ -1311,9 +1312,30 @@ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForImageOperation(
 	}
 	// 如果要求 native 能力（如指定了模型）但没有可用的 APIKey 账号，回退到 basic（OAuth 账号）
 	if requiredCapability == OpenAIImagesCapabilityNative {
-		return s.selectAccountWithScheduler(ctx, groupID, "", sessionHash, requestedModel, excludedIDs, OpenAIUpstreamTransportHTTPSSE, "", OpenAIImagesCapabilityBasic, false, smartCapability)
+		selection, decision, err = s.selectAccountWithScheduler(ctx, groupID, "", sessionHash, requestedModel, excludedIDs, OpenAIUpstreamTransportHTTPSSE, "", OpenAIImagesCapabilityBasic, false, smartCapability)
+		if err == nil && selection != nil && selection.Account != nil {
+			return selection, decision, nil
+		}
+		if s.shouldRetryOpenAIImageSelectionWithFreshAccounts(ctx, err) {
+			return s.selectAccountWithScheduler(withOpenAIBypassSchedulerSnapshot(ctx), groupID, "", sessionHash, requestedModel, excludedIDs, OpenAIUpstreamTransportHTTPSSE, "", OpenAIImagesCapabilityBasic, false, smartCapability)
+		}
+		return selection, decision, err
+	}
+	if s.shouldRetryOpenAIImageSelectionWithFreshAccounts(ctx, err) {
+		return s.selectAccountWithScheduler(withOpenAIBypassSchedulerSnapshot(ctx), groupID, "", sessionHash, requestedModel, excludedIDs, OpenAIUpstreamTransportHTTPSSE, "", requiredCapability, false, smartCapability)
 	}
 	return selection, decision, err
+}
+
+func (s *OpenAIGatewayService) shouldRetryOpenAIImageSelectionWithFreshAccounts(ctx context.Context, err error) bool {
+	noAvailable := errors.Is(err, ErrNoAvailableAccounts)
+	if !noAvailable && err != nil {
+		noAvailable = strings.Contains(err.Error(), "no available OpenAI accounts")
+	}
+	return s != nil &&
+		s.schedulerSnapshot != nil &&
+		!openAIBypassSchedulerSnapshot(ctx) &&
+		noAvailable
 }
 
 func (s *OpenAIGatewayService) selectAccountWithScheduler(

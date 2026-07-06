@@ -833,13 +833,100 @@ func shouldFailoverOpenAIImagesWrappedUpstreamError(statusCode int, body []byte)
 }
 
 func newOpenAIImagesNoOutputFailoverError(body []byte) *UpstreamFailoverError {
-	if len(body) == 0 {
-		body = []byte(`{"error":{"message":"upstream did not return image output","type":"upstream_error","code":"image_output_missing"}}`)
-	}
 	return &UpstreamFailoverError{
 		StatusCode:   http.StatusBadGateway,
-		ResponseBody: body,
+		ResponseBody: buildOpenAIImagesNoOutputFailoverBody(body),
 	}
+}
+
+func buildOpenAIImagesNoOutputFailoverBody(body []byte) []byte {
+	out := []byte(`{"error":{"message":"upstream did not return image output","type":"upstream_error","code":"image_output_missing","summary":{}}}`)
+	if len(body) == 0 {
+		return out
+	}
+
+	seenEvents := make(map[string]struct{})
+	eventCount := 0
+	hasImageGenerationCall := false
+	completed := false
+	responseStatus := ""
+	upstreamModel := ""
+	toolModel := ""
+	outputCount := -1
+	upstreamErrorType := ""
+	upstreamErrorCode := ""
+	upstreamErrorMessage := ""
+
+	forEachOpenAISSEDataPayload(string(body), func(payload []byte) {
+		if !gjson.ValidBytes(payload) {
+			return
+		}
+		eventType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
+		if eventType != "" {
+			if _, ok := seenEvents[eventType]; !ok && eventCount < 8 {
+				seenEvents[eventType] = struct{}{}
+				eventCount++
+				out, _ = sjson.SetBytes(out, "error.summary.events.-1", eventType)
+			}
+			if eventType == "response.completed" {
+				completed = true
+			}
+		}
+		if eventType == "response.output_item.done" &&
+			gjson.GetBytes(payload, "item.type").String() == "image_generation_call" {
+			hasImageGenerationCall = true
+		}
+		response := gjson.GetBytes(payload, "response")
+		if response.Exists() {
+			if value := strings.TrimSpace(response.Get("status").String()); value != "" {
+				responseStatus = value
+			}
+			if value := strings.TrimSpace(response.Get("model").String()); value != "" {
+				upstreamModel = value
+			}
+			if value := strings.TrimSpace(response.Get("tools.0.model").String()); value != "" {
+				toolModel = value
+			}
+			if output := response.Get("output"); output.IsArray() {
+				outputCount = len(output.Array())
+				for _, item := range output.Array() {
+					if item.Get("type").String() == "image_generation_call" {
+						hasImageGenerationCall = true
+					}
+				}
+			}
+			if errObj := response.Get("error"); errObj.Exists() {
+				upstreamErrorType = strings.TrimSpace(errObj.Get("type").String())
+				upstreamErrorCode = strings.TrimSpace(errObj.Get("code").String())
+				upstreamErrorMessage = strings.TrimSpace(errObj.Get("message").String())
+			}
+		}
+	})
+
+	out, _ = sjson.SetBytes(out, "error.summary.completed", completed)
+	out, _ = sjson.SetBytes(out, "error.summary.has_image_generation_call", hasImageGenerationCall)
+	if responseStatus != "" {
+		out, _ = sjson.SetBytes(out, "error.summary.response_status", responseStatus)
+	}
+	if upstreamModel != "" {
+		out, _ = sjson.SetBytes(out, "error.summary.upstream_model", upstreamModel)
+	}
+	if toolModel != "" {
+		out, _ = sjson.SetBytes(out, "error.summary.tool_model", toolModel)
+	}
+	if outputCount >= 0 {
+		out, _ = sjson.SetBytes(out, "error.summary.output_count", outputCount)
+	}
+	if upstreamErrorType != "" {
+		out, _ = sjson.SetBytes(out, "error.summary.upstream_error_type", upstreamErrorType)
+	}
+	if upstreamErrorCode != "" {
+		out, _ = sjson.SetBytes(out, "error.summary.upstream_error_code", upstreamErrorCode)
+	}
+	if upstreamErrorMessage != "" {
+		out, _ = sjson.SetBytes(out, "error.summary.upstream_error_message", truncateString(upstreamErrorMessage, 512))
+	}
+	return out
 }
 
 func buildOpenAIImagesAPIResponse(

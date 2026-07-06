@@ -102,6 +102,81 @@ func TestOpenAIGatewayService_SmartRouterSkipsFailedSourceGroupForImageRetry(t *
 	}
 }
 
+func TestOpenAIGatewayService_ImageRetryUsesFreshDBWhenSnapshotMissesFallback(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+	ctx := context.Background()
+	groupID := int64(7102)
+	snapshotAccounts := []*Account{
+		{
+			ID:          71021,
+			Name:        "k12-a",
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeOAuth,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    1,
+			GroupIDs:    []int64{groupID},
+			Credentials: map[string]any{"model_mapping": map[string]any{"gpt-image-2": "gpt-image-2"}},
+		},
+		{
+			ID:          71022,
+			Name:        "k12-b",
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeOAuth,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    1,
+			GroupIDs:    []int64{groupID},
+			Credentials: map[string]any{"model_mapping": map[string]any{"gpt-image-2": "gpt-image-2"}},
+		},
+	}
+	fallback := Account{
+		ID:          71023,
+		Name:        "404token-image-fallback",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Priority:    2,
+		GroupIDs:    []int64{groupID},
+		Credentials: map[string]any{"model_mapping": map[string]any{"gpt-image-2": "gpt-image-2"}},
+		Extra:       map[string]any{"smart_router": map[string]any{"capabilities": []any{"image_generation", "image_edit"}}},
+	}
+	accounts := []Account{*snapshotAccounts[0], *snapshotAccounts[1], fallback}
+	repo := schedulerTestOpenAIAccountRepo{accounts: accounts}
+	svc := &OpenAIGatewayService{
+		accountRepo:        repo,
+		schedulerSnapshot:  NewSchedulerSnapshotService(&openAISnapshotCacheStub{snapshotAccounts: snapshotAccounts}, nil, repo, nil, nil),
+		cache:              &schedulerTestGatewayCache{},
+		cfg:                &config.Config{},
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+	failed := map[int64]struct{}{71021: {}, 71022: {}}
+
+	selection, decision, err := svc.SelectAccountWithSchedulerForImageOperation(
+		ctx,
+		&groupID,
+		"",
+		"gpt-image-2",
+		failed,
+		OpenAIImagesCapabilityNative,
+		true,
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, int64(71023), selection.Account.ID)
+	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
 func TestOpenAIGatewayService_SmartRouterHonorsExtraMaxConcurrency(t *testing.T) {
 	resetOpenAIAdvancedSchedulerSettingCacheForTest()
 	ctx := context.Background()

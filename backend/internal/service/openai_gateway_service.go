@@ -2156,10 +2156,14 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 }
 
 func (s *OpenAIGatewayService) listSchedulableAccounts(ctx context.Context, groupID *int64) ([]Account, error) {
-	if s.schedulerSnapshot != nil {
+	if s.schedulerSnapshot != nil && !openAIBypassSchedulerSnapshot(ctx) {
 		accounts, _, err := s.schedulerSnapshot.ListSchedulableAccounts(ctx, groupID, PlatformOpenAI, false)
 		return accounts, err
 	}
+	return s.listSchedulableAccountsFromRepo(ctx, groupID)
+}
+
+func (s *OpenAIGatewayService) listSchedulableAccountsFromRepo(ctx context.Context, groupID *int64) ([]Account, error) {
 	var accounts []Account
 	var err error
 	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {

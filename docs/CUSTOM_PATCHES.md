@@ -50,6 +50,10 @@ Why this stays in the overlay:
 - plus/pro/fallback lanes from the same upstream need source-group protection;
 - image and Codex/chat routes need a shared pluggable routing primitive before
   the policy can be commercialized for arbitrary Sub2API users;
+- image fallback selection retries once against fresh DB account rows when the
+  scheduler snapshot reports no available image account, so newly enabled
+  lower-priority fallback lanes are not invisible until the next snapshot
+  rebuild;
 - the first implementation must remain safe to replay after upstream updates
   and easy to disable in production.
 
@@ -87,6 +91,10 @@ It adds three production behaviors:
   failover signal instead of a terminal generic `502`, so any `gpt-image-*`
   account can be skipped temporarily when its upstream task silently produces
   no image.
+- The no-image-output failover body is reduced to a sanitized structured
+  summary (event types, response status, upstream model, tool model, output
+  count, and whether an image call appeared), avoiding raw SSE response ids or
+  large upstream bodies in cooldown reasons.
 - OpenAI image edit transient account failures (`403`, `408`, `500`, `502`,
   `503`, `504`) now apply a short per-account scheduling cooldown via
   `gateway.image_edit_transient_cooldown_seconds` (default `12`) before
