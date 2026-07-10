@@ -32,6 +32,12 @@ scheduling eligibility, or add the models to image-only accounts. It lets an
 operator probe a newly supported upstream before enabling it for production
 routing.
 
+The deployment-specific replay template for aligning a downstream 404token
+instance with the matching aiself lanes is
+`deploy/sql/aiself_dispatch_sync_404token.example.sql`. It matches account
+names together with normalized upstream URLs, preserves credentials, and does
+not copy health/error status across deployments.
+
 ## Compact streaming compatibility
 
 Ops response capture always restores the writer that existed before its middleware before returning the capture wrapper to the pool. This prevents compact SSE keepalive wrappers from retaining a released capture writer and panicking when outer access loggers read status or size.

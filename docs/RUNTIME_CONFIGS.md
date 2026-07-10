@@ -99,6 +99,7 @@ Deployed and verified: 2026-07-10
 - Deployment backup: `/opt/sub2api-deploy/backups/upgrade-v0.1.151-20260710`
 - Latest compose backup: `/opt/sub2api-deploy/docker-compose.yml.before-gpt56-20260710-222245`
 - Latest rollback tag: `sub2api-adapted:rollback-before-gpt56-20260710-222245`
+- Aiself dispatch sync backup: `/opt/sub2api-deploy/backups/aiself-dispatch-sync-20260710-230311`
 - `veyra.enabled=false` and `veyra.portal_enabled=false`; `/` and `/login`
   must remain the official Sub2API default pages.
 - Smart Router target values match the verified downstream policy:
@@ -135,3 +136,12 @@ GPT-5.6 test-selector patch deployed: `44eb5aaa`.
 - The new container was healthy with restart count `0`; Postgres and Redis
   remained healthy and application logs had no panic/fatal/runtime-error
   markers in the final ten-minute check.
+
+### Aiself source-aligned routing sync
+
+Applied: 2026-07-10. Matching was performed by upstream URL plus account role.
+The sync copied the verified GPT-5.6 mappings and image Smart Router lanes for
+the matching aicodexvip, 7646881, and Liuyun accounts. It also removed obsolete
+chat models from the affected 404token group model lists. Account health/error
+states were not copied across hosts; the database backup above is the rollback
+point.
