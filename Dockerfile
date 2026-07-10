@@ -49,10 +49,6 @@ RUN pnpm run build
 # -----------------------------------------------------------------------------
 FROM ${GOLANG_IMAGE} AS backend-builder
 
-# Build arguments for version info (set by CI)
-ARG VERSION=
-ARG COMMIT=docker
-ARG DATE
 ARG GOPROXY
 ARG GOSUMDB
 
@@ -76,6 +72,9 @@ COPY --from=frontend-builder /app/backend/internal/web/dist ./internal/web/dist
 
 # Build the binary (BuildType=release for CI builds, embed frontend)
 # Version precedence: build arg VERSION > exact git tag > cmd/server/VERSION
+ARG VERSION=
+ARG COMMIT=docker
+ARG DATE
 ARG BACKEND_GOGC=
 ARG BACKEND_GOMEMLIMIT=
 RUN --mount=type=cache,id=sub2api-go-build,target=/root/.cache/go-build \

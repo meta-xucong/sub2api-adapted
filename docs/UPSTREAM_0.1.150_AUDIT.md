@@ -18,6 +18,7 @@ The adapted branch is rebuilt from this baseline. Legacy history is not merged i
 - Veyra portal/API overlay and transactional, persistent debit idempotency. The official login page is retained, with only the safe Veyra return redirect added.
 - Gemini native endpoint enforcement of the group custom-model allowlist.
 - Ops alert minimum request/error sample thresholds. The legacy auto-resolve-on-skip behavior is intentionally omitted because repository/query failures share the same skip signal.
+- Response-writer lifecycle fix for the official compact SSE keepalive and Ops capture middleware combination.
 - JP relay, Nginx, SQL recovery, and runtime policy examples.
 - Optional frontend Node heap and Go compiler memory build arguments for repeatable builds on small VPS instances. They are inert unless explicitly supplied.
 

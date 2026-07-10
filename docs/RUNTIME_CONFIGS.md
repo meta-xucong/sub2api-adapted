@@ -10,6 +10,8 @@ Verified: 2026-07-10
 - Persistent runtime config: `/app/data/config.yaml`
 - Host volume path: `/var/lib/docker/volumes/deploy_sub2api_data/_data/config.yaml`
 - Upgrade backup root: `/opt/sub2api/backups/upgrade-v0.1.150-20260710T075612Z`
+- Deployed image: `sub2api-adapted:v0.1.150-audited-a5426d14`
+- Deployed code commit: `a5426d14`
 
 Active Smart Router settings:
 
@@ -38,6 +40,13 @@ Veyra is enabled through the same persistent config:
 - `veyra.portal_enabled=true`
 
 Account priorities, concurrency, model mappings, and `extra.smart_router` lane metadata live in PostgreSQL. Preserve them with a database backup; do not duplicate credentials or account payloads in this repository.
+
+Post-upgrade verification:
+
+- `/health`, `/login`, and `/_veyra/` returned HTTP 200.
+- A Codex-style streaming `gpt-5.5` request completed successfully.
+- A `gpt-image-2` request failed over from account `88` after upstream HTTP 524 to account `89`, then returned one image with HTTP 200.
+- A body-signal compact request failed over after two upstream HTTP 503 responses, succeeded on account `83`, and completed without a recovered panic or container restart.
 
 ## 404token
 

@@ -22,6 +22,10 @@ The router first considers the lowest numeric priority layer. It advances only a
 - URL-only image results are normalized to `b64_json` when requested.
 - Generic multipart uploads marked `application/octet-stream` are content-sniffed before building data URLs.
 
+## Compact streaming compatibility
+
+Ops response capture always restores the writer that existed before its middleware before returning the capture wrapper to the pool. This prevents compact SSE keepalive wrappers from retaining a released capture writer and panicking when outer access loggers read status or size.
+
 ## Veyra
 
 Veyra is disabled by default. `veyra.enabled` enables its API bridge and `veyra.portal_enabled` enables the embedded aiself portal. The ordinary Sub2API login page is never replaced.
