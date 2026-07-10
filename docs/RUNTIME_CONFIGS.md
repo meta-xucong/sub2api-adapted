@@ -48,6 +48,12 @@ Post-upgrade verification:
 - A `gpt-image-2` request failed over from account `88` after upstream HTTP 524 to account `89`, then returned one image with HTTP 200.
 - A body-signal compact request failed over after two upstream HTTP 503 responses, succeeded on account `83`, and completed without a recovered panic or container restart.
 
+Post-build host hygiene:
+
+- Repeated upgrade builds temporarily grew unused BuildKit cache to 11.75 GB and pushed the root filesystem to 93% usage.
+- Unused builder cache was pruned while retaining about 1 GB of recent cache. Root filesystem usage returned to 60% with about 13 GB available.
+- The running image and `sub2api-adapted:rollback-20260710T075612Z` rollback image were verified present after cleanup.
+
 ## 404token
 
 The 404token deployment was intentionally not changed or re-audited during the 2026-07-10 aiself upgrade. Re-read its live compose, persistent config, and database before reusing historical runtime values.
