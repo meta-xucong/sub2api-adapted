@@ -95,8 +95,10 @@ Deployed and verified: 2026-07-10
 - Deploy directory: `/opt/sub2api-deploy`
 - Persistent data mount: `/opt/sub2api-deploy/data` -> `/app/data`
 - Official baseline: `v0.1.151` (`deff3123`)
-- Deployed image: `sub2api-adapted:v0.1.151-404token-da8b3680`
+- Deployed image: `sub2api-adapted:v0.1.151-404token-44eb5aaa`
 - Deployment backup: `/opt/sub2api-deploy/backups/upgrade-v0.1.151-20260710`
+- Latest compose backup: `/opt/sub2api-deploy/docker-compose.yml.before-gpt56-20260710-222245`
+- Latest rollback tag: `sub2api-adapted:rollback-before-gpt56-20260710-222245`
 - `veyra.enabled=false` and `veyra.portal_enabled=false`; `/` and `/login`
   must remain the official Sub2API default pages.
 - Smart Router target values match the verified downstream policy:
@@ -121,3 +123,15 @@ Post-deploy verification:
   runtime-error signatures.
 - BuildKit cleanup reclaimed about `6.95 GB`; the host returned to about 42%
   disk usage while the deployed and rollback images remained present.
+
+GPT-5.6 test-selector patch deployed: `44eb5aaa`.
+
+- The admin account-test and scheduled-test model endpoint now exposes
+  `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` for chat-capable OpenAI
+  mappings.
+- This deployment did not modify account `model_mapping`, group priorities,
+  or scheduling eligibility. The three models can be tested from the admin
+  selector before being enabled for live routing.
+- The new container was healthy with restart count `0`; Postgres and Redis
+  remained healthy and application logs had no panic/fatal/runtime-error
+  markers in the final ten-minute check.
