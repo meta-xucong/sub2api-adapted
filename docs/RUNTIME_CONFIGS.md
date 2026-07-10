@@ -54,6 +54,22 @@ Post-build host hygiene:
 - Unused builder cache was pruned while retaining about 1 GB of recent cache. Root filesystem usage returned to 60% with about 13 GB available.
 - The running image and `sub2api-adapted:rollback-20260710T075612Z` rollback image were verified present after cleanup.
 
+### GPT-5.6 Chat Lanes
+
+Configured and verified: 2026-07-10
+
+- Backup: `/opt/sub2api/backups/gpt56-config-20260710T115521Z`
+- Group `2` (`chatgpt`) exposes `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` alongside the existing models.
+- Account `84` (`liuyun plus`) maps all three GPT-5.6 models and remains schedulable.
+- Account `83` (`7646881 pro`) maps only `gpt-5.6-sol`, the only GPT-5.6 model that completed direct verification on that line.
+- Account `19` (`aicodexvip pro`) maps all three models but remains unschedulable as a prepared cold spare.
+
+Gateway verification with the ordinary user API path:
+
+- `/v1/models` returned all three GPT-5.6 model ids.
+- Streaming Responses with `reasoning.effort=xhigh` completed for Sol, Terra, and Luna; all three selected account `84`.
+- A body-signal `gpt-5.6-sol` compact request completed on account `84` without a recovered panic or container restart.
+
 ## 404token
 
 The 404token deployment was intentionally not changed or re-audited during the 2026-07-10 aiself upgrade. Re-read its live compose, persistent config, and database before reusing historical runtime values.
