@@ -2,6 +2,13 @@
 
 This file records verified non-secret settings that live outside the source tree. Never store API keys, passwords, cookies, private keys, or internal tokens here.
 
+## Repository Baseline
+
+- Current official baseline: `Wei-Shaw/sub2api` `v0.1.151` (`deff3123`).
+- The production aiself image remains pinned to its last verified image until
+  that deployment is deliberately upgraded; repository baseline and deployed
+  image are recorded separately to keep rollback decisions explicit.
+
 ## aiself.vip
 
 Verified: 2026-07-10
@@ -83,4 +90,20 @@ Repository/deployment boundary:
 
 ## 404token
 
-The 404token deployment was intentionally not changed or re-audited during the 2026-07-10 aiself upgrade. Re-read its live compose, persistent config, and database before reusing historical runtime values.
+Upgrade target: 2026-07-10
+
+- Deploy directory: `/opt/sub2api-deploy`
+- Persistent data mount: `/opt/sub2api-deploy/data` -> `/app/data`
+- Official baseline for the candidate image: `v0.1.151`
+- `veyra.enabled=false` and `veyra.portal_enabled=false`; `/` and `/login`
+  must remain the official Sub2API default pages.
+- Smart Router target values match the verified downstream policy:
+  `enabled=true`, `top_k=8`, `max_attempts_image=6`,
+  `max_attempts_chat=3`, `max_attempts_default=3`,
+  `same_source_group_attempts=1`, `cost_bias_max=3`, and image-edit
+  transient cooldown `30` seconds.
+
+The live scheduled image probe was returning upstream `403
+INSUFFICIENT_BALANCE` before this upgrade. That is an upstream account balance
+condition; the new router should classify and isolate it without treating the
+generic Sub2API page or the deployment itself as broken.

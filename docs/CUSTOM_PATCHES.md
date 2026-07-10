@@ -1,6 +1,6 @@
 # Maintained custom overlay
 
-This repository tracks official Sub2API and keeps only the overlays that remain useful after each upstream upgrade. See `UPSTREAM_0.1.150_AUDIT.md` for the current three-way audit.
+This repository tracks official Sub2API and keeps only the overlays that remain useful after each upstream upgrade. See `UPSTREAM_0.1.151_AUDIT.md` for the current three-way audit. `UPSTREAM_0.1.150_AUDIT.md` is retained as the previous release record.
 
 ## Smart Router
 
