@@ -139,6 +139,36 @@ func TestOpsErrorLoggerMiddleware_DoesNotBreakOuterMiddlewares(t *testing.T) {
 	require.Equal(t, http.StatusNoContent, rec.Code)
 }
 
+type opsTestDelegatingWriter struct {
+	gin.ResponseWriter
+}
+
+func TestOpsErrorLoggerMiddleware_RestoresWriterWrappedByDownstream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		originalWriter := c.Writer
+		c.Next()
+		if c.Writer != originalWriter {
+			panic("ops middleware leaked a downstream response writer")
+		}
+		_ = c.Writer.Status()
+	})
+	r.GET("/v1/responses", OpsErrorLoggerMiddleware(nil), func(c *gin.Context) {
+		c.Writer = &opsTestDelegatingWriter{ResponseWriter: c.Writer}
+		c.Status(http.StatusNoContent)
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+
+	require.NotPanics(t, func() {
+		r.ServeHTTP(rec, req)
+	})
+	require.Equal(t, http.StatusNoContent, rec.Code)
+}
+
 // setupOpsErrorLogTestQueue 阻止 enqueueOpsErrorLog 启动真实 worker，改用可检查的测试队列。
 func setupOpsErrorLogTestQueue(t *testing.T, size int) {
 	t.Helper()
