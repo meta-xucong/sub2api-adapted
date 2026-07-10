@@ -90,11 +90,13 @@ Repository/deployment boundary:
 
 ## 404token
 
-Upgrade target: 2026-07-10
+Deployed and verified: 2026-07-10
 
 - Deploy directory: `/opt/sub2api-deploy`
 - Persistent data mount: `/opt/sub2api-deploy/data` -> `/app/data`
-- Official baseline for the candidate image: `v0.1.151`
+- Official baseline: `v0.1.151` (`deff3123`)
+- Deployed image: `sub2api-adapted:v0.1.151-404token-da8b3680`
+- Deployment backup: `/opt/sub2api-deploy/backups/upgrade-v0.1.151-20260710`
 - `veyra.enabled=false` and `veyra.portal_enabled=false`; `/` and `/login`
   must remain the official Sub2API default pages.
 - Smart Router target values match the verified downstream policy:
@@ -107,3 +109,15 @@ The live scheduled image probe was returning upstream `403
 INSUFFICIENT_BALANCE` before this upgrade. That is an upstream account balance
 condition; the new router should classify and isolate it without treating the
 generic Sub2API page or the deployment itself as broken.
+
+Post-deploy verification:
+
+- `sub2api`, Postgres, and Redis were healthy; the application restart count was
+  `0` after the new container became healthy.
+- `/health` returned HTTP 200; `/`, `/login`, and `/_veyra/` returned the
+  generic Sub2API frontend and contained no aiself/Veyra portal markers.
+- Migration `173_allow_cyber_blocked_usage_request_type.sql` was applied.
+- The last five minutes of application logs contained no panic, fatal, or
+  runtime-error signatures.
+- BuildKit cleanup reclaimed about `6.95 GB`; the host returned to about 42%
+  disk usage while the deployed and rollback images remained present.
