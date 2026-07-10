@@ -2238,6 +2238,40 @@ func (h *AccountHandler) SetSchedulable(c *gin.Context) {
 	response.Success(c, h.buildAccountResponseWithRuntime(c.Request.Context(), account))
 }
 
+// appendOpenAIAdminTestModels adds newly registered GPT-5.6 models to the
+// admin test selector for chat-capable OpenAI accounts. This is discovery for
+// the test/scheduled-test UI only; it does not change account model_mapping or
+// gateway scheduling eligibility.
+func appendOpenAIAdminTestModels(models []openai.Model, mapping map[string]string) []openai.Model {
+	chatMapping := false
+	for modelID := range mapping {
+		modelID = strings.ToLower(strings.TrimSpace(modelID))
+		if strings.HasPrefix(modelID, "gpt-5") && !strings.Contains(modelID, "codex-spark") {
+			chatMapping = true
+			break
+		}
+	}
+	if !chatMapping {
+		return models
+	}
+
+	seen := make(map[string]struct{}, len(models))
+	for _, model := range models {
+		seen[model.ID] = struct{}{}
+	}
+	for _, model := range openai.DefaultModels {
+		if !strings.HasPrefix(model.ID, "gpt-5.6-") {
+			continue
+		}
+		if _, ok := seen[model.ID]; ok {
+			continue
+		}
+		models = append(models, model)
+		seen[model.ID] = struct{}{}
+	}
+	return models
+}
+
 // GetAvailableModels handles getting available models for an account
 // GET /api/v1/admin/accounts/:id/models
 func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
@@ -2269,7 +2303,12 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 
 		// Return mapped models
 		var models []openai.Model
+		requestedModels := make([]string, 0, len(mapping))
 		for requestedModel := range mapping {
+			requestedModels = append(requestedModels, requestedModel)
+		}
+		sort.Strings(requestedModels)
+		for _, requestedModel := range requestedModels {
 			var found bool
 			for _, dm := range openai.DefaultModels {
 				if dm.ID == requestedModel {
@@ -2287,7 +2326,7 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 				})
 			}
 		}
-		response.Success(c, models)
+		response.Success(c, appendOpenAIAdminTestModels(models, mapping))
 		return
 	}
 

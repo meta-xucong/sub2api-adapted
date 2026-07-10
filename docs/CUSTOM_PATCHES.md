@@ -22,6 +22,16 @@ The router first considers the lowest numeric priority layer. It advances only a
 - URL-only image results are normalized to `b64_json` when requested.
 - Generic multipart uploads marked `application/octet-stream` are content-sniffed before building data URLs.
 
+## GPT-5.6 admin test discovery
+
+For OpenAI accounts whose explicit mapping contains GPT-5 chat models, the
+admin account-test and scheduled-test model endpoint also exposes the
+registered `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` entries. This is
+test discovery only: it does not write `model_mapping`, change gateway
+scheduling eligibility, or add the models to image-only accounts. It lets an
+operator probe a newly supported upstream before enabling it for production
+routing.
+
 ## Compact streaming compatibility
 
 Ops response capture always restores the writer that existed before its middleware before returning the capture wrapper to the pool. This prevents compact SSE keepalive wrappers from retaining a released capture writer and panicking when outer access loggers read status or size.
