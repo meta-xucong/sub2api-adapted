@@ -19,7 +19,7 @@ The adapted branch is rebuilt from this baseline. Legacy history is not merged i
 - Gemini native endpoint enforcement of the group custom-model allowlist.
 - Ops alert minimum request/error sample thresholds. The legacy auto-resolve-on-skip behavior is intentionally omitted because repository/query failures share the same skip signal.
 - JP relay, Nginx, SQL recovery, and runtime policy examples.
-- Optional frontend Node heap build argument for repeatable builds on small VPS instances. It is inert unless explicitly supplied.
+- Optional frontend Node heap and Go compiler memory build arguments for repeatable builds on small VPS instances. They are inert unless explicitly supplied.
 
 ## Replaced by upstream
 

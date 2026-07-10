@@ -76,10 +76,14 @@ COPY --from=frontend-builder /app/backend/internal/web/dist ./internal/web/dist
 
 # Build the binary (BuildType=release for CI builds, embed frontend)
 # Version precedence: build arg VERSION > exact git tag > cmd/server/VERSION
+ARG BACKEND_GOGC=
+ARG BACKEND_GOMEMLIMIT=
 RUN VERSION_VALUE="${VERSION}" && \
     if [ -z "${VERSION_VALUE}" ]; then VERSION_VALUE="$(./scripts/resolve-version.sh)"; fi && \
     DATE_VALUE="${DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}" && \
-    CGO_ENABLED=0 GOOS=linux go build \
+    GOGC_VALUE="${BACKEND_GOGC:-100}" && \
+    GOMEMLIMIT_VALUE="${BACKEND_GOMEMLIMIT:-off}" && \
+    CGO_ENABLED=0 GOOS=linux GOGC="${GOGC_VALUE}" GOMEMLIMIT="${GOMEMLIMIT_VALUE}" go build \
     -tags embed \
     -ldflags="-s -w -X main.Version=${VERSION_VALUE} -X main.Commit=${COMMIT} -X main.Date=${DATE_VALUE} -X main.BuildType=release" \
     -trimpath \
