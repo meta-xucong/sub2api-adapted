@@ -24,6 +24,7 @@ This directory contains files for deploying Sub2API on Linux servers.
 | `sub2api-datamanagementd.service` | datamanagementd systemd service unit file |
 | `DATAMANAGEMENTD_CN.md` | datamanagementd 部署与联动说明（中文） |
 | `config.example.yaml` | Example configuration file |
+| `sql/gpt56_chat_lane_overlay.example.sql` | Secret-free replay of the verified GPT-5.6 account/group mappings |
 
 ---
 

@@ -70,6 +70,17 @@ Gateway verification with the ordinary user API path:
 - Streaming Responses with `reasoning.effort=xhigh` completed for Sol, Terra, and Luna; all three selected account `84`.
 - A body-signal `gpt-5.6-sol` compact request completed on account `84` without a recovered panic or container restart.
 
+Replay after a future official upgrade:
+
+- Use [`deploy/sql/gpt56_chat_lane_overlay.example.sql`](../deploy/sql/gpt56_chat_lane_overlay.example.sql) after a database backup. It is name-based, validates that the expected accounts and group exist exactly once, merges only `credentials.model_mapping`, preserves the current `schedulable` state of the cold spare, and queues scheduler refresh events.
+- After direct SQL, restart the application or invalidate the API-key auth cache so `/v1/models` and group permissions do not remain stale. Prefer the normal admin save path when available; it performs the same cache and scheduler notifications.
+- The overlay is an aiself-specific replay template. For another Sub2API deployment, change only the names and lane policy after inspecting that deployment; never copy account credentials into the repository.
+
+Repository/deployment boundary:
+
+- The production runtime code is pinned to `a5426d14` in image `sub2api-adapted:v0.1.150-audited-a5426d14`.
+- Later repository commits may contain documentation, replay SQL, build limits, or audit metadata only. Do not infer that a documentation-only repository HEAD requires a production rebuild.
+
 ## 404token
 
 The 404token deployment was intentionally not changed or re-audited during the 2026-07-10 aiself upgrade. Re-read its live compose, persistent config, and database before reusing historical runtime values.
