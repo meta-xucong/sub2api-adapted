@@ -37,3 +37,5 @@ Billing debits use the existing `idempotency_records` table and update user bala
 5. Build a uniquely tagged image, back up the database/config, deploy, and keep the previous image tag for rollback.
 
 On low-memory build hosts, set `--build-arg FRONTEND_NODE_OPTIONS=--max-old-space-size=1536` and build the `frontend-builder` target first. The final build then reuses that stage instead of compiling the frontend concurrently with the Go stage. If generated Ent packages still force heavy swapping, pass `--build-arg BACKEND_GOGC=20 --build-arg BACKEND_GOMEMLIMIT=900MiB`; both backend limits are inert unless explicitly supplied.
+
+The backend build uses a BuildKit Go build-cache mount. Keep BuildKit enabled so small overlay updates can reuse compiled packages.

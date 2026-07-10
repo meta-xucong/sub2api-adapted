@@ -48,7 +48,8 @@ func PortalMiddleware(cfg PortalConfig) gin.HandlerFunc {
 			c.Abort()
 			return
 		case strings.HasPrefix(requestPath, "/_veyra/"):
-			cleanPath := strings.TrimPrefix(path.Clean(requestPath), "/_veyra/")
+			assetPath := strings.TrimPrefix(requestPath, "/_veyra/")
+			cleanPath := strings.TrimPrefix(path.Clean("/"+assetPath), "/")
 			if cleanPath == "." || cleanPath == "" {
 				cleanPath = "mobile.html"
 			}

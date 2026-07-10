@@ -78,7 +78,8 @@ COPY --from=frontend-builder /app/backend/internal/web/dist ./internal/web/dist
 # Version precedence: build arg VERSION > exact git tag > cmd/server/VERSION
 ARG BACKEND_GOGC=
 ARG BACKEND_GOMEMLIMIT=
-RUN VERSION_VALUE="${VERSION}" && \
+RUN --mount=type=cache,id=sub2api-go-build,target=/root/.cache/go-build \
+    VERSION_VALUE="${VERSION}" && \
     if [ -z "${VERSION_VALUE}" ]; then VERSION_VALUE="$(./scripts/resolve-version.sh)"; fi && \
     DATE_VALUE="${DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}" && \
     GOGC_VALUE="${BACKEND_GOGC:-100}" && \

@@ -59,6 +59,21 @@ func TestPortalMiddlewareServesVeyraReturnWhenEnabled(t *testing.T) {
 	require.Contains(t, rec.Body.String(), "/_veyra/app.js")
 }
 
+func TestPortalMiddlewareServesMobilePortalAtDirectoryRoot(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Use(PortalMiddleware(PortalConfig{Enabled: true, PortalEnabled: true}))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/_veyra/", nil)
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Header().Get("Content-Type"), "text/html")
+	require.Contains(t, rec.Body.String(), "Veyra Agent")
+	require.Contains(t, rec.Body.String(), "/_veyra/app.js")
+}
+
 func TestPortalAppDefaultsLoginReturnToHome(t *testing.T) {
 	subFS, err := fs.Sub(portalFS, "portal_dist")
 	require.NoError(t, err)
