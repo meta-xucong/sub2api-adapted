@@ -35,3 +35,5 @@ Billing debits use the existing `idempotency_records` table and update user bala
 3. Compare each overlay against current upstream behavior and tests.
 4. Reapply the maintained overlay commit, resolve against current interfaces, and run `scripts/verify-adapted-overlay.ps1`.
 5. Build a uniquely tagged image, back up the database/config, deploy, and keep the previous image tag for rollback.
+
+On low-memory build hosts, set `--build-arg FRONTEND_NODE_OPTIONS=--max-old-space-size=1536` and build the `frontend-builder` target first. The final build then reuses that stage instead of compiling the frontend concurrently with the Go stage.

@@ -14,12 +14,15 @@ ARG POSTGRES_IMAGE=postgres:18-alpine
 ARG GOPROXY=https://goproxy.cn,direct
 ARG GOSUMDB=sum.golang.google.cn
 ARG NPM_CONFIG_REGISTRY=
+ARG FRONTEND_NODE_OPTIONS=
 
 # -----------------------------------------------------------------------------
 # Stage 1: Frontend Builder
 # -----------------------------------------------------------------------------
 FROM ${NODE_IMAGE} AS frontend-builder
 ARG NPM_CONFIG_REGISTRY
+ARG FRONTEND_NODE_OPTIONS
+ENV NODE_OPTIONS=${FRONTEND_NODE_OPTIONS}
 
 WORKDIR /app/frontend
 
