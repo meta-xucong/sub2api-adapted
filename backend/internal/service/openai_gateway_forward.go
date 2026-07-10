@@ -838,6 +838,9 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	case AccountTypeAPIKey:
 		// API Key accounts use Platform API or custom base URL
 		baseURL := account.GetOpenAIBaseURL()
+		if overrideBaseURL := openAIUpstreamBaseURLOverride(c); overrideBaseURL != "" {
+			baseURL = overrideBaseURL
+		}
 		if baseURL == "" {
 			targetURL = openaiPlatformAPIURL
 		} else {

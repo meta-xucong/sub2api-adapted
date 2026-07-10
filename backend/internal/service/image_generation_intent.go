@@ -65,6 +65,24 @@ func IsImageGenerationIntentMap(endpoint string, requestedModel string, reqBody 
 	return openAIAnyToolChoiceSelectsImageGeneration(reqBody["tool_choice"])
 }
 
+// ResolveOpenAIResponsesImageRoutingModel returns the image model used only for
+// account selection. The forwarded Responses request keeps its original model.
+func ResolveOpenAIResponsesImageRoutingModel(requestedModel string, body []byte) string {
+	requestedModel = strings.TrimSpace(requestedModel)
+	if !IsImageGenerationIntent(openAIResponsesEndpoint, requestedModel, body) {
+		return requestedModel
+	}
+	if isOpenAIImageGenerationModel(requestedModel) {
+		return requestedModel
+	}
+	if cfg, err := resolveOpenAIResponsesImageBillingConfigDetailedFromBody(body, requestedModel); err == nil {
+		if model := strings.TrimSpace(cfg.Model); isOpenAIImageGenerationModel(model) {
+			return model
+		}
+	}
+	return "gpt-image-2"
+}
+
 // IsImageGenerationEndpoint identifies dedicated generated-image endpoints.
 func IsImageGenerationEndpoint(endpoint string) bool {
 	switch normalizeImageGenerationEndpoint(endpoint) {

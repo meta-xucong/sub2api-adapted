@@ -322,7 +322,7 @@ func openAIImageUploadToDataURL(upload OpenAIImagesUpload) (string, error) {
 		return "", fmt.Errorf("upload %q is empty", strings.TrimSpace(upload.FileName))
 	}
 	contentType := strings.TrimSpace(upload.ContentType)
-	if contentType == "" {
+	if contentType == "" || strings.EqualFold(contentType, "application/octet-stream") {
 		contentType = http.DetectContentType(upload.Data)
 	}
 	return "data:" + contentType + ";base64," + base64.StdEncoding.EncodeToString(upload.Data), nil

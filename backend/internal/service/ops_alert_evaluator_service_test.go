@@ -18,6 +18,22 @@ type stubOpsRepo struct {
 	err      error
 }
 
+func TestParseOpsAlertRuleRequestThresholds(t *testing.T) {
+	minRequests, minErrors := parseOpsAlertRuleRequestThresholds(map[string]any{
+		"min_request_count": "20",
+		"min_error_count":   float64(3),
+	})
+	require.Equal(t, int64(20), minRequests)
+	require.Equal(t, int64(3), minErrors)
+
+	minRequests, minErrors = parseOpsAlertRuleRequestThresholds(map[string]any{
+		"min_request_count": -1,
+		"min_error_count":   "bad",
+	})
+	require.Zero(t, minRequests)
+	require.Zero(t, minErrors)
+}
+
 func (s *stubOpsRepo) GetDashboardOverview(ctx context.Context, filter *OpsDashboardFilter) (*OpsDashboardOverview, error) {
 	if s.err != nil {
 		return nil, s.err

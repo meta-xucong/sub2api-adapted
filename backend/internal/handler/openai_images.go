@@ -134,7 +134,9 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 		return
 	}
 
-	sessionHash := h.gatewayService.GenerateExplicitSessionHash(c, body)
+	// Image requests are stateless for routing. Client session headers must not
+	// pin later requests to a provider whose priority or health has changed.
+	sessionHash := ""
 	requestCtx := service.WithOpenAIImageGenerationIntent(c.Request.Context())
 
 	maxAccountSwitches := h.maxAccountSwitches
@@ -142,22 +144,36 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 	failedAccountIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
 	var lastFailoverErr *service.UpstreamFailoverError
+	imageEditCapacityWaited := false
 
 	for {
 		reqLog.Debug("openai.images.account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
-		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForImages(
+		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForImageOperation(
 			requestCtx,
 			apiKey.GroupID,
 			sessionHash,
 			requestModel,
 			failedAccountIDs,
 			parsed.RequiredCapability,
+			parsed.IsEdits(),
 		)
 		if err != nil {
 			reqLog.Warn("openai.images.account_select_failed",
 				zap.Error(err),
 				zap.Int("excluded_account_count", len(failedAccountIDs)),
 			)
+			if parsed.IsEdits() && len(failedAccountIDs) == 0 && !imageEditCapacityWaited {
+				if wait := h.gatewayService.OpenAIImageEditCapacityRetryDelay(requestCtx, apiKey.GroupID, requestModel); wait > 0 {
+					imageEditCapacityWaited = true
+					reqLog.Warn("openai.images.image_edit_capacity_wait", zap.Duration("wait", wait), zap.Error(err))
+					select {
+					case <-requestCtx.Done():
+						return
+					case <-time.After(wait):
+					}
+					continue
+				}
+			}
 			if len(failedAccountIDs) == 0 {
 				cls := classifyNoAccountErrorFromGin(c, h.gatewayService, apiKey, requestModel, requestModel, service.PlatformOpenAI)
 				if !cls.ModelNotFound {
@@ -167,9 +183,11 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 				if !cls.ModelNotFound {
 					message = "No available compatible accounts"
 				}
+				h.setImageEditTransientRetryAfter(c, parsed)
 				h.handleStreamingAwareError(c, cls.Status, cls.ErrType, message, streamStarted)
 				return
 			}
+			h.setImageEditTransientRetryAfter(c, parsed)
 			if lastFailoverErr != nil {
 				h.handleFailoverExhausted(c, lastFailoverErr, streamStarted)
 			} else {
@@ -186,6 +204,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 			if !cls.ModelNotFound {
 				message = "No available compatible accounts"
 			}
+			h.setImageEditTransientRetryAfter(c, parsed)
 			h.handleStreamingAwareError(c, cls.Status, cls.ErrType, message, streamStarted)
 			return
 		}
@@ -284,15 +303,20 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 							continue
 						}
 					}
+					if parsed.IsEdits() {
+						h.gatewayService.TempUnscheduleImageEditTransientError(requestCtx, account, failoverErr)
+					}
 					h.gatewayService.RecordOpenAIAccountSwitch()
 					failedAccountIDs[account.ID] = struct{}{}
 					lastFailoverErr = failoverErr
 					if switchCount >= maxAccountSwitches {
+						h.setImageEditTransientRetryAfter(c, parsed)
 						h.handleFailoverExhausted(c, failoverErr, streamStarted)
 						return
 					}
 					switchCount++
 					if h.gatewayService.ShouldStopOpenAIOAuth429Failover(account, failoverErr.StatusCode, switchCount) {
+						h.setImageEditTransientRetryAfter(c, parsed)
 						h.handleFailoverExhausted(c, failoverErr, streamStarted)
 						return
 					}
@@ -385,4 +409,13 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 
 func isMultipartImagesContentType(contentType string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(contentType)), "multipart/form-data")
+}
+
+func (h *OpenAIGatewayHandler) setImageEditTransientRetryAfter(c *gin.Context, parsed *service.OpenAIImagesRequest) {
+	if h == nil || h.gatewayService == nil || c == nil || parsed == nil || !parsed.IsEdits() {
+		return
+	}
+	if seconds := h.gatewayService.OpenAIImageEditTransientRetryAfterSeconds(); seconds > 0 {
+		c.Header("Retry-After", strconv.Itoa(seconds))
+	}
 }

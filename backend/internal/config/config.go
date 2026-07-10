@@ -70,6 +70,7 @@ type Config struct {
 	Ops                     OpsConfig                     `mapstructure:"ops"`
 	JWT                     JWTConfig                     `mapstructure:"jwt"`
 	Totp                    TotpConfig                    `mapstructure:"totp"`
+	Veyra                   VeyraConfig                   `mapstructure:"veyra"`
 	LinuxDo                 LinuxDoConnectConfig          `mapstructure:"linuxdo_connect"`
 	WeChat                  WeChatConnectConfig           `mapstructure:"wechat_connect"`
 	OIDC                    OIDCConnectConfig             `mapstructure:"oidc_connect"`
@@ -94,6 +95,15 @@ type Config struct {
 	Update                  UpdateConfig                  `mapstructure:"update"`
 	Idempotency             IdempotencyConfig             `mapstructure:"idempotency"`
 	BatchImage              BatchImageConfig              `mapstructure:"batch_image"`
+}
+
+// VeyraConfig controls the optional aiself portal integration.
+type VeyraConfig struct {
+	Enabled               bool   `mapstructure:"enabled"`
+	PortalEnabled         bool   `mapstructure:"portal_enabled"`
+	AlchemyBaseURL        string `mapstructure:"alchemy_base_url"`
+	InternalToken         string `mapstructure:"internal_token"`
+	LoginTicketTTLSeconds int    `mapstructure:"login_ticket_ttl_seconds"`
 }
 
 type LogConfig struct {
@@ -779,6 +789,8 @@ type GatewayConfig struct {
 	OpenAIWS GatewayOpenAIWSConfig `mapstructure:"openai_ws"`
 	// OpenAIScheduler: OpenAI 高级调度器粘性逃逸配置
 	OpenAIScheduler GatewayOpenAISchedulerConfig `mapstructure:"openai_scheduler"`
+	// SmartRouter: optional multi-line routing enhancement layer.
+	SmartRouter GatewaySmartRouterConfig `mapstructure:"smart_router"`
 	// OpenAIHTTP2: OpenAI HTTP 上游协议策略（默认启用 HTTP/2，可按代理能力回退 HTTP/1.1）
 	OpenAIHTTP2 GatewayOpenAIHTTP2Config `mapstructure:"openai_http2"`
 	// ImageConcurrency: 图片生成独立并发限制配置（默认关闭）
@@ -818,6 +830,8 @@ type GatewayConfig struct {
 	ImageStreamDataIntervalTimeout int `mapstructure:"image_stream_data_interval_timeout"`
 	// ImageStreamKeepaliveInterval: 图片流式 keepalive 间隔（秒），0表示禁用
 	ImageStreamKeepaliveInterval int `mapstructure:"image_stream_keepalive_interval"`
+	// ImageEditTransientCooldownSeconds temporarily removes a failing image-edit lane; 0 disables it.
+	ImageEditTransientCooldownSeconds int `mapstructure:"image_edit_transient_cooldown_seconds"`
 	// MaxLineSize: 上游 SSE 单行最大字节数（0使用默认值）
 	MaxLineSize int `mapstructure:"max_line_size"`
 
@@ -857,6 +871,29 @@ type GatewayConfig struct {
 	// UserMessageQueue: 用户消息串行队列配置
 	// 对 role:"user" 的真实用户消息实施账号级串行化 + RPM 自适应延迟
 	UserMessageQueue UserMessageQueueConfig `mapstructure:"user_message_queue"`
+}
+
+// GatewaySmartRouterConfig configures the optional Smart Router module.
+type GatewaySmartRouterConfig struct {
+	Enabled                 bool                            `mapstructure:"enabled"`
+	TopK                    int                             `mapstructure:"top_k"`
+	MaxAttemptsImage        int                             `mapstructure:"max_attempts_image"`
+	MaxAttemptsChat         int                             `mapstructure:"max_attempts_chat"`
+	MaxAttemptsDefault      int                             `mapstructure:"max_attempts_default"`
+	SameSourceGroupAttempts int                             `mapstructure:"same_source_group_attempts"`
+	CostBiasMax             float64                         `mapstructure:"cost_bias_max"`
+	Scoring                 GatewaySmartRouterScoringConfig `mapstructure:"scoring"`
+}
+
+// GatewaySmartRouterScoringConfig controls lane scoring weights.
+type GatewaySmartRouterScoringConfig struct {
+	Priority float64 `mapstructure:"priority"`
+	Cost     float64 `mapstructure:"cost"`
+	Health   float64 `mapstructure:"health"`
+	Load     float64 `mapstructure:"load"`
+	Queue    float64 `mapstructure:"queue"`
+	Latency  float64 `mapstructure:"latency"`
+	Recovery float64 `mapstructure:"recovery"`
 }
 
 // GatewayOpenAIHTTP2Config OpenAI HTTP 上游协议配置。
@@ -1928,6 +1965,13 @@ func setDefaults() {
 	viper.SetDefault("idempotency.cleanup_interval_seconds", 60)
 	viper.SetDefault("idempotency.cleanup_batch_size", 500)
 
+	// Optional aiself/Veyra portal integration.
+	viper.SetDefault("veyra.enabled", false)
+	viper.SetDefault("veyra.portal_enabled", false)
+	viper.SetDefault("veyra.alchemy_base_url", "https://alchemy.aiself.vip")
+	viper.SetDefault("veyra.internal_token", "")
+	viper.SetDefault("veyra.login_ticket_ttl_seconds", 120)
+
 	// Gateway
 	viper.SetDefault("gateway.response_header_timeout", 600) // 600秒(10分钟)等待上游响应头，LLM高负载时可能排队较久
 	viper.SetDefault("gateway.openai_response_header_timeout", 0)
@@ -1937,6 +1981,20 @@ func setDefaults() {
 	viper.SetDefault("gateway.failover_on_400", false)
 	viper.SetDefault("gateway.max_account_switches", 10)
 	viper.SetDefault("gateway.max_account_switches_gemini", 3)
+	viper.SetDefault("gateway.smart_router.enabled", false)
+	viper.SetDefault("gateway.smart_router.top_k", 5)
+	viper.SetDefault("gateway.smart_router.max_attempts_image", 2)
+	viper.SetDefault("gateway.smart_router.max_attempts_chat", 3)
+	viper.SetDefault("gateway.smart_router.max_attempts_default", 3)
+	viper.SetDefault("gateway.smart_router.same_source_group_attempts", 1)
+	viper.SetDefault("gateway.smart_router.cost_bias_max", 3.0)
+	viper.SetDefault("gateway.smart_router.scoring.priority", 0.8)
+	viper.SetDefault("gateway.smart_router.scoring.cost", 1.0)
+	viper.SetDefault("gateway.smart_router.scoring.health", 1.2)
+	viper.SetDefault("gateway.smart_router.scoring.load", 1.0)
+	viper.SetDefault("gateway.smart_router.scoring.queue", 0.6)
+	viper.SetDefault("gateway.smart_router.scoring.latency", 0.4)
+	viper.SetDefault("gateway.smart_router.scoring.recovery", 0.8)
 	viper.SetDefault("gateway.force_codex_cli", false)
 	viper.SetDefault("gateway.codex_image_generation_bridge_enabled", false)
 	viper.SetDefault("gateway.openai_passthrough_allow_timeout_headers", false)
@@ -2024,6 +2082,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.stream_keepalive_interval", 10)
 	viper.SetDefault("gateway.image_stream_data_interval_timeout", 900)
 	viper.SetDefault("gateway.image_stream_keepalive_interval", 10)
+	viper.SetDefault("gateway.image_edit_transient_cooldown_seconds", 12)
 	viper.SetDefault("gateway.max_line_size", 500*1024*1024)
 	viper.SetDefault("gateway.scheduling.sticky_session_max_waiting", 3)
 	viper.SetDefault("gateway.scheduling.sticky_session_wait_timeout", 120*time.Second)
@@ -2709,6 +2768,36 @@ func (c *Config) Validate() error {
 	if c.Gateway.ImageStreamKeepaliveInterval != 0 &&
 		(c.Gateway.ImageStreamKeepaliveInterval < 5 || c.Gateway.ImageStreamKeepaliveInterval > 60) {
 		return fmt.Errorf("gateway.image_stream_keepalive_interval must be 0 or between 5-60 seconds")
+	}
+	if c.Gateway.ImageEditTransientCooldownSeconds < 0 {
+		return fmt.Errorf("gateway.image_edit_transient_cooldown_seconds must be non-negative")
+	}
+	if c.Gateway.SmartRouter.TopK < 0 {
+		return fmt.Errorf("gateway.smart_router.top_k must be non-negative")
+	}
+	if c.Gateway.SmartRouter.MaxAttemptsImage < 0 {
+		return fmt.Errorf("gateway.smart_router.max_attempts_image must be non-negative")
+	}
+	if c.Gateway.SmartRouter.MaxAttemptsChat < 0 {
+		return fmt.Errorf("gateway.smart_router.max_attempts_chat must be non-negative")
+	}
+	if c.Gateway.SmartRouter.MaxAttemptsDefault < 0 {
+		return fmt.Errorf("gateway.smart_router.max_attempts_default must be non-negative")
+	}
+	if c.Gateway.SmartRouter.SameSourceGroupAttempts < 0 {
+		return fmt.Errorf("gateway.smart_router.same_source_group_attempts must be non-negative")
+	}
+	if c.Gateway.SmartRouter.CostBiasMax < 0 {
+		return fmt.Errorf("gateway.smart_router.cost_bias_max must be non-negative")
+	}
+	smartRouterWeights := c.Gateway.SmartRouter.Scoring
+	if smartRouterWeights.Priority < 0 || smartRouterWeights.Cost < 0 || smartRouterWeights.Health < 0 ||
+		smartRouterWeights.Load < 0 || smartRouterWeights.Queue < 0 || smartRouterWeights.Latency < 0 || smartRouterWeights.Recovery < 0 {
+		return fmt.Errorf("gateway.smart_router.scoring.* must be non-negative")
+	}
+	smartRouterWeightSum := smartRouterWeights.Priority + smartRouterWeights.Cost + smartRouterWeights.Health + smartRouterWeights.Load + smartRouterWeights.Queue + smartRouterWeights.Latency + smartRouterWeights.Recovery
+	if c.Gateway.SmartRouter.Enabled && smartRouterWeightSum <= 0 {
+		return fmt.Errorf("gateway.smart_router.scoring must not all be zero when smart_router is enabled")
 	}
 	// 兼容旧键 sticky_previous_response_ttl_seconds
 	if c.Gateway.OpenAIWS.StickyResponseIDTTLSeconds <= 0 && c.Gateway.OpenAIWS.StickyPreviousResponseTTLSeconds > 0 {

@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#fbfaf7" />
+    <title>Veyra Agent</title>
+    <script>
+      (() => {
+        const params = new URLSearchParams(window.location.search);
+        if (params.get("desktop") === "1") return;
+        const mobileUa = /Android|iPhone|iPod|BlackBerry|IEMobile|Opera Mini|Windows Phone|Mobile/i.test(
+          navigator.userAgent || "",
+        );
+        const compactTouch =
+          window.matchMedia &&
+          window.matchMedia("(hover: none) and (pointer: coarse) and (max-width: 820px)").matches;
+        if (mobileUa || compactTouch) {
+          window.location.replace(`/_veyra/mobile.html${window.location.search}${window.location.hash}`);
+        }
+      })();
+    </script>
+    <link rel="stylesheet" href="/_veyra/styles.css" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="site-header">
+        <a class="brand-lockup" href="./index.html" aria-label="Veyra Agent">
+          <strong>Veyra Agent</strong>
+          <span>Unified console</span>
+        </a>
+        <div class="header-actions">
+          <a class="surface-switch-link" href="/_veyra/mobile.html">手机版</a>
+          <span class="session-pill" id="sessionState">未登录</span>
+          <a class="button ghost" href="/login" data-route="login" id="loginLink">登录</a>
+          <button class="button ghost logout-button" type="button" data-route="logout" id="logoutButton" hidden>退出</button>
+        </div>
+      </header>
+
+      <main class="home-layout">
+        <section class="intro">
+          <p class="eyebrow">Veyra Network</p>
+          <h1>一个入口，连接你的 Agent 工具矩阵。</h1>
+          <p>从这里进入聚合平台和 Alchemy Media Agent。账户登录沿用聚合平台的账号体系。</p>
+        </section>
+
+        <section class="entry-grid" aria-label="应用入口">
+          <a class="entry-card" href="/console" data-route="sub2api-console">
+            <span>01 / API Gateway</span>
+            <strong>聚合平台</strong>
+            <p>管理 API Key、模型渠道、充值、余额和调用记录。</p>
+          </a>
+
+          <a class="entry-card image-entry" href="https://alchemy.aiself.vip/" data-route="alchemy">
+            <span>02 / Image Agent</span>
+            <strong>Alchemy Media Agent</strong>
+            <p>进入生图页面，创建品牌视觉资产。</p>
+            <img src="/_veyra/assets/showcase/luxury-product.jpg" alt="Alchemy Media Agent 视觉案例" />
+          </a>
+        </section>
+      </main>
+    </div>
+    <script src="/_veyra/app.js" defer></script>
+  </body>
+</html>

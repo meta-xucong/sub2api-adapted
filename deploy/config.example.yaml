@@ -141,6 +141,14 @@ security:
     # 不影响 AI 账号网关连接。默认 false：fail-fast 防止 IP 泄露。
     allow_direct_on_error: false
 
+# Optional aiself/Veyra portal bridge. Leave disabled on generic deployments.
+veyra:
+  enabled: false
+  portal_enabled: false
+  alchemy_base_url: "https://alchemy.aiself.vip"
+  internal_token: ""
+  login_ticket_ttl_seconds: 120
+
 # =============================================================================
 # Gateway Configuration
 # 网关配置
@@ -338,6 +346,24 @@ gateway:
     sticky_escape_ttft_ms: 15000
     # 错误率 EWMA 超过该阈值时跳过 sticky，默认 0.5，仅在明显降级时触发
     sticky_escape_error_rate: 0.5
+  # Optional Sub2API Smart Router overlay. Disabled keeps official scheduling unchanged.
+  # 可插拔 Smart Router；关闭时完全保持官方调度行为。
+  smart_router:
+    enabled: false
+    top_k: 5
+    max_attempts_image: 2
+    max_attempts_chat: 3
+    max_attempts_default: 3
+    same_source_group_attempts: 1
+    cost_bias_max: 3.0
+    scoring:
+      priority: 0.8
+      cost: 1.0
+      health: 1.2
+      load: 1.0
+      queue: 0.6
+      latency: 0.4
+      recovery: 0.8
   # OpenAI HTTP upstream protocol strategy.
   # OpenAI HTTP 上游协议策略（默认 HTTP/2；代理明确不兼容时可临时回退 HTTP/1.1）。
   openai_http2:
@@ -383,6 +409,9 @@ gateway:
   # Image stream keepalive interval (seconds), 0=disable; independent from ordinary text streams
   # 图片流式 keepalive 间隔（秒），0=禁用；独立于普通文本流式
   image_stream_keepalive_interval: 10
+  # Short cooldown for transient /images/edits failures; 0 disables it.
+  # 图生图瞬时 403/408/5xx 的短冷却秒数；0 表示禁用。
+  image_edit_transient_cooldown_seconds: 12
   # Image generation independent concurrency limiter (process-local, default disabled)
   # 图片生成独立并发限制（进程级，默认关闭；多实例总上限约为实例数×该值）
   image_concurrency:

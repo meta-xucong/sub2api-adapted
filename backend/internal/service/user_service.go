@@ -130,6 +130,24 @@ type RedeemUserAdjustmentRepository interface {
 	ApplyRedeemConcurrencyAdjustment(ctx context.Context, id int64, delta int) error
 }
 
+type UserBalanceDebitInput struct {
+	UserID             int64
+	Amount             float64
+	IdempotencyKey     string
+	RequestFingerprint string
+}
+
+type UserBalanceDebitResult struct {
+	UserID       int64
+	Amount       float64
+	BalanceAfter float64
+	Replayed     bool
+}
+
+type userBalanceDebitRepository interface {
+	DebitBalanceIfSufficient(ctx context.Context, input UserBalanceDebitInput) (*UserBalanceDebitResult, error)
+}
+
 type UserAuthIdentityRecord struct {
 	ProviderType    string
 	ProviderKey     string
@@ -1094,6 +1112,31 @@ func (s *UserService) UpdateBalance(ctx context.Context, userID int64, amount fl
 		}()
 	}
 	return nil
+}
+
+// DebitBalanceIfSufficient performs an idempotent, atomic debit for Veyra.
+func (s *UserService) DebitBalanceIfSufficient(ctx context.Context, input UserBalanceDebitInput) (*UserBalanceDebitResult, error) {
+	repo, ok := s.userRepo.(userBalanceDebitRepository)
+	if !ok || repo == nil {
+		return nil, fmt.Errorf("user repository does not support atomic debit")
+	}
+	result, err := repo.DebitBalanceIfSufficient(ctx, input)
+	if err != nil {
+		return nil, err
+	}
+	if s.authCacheInvalidator != nil {
+		s.authCacheInvalidator.InvalidateAuthCacheByUserID(ctx, result.UserID)
+	}
+	if s.billingCache != nil {
+		go func(userID int64) {
+			cacheCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := s.billingCache.InvalidateUserBalance(cacheCtx, userID); err != nil {
+				slog.Error("invalidate user balance cache failed", "user_id", userID, "error", err)
+			}
+		}(result.UserID)
+	}
+	return result, nil
 }
 
 // UpdateConcurrency 更新用户并发数（管理员功能）

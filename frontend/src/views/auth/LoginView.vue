@@ -263,6 +263,18 @@ const totpTempToken = ref<string>('')
 const totpUserEmailMasked = ref<string>('')
 const totpModalRef = ref<InstanceType<typeof TotpLoginModal> | null>(null)
 
+function resolveLoginRedirect(): string {
+  return (router.currentRoute.value.query.redirect as string) || '/dashboard'
+}
+
+async function applyLoginRedirect(redirectTo: string): Promise<void> {
+  if (redirectTo.startsWith('/_veyra/return')) {
+    window.location.assign(redirectTo)
+    return
+  }
+  await router.push(redirectTo)
+}
+
 const formData = reactive({
   email: '',
   password: ''
@@ -498,8 +510,7 @@ async function handleLogin(): Promise<void> {
     appStore.showSuccess(t('auth.loginSuccess'))
 
     // Redirect to dashboard or intended route
-    const redirectTo = (router.currentRoute.value.query.redirect as string) || '/dashboard'
-    await router.push(redirectTo)
+    await applyLoginRedirect(resolveLoginRedirect())
   } catch (error: unknown) {
     // Reset Turnstile on error
     if (turnstileRef.value) {
@@ -532,8 +543,7 @@ async function handle2FAVerify(code: string): Promise<void> {
     appStore.showSuccess(t('auth.loginSuccess'))
 
     // Redirect to dashboard or intended route
-    const redirectTo = (router.currentRoute.value.query.redirect as string) || '/dashboard'
-    await router.push(redirectTo)
+    await applyLoginRedirect(resolveLoginRedirect())
   } catch (error: unknown) {
     const err = error as { message?: string; response?: { data?: { message?: string } } }
     const message = err.response?.data?.message || err.message || t('profile.totp.loginFailed')
