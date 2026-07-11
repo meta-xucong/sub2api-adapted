@@ -228,6 +228,33 @@ func (s *OpenAIGatewayService) shouldFailoverOpenAIUpstreamResponse(statusCode i
 	return isOpenAITransientProcessingError(statusCode, upstreamMsg, upstreamBody)
 }
 
+// Image-compatible gateways sometimes answer an image request with a text
+// reply instead of an image. Treat that lane as unusable for this request so
+// the image scheduler can try another compatible account, while leaving the
+// generic chat/embedding error policy unchanged.
+func (s *OpenAIGatewayService) shouldFailoverOpenAIImagesResponse(statusCode int, upstreamMsg string, upstreamBody []byte) bool {
+	if isOpenAIImageUpstreamTextReply(upstreamBody) {
+		return true
+	}
+	return s.shouldFailoverOpenAIUpstreamResponse(statusCode, upstreamMsg, upstreamBody)
+}
+
+func isOpenAIImageUpstreamTextReply(upstreamBody []byte) bool {
+	if len(upstreamBody) == 0 {
+		return false
+	}
+	for _, path := range []string{
+		"error.code",
+		"response.error.code",
+		"code",
+	} {
+		if strings.EqualFold(strings.TrimSpace(gjson.GetBytes(upstreamBody, path).String()), "upstream_text_reply") {
+			return true
+		}
+	}
+	return strings.Contains(strings.ToLower(string(upstreamBody)), "upstream_text_reply")
+}
+
 func marshalOpenAIUpstreamJSON(v any) ([]byte, error) {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)

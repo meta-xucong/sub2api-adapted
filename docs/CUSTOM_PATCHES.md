@@ -45,6 +45,10 @@ The router first considers the lowest numeric priority layer. It advances only a
 - OpenAI-compatible image providers may put a `data:image/...;base64,...` value
   in the response `url` field. The image normalizer decodes that inline asset
   locally instead of trying to fetch a `data:` URI over HTTP.
+- Image endpoints that receive a structured `upstream_text_reply` 400 now
+  fail over to the next compatible image lane instead of returning that lane's
+  deterministic text response as the final image error. The generic chat and
+  embedding error policy is unchanged.
 - Scheduled tests accept `gpt-image-2#edits`, which runs an in-memory
   `/v1/images/edits` probe using a tiny embedded PNG instead of a plain
   text-to-image probe.
