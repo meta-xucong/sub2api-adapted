@@ -38,6 +38,13 @@ instance with the matching aiself lanes is
 names together with normalized upstream URLs, preserves credentials, and does
 not copy health/error status across deployments.
 
+The follow-up safety overlay is
+`deploy/sql/404token_gpt56_pro_only_repair.example.sql`. It disables the empty
+aicodexvip source, removes unstable GPT-5.6 mappings from Liuyun, and leaves
+GPT-5.6-Sol only in the existing 7646881/Pro billing groups. It never moves an
+account between billing groups. It also disables recurring scheduled probes for
+the exhausted aicodexvip accounts without deleting those plans.
+
 ## Compact streaming compatibility
 
 Ops response capture always restores the writer that existed before its middleware before returning the capture wrapper to the pool. This prevents compact SSE keepalive wrappers from retaining a released capture writer and panicking when outer access loggers read status or size.

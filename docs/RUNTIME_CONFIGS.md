@@ -100,6 +100,10 @@ Deployed and verified: 2026-07-10
 - Latest compose backup: `/opt/sub2api-deploy/docker-compose.yml.before-gpt56-20260710-222245`
 - Latest rollback tag: `sub2api-adapted:rollback-before-gpt56-20260710-222245`
 - Aiself dispatch sync backup: `/opt/sub2api-deploy/backups/aiself-dispatch-sync-20260710-230311`
+- GPT-5.6 route repair backup: `/opt/sub2api-deploy/backups/gpt56-route-repair-20260711-155223`
+- Liuyun GPT-5.6 removal backup: `/opt/sub2api-deploy/backups/gpt56-route-repair-liuyun-off-20260711-155548`
+- Billing-group correction backup: `/opt/sub2api-deploy/backups/gpt56-group-policy-correct-20260711-155702`
+- aicodex scheduled-probe backup: `/opt/sub2api-deploy/backups/aicodex-scheduled-plan-off-20260711-160500`
 - `veyra.enabled=false` and `veyra.portal_enabled=false`; `/` and `/login`
   must remain the official Sub2API default pages.
 - Smart Router target values match the verified downstream policy:
@@ -137,11 +141,20 @@ GPT-5.6 test-selector patch deployed: `44eb5aaa`.
   remained healthy and application logs had no panic/fatal/runtime-error
   markers in the final ten-minute check.
 
-### Aiself source-aligned routing sync
+### Aiself source-aligned routing sync (historical)
 
 Applied: 2026-07-10. Matching was performed by upstream URL plus account role.
-The sync copied the verified GPT-5.6 mappings and image Smart Router lanes for
-the matching aicodexvip, 7646881, and Liuyun accounts. It also removed obsolete
-chat models from the affected 404token group model lists. Account health/error
-states were not copied across hosts; the database backup above is the rollback
-point.
+This was the initial source-alignment state; the GPT-5.6 policy below is the
+authoritative current 404token state. Account health/error states were not
+copied across hosts; the database backup above is the rollback point.
+
+### GPT-5.6 Pro-only repair
+
+Applied: 2026-07-11. The aicodexvip source is schedulable-disabled because its
+upstream balance is exhausted. Liuyun remains available for 5.4/5.5 but is no
+longer a GPT-5.6 lane after its 429/hanging behavior. `7646881-pro` is limited
+to one concurrent request and retains `gpt-5.6-sol` in the existing
+`chatgpt-7646881` and `chatgpt-pro` groups. No account was moved into the
+cheaper `chatgpt-plus` or `chatgpt-特惠` groups. The aicodexvip scheduled image
+probe (`scheduled_test_plans.id=1`) is disabled, not deleted, to stop repeated
+balance-error noise while preserving a future recovery switch.
