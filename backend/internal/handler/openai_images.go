@@ -305,6 +305,8 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 					}
 					if parsed.IsEdits() {
 						h.gatewayService.TempUnscheduleImageEditTransientError(requestCtx, account, failoverErr)
+					} else {
+						h.gatewayService.TempUnscheduleImageGenerationTransientError(requestCtx, account, failoverErr)
 					}
 					h.gatewayService.RecordOpenAIAccountSwitch()
 					failedAccountIDs[account.ID] = struct{}{}

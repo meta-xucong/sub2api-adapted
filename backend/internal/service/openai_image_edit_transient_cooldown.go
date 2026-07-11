@@ -25,7 +25,7 @@ func (s *OpenAIGatewayService) TempUnscheduleImageEditTransientError(ctx context
 	if s == nil || account == nil || failoverErr == nil {
 		return
 	}
-	if !isOpenAIImageEditTransientStatus(failoverErr.StatusCode) {
+	if !isOpenAIImageTransientStatus(failoverErr.StatusCode) {
 		return
 	}
 	cooldown := s.openAIImageEditTransientCooldown()
@@ -201,7 +201,7 @@ func durationCeilSeconds(value time.Duration) int {
 	return int((value + time.Second - time.Nanosecond) / time.Second)
 }
 
-func isOpenAIImageEditTransientStatus(statusCode int) bool {
+func isOpenAIImageTransientStatus(statusCode int) bool {
 	switch statusCode {
 	case http.StatusForbidden,
 		http.StatusRequestTimeout,

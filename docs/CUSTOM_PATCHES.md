@@ -37,6 +37,12 @@ The router first considers the lowest numeric priority layer. It advances only a
   `gateway.image_edit_transient_cooldown_seconds` (default `12`) before
   failover, so a flapping image-to-image fallback account is not immediately
   reselected by the next user request.
+- OpenAI image generation transient account failures (`403`, `408`, `500`,
+  `502`, `503`, `504`) and structured `upstream_text_reply` image responses
+  now apply a separate short per-account scheduling cooldown via
+  `gateway.image_generation_transient_cooldown_seconds` (default `30`) before
+  failover. The account stays active and is automatically eligible again after
+  the cooldown expires; deterministic parameter errors are not cooled down.
 - OpenAI image API-key transport failures where no HTTP response is received
   (for example SOCKS EOF, TCP/TLS, DNS, or proxy routing errors) now return the
   same `UpstreamFailoverError` used by chat/responses forwarding. This lets the

@@ -832,6 +832,8 @@ type GatewayConfig struct {
 	ImageStreamKeepaliveInterval int `mapstructure:"image_stream_keepalive_interval"`
 	// ImageEditTransientCooldownSeconds temporarily removes a failing image-edit lane; 0 disables it.
 	ImageEditTransientCooldownSeconds int `mapstructure:"image_edit_transient_cooldown_seconds"`
+	// ImageGenerationTransientCooldownSeconds temporarily removes a failing text-to-image lane; 0 disables it.
+	ImageGenerationTransientCooldownSeconds int `mapstructure:"image_generation_transient_cooldown_seconds"`
 	// MaxLineSize: 上游 SSE 单行最大字节数（0使用默认值）
 	MaxLineSize int `mapstructure:"max_line_size"`
 
@@ -2083,6 +2085,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.image_stream_data_interval_timeout", 900)
 	viper.SetDefault("gateway.image_stream_keepalive_interval", 10)
 	viper.SetDefault("gateway.image_edit_transient_cooldown_seconds", 12)
+	viper.SetDefault("gateway.image_generation_transient_cooldown_seconds", 30)
 	viper.SetDefault("gateway.max_line_size", 500*1024*1024)
 	viper.SetDefault("gateway.scheduling.sticky_session_max_waiting", 3)
 	viper.SetDefault("gateway.scheduling.sticky_session_wait_timeout", 120*time.Second)
@@ -2771,6 +2774,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.ImageEditTransientCooldownSeconds < 0 {
 		return fmt.Errorf("gateway.image_edit_transient_cooldown_seconds must be non-negative")
+	}
+	if c.Gateway.ImageGenerationTransientCooldownSeconds < 0 {
+		return fmt.Errorf("gateway.image_generation_transient_cooldown_seconds must be non-negative")
 	}
 	if c.Gateway.SmartRouter.TopK < 0 {
 		return fmt.Errorf("gateway.smart_router.top_k must be non-negative")

@@ -1422,6 +1422,11 @@ func TestValidateConfigErrors(t *testing.T) {
 			wantErr: "gateway.image_edit_transient_cooldown_seconds must be non-negative",
 		},
 		{
+			name:    "gateway image generation transient cooldown negative",
+			mutate:  func(c *Config) { c.Gateway.ImageGenerationTransientCooldownSeconds = -1 },
+			wantErr: "gateway.image_generation_transient_cooldown_seconds must be non-negative",
+		},
+		{
 			name:    "gateway smart router top k negative",
 			mutate:  func(c *Config) { c.Gateway.SmartRouter.TopK = -1 },
 			wantErr: "gateway.smart_router.top_k must be non-negative",
@@ -1984,6 +1989,9 @@ func TestLoad_DefaultGatewayImageStreamConfig(t *testing.T) {
 	}
 	if cfg.Gateway.ImageEditTransientCooldownSeconds != 12 {
 		t.Fatalf("image_edit_transient_cooldown_seconds = %d, want 12", cfg.Gateway.ImageEditTransientCooldownSeconds)
+	}
+	if cfg.Gateway.ImageGenerationTransientCooldownSeconds != 30 {
+		t.Fatalf("image_generation_transient_cooldown_seconds = %d, want 30", cfg.Gateway.ImageGenerationTransientCooldownSeconds)
 	}
 	if cfg.Gateway.SmartRouter.Enabled {
 		t.Fatalf("smart_router.enabled = true, want false")
