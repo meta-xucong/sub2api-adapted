@@ -96,20 +96,23 @@ Replay after a future official upgrade:
 
 Repository/deployment boundary:
 
-- The production runtime code is pinned to `a5426d14` in image `sub2api-adapted:v0.1.150-audited-a5426d14`.
-- Later repository commits may contain documentation, replay SQL, build limits, or audit metadata only. Do not infer that a documentation-only repository HEAD requires a production rebuild.
+- The aiself production runtime is pinned to `2e0b87f3` in image
+  `sub2api-adapted:v0.1.151-smart-router-2e0b87f3`; later repository commits may
+  contain documentation, replay SQL, build limits, or audit metadata only.
 
 ## 404token
 
-Last deployed and verified: 2026-07-10. The 2026-07-12 Smart Router overlay
-has not been deployed here because the current resolved host exposes HTTP/HTTPS
-but all known SSH entry ports are unreachable; no production change was made.
+Verified and upgraded: 2026-07-12. The correct SSH path is through the
+Philippines jump host; the target is not reachable through the common direct SSH
+ports.
 
 - Deploy directory: `/opt/sub2api-deploy`
 - Persistent data mount: `/opt/sub2api-deploy/data` -> `/app/data`
 - Official baseline: `v0.1.151` (`deff3123`)
-- Deployed image: `sub2api-adapted:v0.1.151-404token-44eb5aaa`
-- Deployment backup: `/opt/sub2api-deploy/backups/upgrade-v0.1.151-20260710`
+- Deployed image: `sub2api-adapted:v0.1.151-smart-router-b05c986a`
+- Deployment backup: `/opt/sub2api-deploy/backups/smart-router-b05c986a-20260712-174643`
+- Rollback image tag: `sub2api-adapted:rollback-before-smart-router-b05c986a-20260712-174643`
+- Initial upgrade backup: `/opt/sub2api-deploy/backups/upgrade-v0.1.151-20260710`
 - Latest compose backup: `/opt/sub2api-deploy/docker-compose.yml.before-gpt56-20260710-222245`
 - Latest rollback tag: `sub2api-adapted:rollback-before-gpt56-20260710-222245`
 - Aiself dispatch sync backup: `/opt/sub2api-deploy/backups/aiself-dispatch-sync-20260710-230311`
@@ -124,6 +127,8 @@ but all known SSH entry ports are unreachable; no production change was made.
   `max_attempts_chat=3`, `max_attempts_default=3`,
   `same_source_group_attempts=1`, `cost_bias_max=3`, and image-edit
   transient cooldown `30` seconds.
+- Image gateway budgets are explicit: `image_total_budget_seconds=600`,
+  `image_attempt_seconds=180`, and `image_finalization_reserve_seconds=15`.
 
 The live scheduled image probe was returning upstream `403
 INSUFFICIENT_BALANCE` before this upgrade. That is an upstream account balance
@@ -132,10 +137,11 @@ generic Sub2API page or the deployment itself as broken.
 
 Post-deploy verification:
 
-- `sub2api`, Postgres, and Redis were healthy; the application restart count was
+- `sub2api`, Postgres, and Redis are healthy; the application restart count is
   `0` after the new container became healthy.
-- `/health` returned HTTP 200; `/`, `/login`, and `/_veyra/` returned the
-  generic Sub2API frontend and contained no aiself/Veyra portal markers.
+- Local and public `/health` returned HTTP 200.
+- The official default `/` and `/login` page policy remains unchanged for
+  404token; no aiself/Veyra portal page was introduced.
 - Migration `173_allow_cyber_blocked_usage_request_type.sql` was applied.
 - The last five minutes of application logs contained no panic, fatal, or
   runtime-error signatures.
@@ -154,10 +160,9 @@ GPT-5.6 test-selector patch deployed: `44eb5aaa`.
   remained healthy and application logs had no panic/fatal/runtime-error
   markers in the final ten-minute check.
 
-Current access evidence: `https://404token.xyz/health` and `/login` return HTTP
-200, but the resolved address `141.11.138.220` rejects or times out on ports
-22, 22022, 27793, 2222, 2022, 18789, 8080, 8443, 10022, and 20022. Deploy only
-after the dedicated SSH host/key or jump path is restored.
+Current access evidence: target `141.11.138.220:14161` is reachable through
+jump host `141.11.138.152:13226`; `https://404token.xyz/health` returns HTTP
+200. Credentials and private keys are intentionally not recorded here.
 
 ### Aiself source-aligned routing sync (historical)
 
