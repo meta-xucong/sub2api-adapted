@@ -146,9 +146,9 @@ ports.
 - Deploy directory: `/opt/sub2api-deploy`
 - Persistent data mount: `/opt/sub2api-deploy/data` -> `/app/data`
 - Official baseline: `v0.1.151` (`deff3123`)
-- Deployed image: `sub2api-adapted:v0.1.151-smart-router-b05c986a`
-- Deployment backup: `/opt/sub2api-deploy/backups/smart-router-b05c986a-20260712-174643`
-- Rollback image tag: `sub2api-adapted:rollback-before-smart-router-b05c986a-20260712-174643`
+- Deployed image: `sub2api-adapted:v0.1.151-smart-router-image-recovery-9c600574`
+- Deployment backup: `/opt/sub2api-deploy/backups/smart-router-image-recovery-9c600574-20260712T132508Z`
+- Rollback image tag: `sub2api-adapted:rollback-before-smart-router-image-recovery-9c600574-20260712T132508Z`
 - Initial upgrade backup: `/opt/sub2api-deploy/backups/upgrade-v0.1.151-20260710`
 - Latest compose backup: `/opt/sub2api-deploy/docker-compose.yml.before-gpt56-20260710-222245`
 - Latest rollback tag: `sub2api-adapted:rollback-before-gpt56-20260710-222245`
@@ -163,9 +163,30 @@ ports.
   `enabled=true`, `top_k=8`, `max_attempts_image=6`,
   `max_attempts_chat=3`, `max_attempts_default=3`,
   `same_source_group_attempts=1`, `cost_bias_max=3`, and image-edit
-  transient cooldown `30` seconds.
+  and image-generation transient cooldowns `30` seconds.
 - Image gateway budgets are explicit: `image_total_budget_seconds=600`,
   `image_attempt_seconds=180`, and `image_finalization_reserve_seconds=15`.
+- Per-upstream and end-to-end image timeouts are `180` and `600` seconds.
+- Generic chat/Responses sustained failure threshold remains `3`; the
+  capability-scoped image threshold is `2`, freezing a repeatedly failing image
+  lane until the next `04:00 Asia/Shanghai` calibration.
+
+### Capability And Priority Policy
+
+Applied: 2026-07-12.
+
+- [`deploy/sql/404token_smart_router_overlay.example.sql`](../deploy/sql/404token_smart_router_overlay.example.sql)
+  annotated the 16 existing routing accounts without changing account priority,
+  group priority, model mapping, account status, schedulability, or credentials.
+- The 7646881 and Liuyun chat price tiers are separate retry domains with a
+  Router effective concurrency limit of one each. This preserves the admin UI's
+  low-price-to-high-price fallback order inside their shared downstream groups.
+- YeToken chat lanes are explicitly `chat`/`responses` only with shared source
+  concurrency two. Its two image lanes are `image_generation` only with shared
+  source concurrency one. Unverified image edit capability is not inferred.
+- The existing Liuyun and 7646881 image lanes retain separate generation/edit
+  health states. `aicodexvip生图` remains schedulable-disabled; the overlay does
+  not reactivate it.
 
 The live scheduled image probe was returning upstream `403
 INSUFFICIENT_BALANCE` before this upgrade. That is an upstream account balance
@@ -182,6 +203,13 @@ Post-deploy verification:
 - Migration `173_allow_cyber_blocked_usage_request_type.sql` was applied.
 - The last five minutes of application logs contained no panic, fatal, or
   runtime-error signatures.
+- The image-health deployment created `smart_router_health_events`,
+  `smart_router_lane_state`, and `smart_router_calibration_runs`; all are ready
+  for the first production result. The application logged its internal
+  `0 4 * * * Asia/Shanghai` calibration schedule, with no ledger-write, panic,
+  fatal, or runtime errors after startup.
+- Local `/` and `/login` returned HTTP 200 with Veyra configuration absent, so
+  the official Sub2API default page policy remains in effect.
 - BuildKit cleanup reclaimed about `6.95 GB`; the host returned to about 42%
   disk usage while the deployed and rollback images remained present.
 
