@@ -17,9 +17,11 @@ Verified: 2026-07-12
 - Persistent runtime config: `/app/data/config.yaml`
 - Host volume path: `/var/lib/docker/volumes/deploy_sub2api_data/_data/config.yaml`
 - Upgrade backup root: `/opt/sub2api/backups/upgrade-v0.1.150-20260710T075612Z`
-- Latest image backup: `/opt/sub2api/deploy/backups/smart-router-image-policy-9c600574-20260712T130228Z`
-- Deployed image: `sub2api-adapted:v0.1.151-smart-router-image-recovery-9c600574`
-- Deployed code commit: `9c600574`
+- Latest image backup: `/opt/sub2api/backups/smart-router-280a5ccc-20260713-002438`
+- Deployed image: `sub2api-adapted:v0.1.151-smart-router-280a5ccc`
+- Deployed code commit: `280a5ccc`
+- Runtime image uses the locally cross-compiled Linux binary with the unchanged
+  frontend dist; this avoids resource-heavy Node/Go compilation on the VPS.
 
 Active Smart Router settings:
 
@@ -140,8 +142,8 @@ Replay after a future official upgrade:
 
 Repository/deployment boundary:
 
-- The aiself production runtime is pinned to `9c600574` in image
-  `sub2api-adapted:v0.1.151-smart-router-image-recovery-9c600574`; later repository commits may
+- The aiself production runtime is pinned to `280a5ccc` in image
+  `sub2api-adapted:v0.1.151-smart-router-280a5ccc`; later repository commits may
   contain documentation, replay SQL, build limits, or audit metadata only.
 
 ## 404token
@@ -153,9 +155,11 @@ ports.
 - Deploy directory: `/opt/sub2api-deploy`
 - Persistent data mount: `/opt/sub2api-deploy/data` -> `/app/data`
 - Official baseline: `v0.1.151` (`deff3123`)
-- Deployed image: `sub2api-adapted:v0.1.151-smart-router-image-recovery-9c600574`
-- Deployment backup: `/opt/sub2api-deploy/backups/smart-router-image-recovery-9c600574-20260712T132508Z`
-- Rollback image tag: `sub2api-adapted:rollback-before-smart-router-image-recovery-9c600574-20260712T132508Z`
+- Deployed image: `sub2api-adapted:v0.1.151-smart-router-280a5ccc`
+- Deployment backup: `/opt/sub2api-deploy/backups/smart-router-280a5ccc-20260713-002446`
+- Rollback image tag: `sub2api-adapted:v0.1.151-smart-router-image-recovery-9c600574`
+- Runtime image uses the locally cross-compiled Linux binary; no VPS-side Go
+  compilation is required for this deployment path.
 - Initial upgrade backup: `/opt/sub2api-deploy/backups/upgrade-v0.1.151-20260710`
 - Latest compose backup: `/opt/sub2api-deploy/docker-compose.yml.before-gpt56-20260710-222245`
 - Latest rollback tag: `sub2api-adapted:rollback-before-gpt56-20260710-222245`
