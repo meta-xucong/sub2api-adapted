@@ -639,7 +639,9 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 	if err != nil {
 		return nil, err
 	}
-	upstreamReq, err := s.buildOpenAIImagesRequest(upstreamCtx, c, account, forwardBody, forwardContentType, token, upstreamParsed.Endpoint)
+	imageUpstreamCtx, cancelImageUpstream := s.withOpenAIImageUpstreamTimeout(upstreamCtx)
+	defer cancelImageUpstream()
+	upstreamReq, err := s.buildOpenAIImagesRequest(imageUpstreamCtx, c, account, forwardBody, forwardContentType, token, upstreamParsed.Endpoint)
 	if err != nil {
 		return nil, err
 	}

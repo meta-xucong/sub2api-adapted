@@ -43,6 +43,11 @@ The router first considers the lowest numeric priority layer. It advances only a
   `gateway.image_generation_transient_cooldown_seconds` (default `30`) before
   failover. The account stays active and is automatically eligible again after
   the cooldown expires; deterministic parameter errors are not cooled down.
+- OpenAI-compatible image upstream calls have a bounded request timeout via
+  `gateway.image_upstream_timeout_seconds` (default `180`). A stuck API-key or
+  OAuth image upstream becomes a failover event before the client-side timeout,
+  giving Smart Router time to move to the next eligible lane instead of ending
+  as a client `context canceled` with no switch.
 - OpenAI image API-key transport failures where no HTTP response is received
   (for example SOCKS EOF, TCP/TLS, DNS, or proxy routing errors) now return the
   same `UpstreamFailoverError` used by chat/responses forwarding. This lets the

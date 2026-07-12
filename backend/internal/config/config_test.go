@@ -1407,6 +1407,11 @@ func TestValidateConfigErrors(t *testing.T) {
 			wantErr: "gateway.image_stream_keepalive_interval must be non-negative",
 		},
 		{
+			name:    "gateway image upstream timeout negative",
+			mutate:  func(c *Config) { c.Gateway.ImageUpstreamTimeoutSeconds = -1 },
+			wantErr: "gateway.image_upstream_timeout_seconds must be non-negative",
+		},
+		{
 			name:    "gateway image stream data interval range",
 			mutate:  func(c *Config) { c.Gateway.ImageStreamDataIntervalTimeout = 30 },
 			wantErr: "gateway.image_stream_data_interval_timeout",
@@ -1986,6 +1991,9 @@ func TestLoad_DefaultGatewayImageStreamConfig(t *testing.T) {
 	}
 	if cfg.Gateway.ImageStreamKeepaliveInterval != 10 {
 		t.Fatalf("image_stream_keepalive_interval = %d, want 10", cfg.Gateway.ImageStreamKeepaliveInterval)
+	}
+	if cfg.Gateway.ImageUpstreamTimeoutSeconds != 180 {
+		t.Fatalf("image_upstream_timeout_seconds = %d, want 180", cfg.Gateway.ImageUpstreamTimeoutSeconds)
 	}
 	if cfg.Gateway.ImageEditTransientCooldownSeconds != 12 {
 		t.Fatalf("image_edit_transient_cooldown_seconds = %d, want 12", cfg.Gateway.ImageEditTransientCooldownSeconds)
