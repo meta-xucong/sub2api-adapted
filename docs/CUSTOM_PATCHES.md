@@ -44,6 +44,12 @@ The ledger projection explicitly casts its event timestamp parameters to
 the casts, a route could continue to fail over in memory while its durable health
 event is rejected and the next calibration has no evidence to restore.
 
+`gateway.smart_router.recovery.image_sustained_failure_threshold` optionally
+overrides this threshold for `image_generation` and `image_edit` only. It is
+zero by default, preserving the generic threshold. A value of `2` freezes a
+repeatedly failing image lane at its second consecutive upstream failure while
+leaving chat and Responses lanes on the generic policy.
+
 This means Docker's normal `restart: unless-stopped` is the only process supervisor
 needed. Do not add a systemd timer that calls an image API independently: it would
 bypass the protected account adapter and can duplicate chargeable probes.
@@ -124,6 +130,13 @@ instance with the matching aiself lanes is
 `deploy/sql/aiself_dispatch_sync_404token.example.sql`. It matches account
 names together with normalized upstream URLs, preserves credentials, and does
 not copy health/error status across deployments.
+
+`deploy/sql/aiself_yetoken_smart_router_overlay.example.sql` is the aiself
+replay for the current YeToken pool. It preserves manual account/group
+priorities, keeps chat/Responses and image generation in separate source
+groups, limits a single YeToken image lane and the shared image source group to
+one concurrent request, and deliberately does not enable image edits until an
+upstream proves that capability.
 
 Why the image overlay stays maintained:
 

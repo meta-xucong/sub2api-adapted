@@ -365,6 +365,8 @@ gateway:
     recovery:
       second_failure_cooldown_seconds: 600
       sustained_failure_threshold: 3
+      # Optional image-only override. 0 keeps the generic threshold.
+      image_sustained_failure_threshold: 0
     # Runs inside the Sub2API process at the Shanghai calendar time below.
     # It writes only routing health metadata, never prompts or credentials.
     calibration:

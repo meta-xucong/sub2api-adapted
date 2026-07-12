@@ -157,6 +157,9 @@ func (s *OpenAIGatewayService) smartRouterHealthPolicy() smartrouter.HealthPolic
 		policy.SustainedFailureThreshold = recovery.SustainedFailureThreshold
 		policy.SustainedFailureUntil = nextSmartRouterCalibrationTime
 	}
+	if recovery.ImageSustainedFailureThreshold > 0 {
+		policy.ImageSustainedFailureThreshold = recovery.ImageSustainedFailureThreshold
+	}
 	return policy
 }
 

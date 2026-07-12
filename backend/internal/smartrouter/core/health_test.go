@@ -90,6 +90,31 @@ func TestHealthTrackerSustainedTransientFailuresFreezeUntilCalibration(t *testin
 	require.Greater(t, blocked.Priority, 2)
 }
 
+func TestHealthTrackerImageThresholdFreezesBeforeChat(t *testing.T) {
+	now := time.Date(2026, time.July, 12, 3, 55, 0, 0, time.FixedZone("Asia/Shanghai", 8*60*60))
+	calibrationAt := time.Date(2026, time.July, 12, 4, 0, 0, 0, now.Location())
+	tracker := NewHealthTracker(HealthPolicy{
+		TransientCooldown:              30 * time.Second,
+		SecondTransientCooldown:        10 * time.Minute,
+		SustainedFailureThreshold:      3,
+		ImageSustainedFailureThreshold: 2,
+		SustainedFailureUntil: func(time.Time) time.Time {
+			return calibrationAt
+		},
+	}, func() time.Time { return now }, nil)
+
+	image := RouteResult{LaneID: "image", Capability: CapabilityImageGeneration, Model: "gpt-image-2", StatusCode: http.StatusBadGateway, ErrorClass: FailureUpstream5xx}
+	tracker.Observe(image)
+	imageSecond := tracker.Observe(image)
+	require.Equal(t, calibrationAt.Unix(), imageSecond.CooldownUntilUnix)
+
+	chat := RouteResult{LaneID: "chat", Capability: CapabilityResponses, Model: "gpt-5.5", StatusCode: http.StatusBadGateway, ErrorClass: FailureUpstream5xx}
+	tracker.Observe(chat)
+	chatSecond := tracker.Observe(chat)
+	require.Equal(t, now.Add(10*time.Minute).Unix(), chatSecond.CooldownUntilUnix)
+	require.NotEqual(t, calibrationAt.Unix(), chatSecond.CooldownUntilUnix)
+}
+
 func TestHealthTrackerRestorePreservesCapabilityScopedCooldown(t *testing.T) {
 	now := time.Unix(12_000, 0)
 	tracker := NewHealthTracker(HealthPolicy{}, func() time.Time { return now }, nil)

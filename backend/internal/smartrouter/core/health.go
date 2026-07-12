@@ -11,17 +11,18 @@ import (
 // deliberately independent of the persistence layer so a deployment can use
 // memory, Redis, or PostgreSQL without changing routing behavior.
 type HealthPolicy struct {
-	TransientCooldown         time.Duration
-	SecondTransientCooldown   time.Duration
-	SustainedFailureThreshold int
-	SustainedFailureUntil     func(time.Time) time.Time
-	RateLimitCooldown         time.Duration
-	CapabilityQuarantine      time.Duration
-	AuthQuarantine            time.Duration
-	MaxCooldown               time.Duration
-	MaxPenalty                int
-	RecoverySuccessesToNormal int
-	ErrorRateAlpha            float64
+	TransientCooldown              time.Duration
+	SecondTransientCooldown        time.Duration
+	SustainedFailureThreshold      int
+	ImageSustainedFailureThreshold int
+	SustainedFailureUntil          func(time.Time) time.Time
+	RateLimitCooldown              time.Duration
+	CapabilityQuarantine           time.Duration
+	AuthQuarantine                 time.Duration
+	MaxCooldown                    time.Duration
+	MaxPenalty                     int
+	RecoverySuccessesToNormal      int
+	ErrorRateAlpha                 float64
 }
 
 func DefaultHealthPolicy() HealthPolicy {
@@ -297,7 +298,7 @@ func (t *HealthTracker) Observe(result RouteResult) HealthSnapshot {
 			if state.ConsecutiveFailures == 2 && t.policy.SecondTransientCooldown > 0 {
 				until = now.Add(t.policy.SecondTransientCooldown)
 			}
-			if t.policy.SustainedFailureThreshold > 0 && state.ConsecutiveFailures >= t.policy.SustainedFailureThreshold && t.policy.SustainedFailureUntil != nil {
+			if threshold := t.policy.sustainedFailureThreshold(result.Capability); threshold > 0 && state.ConsecutiveFailures >= threshold && t.policy.SustainedFailureUntil != nil {
 				if sustainedUntil := t.policy.SustainedFailureUntil(now); sustainedUntil.After(now) {
 					until = sustainedUntil
 					action = "sustained_failure_quarantine"
@@ -341,6 +342,13 @@ func (t *HealthTracker) Observe(result RouteResult) HealthSnapshot {
 		t.sink(event)
 	}
 	return snapshot
+}
+
+func (p HealthPolicy) sustainedFailureThreshold(capability Capability) int {
+	if (capability == CapabilityImageGeneration || capability == CapabilityImageEdit) && p.ImageSustainedFailureThreshold > 0 {
+		return p.ImageSustainedFailureThreshold
+	}
+	return p.SustainedFailureThreshold
 }
 
 func (t *HealthTracker) cooldownFor(consecutiveFailures int) time.Duration {

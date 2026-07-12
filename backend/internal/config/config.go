@@ -902,6 +902,9 @@ type GatewaySmartRouterConfig struct {
 type GatewaySmartRouterRecoveryConfig struct {
 	SecondFailureCooldownSeconds int `mapstructure:"second_failure_cooldown_seconds"`
 	SustainedFailureThreshold    int `mapstructure:"sustained_failure_threshold"`
+	// ImageSustainedFailureThreshold overrides the generic threshold only for
+	// image generation and image edit lanes. Zero keeps the generic threshold.
+	ImageSustainedFailureThreshold int `mapstructure:"image_sustained_failure_threshold"`
 }
 
 // GatewaySmartRouterCalibrationConfig controls the durable daily health probes.
@@ -2021,6 +2024,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.smart_router.image_finalization_reserve_seconds", 15)
 	viper.SetDefault("gateway.smart_router.recovery.second_failure_cooldown_seconds", 600)
 	viper.SetDefault("gateway.smart_router.recovery.sustained_failure_threshold", 3)
+	viper.SetDefault("gateway.smart_router.recovery.image_sustained_failure_threshold", 0)
 	viper.SetDefault("gateway.smart_router.calibration.enabled", true)
 	viper.SetDefault("gateway.smart_router.calibration.hour", 4)
 	viper.SetDefault("gateway.smart_router.calibration.minute", 0)
@@ -2854,6 +2858,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.SmartRouter.Recovery.SustainedFailureThreshold < 0 {
 		return fmt.Errorf("gateway.smart_router.recovery.sustained_failure_threshold must be non-negative")
+	}
+	if c.Gateway.SmartRouter.Recovery.ImageSustainedFailureThreshold < 0 {
+		return fmt.Errorf("gateway.smart_router.recovery.image_sustained_failure_threshold must be non-negative")
 	}
 	if c.Gateway.SmartRouter.Calibration.Hour < 0 || c.Gateway.SmartRouter.Calibration.Hour > 23 {
 		return fmt.Errorf("gateway.smart_router.calibration.hour must be between 0 and 23")

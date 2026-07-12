@@ -1457,6 +1457,11 @@ func TestValidateConfigErrors(t *testing.T) {
 			wantErr: "gateway.smart_router.recovery.sustained_failure_threshold must be non-negative",
 		},
 		{
+			name:    "gateway smart router image sustained failure threshold negative",
+			mutate:  func(c *Config) { c.Gateway.SmartRouter.Recovery.ImageSustainedFailureThreshold = -1 },
+			wantErr: "gateway.smart_router.recovery.image_sustained_failure_threshold must be non-negative",
+		},
+		{
 			name:    "gateway smart router calibration hour invalid",
 			mutate:  func(c *Config) { c.Gateway.SmartRouter.Calibration.Hour = 24 },
 			wantErr: "gateway.smart_router.calibration.hour must be between 0 and 23",
@@ -2070,6 +2075,7 @@ func TestLoad_DefaultGatewayImageStreamConfig(t *testing.T) {
 	}
 	if cfg.Gateway.SmartRouter.Recovery.SecondFailureCooldownSeconds != 600 ||
 		cfg.Gateway.SmartRouter.Recovery.SustainedFailureThreshold != 3 ||
+		cfg.Gateway.SmartRouter.Recovery.ImageSustainedFailureThreshold != 0 ||
 		!cfg.Gateway.SmartRouter.Calibration.Enabled ||
 		cfg.Gateway.SmartRouter.Calibration.Hour != 4 ||
 		cfg.Gateway.SmartRouter.Calibration.Minute != 0 ||
