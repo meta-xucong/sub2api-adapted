@@ -830,8 +830,15 @@ type GatewayConfig struct {
 	ImageStreamDataIntervalTimeout int `mapstructure:"image_stream_data_interval_timeout"`
 	// ImageStreamKeepaliveInterval: 图片流式 keepalive 间隔（秒），0表示禁用
 	ImageStreamKeepaliveInterval int `mapstructure:"image_stream_keepalive_interval"`
+	// ImageUpstreamTimeoutSeconds bounds a single OpenAI-compatible image upstream request; 0 disables it.
+	ImageUpstreamTimeoutSeconds int `mapstructure:"image_upstream_timeout_seconds"`
+	// ImageRequestTimeoutSeconds bounds the total wall-clock budget for one image request,
+	// including Smart Router failover attempts; 0 disables the gateway budget.
+	ImageRequestTimeoutSeconds int `mapstructure:"image_request_timeout_seconds"`
 	// ImageEditTransientCooldownSeconds temporarily removes a failing image-edit lane; 0 disables it.
 	ImageEditTransientCooldownSeconds int `mapstructure:"image_edit_transient_cooldown_seconds"`
+	// ImageGenerationTransientCooldownSeconds temporarily removes a failing text-to-image lane; 0 disables it.
+	ImageGenerationTransientCooldownSeconds int `mapstructure:"image_generation_transient_cooldown_seconds"`
 	// MaxLineSize: 上游 SSE 单行最大字节数（0使用默认值）
 	MaxLineSize int `mapstructure:"max_line_size"`
 
@@ -2088,7 +2095,10 @@ func setDefaults() {
 	viper.SetDefault("gateway.stream_keepalive_interval", 10)
 	viper.SetDefault("gateway.image_stream_data_interval_timeout", 900)
 	viper.SetDefault("gateway.image_stream_keepalive_interval", 10)
+	viper.SetDefault("gateway.image_upstream_timeout_seconds", 180)
+	viper.SetDefault("gateway.image_request_timeout_seconds", 600)
 	viper.SetDefault("gateway.image_edit_transient_cooldown_seconds", 12)
+	viper.SetDefault("gateway.image_generation_transient_cooldown_seconds", 30)
 	viper.SetDefault("gateway.max_line_size", 500*1024*1024)
 	viper.SetDefault("gateway.scheduling.sticky_session_max_waiting", 3)
 	viper.SetDefault("gateway.scheduling.sticky_session_wait_timeout", 120*time.Second)
@@ -2775,8 +2785,17 @@ func (c *Config) Validate() error {
 		(c.Gateway.ImageStreamKeepaliveInterval < 5 || c.Gateway.ImageStreamKeepaliveInterval > 60) {
 		return fmt.Errorf("gateway.image_stream_keepalive_interval must be 0 or between 5-60 seconds")
 	}
+	if c.Gateway.ImageUpstreamTimeoutSeconds < 0 {
+		return fmt.Errorf("gateway.image_upstream_timeout_seconds must be non-negative")
+	}
+	if c.Gateway.ImageRequestTimeoutSeconds < 0 {
+		return fmt.Errorf("gateway.image_request_timeout_seconds must be non-negative")
+	}
 	if c.Gateway.ImageEditTransientCooldownSeconds < 0 {
 		return fmt.Errorf("gateway.image_edit_transient_cooldown_seconds must be non-negative")
+	}
+	if c.Gateway.ImageGenerationTransientCooldownSeconds < 0 {
+		return fmt.Errorf("gateway.image_generation_transient_cooldown_seconds must be non-negative")
 	}
 	if c.Gateway.SmartRouter.TopK < 0 {
 		return fmt.Errorf("gateway.smart_router.top_k must be non-negative")

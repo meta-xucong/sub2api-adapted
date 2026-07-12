@@ -22,6 +22,59 @@ The router first considers the lowest numeric priority layer. It advances only a
 - URL-only image results are normalized to `b64_json` when requested.
 - Generic multipart uploads marked `application/octet-stream` are content-sniffed before building data URLs.
 
+- OpenAI image `403` now cools only the model-scoped image capability for
+  10 minutes instead of escalating the whole account into `error`.
+- OpenAI images responses that finish without any image output now return a
+  failover signal instead of a terminal generic `502`, so any `gpt-image-*`
+  account can be skipped temporarily when its upstream task silently produces
+  no image.
+- The no-image-output failover body is reduced to a sanitized structured
+  summary (event types, response status, upstream model, tool model, output
+  count, and whether an image call appeared), avoiding raw SSE response ids or
+  large upstream bodies in cooldown reasons.
+- OpenAI image edit transient account failures (`403`, `408`, `500`, `502`,
+  `503`, `504`) now apply a short per-account scheduling cooldown via
+  `gateway.image_edit_transient_cooldown_seconds` (default `12`) before
+  failover, so a flapping image-to-image fallback account is not immediately
+  reselected by the next user request.
+- OpenAI image generation transient account failures (`403`, `408`, `500`,
+  `502`, `503`, `504`) and structured `upstream_text_reply` image responses
+  now apply a separate short per-account scheduling cooldown via
+  `gateway.image_generation_transient_cooldown_seconds` (default `30`) before
+  failover. The account stays active and is automatically eligible again after
+  the cooldown expires; repeated recent failures expand the temporary backoff
+  up to `10` minutes, while successful traffic naturally lowers the health
+  penalty. Deterministic parameter errors are not cooled down.
+- OpenAI-compatible image upstream calls have a bounded request timeout via
+  `gateway.image_upstream_timeout_seconds` (default `180`). A stuck API-key or
+  OAuth image upstream becomes a failover event before the client-side timeout,
+  giving Smart Router time to move to the next eligible lane instead of ending
+  as a client `context canceled` with no switch.
+- One image request now has a separate total wall-clock budget via
+  `gateway.image_request_timeout_seconds` (default `600`). The deadline is
+  shared by `/v1/images/*` and image-generation `/v1/responses` requests, so
+  each failover attempt receives only the remaining time and the handler stops
+  instead of starting another upstream request after the total budget expires.
+  The response-path detachment preserves this deadline while retaining its
+  existing non-stream client-cancellation behavior.
+- OpenAI image API-key transport failures where no HTTP response is received
+  (for example SOCKS EOF, TCP/TLS, DNS, or proxy routing errors) now return the
+  same `UpstreamFailoverError` used by chat/responses forwarding. This lets the
+  image handler fail over to the next compatible lane instead of ending the
+  request on the first broken connection attempt.
+- OpenAI-compatible image providers may put a `data:image/...;base64,...` value
+  in the response `url` field. The image normalizer decodes that inline asset
+  locally instead of trying to fetch a `data:` URI over HTTP.
+- Image endpoints that receive a structured `upstream_text_reply` 400 now
+  fail over to the next compatible image lane instead of returning that lane's
+  deterministic text response as the final image error. The generic chat and
+  embedding error policy is unchanged.
+- Scheduled tests accept `gpt-image-2#edits`, which runs an in-memory
+  `/v1/images/edits` probe using a tiny embedded PNG instead of a plain
+  text-to-image probe.
+- The admin Scheduled Tests panel exposes an `edit probe` option for image
+  models so operators can enable `auto_recover` without inserting rows by hand.
+
 ## GPT-5.6 admin test discovery
 
 For OpenAI accounts whose explicit mapping contains GPT-5 chat models, the
@@ -37,6 +90,23 @@ instance with the matching aiself lanes is
 `deploy/sql/aiself_dispatch_sync_404token.example.sql`. It matches account
 names together with normalized upstream URLs, preserves credentials, and does
 not copy health/error status across deployments.
+
+Why the image overlay stays maintained:
+
+- some low-cost image providers intermittently return a provider-side `403`
+  wrapped as outward `502` / `503`, and the generic OpenAI auth handler is too
+  aggressive for that failure mode;
+- generation-only health checks are too weak because these lanes often recover
+  text-to-image before image-to-image becomes stable again.
+- image-to-image fallback accounts can fail with intermittent `500` while still
+  passing a later probe, so they need a short cooling window rather than a
+  permanent disable.
+- image providers behind local SOCKS/Japan relay or upstream reverse proxies
+  can fail before returning an HTTP status; those failures should be treated as
+  lane failures and routed onward, not as final user-visible `502` responses.
+- web/OAuth image providers can occasionally return a completed response with
+  usage metadata but no image payload; that should be treated as an upstream
+  lane failure and routed onward, not as a final user-facing error.
 
 The follow-up safety overlay is
 `deploy/sql/404token_gpt56_pro_only_repair.example.sql`. It disables the empty

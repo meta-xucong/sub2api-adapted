@@ -1517,7 +1517,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 		account.Type,
 		len(parsed.Uploads),
 	)
-	upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
+	upstreamCtx, releaseUpstreamCtx := detachOpenAIImageUpstreamContext(ctx)
 	defer releaseUpstreamCtx()
 
 	token, _, err := s.GetAccessToken(upstreamCtx, account)
@@ -1529,7 +1529,9 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 	if err != nil {
 		return nil, err
 	}
-	upstreamReq, err := s.buildUpstreamRequest(upstreamCtx, c, account, responsesBody, token, true, parsed.StickySessionSeed(), false)
+	imageUpstreamCtx, cancelImageUpstream := s.withOpenAIImageUpstreamTimeout(upstreamCtx)
+	defer cancelImageUpstream()
+	upstreamReq, err := s.buildUpstreamRequest(imageUpstreamCtx, c, account, responsesBody, token, true, parsed.StickySessionSeed(), false)
 	if err != nil {
 		return nil, err
 	}
@@ -1544,18 +1546,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
 	SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
 	if err != nil {
-		safeErr := sanitizeUpstreamErrorMessage(err.Error())
-		setOpsUpstreamError(c, 0, safeErr, "")
-		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
-			Platform:           account.Platform,
-			AccountID:          account.ID,
-			AccountName:        account.Name,
-			UpstreamStatusCode: 0,
-			UpstreamURL:        safeUpstreamURL(upstreamReq.URL.String()),
-			Kind:               "request_error",
-			Message:            safeErr,
-		})
-		return nil, fmt.Errorf("upstream request failed: %s", safeErr)
+		return nil, s.handleOpenAIUpstreamTransportError(imageUpstreamCtx, c, account, err, false)
 	}
 	if resp.StatusCode >= 400 {
 		respBody := s.readUpstreamErrorBody(resp)
@@ -1563,7 +1554,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
-		if s.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, upstreamMsg, respBody) {
+		if s.shouldFailoverOpenAIImagesResponse(resp.StatusCode, upstreamMsg, respBody) {
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 				Platform:           account.Platform,
 				AccountID:          account.ID,

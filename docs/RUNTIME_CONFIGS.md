@@ -11,14 +11,15 @@ This file records verified non-secret settings that live outside the source tree
 
 ## aiself.vip
 
-Verified: 2026-07-10
+Verified: 2026-07-12
 
 - Deploy directory: `/opt/sub2api/deploy`
 - Persistent runtime config: `/app/data/config.yaml`
 - Host volume path: `/var/lib/docker/volumes/deploy_sub2api_data/_data/config.yaml`
 - Upgrade backup root: `/opt/sub2api/backups/upgrade-v0.1.150-20260710T075612Z`
-- Deployed image: `sub2api-adapted:v0.1.150-audited-a5426d14`
-- Deployed code commit: `a5426d14`
+- Latest image backup: `/opt/sub2api/deploy/backups/image-total-budget-20260712-135457`
+- Deployed image: `sub2api-adapted:v0.1.150-image-total-budget-9b8ad3fe`
+- Deployed code commit: `9b8ad3fe`
 
 Active Smart Router settings:
 
@@ -30,6 +31,8 @@ Active Smart Router settings:
 - `gateway.smart_router.same_source_group_attempts=1`
 - `gateway.smart_router.cost_bias_max=3`
 - `gateway.image_edit_transient_cooldown_seconds=30`
+- `gateway.image_upstream_timeout_seconds=180`
+- `gateway.image_request_timeout_seconds=600` (shared total budget across image failover attempts)
 
 Active Smart Router scoring weights:
 
@@ -54,6 +57,8 @@ Post-upgrade verification:
 - A Codex-style streaming `gpt-5.5` request completed successfully.
 - A `gpt-image-2` request failed over from account `88` after upstream HTTP 524 to account `89`, then returned one image with HTTP 200.
 - A body-signal compact request failed over after two upstream HTTP 503 responses, succeeded on account `83`, and completed without a recovered panic or container restart.
+- After the total image budget patch, a minimal `gpt-image-2` generation returned HTTP 200
+  with image data in about 33 seconds; the application remained healthy with restart count `0`.
 
 Post-build host hygiene:
 

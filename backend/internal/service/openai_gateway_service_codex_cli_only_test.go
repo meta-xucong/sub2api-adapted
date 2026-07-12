@@ -322,6 +322,14 @@ func TestShouldFailoverOpenAIUpstreamResponseContextWindow502(t *testing.T) {
 	require.True(t, svc.shouldFailoverOpenAIUpstreamResponse(http.StatusBadGateway, "temporary upstream outage", []byte(`{"error":{"message":"temporary upstream outage"}}`)))
 }
 
+func TestShouldFailoverOpenAIImagesResponse_UpstreamTextReply(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	body := []byte(`{"error":{"code":"upstream_text_reply","message":"requires a usable image target"}}`)
+
+	require.True(t, svc.shouldFailoverOpenAIImagesResponse(http.StatusBadRequest, "requires a usable image target", body))
+	require.False(t, svc.shouldFailoverOpenAIUpstreamResponse(http.StatusBadRequest, "requires a usable image target", body))
+}
+
 func TestOpenAIGatewayService_Forward_LogsInstructionsRequiredDetails(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	logSink, restore := captureStructuredLog(t)

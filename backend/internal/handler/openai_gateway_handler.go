@@ -279,10 +279,14 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		}
 	}
 	routingModel := reqModel
-	routingContext := c.Request.Context()
+	requestCtx := c.Request.Context()
+	routingContext := requestCtx
 	if imageIntent {
 		routingModel = service.ResolveOpenAIResponsesImageRoutingModel(reqModel, body)
-		routingContext = service.WithOpenAIImageGenerationIntent(routingContext)
+		requestCtx, cancelImageRequest := h.gatewayService.WithOpenAIImageRequestTimeout(requestCtx)
+		defer cancelImageRequest()
+		requestCtx = service.WithOpenAIImageGenerationIntent(requestCtx)
+		routingContext = requestCtx
 	}
 
 	// 解析渠道级模型映射
@@ -422,7 +426,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					accountReleaseFunc()
 				}
 			}()
-			return h.gatewayService.Forward(c.Request.Context(), c, account, forwardBody)
+			return h.gatewayService.Forward(requestCtx, c, account, forwardBody)
 		}()
 		cyberBlockKeyHTTP := ""
 		if service.GetOpsCyberPolicy(c) != nil {
@@ -449,6 +453,16 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			} else {
 				var failoverErr *service.UpstreamFailoverError
 				if errors.As(err, &failoverErr) {
+					if requestCtx.Err() != nil {
+						if errors.Is(requestCtx.Err(), context.DeadlineExceeded) {
+							reqLog.Warn("openai.total_timeout_exhausted",
+								zap.Int64("account_id", account.ID),
+								zap.Int("switch_count", switchCount),
+							)
+							h.handleFailoverExhausted(c, failoverErr, streamStarted)
+						}
+						return
+					}
 					if service.OpenAICompactKeepaliveAdjustedWrittenSize(c) != writerSizeBeforeForward {
 						h.handleFailoverExhausted(c, failoverErr, true)
 						return

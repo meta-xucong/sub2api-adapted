@@ -427,6 +427,14 @@ func TestResolveOpenAIImageBytes_PrefersInlineBase64(t *testing.T) {
 	require.Equal(t, []byte("ABC"), data)
 }
 
+func TestResolveOpenAIImageBytes_DecodesDataURIInURL(t *testing.T) {
+	data, err := resolveOpenAIImageBytes(context.Background(), nil, nil, "", openAIImagePointerInfo{
+		DownloadURL: "data:image/png;base64,QUJD",
+	}, openAIUpstreamErrorBodyReadLimit)
+	require.NoError(t, err)
+	require.Equal(t, []byte("ABC"), data)
+}
+
 func TestNewOpenAIImageStatusError_UsesProvidedReadLimit(t *testing.T) {
 	padding := strings.Repeat("x", int(openAIUpstreamErrorBodyReadLimit)+1024)
 	body := fmt.Sprintf(`{"error":{"padding":"%s","message":"diagnostic-marker"}}`, padding)
@@ -1001,6 +1009,43 @@ func TestOpenAIGatewayServiceForwardImages_APIKeyGenerationUsesConfiguredV1BaseU
 	require.Equal(t, "gpt-image-2", gjson.GetBytes(upstream.lastBody, "model").String())
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Equal(t, "aGVsbG8=", gjson.Get(rec.Body.String(), "data.0.b64_json").String())
+}
+
+func TestOpenAIGatewayServiceForwardImages_APIKeyTransportErrorReturnsFailover(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"model":"gpt-image-2","prompt":"draw a cat","response_format":"b64_json"}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = req
+
+	svc := &OpenAIGatewayService{
+		cfg: &config.Config{},
+		httpUpstream: &httpUpstreamRecorder{
+			err: errors.New(`Post "https://image-upstream.example/v1/images/generations": socks connect tcp 172.18.0.1:21081->image-upstream.example:443: EOF`),
+		},
+	}
+	parsed, err := svc.ParseOpenAIImagesRequest(c, body)
+	require.NoError(t, err)
+
+	account := &Account{
+		ID:       6,
+		Name:     "openai-apikey",
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key":  "test-api-key",
+			"base_url": "https://image-upstream.example/v1",
+		},
+	}
+
+	result, err := svc.ForwardImages(context.Background(), c, account, body, parsed, "")
+	require.Nil(t, result)
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
 }
 
 func TestOpenAIGatewayServiceForwardImages_APIKeyStreamJSONResponseBillsImage(t *testing.T) {
