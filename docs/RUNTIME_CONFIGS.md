@@ -17,9 +17,9 @@ Verified: 2026-07-12
 - Persistent runtime config: `/app/data/config.yaml`
 - Host volume path: `/var/lib/docker/volumes/deploy_sub2api_data/_data/config.yaml`
 - Upgrade backup root: `/opt/sub2api/backups/upgrade-v0.1.150-20260710T075612Z`
-- Latest image backup: `/opt/sub2api/deploy/backups/smart-router-ledger-timestamp-1bb78faa-20260712T120239Z`
-- Deployed image: `sub2api-adapted:v0.1.151-smart-router-ledger-timestamp-1bb78faa`
-- Deployed code commit: `1bb78faa`
+- Latest image backup: `/opt/sub2api/deploy/backups/smart-router-image-policy-9c600574-20260712T130228Z`
+- Deployed image: `sub2api-adapted:v0.1.151-smart-router-image-recovery-9c600574`
+- Deployed code commit: `9c600574`
 
 Active Smart Router settings:
 
@@ -38,6 +38,7 @@ Active Smart Router settings:
 - `gateway.smart_router.image_finalization_reserve_seconds=15`
 - `gateway.smart_router.recovery.second_failure_cooldown_seconds=600`
 - `gateway.smart_router.recovery.sustained_failure_threshold=3`
+- `gateway.smart_router.recovery.image_sustained_failure_threshold=2`
 - `gateway.smart_router.calibration.enabled=true`, scheduled for `04:00 Asia/Shanghai`
 - `gateway.smart_router.calibration.total_budget_seconds=1800`
 - `gateway.smart_router.calibration.probe_timeout_seconds=180`
@@ -58,6 +59,23 @@ Veyra is enabled through the same persistent config:
 - `veyra.portal_enabled=true`
 
 Account priorities, concurrency, model mappings, and `extra.smart_router` lane metadata live in PostgreSQL. Preserve them with a database backup; do not duplicate credentials or account payloads in this repository.
+
+### YeToken Capability Lanes
+
+Configured and verified: 2026-07-12.
+
+- The `YeToken` chat accounts retain their existing account and group priorities;
+  they are explicitly limited to the `chat` and `responses` capabilities in the
+  shared `yetoken-chat` source group, capped at two concurrent requests across
+  that upstream.
+- The `YeToken` image accounts retain their existing priorities and are limited
+  to `image_generation` in the separate `yetoken-image` source group. Both the
+  per-lane and source-group ceiling are one concurrent request.
+- Image edit is deliberately absent from these two lanes until it is verified
+  against their upstream; an image-edit failure or cooldown elsewhere cannot
+  alter their text-to-image eligibility.
+- Replay after a future official update with
+  [`deploy/sql/aiself_yetoken_smart_router_overlay.example.sql`](../deploy/sql/aiself_yetoken_smart_router_overlay.example.sql).
 
 Post-upgrade verification:
 
@@ -80,6 +98,10 @@ Post-upgrade verification:
   The repaired container returned `/health` HTTP 200 with restart count `0`, and
   its scheduler logged the same daily calibration schedule without ledger-write
   errors.
+- The image-only recovery policy and YeToken capability overlay were deployed
+  with container restart count `0`. The router again registered its daily
+  `0 4 * * * Asia/Shanghai` calibration, with no ledger, panic, or runtime
+  errors in its post-restart logs.
 
 Post-build host hygiene:
 
@@ -111,8 +133,8 @@ Replay after a future official upgrade:
 
 Repository/deployment boundary:
 
-- The aiself production runtime is pinned to `1bb78faa` in image
-  `sub2api-adapted:v0.1.151-smart-router-ledger-timestamp-1bb78faa`; later repository commits may
+- The aiself production runtime is pinned to `9c600574` in image
+  `sub2api-adapted:v0.1.151-smart-router-image-recovery-9c600574`; later repository commits may
   contain documentation, replay SQL, build limits, or audit metadata only.
 
 ## 404token
