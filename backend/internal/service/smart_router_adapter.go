@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	smartrouter "github.com/Wei-Shaw/sub2api/internal/smartrouter/core"
 )
 
@@ -32,6 +33,8 @@ type OpenAIImageSmartRouterBudgetState struct {
 
 type smartRouterImageBudgetContextKey struct{}
 
+type smartRouterImageSizeTierContextKey struct{}
+
 func WithOpenAIImageSmartRouterBudget(ctx context.Context, budget OpenAIImageSmartRouterBudgetState) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
@@ -47,6 +50,28 @@ func OpenAIImageSmartRouterBudgetFromContext(ctx context.Context) (OpenAIImageSm
 	return budget, ok
 }
 
+// WithOpenAIImageSmartRouterSizeTier attaches an explicit OpenAI Images
+// output tier to the route decision. Empty or unrecognized values are omitted.
+func WithOpenAIImageSmartRouterSizeTier(ctx context.Context, tier string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	tier = normalizeSmartRouterImageSizeTier(tier)
+	if tier == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, smartRouterImageSizeTierContextKey{}, tier)
+}
+
+func OpenAIImageSmartRouterSizeTierFromContext(ctx context.Context) (string, bool) {
+	if ctx == nil {
+		return "", false
+	}
+	tier, ok := ctx.Value(smartRouterImageSizeTierContextKey{}).(string)
+	tier = normalizeSmartRouterImageSizeTier(tier)
+	return tier, ok && tier != ""
+}
+
 type smartRouterAccountExtra struct {
 	Present                   bool
 	EnabledSet                bool
@@ -58,6 +83,7 @@ type smartRouterAccountExtra struct {
 	MaxConcurrency            int
 	SourceGroupMaxConcurrency int
 	Capabilities              map[smartrouter.Capability]bool
+	ImageSizeTiers            []string
 }
 
 func (s *OpenAIGatewayService) smartRouterPolicy() smartrouter.Policy {
@@ -121,15 +147,85 @@ func (s *OpenAIGatewayService) smartRouterHealth() *smartrouter.HealthTracker {
 		return nil
 	}
 	s.smartRouterHealthOnce.Do(func() {
-		s.smartRouterHealthTracker = smartrouter.NewHealthTracker(smartrouter.DefaultHealthPolicy(), time.Now, nil)
+		tracker := smartrouter.NewHealthTracker(s.smartRouterHealthPolicy(), time.Now, s.persistSmartRouterHealthEvent)
+		if s.smartRouterHealthLedger != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			states, err := s.smartRouterHealthLedger.LoadStates(ctx)
+			cancel()
+			if err != nil {
+				logger.LegacyPrintf("service.openai_gateway", "Smart Router ledger restore failed: %v", err)
+			} else {
+				for _, state := range states {
+					tracker.Restore(
+						smartrouter.NewHealthKey(state.LaneID, state.Capability, state.ModelFamily),
+						state.Snapshot,
+						state.LastFailureUnix,
+					)
+				}
+			}
+		}
+		s.smartRouterHealthTracker = tracker
 	})
 	return s.smartRouterHealthTracker
+}
+
+func (s *OpenAIGatewayService) smartRouterHealthPolicy() smartrouter.HealthPolicy {
+	policy := smartrouter.DefaultHealthPolicy()
+	if s == nil || s.cfg == nil {
+		return policy
+	}
+	recovery := s.cfg.Gateway.SmartRouter.Recovery
+	if recovery.SecondFailureCooldownSeconds > 0 {
+		policy.SecondTransientCooldown = time.Duration(recovery.SecondFailureCooldownSeconds) * time.Second
+	}
+	if recovery.SustainedFailureThreshold > 0 {
+		policy.SustainedFailureThreshold = recovery.SustainedFailureThreshold
+		policy.SustainedFailureUntil = nextSmartRouterCalibrationTime
+	}
+	if recovery.ImageSustainedFailureThreshold > 0 {
+		policy.ImageSustainedFailureThreshold = recovery.ImageSustainedFailureThreshold
+	}
+	return policy
+}
+
+func nextSmartRouterCalibrationTime(now time.Time) time.Time {
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		loc = time.FixedZone("Asia/Shanghai", 8*60*60)
+	}
+	local := now.In(loc)
+	target := time.Date(local.Year(), local.Month(), local.Day(), 4, 0, 0, 0, loc)
+	if !target.After(local) {
+		target = target.AddDate(0, 0, 1)
+	}
+	return target
+}
+
+func (s *OpenAIGatewayService) persistSmartRouterHealthEvent(event smartrouter.HealthEvent) {
+	if s == nil || s.smartRouterHealthLedger == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := s.smartRouterHealthLedger.RecordEvent(ctx, event); err != nil {
+		logger.LegacyPrintf("service.openai_gateway", "Smart Router ledger record failed: %v", err)
+	}
 }
 
 // ReportSmartRouterImageResult feeds a single image attempt into the
 // capability-scoped tracker. The tracker stores only safe error summaries;
 // response bodies are used for classification but are not persisted.
 func (s *OpenAIGatewayService) ReportSmartRouterImageResult(account *Account, parsed *OpenAIImagesRequest, result *OpenAIForwardResult, err error, durationMs int64) {
+	s.reportSmartRouterImageResult("production", account, parsed, result, err, durationMs)
+}
+
+// ReportSmartRouterImageCalibrationResult records a direct calibration probe
+// without changing the account's configured priority or enabled state.
+func (s *OpenAIGatewayService) ReportSmartRouterImageCalibrationResult(account *Account, parsed *OpenAIImagesRequest, result *OpenAIForwardResult, err error, durationMs int64) {
+	s.reportSmartRouterImageResult("calibration", account, parsed, result, err, durationMs)
+}
+
+func (s *OpenAIGatewayService) reportSmartRouterImageResult(source string, account *Account, parsed *OpenAIImagesRequest, result *OpenAIForwardResult, err error, durationMs int64) {
 	if s == nil || !s.isSmartRouterEnabled() || account == nil || parsed == nil {
 		return
 	}
@@ -165,7 +261,7 @@ func (s *OpenAIGatewayService) ReportSmartRouterImageResult(account *Account, pa
 		errorClass = smartrouter.ClassifyFailureDetails(statusCode, capability, message, code, clientCancelled)
 	}
 	s.smartRouterHealth().Observe(smartrouter.RouteResult{
-		Source:         "production",
+		Source:         source,
 		LaneID:         lane.LaneID,
 		AccountID:      lane.AccountID,
 		SourceGroup:    lane.SourceGroup,
@@ -246,6 +342,7 @@ func smartRouterLaneSnapshot(account *Account, loadInfo *AccountLoadInfo, errorR
 		Name:                      account.Name,
 		SourceGroup:               sourceGroup,
 		Capabilities:              extra.Capabilities,
+		ImageSizeTiers:            extra.ImageSizeTiers,
 		ModelPatterns:             smartRouterModelPatterns(account),
 		Priority:                  account.Priority,
 		CostMultiplier:            costMultiplier,
@@ -407,7 +504,47 @@ func parseSmartRouterAccountExtra(account *Account) smartRouterAccountExtra {
 	cfg.MaxConcurrency = smartRouterInt(block["max_concurrency"])
 	cfg.SourceGroupMaxConcurrency = smartRouterInt(block["source_group_max_concurrency"])
 	cfg.Capabilities = smartRouterCapabilities(block["capabilities"])
+	cfg.ImageSizeTiers = smartRouterImageSizeTiers(block["image_size_tiers"])
 	return cfg
+}
+
+func smartRouterImageSizeTiers(raw any) []string {
+	values := make([]string, 0)
+	switch typed := raw.(type) {
+	case []any:
+		for _, item := range typed {
+			if value, ok := item.(string); ok {
+				values = append(values, value)
+			}
+		}
+	case []string:
+		values = append(values, typed...)
+	case string:
+		values = strings.Split(typed, ",")
+	}
+	seen := make(map[string]struct{}, len(values))
+	tiers := make([]string, 0, len(values))
+	for _, value := range values {
+		value = normalizeSmartRouterImageSizeTier(value)
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		tiers = append(tiers, value)
+	}
+	return tiers
+}
+
+func normalizeSmartRouterImageSizeTier(value string) string {
+	switch strings.ToUpper(strings.TrimSpace(value)) {
+	case "1K", "2K", "4K":
+		return strings.ToUpper(strings.TrimSpace(value))
+	default:
+		return ""
+	}
 }
 
 func smartRouterModelPatterns(account *Account) []string {

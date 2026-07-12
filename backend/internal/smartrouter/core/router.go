@@ -61,10 +61,13 @@ func Order(req RouteRequest, lanes []LaneSnapshot, policy Policy) RoutePlan {
 			plan.SkipReasons[lane.LaneID] = "model_mismatch"
 			continue
 		}
-		if lane.CooldownUntilUnix > nowUnix {
-			plan.SkipReasons[lane.LaneID] = "cooldown"
+		if !laneSupportsImageSizeTier(lane, req.ImageSizeTier) {
+			plan.SkipReasons[lane.LaneID] = "image_size_mismatch"
 			continue
 		}
+		// Health cooldown is a soft penalty, not a hard exclusion. The health
+		// snapshot raises effective priority and lowers recovery weight, while
+		// retaining the lane as a last-resort candidate when every lane is bad.
 		if lane.MaxConcurrency > 0 && lane.CurrentConcurrency >= lane.MaxConcurrency {
 			plan.SkipReasons[lane.LaneID] = "lane_concurrency_full"
 			continue
@@ -78,6 +81,9 @@ func Order(req RouteRequest, lanes []LaneSnapshot, policy Policy) RoutePlan {
 	if len(filtered) == 0 {
 		return plan
 	}
+	// Explicit size-specialized lanes get first use for their matching tier.
+	// Once all of them are unavailable, generic lanes become the fallback.
+	filtered = preferExplicitImageSizeTier(filtered, req.ImageSizeTier)
 	filtered = filterLowestPriorityLayer(filtered)
 
 	minPriority, maxPriority := filtered[0].Priority, filtered[0].Priority
@@ -291,6 +297,48 @@ func laneSupportsModel(lane LaneSnapshot, model string) bool {
 		}
 	}
 	return false
+}
+
+func laneSupportsImageSizeTier(lane LaneSnapshot, requestedTier string) bool {
+	requestedTier = normalizeImageSizeTier(requestedTier)
+	if requestedTier == "" || len(lane.ImageSizeTiers) == 0 {
+		return true
+	}
+	for _, tier := range lane.ImageSizeTiers {
+		if normalizeImageSizeTier(tier) == requestedTier {
+			return true
+		}
+	}
+	return false
+}
+
+func preferExplicitImageSizeTier(lanes []LaneSnapshot, requestedTier string) []LaneSnapshot {
+	requestedTier = normalizeImageSizeTier(requestedTier)
+	if requestedTier == "" {
+		return lanes
+	}
+	matched := make([]LaneSnapshot, 0, len(lanes))
+	for _, lane := range lanes {
+		for _, tier := range lane.ImageSizeTiers {
+			if normalizeImageSizeTier(tier) == requestedTier {
+				matched = append(matched, lane)
+				break
+			}
+		}
+	}
+	if len(matched) > 0 {
+		return matched
+	}
+	return lanes
+}
+
+func normalizeImageSizeTier(value string) string {
+	switch strings.ToUpper(strings.TrimSpace(value)) {
+	case "1K", "2K", "4K":
+		return strings.ToUpper(strings.TrimSpace(value))
+	default:
+		return ""
+	}
 }
 
 func matchPattern(pattern string, value string) bool {

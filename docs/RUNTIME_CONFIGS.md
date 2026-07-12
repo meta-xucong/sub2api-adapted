@@ -17,9 +17,9 @@ Verified: 2026-07-12
 - Persistent runtime config: `/app/data/config.yaml`
 - Host volume path: `/var/lib/docker/volumes/deploy_sub2api_data/_data/config.yaml`
 - Upgrade backup root: `/opt/sub2api/backups/upgrade-v0.1.150-20260710T075612Z`
-- Latest image backup: `/opt/sub2api/deploy/backups/smart-router-2e0b87f3-20260712-165734`
-- Deployed image: `sub2api-adapted:v0.1.151-smart-router-2e0b87f3`
-- Deployed code commit: `2e0b87f3`
+- Latest image backup: `/opt/sub2api/deploy/backups/smart-router-image-policy-9c600574-20260712T130228Z`
+- Deployed image: `sub2api-adapted:v0.1.151-smart-router-image-recovery-9c600574`
+- Deployed code commit: `9c600574`
 
 Active Smart Router settings:
 
@@ -36,6 +36,15 @@ Active Smart Router settings:
 - `gateway.smart_router.image_total_budget_seconds=600`
 - `gateway.smart_router.image_attempt_seconds=180`
 - `gateway.smart_router.image_finalization_reserve_seconds=15`
+- `gateway.smart_router.recovery.second_failure_cooldown_seconds=600`
+- `gateway.smart_router.recovery.sustained_failure_threshold=3`
+- `gateway.smart_router.recovery.image_sustained_failure_threshold=2`
+- `gateway.smart_router.calibration.enabled=true`, scheduled for `04:00 Asia/Shanghai`
+- `gateway.smart_router.calibration.total_budget_seconds=1800`
+- `gateway.smart_router.calibration.probe_timeout_seconds=180`
+- Transient image failures are soft penalties: lanes remain in the Smart Router
+  candidate pool with lower effective priority; no automatic permanent disable
+  or legacy temp-unschedulable write is used while Smart Router is enabled.
 
 Active Smart Router scoring weights:
 
@@ -54,6 +63,27 @@ Veyra is enabled through the same persistent config:
 
 Account priorities, concurrency, model mappings, and `extra.smart_router` lane metadata live in PostgreSQL. Preserve them with a database backup; do not duplicate credentials or account payloads in this repository.
 
+### YeToken Capability Lanes
+
+Configured and verified: 2026-07-12.
+
+- The `YeToken` chat accounts retain their existing account and group priorities;
+  they are explicitly limited to the `chat` and `responses` capabilities in the
+  shared `yetoken-chat` source group, capped at two concurrent requests across
+  that upstream.
+- The `YeToken` image accounts retain their existing priorities and are limited
+  to `image_generation` in the separate `yetoken-image` source group. Both the
+  per-lane and source-group ceiling are one concurrent request.
+- Image edit is deliberately absent from these two lanes until it is verified
+  against their upstream; an image-edit failure or cooldown elsewhere cannot
+  alter their text-to-image eligibility.
+- `image:yetoken-1k` is a `1K` specialist and `image:yetoken-super-res` is a
+  `2K`/`4K` specialist. A matching specialist is selected before generic image
+  lanes; when it is cooling down or fails, normal priority-ordered lanes remain
+  the automatic fallback.
+- Replay after a future official update with
+  [`deploy/sql/aiself_yetoken_smart_router_overlay.example.sql`](../deploy/sql/aiself_yetoken_smart_router_overlay.example.sql).
+
 Post-upgrade verification:
 
 - `/health`, `/login`, and `/_veyra/` returned HTTP 200.
@@ -65,6 +95,20 @@ Post-upgrade verification:
 - After the Smart Router overlay deployment, `/health` returned HTTP 200, `/v1/models`
   returned HTTP 200 with six configured GPT model ids, and a Codex-style `gpt-5.5`
   `/responses` smoke request returned HTTP 200 with a response id.
+- Durable Smart Router health ledger deployment: `/health` returned HTTP 200;
+  restart count remained `0`; migration `174_smart_router_health_ledger.sql`
+  created all four ledger tables; and the application logged its internal
+  `0 4 * * * Asia/Shanghai` calibration schedule. No live calibration probe was
+  forced during deployment.
+- The timestamp write-path repair was then deployed after PostgreSQL rejected
+  ledger events with a `timestamp with time zone` versus `text` type mismatch.
+  The repaired container returned `/health` HTTP 200 with restart count `0`, and
+  its scheduler logged the same daily calibration schedule without ledger-write
+  errors.
+- The image-only recovery policy and YeToken capability overlay were deployed
+  with container restart count `0`. The router again registered its daily
+  `0 4 * * * Asia/Shanghai` calibration, with no ledger, panic, or runtime
+  errors in its post-restart logs.
 
 Post-build host hygiene:
 
@@ -96,8 +140,8 @@ Replay after a future official upgrade:
 
 Repository/deployment boundary:
 
-- The aiself production runtime is pinned to `2e0b87f3` in image
-  `sub2api-adapted:v0.1.151-smart-router-2e0b87f3`; later repository commits may
+- The aiself production runtime is pinned to `9c600574` in image
+  `sub2api-adapted:v0.1.151-smart-router-image-recovery-9c600574`; later repository commits may
   contain documentation, replay SQL, build limits, or audit metadata only.
 
 ## 404token
@@ -109,9 +153,9 @@ ports.
 - Deploy directory: `/opt/sub2api-deploy`
 - Persistent data mount: `/opt/sub2api-deploy/data` -> `/app/data`
 - Official baseline: `v0.1.151` (`deff3123`)
-- Deployed image: `sub2api-adapted:v0.1.151-smart-router-b05c986a`
-- Deployment backup: `/opt/sub2api-deploy/backups/smart-router-b05c986a-20260712-174643`
-- Rollback image tag: `sub2api-adapted:rollback-before-smart-router-b05c986a-20260712-174643`
+- Deployed image: `sub2api-adapted:v0.1.151-smart-router-image-recovery-9c600574`
+- Deployment backup: `/opt/sub2api-deploy/backups/smart-router-image-recovery-9c600574-20260712T132508Z`
+- Rollback image tag: `sub2api-adapted:rollback-before-smart-router-image-recovery-9c600574-20260712T132508Z`
 - Initial upgrade backup: `/opt/sub2api-deploy/backups/upgrade-v0.1.151-20260710`
 - Latest compose backup: `/opt/sub2api-deploy/docker-compose.yml.before-gpt56-20260710-222245`
 - Latest rollback tag: `sub2api-adapted:rollback-before-gpt56-20260710-222245`
@@ -126,9 +170,30 @@ ports.
   `enabled=true`, `top_k=8`, `max_attempts_image=6`,
   `max_attempts_chat=3`, `max_attempts_default=3`,
   `same_source_group_attempts=1`, `cost_bias_max=3`, and image-edit
-  transient cooldown `30` seconds.
+  and image-generation transient cooldowns `30` seconds.
 - Image gateway budgets are explicit: `image_total_budget_seconds=600`,
   `image_attempt_seconds=180`, and `image_finalization_reserve_seconds=15`.
+- Per-upstream and end-to-end image timeouts are `180` and `600` seconds.
+- Generic chat/Responses sustained failure threshold remains `3`; the
+  capability-scoped image threshold is `2`, freezing a repeatedly failing image
+  lane until the next `04:00 Asia/Shanghai` calibration.
+
+### Capability And Priority Policy
+
+Applied: 2026-07-12.
+
+- [`deploy/sql/404token_smart_router_overlay.example.sql`](../deploy/sql/404token_smart_router_overlay.example.sql)
+  annotated the 16 existing routing accounts without changing account priority,
+  group priority, model mapping, account status, schedulability, or credentials.
+- The 7646881 and Liuyun chat price tiers are separate retry domains with a
+  Router effective concurrency limit of one each. This preserves the admin UI's
+  low-price-to-high-price fallback order inside their shared downstream groups.
+- YeToken chat lanes are explicitly `chat`/`responses` only with shared source
+  concurrency two. Its two image lanes are `image_generation` only with shared
+  source concurrency one. Unverified image edit capability is not inferred.
+- The existing Liuyun and 7646881 image lanes retain separate generation/edit
+  health states. `aicodexvip生图` remains schedulable-disabled; the overlay does
+  not reactivate it.
 
 The live scheduled image probe was returning upstream `403
 INSUFFICIENT_BALANCE` before this upgrade. That is an upstream account balance
@@ -145,6 +210,13 @@ Post-deploy verification:
 - Migration `173_allow_cyber_blocked_usage_request_type.sql` was applied.
 - The last five minutes of application logs contained no panic, fatal, or
   runtime-error signatures.
+- The image-health deployment created `smart_router_health_events`,
+  `smart_router_lane_state`, and `smart_router_calibration_runs`; all are ready
+  for the first production result. The application logged its internal
+  `0 4 * * * Asia/Shanghai` calibration schedule, with no ledger-write, panic,
+  fatal, or runtime errors after startup.
+- Local `/` and `/login` returned HTTP 200 with Veyra configuration absent, so
+  the official Sub2API default page policy remains in effect.
 - BuildKit cleanup reclaimed about `6.95 GB`; the host returned to about 42%
   disk usage while the deployed and rollback images remained present.
 

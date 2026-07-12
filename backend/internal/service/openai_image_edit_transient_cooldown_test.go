@@ -182,6 +182,23 @@ func TestOpenAIImageEditTransientRetryAfterSeconds_CeilsPadding(t *testing.T) {
 	require.Equal(t, 8, svc.OpenAIImageEditTransientRetryAfterSeconds())
 }
 
+func TestTempUnscheduleImageEditTransientError_SmartRouterUsesSoftPenalty(t *testing.T) {
+	repo := &imageEditCooldownAccountRepoStub{}
+	cfg := &config.Config{}
+	cfg.Gateway.ImageEditTransientCooldownSeconds = 7
+	cfg.Gateway.SmartRouter.Enabled = true
+	svc := &OpenAIGatewayService{accountRepo: repo, cfg: cfg}
+	account := &Account{ID: 5757, Name: "smart-router-edit-lane", Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+
+	svc.TempUnscheduleImageEditTransientError(context.Background(), account, &UpstreamFailoverError{
+		StatusCode:   http.StatusBadGateway,
+		ResponseBody: []byte(`gateway unavailable`),
+	})
+
+	require.Empty(t, repo.tempUnschedCalls)
+	require.False(t, svc.isOpenAIAccountRuntimeBlocked(account))
+}
+
 func openAIImageEditCandidateForTest(id int64, name string, until time.Time) Account {
 	return Account{
 		ID:                      id,

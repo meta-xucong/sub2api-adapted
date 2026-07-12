@@ -53,14 +53,21 @@ type RouteRequest struct {
 	RemainingBudgetSeconds     float64
 	MinimumAttemptSeconds      float64
 	FinalizationReserveSeconds float64
+	// ImageSizeTier is the normalized requested output tier (1K, 2K, or 4K)
+	// for explicit OpenAI Images sizes. It is empty for non-image and
+	// implicit-size requests, preserving ordinary lane selection.
+	ImageSizeTier string
 }
 
 type LaneSnapshot struct {
-	LaneID                    string
-	AccountID                 int64
-	Name                      string
-	SourceGroup               string
-	Capabilities              map[Capability]bool
+	LaneID       string
+	AccountID    int64
+	Name         string
+	SourceGroup  string
+	Capabilities map[Capability]bool
+	// ImageSizeTiers optionally makes a lane specialized for explicit image
+	// output tiers. An empty slice means the lane remains a generic fallback.
+	ImageSizeTiers            []string
 	ModelPatterns             []string
 	Priority                  int
 	CostMultiplier            float64

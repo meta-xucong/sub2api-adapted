@@ -58,25 +58,26 @@ var openAIAdvancedSchedulerSettingCache atomic.Value // *cachedOpenAIAdvancedSch
 var openAIAdvancedSchedulerSettingSF singleflight.Group
 
 type OpenAIAccountScheduleRequest struct {
-	GroupID                 *int64
-	Platform                string
-	SessionHash             string
-	StickyAccountID         int64
-	StickyPreviousAccountID int64
-	StickyWeighted          bool
-	SubscriptionPriority    bool
-	PreserveStickyBinding   bool
-	PreviousResponseID      string
-	PreviousResponseCanMove bool
-	RequestedModel          string
-	RequiredTransport       OpenAIUpstreamTransport
-	RequiredCapability      OpenAIEndpointCapability
-	RequiredImageCapability OpenAIImagesCapability
-	SmartRouterCapability   smartrouter.Capability
-	RequireCompact          bool
-	ExcludedIDs             map[int64]struct{}
-	ExcludedSourceGroups    map[string]struct{}
-	SmartRouterImageBudget  OpenAIImageSmartRouterBudgetState
+	GroupID                  *int64
+	Platform                 string
+	SessionHash              string
+	StickyAccountID          int64
+	StickyPreviousAccountID  int64
+	StickyWeighted           bool
+	SubscriptionPriority     bool
+	PreserveStickyBinding    bool
+	PreviousResponseID       string
+	PreviousResponseCanMove  bool
+	RequestedModel           string
+	RequiredTransport        OpenAIUpstreamTransport
+	RequiredCapability       OpenAIEndpointCapability
+	RequiredImageCapability  OpenAIImagesCapability
+	SmartRouterCapability    smartrouter.Capability
+	SmartRouterImageSizeTier string
+	RequireCompact           bool
+	ExcludedIDs              map[int64]struct{}
+	ExcludedSourceGroups     map[string]struct{}
+	SmartRouterImageBudget   OpenAIImageSmartRouterBudgetState
 }
 
 type OpenAIAccountScheduleDecision struct {
@@ -1025,6 +1026,7 @@ func (s *defaultOpenAIAccountScheduler) smartRouterRouteRequest(req OpenAIAccoun
 		RemainingBudgetSeconds:     req.SmartRouterImageBudget.RemainingSeconds,
 		MinimumAttemptSeconds:      req.SmartRouterImageBudget.MinimumAttemptSeconds,
 		FinalizationReserveSeconds: req.SmartRouterImageBudget.FinalizationReserveSeconds,
+		ImageSizeTier:              req.SmartRouterImageSizeTier,
 	}
 }
 
@@ -1916,24 +1918,26 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
 		smartCapability = smartRouterCapability[0]
 	}
 	imageBudget, _ := OpenAIImageSmartRouterBudgetFromContext(ctx)
+	imageSizeTier, _ := OpenAIImageSmartRouterSizeTierFromContext(ctx)
 	return scheduler.Select(ctx, OpenAIAccountScheduleRequest{
-		GroupID:                 groupID,
-		Platform:                platform,
-		SessionHash:             sessionHash,
-		StickyAccountID:         stickyAccountID,
-		StickyPreviousAccountID: stickyPreviousAccountID,
-		StickyWeighted:          stickyWeighted,
-		SubscriptionPriority:    subscriptionPriority,
-		PreviousResponseID:      previousResponseID,
-		PreviousResponseCanMove: previousResponseCanMove,
-		RequestedModel:          requestedModel,
-		RequiredTransport:       requiredTransport,
-		RequiredCapability:      requiredCapability,
-		RequiredImageCapability: requiredImageCapability,
-		SmartRouterCapability:   smartCapability,
-		RequireCompact:          requireCompact,
-		ExcludedIDs:             excludedIDs,
-		SmartRouterImageBudget:  imageBudget,
+		GroupID:                  groupID,
+		Platform:                 platform,
+		SessionHash:              sessionHash,
+		StickyAccountID:          stickyAccountID,
+		StickyPreviousAccountID:  stickyPreviousAccountID,
+		StickyWeighted:           stickyWeighted,
+		SubscriptionPriority:     subscriptionPriority,
+		PreviousResponseID:       previousResponseID,
+		PreviousResponseCanMove:  previousResponseCanMove,
+		RequestedModel:           requestedModel,
+		RequiredTransport:        requiredTransport,
+		RequiredCapability:       requiredCapability,
+		RequiredImageCapability:  requiredImageCapability,
+		SmartRouterCapability:    smartCapability,
+		RequireCompact:           requireCompact,
+		ExcludedIDs:              excludedIDs,
+		SmartRouterImageBudget:   imageBudget,
+		SmartRouterImageSizeTier: imageSizeTier,
 	})
 }
 

@@ -68,7 +68,12 @@ func BuildCalibrationPlan(now time.Time, lanes []LaneSnapshot, evidence []Capabi
 		if generationKnown && needsProbe(now, item.GenerationKnown, item.GenerationLastSuccess, item.GenerationLastFailure, policy.FreshEvidenceWindow) {
 			probes = append(probes, CalibrationProbe{LaneID: lane.LaneID, Capability: CapabilityImageGeneration, Reason: probeReason(item.GenerationKnown, item.GenerationLastFailure)})
 		}
-		if editKnown && needsProbe(now, item.EditKnown, item.EditLastSuccess, item.EditLastFailure, policy.FreshEvidenceWindow) {
+		// A lane with fresh, consistent text-to-image and image-edit evidence only
+		// receives the inexpensive text-to-image daily probe. Image edit is added
+		// when it is unknown, has failed since its last success, or diverges from
+		// generation. This keeps calibration useful without creating needless edits.
+		needEditProbe := !item.EditKnown || item.ModesDiverged || (!item.EditLastFailure.IsZero() && item.EditLastFailure.After(item.EditLastSuccess))
+		if editKnown && needEditProbe {
 			probes = append(probes, CalibrationProbe{LaneID: lane.LaneID, Capability: CapabilityImageEdit, Reason: probeReason(item.EditKnown, item.EditLastFailure)})
 		} else if editKnown && item.ModesDiverged && item.EditLastSuccess.IsZero() {
 			probes = append(probes, CalibrationProbe{LaneID: lane.LaneID, Capability: CapabilityImageEdit, Reason: "mode_divergence_requires_edit_probe"})

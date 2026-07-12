@@ -29,6 +29,18 @@ func (s *OpenAIGatewayService) TempUnscheduleImageGenerationTransientError(ctx c
 	if cooldown <= 0 {
 		return
 	}
+	if s.isSmartRouterEnabled() {
+		// Smart Router owns transient health state. Do not write the legacy
+		// temp-unschedulable flag, which would remove this lane instead of
+		// lowering its effective priority.
+		logger.L().With(zap.String("component", "service.openai_gateway")).Info(
+			"openai.image_generation_transient_soft_penalty",
+			zap.Int64("account_id", account.ID),
+			zap.Int("status_code", failoverErr.StatusCode),
+			zap.Duration("cooldown_hint", cooldown),
+		)
+		return
+	}
 
 	until := time.Now().Add(cooldown)
 	reason := openAIImageGenerationTransientCooldownReason(failoverErr)

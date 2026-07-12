@@ -10,9 +10,49 @@ Code:
 - `backend/internal/service/smart_router_adapter.go`
 - scheduler hooks in `openai_account_scheduler.go`
 
-Enable with `gateway.smart_router.enabled: true`. Existing accounts work without manual metadata. Optional `account.extra.smart_router` fields can override `source_group`, capabilities, cost multiplier, and concurrency.
+Enable with `gateway.smart_router.enabled: true`. Existing accounts work without manual metadata. Optional `account.extra.smart_router` fields can override `source_group`, capabilities, cost multiplier, and concurrency. `image_size_tiers: ["1K", "2K", "4K"]` optionally marks a lane as a specialist for explicit OpenAI Images output sizes: matching specialists are chosen before generic lanes, while generic lanes remain automatic fallbacks when every specialist is unavailable. Implicit image sizes retain the original routing behavior.
 
 The router first considers the lowest numeric priority layer. It advances only after that layer has no eligible lane. Retries can exclude an entire source group so multiple accounts backed by the same upstream are not hammered repeatedly.
+
+### Durable image health and 04:00 calibration
+
+The image lane health overlay is durable across container restarts. It records only
+safe routing metadata in PostgreSQL: lane/account ids, capability, status class,
+health score, cooldown/recovery state, and short error summaries. It never records
+prompts, images, API keys, cookies, or credentials.
+
+For each `gpt-image-*` lane and capability independently:
+
+- first transient failure: short cooldown and dynamic priority penalty;
+- second consecutive transient failure: longer cooldown;
+- third consecutive transient failure: capability-only freeze until the next
+  04:00 Asia/Shanghai calibration; the account and its chat/image-edit capability
+  stay untouched;
+- a successful calibration returns the lane through the existing warming stages,
+  then successful production traffic removes the remaining penalty.
+
+The scheduler is an internal application cron (`robfig/cron`) rather than a host
+script. It uses the real Sub2API account adapter, proxy, and model mapping, with a
+unique database run record to prevent duplicate probes after restarts. At 04:00 it
+uses the health ledger to decide whether a lane needs only a text-to-image probe or
+also an image-edit probe. When its evidence needs renewal, a stable lane gets the
+lightweight generation check; an unknown, failed, or generation/edit-divergent lane
+also gets an edit check.
+
+The ledger projection explicitly casts its event timestamp parameters to
+`timestamptz`. This is required by PostgreSQL's `CASE` expression inference; without
+the casts, a route could continue to fail over in memory while its durable health
+event is rejected and the next calibration has no evidence to restore.
+
+`gateway.smart_router.recovery.image_sustained_failure_threshold` optionally
+overrides this threshold for `image_generation` and `image_edit` only. It is
+zero by default, preserving the generic threshold. A value of `2` freezes a
+repeatedly failing image lane at its second consecutive upstream failure while
+leaving chat and Responses lanes on the generic policy.
+
+This means Docker's normal `restart: unless-stopped` is the only process supervisor
+needed. Do not add a systemd timer that calls an image API independently: it would
+bypass the protected account adapter and can duplicate chargeable probes.
 
 ## Image compatibility
 
@@ -90,6 +130,21 @@ instance with the matching aiself lanes is
 `deploy/sql/aiself_dispatch_sync_404token.example.sql`. It matches account
 names together with normalized upstream URLs, preserves credentials, and does
 not copy health/error status across deployments.
+
+`deploy/sql/aiself_yetoken_smart_router_overlay.example.sql` is the aiself
+replay for the current YeToken pool. It preserves manual account/group
+priorities, keeps chat/Responses and image generation in separate source
+groups, limits a single YeToken image lane and the shared image source group to
+one concurrent request, and deliberately does not enable image edits until an
+upstream proves that capability.
+
+`deploy/sql/404token_smart_router_overlay.example.sql` is the matching
+404token replay. It preserves the pricing order configured in the admin UI,
+separates its 7646881, Liuyun, YeToken chat pools from image lanes, and applies
+same-source limits without enabling a disabled account or copying any aiself
+credential, priority, or model-mapping data. The 7646881 and Liuyun price
+tiers intentionally receive separate retry fault domains: those tiers coexist
+inside the same downstream group and must remain eligible for ordered fallback.
 
 Why the image overlay stays maintained:
 

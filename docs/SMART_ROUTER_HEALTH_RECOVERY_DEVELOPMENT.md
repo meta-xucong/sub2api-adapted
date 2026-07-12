@@ -79,7 +79,7 @@ manual_disabled  -> manual_disabled      -> manual_enable_only
 | --- | --- | --- |
 | `healthy` | 按原始优先级和动态权重参与 | 按账本决定是否探测 |
 | `suspect` | 降权，仍可少量使用 | 到期后探测 |
-| `cooldown` | 跳过当前 lane/capability | 冷却结束进入探针 |
+| `cooldown` | 降低有效优先级但保留候选资格；全池异常时仍可作为最后兜底 | 冷却/校准后进入恢复探针 |
 | `quarantined_capability` | 只跳过该能力 | 单独探测该能力 |
 | `warming_5` | 只接收目标权重约 5% | 连续成功后升级 |
 | `warming_25` | 只接收目标权重约 25% | 安静窗口后升级 |
@@ -103,7 +103,7 @@ manual_disabled  -> manual_disabled      -> manual_enable_only
 
 | 类型 | 典型例子 | 作用范围 | 默认动作 |
 | --- | --- | --- | --- |
-| `transient_upstream` | 408、500、502、503、504、524、EOF | lane + capability | 冷却并降低健康分 |
+| `transient_upstream` | 408、500、502、503、504、524、EOF | lane + capability | 降低有效优先级并记录冷却提示，不硬关闭 |
 | `rate_limited` | 429、明确限流文案 | lane/capability/source group | 冷却并降低并发 |
 | `capability_mismatch` | 不支持模型、参数或 endpoint | lane + capability | 长退避，等待能力探针 |
 | `upstream_text_reply` | 生图返回“请上传参考图”等文字 | lane + capability | 判定能力不兼容，不反复重试 |
@@ -118,9 +118,9 @@ manual_disabled  -> manual_disabled      -> manual_enable_only
 7646881 的 502、超时、EOF 应视为抖动：
 
 ```text
-第一次失败       -> 短冷却
-15 分钟内两次失败 -> 后置一档并降低并发
-连续三次失败     -> 进入较长冷却
+第一次失败       -> 有效优先级后置一档
+15 分钟内两次失败 -> 再后置一档并降低并发
+连续三次失败     -> 继续后置，但仍保留最低权重尝试机会
 校准成功         -> 5% 灰度回流
 连续成功         -> 恢复原始优先级
 ```
@@ -140,7 +140,7 @@ manual_disabled  -> manual_disabled      -> manual_enable_only
 1. 用户、分组、模型映射和人工开关；
 2. capability 与模型支持；
 3. lane/account 是否可调度；
-4. capability 冷却、账号冷却和 source group 冷却；
+4. capability、账号和 source group 的健康惩罚；
 5. lane、账号和 source group 并发；
 6. 当前请求已尝试的 lane/source group。
 
@@ -403,7 +403,8 @@ gateway:
 ## 11. 兼容性与回滚
 
 - 不修改人工优先级、分组、模型价格和人工禁用状态；
-- 继续兼容已有 `temp_unschedulable_until`；
+- Smart Router 开启时，瞬时生图失败不再写入 legacy `temp_unschedulable_until`，改由有效优先级和健康权重软降权；
+- 非 Smart Router 账号继续兼容已有 `temp_unschedulable_until`；
 - 已有 `image_edit_transient_cooldown_seconds` 作为兼容别名保留；
 - 未配置 Smart Router 的账号继续使用原 scheduler；
 - 两层 Sub2API 各自维护运行时健康状态，不把内部账号 ID 暴露给下游；

@@ -11,24 +11,30 @@ import (
 // deliberately independent of the persistence layer so a deployment can use
 // memory, Redis, or PostgreSQL without changing routing behavior.
 type HealthPolicy struct {
-	TransientCooldown         time.Duration
-	RateLimitCooldown         time.Duration
-	CapabilityQuarantine      time.Duration
-	AuthQuarantine            time.Duration
-	MaxCooldown               time.Duration
-	MaxPenalty                int
-	RecoverySuccessesToNormal int
-	ErrorRateAlpha            float64
+	TransientCooldown              time.Duration
+	SecondTransientCooldown        time.Duration
+	SustainedFailureThreshold      int
+	ImageSustainedFailureThreshold int
+	SustainedFailureUntil          func(time.Time) time.Time
+	RateLimitCooldown              time.Duration
+	CapabilityQuarantine           time.Duration
+	AuthQuarantine                 time.Duration
+	MaxCooldown                    time.Duration
+	MaxPenalty                     int
+	RecoverySuccessesToNormal      int
+	ErrorRateAlpha                 float64
 }
 
 func DefaultHealthPolicy() HealthPolicy {
 	return HealthPolicy{
-		TransientCooldown:         30 * time.Second,
-		RateLimitCooldown:         5 * time.Minute,
-		CapabilityQuarantine:      24 * time.Hour,
-		AuthQuarantine:            24 * time.Hour,
-		MaxCooldown:               6 * time.Hour,
-		MaxPenalty:                3,
+		TransientCooldown:    30 * time.Second,
+		RateLimitCooldown:    5 * time.Minute,
+		CapabilityQuarantine: 24 * time.Hour,
+		AuthQuarantine:       24 * time.Hour,
+		MaxCooldown:          6 * time.Hour,
+		// Leave room to move a lane behind a growing pool of alternatives. This
+		// changes only effective routing priority, never persisted account priority.
+		MaxPenalty:                32,
 		RecoverySuccessesToNormal: 3,
 		ErrorRateAlpha:            0.2,
 	}
@@ -88,18 +94,35 @@ type HealthSnapshot struct {
 }
 
 type HealthEvent struct {
-	OccurredAtUnix    int64
-	Source            string
-	Key               HealthKey
-	StatusCode        int
-	FailureClass      FailureClass
-	Success           bool
-	Action            string
-	CooldownUntilUnix int64
-	HealthPenalty     int
-	RecoveryStage     RecoveryStage
-	LatencyMs         int64
-	ErrorSummary      string
+	OccurredAtUnix       int64
+	Source               string
+	Key                  HealthKey
+	AccountID            int64
+	SourceGroup          string
+	StatusCode           int
+	FailureClass         FailureClass
+	Success              bool
+	Action               string
+	CooldownUntilUnix    int64
+	HealthPenalty        int
+	HealthScore          float64
+	ErrorRateEWMA        float64
+	ConsecutiveFailures  int
+	ConsecutiveSuccesses int
+	RecoveryStage        RecoveryStage
+	LatencyMs            int64
+	ErrorSummary         string
+}
+
+// Restore seeds a tracker from durable state after a process restart. The
+// caller owns persistence; the core deliberately does not depend on storage.
+func (t *HealthTracker) Restore(key HealthKey, snapshot HealthSnapshot, lastFailureUnix int64) {
+	if t == nil || key.LaneID == "" || key.Capability == "" {
+		return
+	}
+	t.mu.Lock()
+	t.states[key] = &healthState{HealthSnapshot: snapshot, lastFailureUnix: lastFailureUnix}
+	t.mu.Unlock()
 }
 
 // HealthEventSink is the ledger boundary. The core never writes credentials,
@@ -273,26 +296,44 @@ func (t *HealthTracker) Observe(result RouteResult) HealthSnapshot {
 			state.ErrorRateEWMA = state.ErrorRateEWMA*(1-t.policy.ErrorRateAlpha) + t.policy.ErrorRateAlpha
 			state.HealthScore = maxFloat(0.05, state.HealthScore*0.65)
 			state.HealthPenalty = minInt(state.HealthPenalty+1, t.policy.MaxPenalty)
-			state.CooldownUntilUnix = now.Add(t.cooldownFor(state.ConsecutiveFailures)).Unix()
+			until := now.Add(t.cooldownFor(state.ConsecutiveFailures))
+			if state.ConsecutiveFailures == 2 && t.policy.SecondTransientCooldown > 0 {
+				until = now.Add(t.policy.SecondTransientCooldown)
+			}
+			if threshold := t.policy.sustainedFailureThreshold(result.Capability); threshold > 0 && state.ConsecutiveFailures >= threshold && t.policy.SustainedFailureUntil != nil {
+				if sustainedUntil := t.policy.SustainedFailureUntil(now); sustainedUntil.After(now) {
+					until = sustainedUntil
+					action = "sustained_failure_quarantine"
+				}
+			}
+			state.CooldownUntilUnix = until.Unix()
 			state.RecoveryStage = RecoveryCooling
-			action = "transient_cooldown"
+			if action == "record_only" {
+				action = "transient_cooldown"
+			}
 		}
 		state.lastFailureUnix = now.Unix()
 	}
 	snapshot := state.HealthSnapshot
 	event := HealthEvent{
-		OccurredAtUnix:    now.Unix(),
-		Source:            defaultSource(result.Source),
-		Key:               key,
-		StatusCode:        result.StatusCode,
-		FailureClass:      class,
-		Success:           result.Success,
-		Action:            action,
-		CooldownUntilUnix: snapshot.CooldownUntilUnix,
-		HealthPenalty:     snapshot.HealthPenalty,
-		RecoveryStage:     snapshot.RecoveryStage,
-		LatencyMs:         result.TotalLatencyMs,
-		ErrorSummary:      truncateSummary(result.ErrorSummary, 256),
+		OccurredAtUnix:       now.Unix(),
+		Source:               defaultSource(result.Source),
+		Key:                  key,
+		AccountID:            result.AccountID,
+		SourceGroup:          result.SourceGroup,
+		StatusCode:           result.StatusCode,
+		FailureClass:         class,
+		Success:              result.Success,
+		Action:               action,
+		CooldownUntilUnix:    snapshot.CooldownUntilUnix,
+		HealthPenalty:        snapshot.HealthPenalty,
+		HealthScore:          snapshot.HealthScore,
+		ErrorRateEWMA:        snapshot.ErrorRateEWMA,
+		ConsecutiveFailures:  snapshot.ConsecutiveFailures,
+		ConsecutiveSuccesses: snapshot.ConsecutiveSuccesses,
+		RecoveryStage:        snapshot.RecoveryStage,
+		LatencyMs:            result.TotalLatencyMs,
+		ErrorSummary:         truncateSummary(result.ErrorSummary, 256),
 	}
 	t.events = append(t.events, event)
 	if len(t.events) > t.maxEvents {
@@ -303,6 +344,13 @@ func (t *HealthTracker) Observe(result RouteResult) HealthSnapshot {
 		t.sink(event)
 	}
 	return snapshot
+}
+
+func (p HealthPolicy) sustainedFailureThreshold(capability Capability) int {
+	if (capability == CapabilityImageGeneration || capability == CapabilityImageEdit) && p.ImageSustainedFailureThreshold > 0 {
+		return p.ImageSustainedFailureThreshold
+	}
+	return p.SustainedFailureThreshold
 }
 
 func (t *HealthTracker) cooldownFor(consecutiveFailures int) time.Duration {

@@ -44,3 +44,28 @@ func TestBuildCalibrationPlanTestsUnknownLaneInBothModes(t *testing.T) {
 		{LaneID: "new-line", Capability: CapabilityImageEdit, Reason: "unknown_capability"},
 	}, probes)
 }
+
+func TestBuildCalibrationPlanUsesOneGenerationProbeForStableLane(t *testing.T) {
+	now := time.Date(2026, 7, 12, 4, 0, 0, 0, time.FixedZone("Asia/Shanghai", 8*60*60))
+	lanes := []LaneSnapshot{{
+		LaneID: "stable",
+		Capabilities: map[Capability]bool{
+			CapabilityImageGeneration: true,
+			CapabilityImageEdit:       true,
+		},
+	}}
+	evidence := []CapabilityEvidence{{
+		LaneID:                "stable",
+		GenerationKnown:       true,
+		GenerationLastSuccess: now.Add(-25 * time.Hour),
+		EditKnown:             true,
+		EditLastSuccess:       now.Add(-25 * time.Hour),
+	}}
+
+	probes := BuildCalibrationPlan(now, lanes, evidence, CalibrationPolicy{FreshEvidenceWindow: 24 * time.Hour})
+	require.Equal(t, []CalibrationProbe{{
+		LaneID:     "stable",
+		Capability: CapabilityImageGeneration,
+		Reason:     "stale_success_evidence",
+	}}, probes)
+}
