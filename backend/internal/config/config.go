@@ -832,6 +832,9 @@ type GatewayConfig struct {
 	ImageStreamKeepaliveInterval int `mapstructure:"image_stream_keepalive_interval"`
 	// ImageUpstreamTimeoutSeconds bounds a single OpenAI-compatible image upstream request; 0 disables it.
 	ImageUpstreamTimeoutSeconds int `mapstructure:"image_upstream_timeout_seconds"`
+	// ImageRequestTimeoutSeconds bounds the total wall-clock budget for one image request,
+	// including Smart Router failover attempts; 0 disables the gateway budget.
+	ImageRequestTimeoutSeconds int `mapstructure:"image_request_timeout_seconds"`
 	// ImageEditTransientCooldownSeconds temporarily removes a failing image-edit lane; 0 disables it.
 	ImageEditTransientCooldownSeconds int `mapstructure:"image_edit_transient_cooldown_seconds"`
 	// ImageGenerationTransientCooldownSeconds temporarily removes a failing text-to-image lane; 0 disables it.
@@ -2087,6 +2090,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.image_stream_data_interval_timeout", 900)
 	viper.SetDefault("gateway.image_stream_keepalive_interval", 10)
 	viper.SetDefault("gateway.image_upstream_timeout_seconds", 180)
+	viper.SetDefault("gateway.image_request_timeout_seconds", 600)
 	viper.SetDefault("gateway.image_edit_transient_cooldown_seconds", 12)
 	viper.SetDefault("gateway.image_generation_transient_cooldown_seconds", 30)
 	viper.SetDefault("gateway.max_line_size", 500*1024*1024)
@@ -2777,6 +2781,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.ImageUpstreamTimeoutSeconds < 0 {
 		return fmt.Errorf("gateway.image_upstream_timeout_seconds must be non-negative")
+	}
+	if c.Gateway.ImageRequestTimeoutSeconds < 0 {
+		return fmt.Errorf("gateway.image_request_timeout_seconds must be non-negative")
 	}
 	if c.Gateway.ImageEditTransientCooldownSeconds < 0 {
 		return fmt.Errorf("gateway.image_edit_transient_cooldown_seconds must be non-negative")

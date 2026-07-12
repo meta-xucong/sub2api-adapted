@@ -50,6 +50,13 @@ The router first considers the lowest numeric priority layer. It advances only a
   OAuth image upstream becomes a failover event before the client-side timeout,
   giving Smart Router time to move to the next eligible lane instead of ending
   as a client `context canceled` with no switch.
+- One image request now has a separate total wall-clock budget via
+  `gateway.image_request_timeout_seconds` (default `600`). The deadline is
+  shared by `/v1/images/*` and image-generation `/v1/responses` requests, so
+  each failover attempt receives only the remaining time and the handler stops
+  instead of starting another upstream request after the total budget expires.
+  The response-path detachment preserves this deadline while retaining its
+  existing non-stream client-cancellation behavior.
 - OpenAI image API-key transport failures where no HTTP response is received
   (for example SOCKS EOF, TCP/TLS, DNS, or proxy routing errors) now return the
   same `UpstreamFailoverError` used by chat/responses forwarding. This lets the

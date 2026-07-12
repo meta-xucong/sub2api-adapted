@@ -409,6 +409,12 @@ gateway:
   # Image stream keepalive interval (seconds), 0=disable; independent from ordinary text streams
   # 图片流式 keepalive 间隔（秒），0=禁用；独立于普通文本流式
   image_stream_keepalive_interval: 10
+  # Total wall-clock budget for one image request, including Smart Router failover (seconds); 0=disable
+  # 单次生图请求总预算，包含 Smart Router 切线（秒）；0=禁用
+  image_request_timeout_seconds: 600
+  # Per-upstream image request timeout (seconds); 0=disable
+  # 单条上游生图线路超时（秒）；0=禁用
+  image_upstream_timeout_seconds: 180
   # Short cooldown for transient /images/edits failures; 0 disables it.
   # 图生图瞬时 403/408/5xx 的短冷却秒数；0 表示禁用。
   image_edit_transient_cooldown_seconds: 12
