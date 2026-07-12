@@ -138,6 +138,14 @@ groups, limits a single YeToken image lane and the shared image source group to
 one concurrent request, and deliberately does not enable image edits until an
 upstream proves that capability.
 
+`deploy/sql/404token_smart_router_overlay.example.sql` is the matching
+404token replay. It preserves the pricing order configured in the admin UI,
+separates its 7646881, Liuyun, YeToken chat pools from image lanes, and applies
+same-source limits without enabling a disabled account or copying any aiself
+credential, priority, or model-mapping data. The 7646881 and Liuyun price
+tiers intentionally receive separate retry fault domains: those tiers coexist
+inside the same downstream group and must remain eligible for ordered fallback.
+
 Why the image overlay stays maintained:
 
 - some low-cost image providers intermittently return a provider-side `403`
