@@ -39,6 +39,11 @@ also an image-edit probe. When its evidence needs renewal, a stable lane gets th
 lightweight generation check; an unknown, failed, or generation/edit-divergent lane
 also gets an edit check.
 
+The ledger projection explicitly casts its event timestamp parameters to
+`timestamptz`. This is required by PostgreSQL's `CASE` expression inference; without
+the casts, a route could continue to fail over in memory while its durable health
+event is rejected and the next calibration has no evidence to restore.
+
 This means Docker's normal `restart: unless-stopped` is the only process supervisor
 needed. Do not add a systemd timer that calls an image API independently: it would
 bypass the protected account adapter and can duplicate chargeable probes.

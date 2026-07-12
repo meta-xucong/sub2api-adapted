@@ -103,9 +103,9 @@ INSERT INTO smart_router_lane_state (
     last_failure_unix, updated_at
 ) VALUES (
     $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,
-    CASE WHEN $13 THEN $14 ELSE NULL END,
-    CASE WHEN $13 THEN NULL ELSE $14 END,
-    CASE WHEN $13 THEN 0 ELSE $15 END,
+    CASE WHEN $13::boolean THEN $14::timestamptz ELSE NULL::timestamptz END,
+    CASE WHEN $13::boolean THEN NULL::timestamptz ELSE $14::timestamptz END,
+    CASE WHEN $13::boolean THEN 0 ELSE $15::bigint END,
     NOW()
 )
 ON CONFLICT (lane_id, capability, model_family) DO UPDATE SET
@@ -118,9 +118,9 @@ ON CONFLICT (lane_id, capability, model_family) DO UPDATE SET
     consecutive_successes = EXCLUDED.consecutive_successes,
     cooldown_until = EXCLUDED.cooldown_until,
     recovery_stage = EXCLUDED.recovery_stage,
-    last_success_at = CASE WHEN $13 THEN EXCLUDED.last_success_at ELSE smart_router_lane_state.last_success_at END,
-    last_failure_at = CASE WHEN $13 THEN smart_router_lane_state.last_failure_at ELSE EXCLUDED.last_failure_at END,
-    last_failure_unix = CASE WHEN $13 THEN smart_router_lane_state.last_failure_unix ELSE EXCLUDED.last_failure_unix END,
+    last_success_at = CASE WHEN $13::boolean THEN EXCLUDED.last_success_at ELSE smart_router_lane_state.last_success_at END,
+    last_failure_at = CASE WHEN $13::boolean THEN smart_router_lane_state.last_failure_at ELSE EXCLUDED.last_failure_at END,
+    last_failure_unix = CASE WHEN $13::boolean THEN smart_router_lane_state.last_failure_unix ELSE EXCLUDED.last_failure_unix END,
     updated_at = NOW()`,
 		event.Key.LaneID, event.Key.Capability, event.Key.Model, event.AccountID, event.SourceGroup,
 		event.HealthPenalty, event.HealthScore, event.ErrorRateEWMA, event.ConsecutiveFailures,
