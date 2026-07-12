@@ -39,7 +39,6 @@ Active Smart Router settings:
 - `gateway.smart_router.recovery.second_failure_cooldown_seconds=600`
 - `gateway.smart_router.recovery.sustained_failure_threshold=3`
 - `gateway.smart_router.recovery.image_sustained_failure_threshold=2`
-- `gateway.smart_router.recovery.image_sustained_failure_threshold=2`
 - `gateway.smart_router.calibration.enabled=true`, scheduled for `04:00 Asia/Shanghai`
 - `gateway.smart_router.calibration.total_budget_seconds=1800`
 - `gateway.smart_router.calibration.probe_timeout_seconds=180`
