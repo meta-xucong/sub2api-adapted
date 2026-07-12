@@ -2,11 +2,85 @@ package service
 
 import (
 	"context"
+	"net/http"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/stretchr/testify/require"
 )
+
+func TestOpenAIGatewayService_SmartRouterDemotesImageGenerationCapabilityAfterDeterministicFailure(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+	ctx := context.Background()
+	groupID := int64(7301)
+	accounts := []Account{
+		{
+			ID:          73001,
+			Name:        "flowyun-image",
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    1,
+			GroupIDs:    []int64{groupID},
+			Extra: map[string]any{"smart_router": map[string]any{
+				"source_group": "flowyun",
+			}},
+		},
+		{
+			ID:          73002,
+			Name:        "stable-fallback",
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    2,
+			GroupIDs:    []int64{groupID},
+			Extra: map[string]any{"smart_router": map[string]any{
+				"source_group": "stable",
+			}},
+		},
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:              &schedulerTestGatewayCache{},
+		cfg:                newSmartRouterSchedulerTestConfig(),
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+
+	selection, _, err := svc.SelectAccountWithSchedulerForImageOperation(ctx, &groupID, "", "gpt-image-2", nil, OpenAIImagesCapabilityBasic, false)
+	require.NoError(t, err)
+	require.Equal(t, int64(73001), selection.Account.ID)
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+
+	svc.ReportSmartRouterImageResult(
+		&accounts[0],
+		&OpenAIImagesRequest{Endpoint: openAIImagesGenerationsEndpoint, Model: "gpt-image-2"},
+		nil,
+		&OpenAIImagesUpstreamError{StatusCode: http.StatusBadRequest, Code: "upstream_text_reply", Message: "requires a usable image target"},
+		140000,
+	)
+
+	selection, _, err = svc.SelectAccountWithSchedulerForImageOperation(ctx, &groupID, "", "gpt-image-2", nil, OpenAIImagesCapabilityBasic, false)
+	require.NoError(t, err)
+	require.Equal(t, int64(73002), selection.Account.ID)
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+
+	// The same lane remains eligible for edits because health is capability-scoped.
+	selection, _, err = svc.SelectAccountWithSchedulerForImageOperation(ctx, &groupID, "", "gpt-image-2", nil, OpenAIImagesCapabilityBasic, true)
+	require.NoError(t, err)
+	require.Equal(t, int64(73001), selection.Account.ID)
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
 
 func newSmartRouterSchedulerTestConfig() *config.Config {
 	cfg := &config.Config{}
@@ -25,6 +99,24 @@ func newSmartRouterSchedulerTestConfig() *config.Config {
 	cfg.Gateway.SmartRouter.Scoring.Latency = 0.4
 	cfg.Gateway.SmartRouter.Scoring.Recovery = 0.8
 	return cfg
+}
+
+func TestOpenAIGatewayService_SmartRouterImageBudgetDefaultsAndOverrides(t *testing.T) {
+	cfg := newSmartRouterSchedulerTestConfig()
+	svc := &OpenAIGatewayService{cfg: cfg}
+
+	budget := svc.OpenAIImageSmartRouterBudget()
+	require.Equal(t, 600.0, budget.TotalSeconds)
+	require.Equal(t, 180.0, budget.MinimumAttemptSeconds)
+	require.Equal(t, 15.0, budget.FinalizationReserveSeconds)
+
+	cfg.Gateway.SmartRouter.ImageTotalBudgetSeconds = 420
+	cfg.Gateway.SmartRouter.ImageAttemptSeconds = 120
+	cfg.Gateway.SmartRouter.ImageReserveSeconds = 10
+	budget = svc.OpenAIImageSmartRouterBudget()
+	require.Equal(t, 420.0, budget.TotalSeconds)
+	require.Equal(t, 120.0, budget.MinimumAttemptSeconds)
+	require.Equal(t, 10.0, budget.FinalizationReserveSeconds)
 }
 
 func TestOpenAIGatewayService_SmartRouterSkipsFailedSourceGroupForImageRetry(t *testing.T) {

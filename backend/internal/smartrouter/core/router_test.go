@@ -47,6 +47,34 @@ func TestOrder_RespectsAttemptBudget(t *testing.T) {
 	require.Empty(t, exhausted.OrderedLaneIDs)
 }
 
+func TestOrder_BlocksAttemptWhenRemainingBudgetCannotFit(t *testing.T) {
+	policy := DefaultPolicy()
+	policy.Enabled = true
+
+	plan := Order(RouteRequest{
+		Capability:                 CapabilityImageGeneration,
+		RemainingBudgetSeconds:     195,
+		MinimumAttemptSeconds:      180,
+		FinalizationReserveSeconds: 15,
+	}, []LaneSnapshot{{LaneID: "fallback", AccountID: 1}}, policy)
+
+	require.True(t, plan.BudgetBlocked)
+	require.Empty(t, plan.OrderedLaneIDs)
+	require.Equal(t, "insufficient_remaining_budget", plan.SkipReasons["__budget__"])
+}
+
+func TestOrder_StaticCapabilityMapKeepsImageLanesSeparate(t *testing.T) {
+	policy := DefaultPolicy()
+	policy.Enabled = true
+	plan := Order(RouteRequest{Capability: CapabilityImageGeneration}, []LaneSnapshot{
+		{LaneID: "flowyun-edit-only", AccountID: 1, Capabilities: map[Capability]bool{CapabilityImageEdit: true}},
+		{LaneID: "stable-generation", AccountID: 2, Capabilities: map[Capability]bool{CapabilityImageGeneration: true}},
+	}, policy)
+
+	require.Equal(t, []string{"stable-generation"}, plan.OrderedLaneIDs)
+	require.Equal(t, "capability_mismatch", plan.SkipReasons["flowyun-edit-only"])
+}
+
 func TestOrder_SourceGroupGuard(t *testing.T) {
 	policy := DefaultPolicy()
 	policy.Enabled = true

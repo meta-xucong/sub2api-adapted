@@ -356,6 +356,10 @@ gateway:
     max_attempts_default: 3
     same_source_group_attempts: 1
     cost_bias_max: 3.0
+    # 图片请求的端到端预算；每条线路至少保留 180 秒，并预留 15 秒收尾。
+    image_total_budget_seconds: 600
+    image_attempt_seconds: 180
+    image_finalization_reserve_seconds: 15
     scoring:
       priority: 0.8
       cost: 1.0

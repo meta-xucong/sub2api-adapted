@@ -76,6 +76,7 @@ type OpenAIAccountScheduleRequest struct {
 	RequireCompact          bool
 	ExcludedIDs             map[int64]struct{}
 	ExcludedSourceGroups    map[string]struct{}
+	SmartRouterImageBudget  OpenAIImageSmartRouterBudgetState
 }
 
 type OpenAIAccountScheduleDecision struct {
@@ -974,6 +975,9 @@ func (s *defaultOpenAIAccountScheduler) buildSmartRouterSelectionOrder(
 		if !ok {
 			continue
 		}
+		if health := s.service.smartRouterHealth(); health != nil {
+			lane = health.Snapshot(lane, req.SmartRouterCapability, req.RequestedModel, time.Now().Unix())
+		}
 		laneToCandidate[lane.LaneID] = candidate
 		lanes = append(lanes, lane)
 	}
@@ -1011,13 +1015,16 @@ func (s *defaultOpenAIAccountScheduler) smartRouterRouteRequest(req OpenAIAccoun
 		excludedLaneIDs = nil
 	}
 	return smartrouter.RouteRequest{
-		GroupID:              smartRouterGroupID(req.GroupID),
-		Model:                req.RequestedModel,
-		Capability:           capability,
-		PreviousResponseID:   req.PreviousResponseID,
-		ExcludedLaneIDs:      excludedLaneIDs,
-		ExcludedSourceGroups: req.ExcludedSourceGroups,
-		AttemptNumber:        len(req.ExcludedIDs),
+		GroupID:                    smartRouterGroupID(req.GroupID),
+		Model:                      req.RequestedModel,
+		Capability:                 capability,
+		PreviousResponseID:         req.PreviousResponseID,
+		ExcludedLaneIDs:            excludedLaneIDs,
+		ExcludedSourceGroups:       req.ExcludedSourceGroups,
+		AttemptNumber:              len(req.ExcludedIDs),
+		RemainingBudgetSeconds:     req.SmartRouterImageBudget.RemainingSeconds,
+		MinimumAttemptSeconds:      req.SmartRouterImageBudget.MinimumAttemptSeconds,
+		FinalizationReserveSeconds: req.SmartRouterImageBudget.FinalizationReserveSeconds,
 	}
 }
 
@@ -1908,6 +1915,7 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
 	if len(smartRouterCapability) > 0 {
 		smartCapability = smartRouterCapability[0]
 	}
+	imageBudget, _ := OpenAIImageSmartRouterBudgetFromContext(ctx)
 	return scheduler.Select(ctx, OpenAIAccountScheduleRequest{
 		GroupID:                 groupID,
 		Platform:                platform,
@@ -1925,6 +1933,7 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
 		SmartRouterCapability:   smartCapability,
 		RequireCompact:          requireCompact,
 		ExcludedIDs:             excludedIDs,
+		SmartRouterImageBudget:  imageBudget,
 	})
 }
 

@@ -1422,6 +1422,31 @@ func TestValidateConfigErrors(t *testing.T) {
 			wantErr: "gateway.image_edit_transient_cooldown_seconds must be non-negative",
 		},
 		{
+			name:    "gateway smart router image total budget negative",
+			mutate:  func(c *Config) { c.Gateway.SmartRouter.ImageTotalBudgetSeconds = -1 },
+			wantErr: "gateway.smart_router.image_total_budget_seconds must be non-negative",
+		},
+		{
+			name:    "gateway smart router image attempt negative",
+			mutate:  func(c *Config) { c.Gateway.SmartRouter.ImageAttemptSeconds = -1 },
+			wantErr: "gateway.smart_router.image_attempt_seconds must be non-negative",
+		},
+		{
+			name:    "gateway smart router image reserve negative",
+			mutate:  func(c *Config) { c.Gateway.SmartRouter.ImageReserveSeconds = -1 },
+			wantErr: "gateway.smart_router.image_finalization_reserve_seconds must be non-negative",
+		},
+		{
+			name: "gateway smart router image budget too small",
+			mutate: func(c *Config) {
+				c.Gateway.SmartRouter.Enabled = true
+				c.Gateway.SmartRouter.ImageTotalBudgetSeconds = 195
+				c.Gateway.SmartRouter.ImageAttemptSeconds = 180
+				c.Gateway.SmartRouter.ImageReserveSeconds = 15
+			},
+			wantErr: "gateway.smart_router.image_total_budget_seconds must exceed",
+		},
+		{
 			name:    "gateway smart router top k negative",
 			mutate:  func(c *Config) { c.Gateway.SmartRouter.TopK = -1 },
 			wantErr: "gateway.smart_router.top_k must be non-negative",
@@ -1984,6 +2009,14 @@ func TestLoad_DefaultGatewayImageStreamConfig(t *testing.T) {
 	}
 	if cfg.Gateway.ImageEditTransientCooldownSeconds != 12 {
 		t.Fatalf("image_edit_transient_cooldown_seconds = %d, want 12", cfg.Gateway.ImageEditTransientCooldownSeconds)
+	}
+	if cfg.Gateway.SmartRouter.ImageTotalBudgetSeconds != 600 ||
+		cfg.Gateway.SmartRouter.ImageAttemptSeconds != 180 ||
+		cfg.Gateway.SmartRouter.ImageReserveSeconds != 15 {
+		t.Fatalf("unexpected smart router image budget: total=%d attempt=%d reserve=%d",
+			cfg.Gateway.SmartRouter.ImageTotalBudgetSeconds,
+			cfg.Gateway.SmartRouter.ImageAttemptSeconds,
+			cfg.Gateway.SmartRouter.ImageReserveSeconds)
 	}
 	if cfg.Gateway.SmartRouter.Enabled {
 		t.Fatalf("smart_router.enabled = true, want false")

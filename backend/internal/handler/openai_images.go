@@ -138,6 +138,12 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 	// pin later requests to a provider whose priority or health has changed.
 	sessionHash := ""
 	requestCtx := service.WithOpenAIImageGenerationIntent(c.Request.Context())
+	imageBudget := h.gatewayService.OpenAIImageSmartRouterBudget()
+	if imageBudget.TotalSeconds > 0 {
+		var cancel context.CancelFunc
+		requestCtx, cancel = context.WithTimeout(requestCtx, time.Duration(imageBudget.TotalSeconds)*time.Second)
+		defer cancel()
+	}
 
 	maxAccountSwitches := h.maxAccountSwitches
 	switchCount := 0
@@ -147,6 +153,10 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 	imageEditCapacityWaited := false
 
 	for {
+		if imageBudget.TotalSeconds > 0 {
+			imageBudget.RemainingSeconds = imageBudget.TotalSeconds - time.Since(requestStart).Seconds()
+			requestCtx = service.WithOpenAIImageSmartRouterBudget(requestCtx, imageBudget)
+		}
 		reqLog.Debug("openai.images.account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
 		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForImageOperation(
 			requestCtx,
@@ -249,6 +259,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 		if result != nil && result.FirstTokenMs != nil {
 			service.SetOpsLatencyMs(c, service.OpsTimeToFirstTokenMsKey, int64(*result.FirstTokenMs))
 		}
+		h.gatewayService.ReportSmartRouterImageResult(account, parsed, result, err, forwardDurationMs)
 		if err != nil {
 			if result != nil && result.ImageCount > 0 {
 				reqLog.Warn("openai.images.forward_partial_error_with_image_result",

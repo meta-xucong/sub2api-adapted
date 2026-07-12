@@ -882,6 +882,9 @@ type GatewaySmartRouterConfig struct {
 	MaxAttemptsDefault      int                             `mapstructure:"max_attempts_default"`
 	SameSourceGroupAttempts int                             `mapstructure:"same_source_group_attempts"`
 	CostBiasMax             float64                         `mapstructure:"cost_bias_max"`
+	ImageTotalBudgetSeconds int                             `mapstructure:"image_total_budget_seconds"`
+	ImageAttemptSeconds     int                             `mapstructure:"image_attempt_seconds"`
+	ImageReserveSeconds     int                             `mapstructure:"image_finalization_reserve_seconds"`
 	Scoring                 GatewaySmartRouterScoringConfig `mapstructure:"scoring"`
 }
 
@@ -1988,6 +1991,9 @@ func setDefaults() {
 	viper.SetDefault("gateway.smart_router.max_attempts_default", 3)
 	viper.SetDefault("gateway.smart_router.same_source_group_attempts", 1)
 	viper.SetDefault("gateway.smart_router.cost_bias_max", 3.0)
+	viper.SetDefault("gateway.smart_router.image_total_budget_seconds", 600)
+	viper.SetDefault("gateway.smart_router.image_attempt_seconds", 180)
+	viper.SetDefault("gateway.smart_router.image_finalization_reserve_seconds", 15)
 	viper.SetDefault("gateway.smart_router.scoring.priority", 0.8)
 	viper.SetDefault("gateway.smart_router.scoring.cost", 1.0)
 	viper.SetDefault("gateway.smart_router.scoring.health", 1.2)
@@ -2789,6 +2795,21 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.SmartRouter.CostBiasMax < 0 {
 		return fmt.Errorf("gateway.smart_router.cost_bias_max must be non-negative")
+	}
+	if c.Gateway.SmartRouter.ImageTotalBudgetSeconds < 0 {
+		return fmt.Errorf("gateway.smart_router.image_total_budget_seconds must be non-negative")
+	}
+	if c.Gateway.SmartRouter.ImageAttemptSeconds < 0 {
+		return fmt.Errorf("gateway.smart_router.image_attempt_seconds must be non-negative")
+	}
+	if c.Gateway.SmartRouter.ImageReserveSeconds < 0 {
+		return fmt.Errorf("gateway.smart_router.image_finalization_reserve_seconds must be non-negative")
+	}
+	if c.Gateway.SmartRouter.Enabled &&
+		c.Gateway.SmartRouter.ImageTotalBudgetSeconds > 0 &&
+		c.Gateway.SmartRouter.ImageAttemptSeconds > 0 &&
+		c.Gateway.SmartRouter.ImageTotalBudgetSeconds <= c.Gateway.SmartRouter.ImageAttemptSeconds+c.Gateway.SmartRouter.ImageReserveSeconds {
+		return fmt.Errorf("gateway.smart_router.image_total_budget_seconds must exceed image_attempt_seconds plus image_finalization_reserve_seconds")
 	}
 	smartRouterWeights := c.Gateway.SmartRouter.Scoring
 	if smartRouterWeights.Priority < 0 || smartRouterWeights.Cost < 0 || smartRouterWeights.Health < 0 ||

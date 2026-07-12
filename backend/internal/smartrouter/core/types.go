@@ -15,6 +15,8 @@ type FailureClass string
 const (
 	FailureClientError        FailureClass = "client_error"
 	FailureCapabilityError    FailureClass = "capability_error"
+	FailurePayloadRejected    FailureClass = "payload_rejected"
+	FailureContentRejected    FailureClass = "content_rejected"
 	FailureAuthForbidden      FailureClass = "auth_forbidden"
 	FailureTransientForbidden FailureClass = "transient_forbidden"
 	FailureRateLimited        FailureClass = "rate_limited"
@@ -46,6 +48,11 @@ type RouteRequest struct {
 	AttemptNumber        int
 	NowUnix              int64
 	Seed                 uint64
+	// RemainingBudgetSeconds is the end-to-end budget left for this request.
+	// The fields are intentionally request-scoped so chat routing is unaffected.
+	RemainingBudgetSeconds     float64
+	MinimumAttemptSeconds      float64
+	FinalizationReserveSeconds float64
 }
 
 type LaneSnapshot struct {
@@ -72,6 +79,7 @@ type LaneSnapshot struct {
 }
 
 type RouteResult struct {
+	Source         string
 	LaneID         string
 	AccountID      int64
 	SourceGroup    string
@@ -96,5 +104,6 @@ type RoutePlan struct {
 	Candidates     []CandidateDecision
 	OrderedLaneIDs []string
 	AttemptBudget  int
+	BudgetBlocked  bool
 	SkipReasons    map[string]string
 }

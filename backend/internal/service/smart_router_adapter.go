@@ -1,16 +1,51 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	smartrouter "github.com/Wei-Shaw/sub2api/internal/smartrouter/core"
 )
 
 const smartRouterExtraKey = "smart_router"
+
+const (
+	defaultSmartRouterImageTotalBudgetSeconds = 600
+	defaultSmartRouterImageAttemptSeconds     = 180
+	defaultSmartRouterImageReserveSeconds     = 15
+)
+
+// OpenAIImageSmartRouterBudgetState carries the live budget into account
+// selection. It is deliberately separate from chat scheduling state.
+type OpenAIImageSmartRouterBudgetState struct {
+	TotalSeconds               float64
+	RemainingSeconds           float64
+	MinimumAttemptSeconds      float64
+	FinalizationReserveSeconds float64
+}
+
+type smartRouterImageBudgetContextKey struct{}
+
+func WithOpenAIImageSmartRouterBudget(ctx context.Context, budget OpenAIImageSmartRouterBudgetState) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, smartRouterImageBudgetContextKey{}, budget)
+}
+
+func OpenAIImageSmartRouterBudgetFromContext(ctx context.Context) (OpenAIImageSmartRouterBudgetState, bool) {
+	if ctx == nil {
+		return OpenAIImageSmartRouterBudgetState{}, false
+	}
+	budget, ok := ctx.Value(smartRouterImageBudgetContextKey{}).(OpenAIImageSmartRouterBudgetState)
+	return budget, ok
+}
 
 type smartRouterAccountExtra struct {
 	Present                   bool
@@ -50,8 +85,98 @@ func (s *OpenAIGatewayService) smartRouterPolicy() smartrouter.Policy {
 	return policy.Normalize()
 }
 
+// OpenAIImageSmartRouterBudget returns the configured end-to-end image budget.
+// A disabled Smart Router returns a zero value so ordinary image scheduling
+// keeps its historical behavior.
+func (s *OpenAIGatewayService) OpenAIImageSmartRouterBudget() OpenAIImageSmartRouterBudgetState {
+	if s == nil || !s.isSmartRouterEnabled() || s.cfg == nil {
+		return OpenAIImageSmartRouterBudgetState{}
+	}
+	cfg := s.cfg.Gateway.SmartRouter
+	total := cfg.ImageTotalBudgetSeconds
+	attempt := cfg.ImageAttemptSeconds
+	reserve := cfg.ImageReserveSeconds
+	if total <= 0 {
+		total = defaultSmartRouterImageTotalBudgetSeconds
+	}
+	if attempt <= 0 {
+		attempt = defaultSmartRouterImageAttemptSeconds
+	}
+	if reserve <= 0 {
+		reserve = defaultSmartRouterImageReserveSeconds
+	}
+	return OpenAIImageSmartRouterBudgetState{
+		TotalSeconds:               float64(total),
+		MinimumAttemptSeconds:      float64(attempt),
+		FinalizationReserveSeconds: float64(reserve),
+	}
+}
+
 func (s *OpenAIGatewayService) isSmartRouterEnabled() bool {
 	return s.smartRouterPolicy().Enabled
+}
+
+func (s *OpenAIGatewayService) smartRouterHealth() *smartrouter.HealthTracker {
+	if s == nil {
+		return nil
+	}
+	s.smartRouterHealthOnce.Do(func() {
+		s.smartRouterHealthTracker = smartrouter.NewHealthTracker(smartrouter.DefaultHealthPolicy(), time.Now, nil)
+	})
+	return s.smartRouterHealthTracker
+}
+
+// ReportSmartRouterImageResult feeds a single image attempt into the
+// capability-scoped tracker. The tracker stores only safe error summaries;
+// response bodies are used for classification but are not persisted.
+func (s *OpenAIGatewayService) ReportSmartRouterImageResult(account *Account, parsed *OpenAIImagesRequest, result *OpenAIForwardResult, err error, durationMs int64) {
+	if s == nil || !s.isSmartRouterEnabled() || account == nil || parsed == nil {
+		return
+	}
+	lane, ok := smartRouterLaneSnapshot(account, nil, 0, 0, false)
+	if !ok {
+		return
+	}
+	capability := smartrouter.CapabilityImageGeneration
+	if parsed.IsEdits() {
+		capability = smartrouter.CapabilityImageEdit
+	}
+	statusCode := 0
+	message := ""
+	code := ""
+	var imageErr *OpenAIImagesUpstreamError
+	if errors.As(err, &imageErr) && imageErr != nil {
+		statusCode = imageErr.StatusCode
+		message = imageErr.Message
+		code = imageErr.Code
+	}
+	var failoverErr *UpstreamFailoverError
+	if errors.As(err, &failoverErr) && failoverErr != nil {
+		statusCode = failoverErr.StatusCode
+		message = string(failoverErr.ResponseBody)
+	}
+	clientCancelled := errors.Is(err, context.Canceled) || strings.Contains(strings.ToLower(message), "context canceled")
+	success := err == nil || (result != nil && result.ImageCount > 0)
+	if success {
+		statusCode = 200
+	}
+	errorClass := smartrouter.FailureClass("")
+	if !success {
+		errorClass = smartrouter.ClassifyFailureDetails(statusCode, capability, message, code, clientCancelled)
+	}
+	s.smartRouterHealth().Observe(smartrouter.RouteResult{
+		Source:         "production",
+		LaneID:         lane.LaneID,
+		AccountID:      lane.AccountID,
+		SourceGroup:    lane.SourceGroup,
+		Capability:     capability,
+		Model:          parsed.Model,
+		Success:        success,
+		StatusCode:     statusCode,
+		ErrorClass:     errorClass,
+		TotalLatencyMs: durationMs,
+		ErrorSummary:   code,
+	})
 }
 
 func (s *OpenAIGatewayService) smartRouterExcludedSourceGroups(accounts []Account, excludedIDs map[int64]struct{}) map[string]struct{} {

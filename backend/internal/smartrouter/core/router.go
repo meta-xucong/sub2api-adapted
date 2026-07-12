@@ -21,6 +21,15 @@ func Order(req RouteRequest, lanes []LaneSnapshot, policy Policy) RoutePlan {
 	if plan.AttemptBudget > 0 && req.AttemptNumber >= plan.AttemptBudget {
 		return plan
 	}
+	if req.RemainingBudgetSeconds > 0 {
+		minimumAttempt := math.Max(req.MinimumAttemptSeconds, 0)
+		reserve := math.Max(req.FinalizationReserveSeconds, 0)
+		if req.RemainingBudgetSeconds <= minimumAttempt+reserve {
+			plan.BudgetBlocked = true
+			plan.SkipReasons["__budget__"] = "insufficient_remaining_budget"
+			return plan
+		}
+	}
 
 	nowUnix := req.NowUnix
 	if nowUnix <= 0 {
