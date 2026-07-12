@@ -1447,6 +1447,26 @@ func TestValidateConfigErrors(t *testing.T) {
 			wantErr: "gateway.smart_router.image_finalization_reserve_seconds must be non-negative",
 		},
 		{
+			name:    "gateway smart router second failure cooldown negative",
+			mutate:  func(c *Config) { c.Gateway.SmartRouter.Recovery.SecondFailureCooldownSeconds = -1 },
+			wantErr: "gateway.smart_router.recovery.second_failure_cooldown_seconds must be non-negative",
+		},
+		{
+			name:    "gateway smart router sustained failure threshold negative",
+			mutate:  func(c *Config) { c.Gateway.SmartRouter.Recovery.SustainedFailureThreshold = -1 },
+			wantErr: "gateway.smart_router.recovery.sustained_failure_threshold must be non-negative",
+		},
+		{
+			name:    "gateway smart router calibration hour invalid",
+			mutate:  func(c *Config) { c.Gateway.SmartRouter.Calibration.Hour = 24 },
+			wantErr: "gateway.smart_router.calibration.hour must be between 0 and 23",
+		},
+		{
+			name:    "gateway smart router calibration probe timeout negative",
+			mutate:  func(c *Config) { c.Gateway.SmartRouter.Calibration.ProbeTimeoutSeconds = -1 },
+			wantErr: "gateway.smart_router.calibration.probe_timeout_seconds must be non-negative",
+		},
+		{
 			name: "gateway smart router image budget too small",
 			mutate: func(c *Config) {
 				c.Gateway.SmartRouter.Enabled = true
@@ -2047,6 +2067,16 @@ func TestLoad_DefaultGatewayImageStreamConfig(t *testing.T) {
 	}
 	if cfg.Gateway.SmartRouter.TopK != 5 || cfg.Gateway.SmartRouter.MaxAttemptsImage != 2 {
 		t.Fatalf("unexpected smart router defaults: top_k=%d max_attempts_image=%d", cfg.Gateway.SmartRouter.TopK, cfg.Gateway.SmartRouter.MaxAttemptsImage)
+	}
+	if cfg.Gateway.SmartRouter.Recovery.SecondFailureCooldownSeconds != 600 ||
+		cfg.Gateway.SmartRouter.Recovery.SustainedFailureThreshold != 3 ||
+		!cfg.Gateway.SmartRouter.Calibration.Enabled ||
+		cfg.Gateway.SmartRouter.Calibration.Hour != 4 ||
+		cfg.Gateway.SmartRouter.Calibration.Minute != 0 ||
+		cfg.Gateway.SmartRouter.Calibration.TotalBudgetSeconds != 1800 ||
+		cfg.Gateway.SmartRouter.Calibration.ProbeTimeoutSeconds != 180 {
+		t.Fatalf("unexpected smart router recovery/calibration defaults: %#v %#v",
+			cfg.Gateway.SmartRouter.Recovery, cfg.Gateway.SmartRouter.Calibration)
 	}
 	if cfg.Gateway.ImageConcurrency.Enabled {
 		t.Fatalf("image_concurrency.enabled = true, want false")

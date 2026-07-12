@@ -360,6 +360,19 @@ gateway:
     image_total_budget_seconds: 600
     image_attempt_seconds: 180
     image_finalization_reserve_seconds: 15
+    # Capability-scoped recovery. Repeated transient failures never disable the
+    # account itself; they only move that image capability behind healthy lanes.
+    recovery:
+      second_failure_cooldown_seconds: 600
+      sustained_failure_threshold: 3
+    # Runs inside the Sub2API process at the Shanghai calendar time below.
+    # It writes only routing health metadata, never prompts or credentials.
+    calibration:
+      enabled: true
+      hour: 4
+      minute: 0
+      total_budget_seconds: 1800
+      probe_timeout_seconds: 180
     scoring:
       priority: 0.8
       cost: 1.0

@@ -364,6 +364,7 @@ type OpenAIGatewayService struct {
 	openaiAccountStats            *openAIAccountRuntimeStats
 	smartRouterHealthOnce         sync.Once
 	smartRouterHealthTracker      *smartrouter.HealthTracker
+	smartRouterHealthLedger       SmartRouterHealthLedger
 
 	openaiWSFallbackUntil               sync.Map // key: int64(accountID), value: time.Time
 	openaiAccountRuntimeBlockUntil      sync.Map // key: int64(accountID), value: time.Time
@@ -444,6 +445,15 @@ func NewOpenAIGatewayService(
 	}
 	svc.logOpenAIWSModeBootstrap()
 	return svc
+}
+
+// SetSmartRouterHealthLedger attaches optional durable Smart Router state.
+// It must be called during application construction, before request handling.
+func (s *OpenAIGatewayService) SetSmartRouterHealthLedger(ledger SmartRouterHealthLedger) {
+	if s == nil {
+		return
+	}
+	s.smartRouterHealthLedger = ledger
 }
 
 // ResolveChannelMapping 解析渠道级模型映射（代理到 ChannelService）

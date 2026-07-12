@@ -882,17 +882,35 @@ type GatewayConfig struct {
 
 // GatewaySmartRouterConfig configures the optional Smart Router module.
 type GatewaySmartRouterConfig struct {
-	Enabled                 bool                            `mapstructure:"enabled"`
-	TopK                    int                             `mapstructure:"top_k"`
-	MaxAttemptsImage        int                             `mapstructure:"max_attempts_image"`
-	MaxAttemptsChat         int                             `mapstructure:"max_attempts_chat"`
-	MaxAttemptsDefault      int                             `mapstructure:"max_attempts_default"`
-	SameSourceGroupAttempts int                             `mapstructure:"same_source_group_attempts"`
-	CostBiasMax             float64                         `mapstructure:"cost_bias_max"`
-	ImageTotalBudgetSeconds int                             `mapstructure:"image_total_budget_seconds"`
-	ImageAttemptSeconds     int                             `mapstructure:"image_attempt_seconds"`
-	ImageReserveSeconds     int                             `mapstructure:"image_finalization_reserve_seconds"`
-	Scoring                 GatewaySmartRouterScoringConfig `mapstructure:"scoring"`
+	Enabled                 bool                                `mapstructure:"enabled"`
+	TopK                    int                                 `mapstructure:"top_k"`
+	MaxAttemptsImage        int                                 `mapstructure:"max_attempts_image"`
+	MaxAttemptsChat         int                                 `mapstructure:"max_attempts_chat"`
+	MaxAttemptsDefault      int                                 `mapstructure:"max_attempts_default"`
+	SameSourceGroupAttempts int                                 `mapstructure:"same_source_group_attempts"`
+	CostBiasMax             float64                             `mapstructure:"cost_bias_max"`
+	ImageTotalBudgetSeconds int                                 `mapstructure:"image_total_budget_seconds"`
+	ImageAttemptSeconds     int                                 `mapstructure:"image_attempt_seconds"`
+	ImageReserveSeconds     int                                 `mapstructure:"image_finalization_reserve_seconds"`
+	Recovery                GatewaySmartRouterRecoveryConfig    `mapstructure:"recovery"`
+	Calibration             GatewaySmartRouterCalibrationConfig `mapstructure:"calibration"`
+	Scoring                 GatewaySmartRouterScoringConfig     `mapstructure:"scoring"`
+}
+
+// GatewaySmartRouterRecoveryConfig governs capability-scoped penalties. It
+// never changes the account's manually configured base priority.
+type GatewaySmartRouterRecoveryConfig struct {
+	SecondFailureCooldownSeconds int `mapstructure:"second_failure_cooldown_seconds"`
+	SustainedFailureThreshold    int `mapstructure:"sustained_failure_threshold"`
+}
+
+// GatewaySmartRouterCalibrationConfig controls the durable daily health probes.
+type GatewaySmartRouterCalibrationConfig struct {
+	Enabled             bool `mapstructure:"enabled"`
+	Hour                int  `mapstructure:"hour"`
+	Minute              int  `mapstructure:"minute"`
+	TotalBudgetSeconds  int  `mapstructure:"total_budget_seconds"`
+	ProbeTimeoutSeconds int  `mapstructure:"probe_timeout_seconds"`
 }
 
 // GatewaySmartRouterScoringConfig controls lane scoring weights.
@@ -2001,6 +2019,13 @@ func setDefaults() {
 	viper.SetDefault("gateway.smart_router.image_total_budget_seconds", 600)
 	viper.SetDefault("gateway.smart_router.image_attempt_seconds", 180)
 	viper.SetDefault("gateway.smart_router.image_finalization_reserve_seconds", 15)
+	viper.SetDefault("gateway.smart_router.recovery.second_failure_cooldown_seconds", 600)
+	viper.SetDefault("gateway.smart_router.recovery.sustained_failure_threshold", 3)
+	viper.SetDefault("gateway.smart_router.calibration.enabled", true)
+	viper.SetDefault("gateway.smart_router.calibration.hour", 4)
+	viper.SetDefault("gateway.smart_router.calibration.minute", 0)
+	viper.SetDefault("gateway.smart_router.calibration.total_budget_seconds", 1800)
+	viper.SetDefault("gateway.smart_router.calibration.probe_timeout_seconds", 180)
 	viper.SetDefault("gateway.smart_router.scoring.priority", 0.8)
 	viper.SetDefault("gateway.smart_router.scoring.cost", 1.0)
 	viper.SetDefault("gateway.smart_router.scoring.health", 1.2)
@@ -2823,6 +2848,24 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.SmartRouter.ImageReserveSeconds < 0 {
 		return fmt.Errorf("gateway.smart_router.image_finalization_reserve_seconds must be non-negative")
+	}
+	if c.Gateway.SmartRouter.Recovery.SecondFailureCooldownSeconds < 0 {
+		return fmt.Errorf("gateway.smart_router.recovery.second_failure_cooldown_seconds must be non-negative")
+	}
+	if c.Gateway.SmartRouter.Recovery.SustainedFailureThreshold < 0 {
+		return fmt.Errorf("gateway.smart_router.recovery.sustained_failure_threshold must be non-negative")
+	}
+	if c.Gateway.SmartRouter.Calibration.Hour < 0 || c.Gateway.SmartRouter.Calibration.Hour > 23 {
+		return fmt.Errorf("gateway.smart_router.calibration.hour must be between 0 and 23")
+	}
+	if c.Gateway.SmartRouter.Calibration.Minute < 0 || c.Gateway.SmartRouter.Calibration.Minute > 59 {
+		return fmt.Errorf("gateway.smart_router.calibration.minute must be between 0 and 59")
+	}
+	if c.Gateway.SmartRouter.Calibration.TotalBudgetSeconds < 0 {
+		return fmt.Errorf("gateway.smart_router.calibration.total_budget_seconds must be non-negative")
+	}
+	if c.Gateway.SmartRouter.Calibration.ProbeTimeoutSeconds < 0 {
+		return fmt.Errorf("gateway.smart_router.calibration.probe_timeout_seconds must be non-negative")
 	}
 	if c.Gateway.SmartRouter.Enabled &&
 		c.Gateway.SmartRouter.ImageTotalBudgetSeconds > 0 &&

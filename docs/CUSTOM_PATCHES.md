@@ -14,6 +14,35 @@ Enable with `gateway.smart_router.enabled: true`. Existing accounts work without
 
 The router first considers the lowest numeric priority layer. It advances only after that layer has no eligible lane. Retries can exclude an entire source group so multiple accounts backed by the same upstream are not hammered repeatedly.
 
+### Durable image health and 04:00 calibration
+
+The image lane health overlay is durable across container restarts. It records only
+safe routing metadata in PostgreSQL: lane/account ids, capability, status class,
+health score, cooldown/recovery state, and short error summaries. It never records
+prompts, images, API keys, cookies, or credentials.
+
+For each `gpt-image-*` lane and capability independently:
+
+- first transient failure: short cooldown and dynamic priority penalty;
+- second consecutive transient failure: longer cooldown;
+- third consecutive transient failure: capability-only freeze until the next
+  04:00 Asia/Shanghai calibration; the account and its chat/image-edit capability
+  stay untouched;
+- a successful calibration returns the lane through the existing warming stages,
+  then successful production traffic removes the remaining penalty.
+
+The scheduler is an internal application cron (`robfig/cron`) rather than a host
+script. It uses the real Sub2API account adapter, proxy, and model mapping, with a
+unique database run record to prevent duplicate probes after restarts. At 04:00 it
+uses the health ledger to decide whether a lane needs only a text-to-image probe or
+also an image-edit probe. When its evidence needs renewal, a stable lane gets the
+lightweight generation check; an unknown, failed, or generation/edit-divergent lane
+also gets an edit check.
+
+This means Docker's normal `restart: unless-stopped` is the only process supervisor
+needed. Do not add a systemd timer that calls an image API independently: it would
+bypass the protected account adapter and can duplicate chargeable probes.
+
 ## Image compatibility
 
 - `/v1/images/edits` transient `403/408/500/502/503/504` failures receive a short temporary scheduling cooldown.
