@@ -75,6 +75,32 @@ func TestOrder_StaticCapabilityMapKeepsImageLanesSeparate(t *testing.T) {
 	require.Equal(t, "capability_mismatch", plan.SkipReasons["flowyun-edit-only"])
 }
 
+func TestOrder_PrefersMatchingImageSizeSpecialistThenFallsBackToGenericLane(t *testing.T) {
+	policy := DefaultPolicy()
+	policy.Enabled = true
+	lanes := []LaneSnapshot{
+		{LaneID: "generic-cheap", AccountID: 1, Priority: 1, Capabilities: map[Capability]bool{CapabilityImageGeneration: true}},
+		{LaneID: "super-resolution", AccountID: 2, Priority: 9, Capabilities: map[Capability]bool{CapabilityImageGeneration: true}, ImageSizeTiers: []string{"2K", "4K"}},
+		{LaneID: "one-k", AccountID: 3, Priority: 2, Capabilities: map[Capability]bool{CapabilityImageGeneration: true}, ImageSizeTiers: []string{"1K"}},
+	}
+
+	twoK := Order(RouteRequest{Capability: CapabilityImageGeneration, ImageSizeTier: "2k", Seed: 31}, lanes, policy)
+	require.Equal(t, []string{"super-resolution"}, twoK.OrderedLaneIDs)
+	require.Equal(t, "image_size_mismatch", twoK.SkipReasons["one-k"])
+
+	fallback := Order(RouteRequest{
+		Capability:      CapabilityImageGeneration,
+		ImageSizeTier:   "2K",
+		Seed:            32,
+		ExcludedLaneIDs: map[string]struct{}{"super-resolution": {}},
+	}, lanes, policy)
+	require.Equal(t, []string{"generic-cheap"}, fallback.OrderedLaneIDs)
+	require.Equal(t, "excluded_lane", fallback.SkipReasons["super-resolution"])
+
+	oneK := Order(RouteRequest{Capability: CapabilityImageGeneration, ImageSizeTier: "1K", Seed: 33}, lanes, policy)
+	require.Equal(t, []string{"one-k"}, oneK.OrderedLaneIDs)
+}
+
 func TestOrder_SourceGroupGuard(t *testing.T) {
 	policy := DefaultPolicy()
 	policy.Enabled = true

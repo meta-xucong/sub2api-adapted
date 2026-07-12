@@ -137,9 +137,11 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 	// Image requests are stateless for routing. Client session headers must not
 	// pin later requests to a provider whose priority or health has changed.
 	sessionHash := ""
-	requestCtx, cancelImageRequest := h.gatewayService.WithOpenAIImageRequestTimeout(
-		service.WithOpenAIImageGenerationIntent(c.Request.Context()),
-	)
+	imageRequestContext := service.WithOpenAIImageGenerationIntent(c.Request.Context())
+	if parsed.ExplicitSize {
+		imageRequestContext = service.WithOpenAIImageSmartRouterSizeTier(imageRequestContext, parsed.SizeTier)
+	}
+	requestCtx, cancelImageRequest := h.gatewayService.WithOpenAIImageRequestTimeout(imageRequestContext)
 	defer cancelImageRequest()
 	imageBudget := h.gatewayService.OpenAIImageSmartRouterBudget()
 

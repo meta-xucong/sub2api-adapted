@@ -54,4 +54,16 @@ FROM policy
 WHERE account.name = policy.name
   AND account.deleted_at IS NULL;
 
+-- Explicit image-size specialists are preferred only for matching requests.
+-- Every other image lane remains a generic fallback without this field.
+UPDATE accounts
+SET extra = jsonb_set(extra, '{smart_router,image_size_tiers}', '["1K"]'::jsonb, true)
+WHERE extra #>> '{smart_router,lane_id}' = 'image:yetoken-1k'
+  AND deleted_at IS NULL;
+
+UPDATE accounts
+SET extra = jsonb_set(extra, '{smart_router,image_size_tiers}', '["2K","4K"]'::jsonb, true)
+WHERE extra #>> '{smart_router,lane_id}' = 'image:yetoken-super-res'
+  AND deleted_at IS NULL;
+
 COMMIT;

@@ -33,6 +33,8 @@ type OpenAIImageSmartRouterBudgetState struct {
 
 type smartRouterImageBudgetContextKey struct{}
 
+type smartRouterImageSizeTierContextKey struct{}
+
 func WithOpenAIImageSmartRouterBudget(ctx context.Context, budget OpenAIImageSmartRouterBudgetState) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
@@ -48,6 +50,28 @@ func OpenAIImageSmartRouterBudgetFromContext(ctx context.Context) (OpenAIImageSm
 	return budget, ok
 }
 
+// WithOpenAIImageSmartRouterSizeTier attaches an explicit OpenAI Images
+// output tier to the route decision. Empty or unrecognized values are omitted.
+func WithOpenAIImageSmartRouterSizeTier(ctx context.Context, tier string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	tier = normalizeSmartRouterImageSizeTier(tier)
+	if tier == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, smartRouterImageSizeTierContextKey{}, tier)
+}
+
+func OpenAIImageSmartRouterSizeTierFromContext(ctx context.Context) (string, bool) {
+	if ctx == nil {
+		return "", false
+	}
+	tier, ok := ctx.Value(smartRouterImageSizeTierContextKey{}).(string)
+	tier = normalizeSmartRouterImageSizeTier(tier)
+	return tier, ok && tier != ""
+}
+
 type smartRouterAccountExtra struct {
 	Present                   bool
 	EnabledSet                bool
@@ -59,6 +83,7 @@ type smartRouterAccountExtra struct {
 	MaxConcurrency            int
 	SourceGroupMaxConcurrency int
 	Capabilities              map[smartrouter.Capability]bool
+	ImageSizeTiers            []string
 }
 
 func (s *OpenAIGatewayService) smartRouterPolicy() smartrouter.Policy {
@@ -317,6 +342,7 @@ func smartRouterLaneSnapshot(account *Account, loadInfo *AccountLoadInfo, errorR
 		Name:                      account.Name,
 		SourceGroup:               sourceGroup,
 		Capabilities:              extra.Capabilities,
+		ImageSizeTiers:            extra.ImageSizeTiers,
 		ModelPatterns:             smartRouterModelPatterns(account),
 		Priority:                  account.Priority,
 		CostMultiplier:            costMultiplier,
@@ -478,7 +504,47 @@ func parseSmartRouterAccountExtra(account *Account) smartRouterAccountExtra {
 	cfg.MaxConcurrency = smartRouterInt(block["max_concurrency"])
 	cfg.SourceGroupMaxConcurrency = smartRouterInt(block["source_group_max_concurrency"])
 	cfg.Capabilities = smartRouterCapabilities(block["capabilities"])
+	cfg.ImageSizeTiers = smartRouterImageSizeTiers(block["image_size_tiers"])
 	return cfg
+}
+
+func smartRouterImageSizeTiers(raw any) []string {
+	values := make([]string, 0)
+	switch typed := raw.(type) {
+	case []any:
+		for _, item := range typed {
+			if value, ok := item.(string); ok {
+				values = append(values, value)
+			}
+		}
+	case []string:
+		values = append(values, typed...)
+	case string:
+		values = strings.Split(typed, ",")
+	}
+	seen := make(map[string]struct{}, len(values))
+	tiers := make([]string, 0, len(values))
+	for _, value := range values {
+		value = normalizeSmartRouterImageSizeTier(value)
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		tiers = append(tiers, value)
+	}
+	return tiers
+}
+
+func normalizeSmartRouterImageSizeTier(value string) string {
+	switch strings.ToUpper(strings.TrimSpace(value)) {
+	case "1K", "2K", "4K":
+		return strings.ToUpper(strings.TrimSpace(value))
+	default:
+		return ""
+	}
 }
 
 func smartRouterModelPatterns(account *Account) []string {

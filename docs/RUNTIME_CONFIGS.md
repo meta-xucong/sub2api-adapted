@@ -39,6 +39,7 @@ Active Smart Router settings:
 - `gateway.smart_router.recovery.second_failure_cooldown_seconds=600`
 - `gateway.smart_router.recovery.sustained_failure_threshold=3`
 - `gateway.smart_router.recovery.image_sustained_failure_threshold=2`
+- `gateway.smart_router.recovery.image_sustained_failure_threshold=2`
 - `gateway.smart_router.calibration.enabled=true`, scheduled for `04:00 Asia/Shanghai`
 - `gateway.smart_router.calibration.total_budget_seconds=1800`
 - `gateway.smart_router.calibration.probe_timeout_seconds=180`
@@ -74,6 +75,10 @@ Configured and verified: 2026-07-12.
 - Image edit is deliberately absent from these two lanes until it is verified
   against their upstream; an image-edit failure or cooldown elsewhere cannot
   alter their text-to-image eligibility.
+- `image:yetoken-1k` is a `1K` specialist and `image:yetoken-super-res` is a
+  `2K`/`4K` specialist. A matching specialist is selected before generic image
+  lanes; when it is cooling down or fails, normal priority-ordered lanes remain
+  the automatic fallback.
 - Replay after a future official update with
   [`deploy/sql/aiself_yetoken_smart_router_overlay.example.sql`](../deploy/sql/aiself_yetoken_smart_router_overlay.example.sql).
 

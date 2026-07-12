@@ -10,7 +10,7 @@ Code:
 - `backend/internal/service/smart_router_adapter.go`
 - scheduler hooks in `openai_account_scheduler.go`
 
-Enable with `gateway.smart_router.enabled: true`. Existing accounts work without manual metadata. Optional `account.extra.smart_router` fields can override `source_group`, capabilities, cost multiplier, and concurrency.
+Enable with `gateway.smart_router.enabled: true`. Existing accounts work without manual metadata. Optional `account.extra.smart_router` fields can override `source_group`, capabilities, cost multiplier, and concurrency. `image_size_tiers: ["1K", "2K", "4K"]` optionally marks a lane as a specialist for explicit OpenAI Images output sizes: matching specialists are chosen before generic lanes, while generic lanes remain automatic fallbacks when every specialist is unavailable. Implicit image sizes retain the original routing behavior.
 
 The router first considers the lowest numeric priority layer. It advances only after that layer has no eligible lane. Retries can exclude an entire source group so multiple accounts backed by the same upstream are not hammered repeatedly.
 

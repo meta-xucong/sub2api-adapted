@@ -119,6 +119,53 @@ func TestOpenAIGatewayService_SmartRouterImageBudgetDefaultsAndOverrides(t *test
 	require.Equal(t, 10.0, budget.FinalizationReserveSeconds)
 }
 
+func TestOpenAIGatewayService_SmartRouterPrefersExplicitImageSizeSpecialist(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+	groupID := int64(7401)
+	accounts := []Account{
+		{
+			ID: 74001, Name: "generic-image", Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+			Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 1, GroupIDs: []int64{groupID},
+			Extra: map[string]any{"smart_router": map[string]any{
+				"capabilities": []any{"image_generation"},
+			}},
+		},
+		{
+			ID: 74002, Name: "two-k-specialist", Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+			Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 9, GroupIDs: []int64{groupID},
+			Extra: map[string]any{"smart_router": map[string]any{
+				"capabilities": []any{"image_generation"}, "image_size_tiers": []any{"2K", "4K"},
+			}},
+		},
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:              &schedulerTestGatewayCache{},
+		cfg:                newSmartRouterSchedulerTestConfig(),
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+
+	selection, _, err := svc.SelectAccountWithSchedulerForImageOperation(
+		WithOpenAIImageSmartRouterSizeTier(context.Background(), "2k"),
+		&groupID, "", "gpt-image-2", nil, OpenAIImagesCapabilityBasic, false,
+	)
+	require.NoError(t, err)
+	require.Equal(t, int64(74002), selection.Account.ID)
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+
+	selection, _, err = svc.SelectAccountWithSchedulerForImageOperation(
+		context.Background(), &groupID, "", "gpt-image-2", nil, OpenAIImagesCapabilityBasic, false,
+	)
+	require.NoError(t, err)
+	require.Equal(t, int64(74001), selection.Account.ID)
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
 func TestOpenAIGatewayService_SmartRouterSkipsFailedSourceGroupForImageRetry(t *testing.T) {
 	resetOpenAIAdvancedSchedulerSettingCacheForTest()
 	ctx := context.Background()
@@ -424,6 +471,7 @@ func TestSmartRouterLaneSnapshotParsesAccountExtra(t *testing.T) {
 			"max_concurrency":              2,
 			"source_group_max_concurrency": 3,
 			"capabilities":                 []any{"image_generation", "image_edit"},
+			"image_size_tiers":             []any{"2K", "4k", "invalid"},
 		}},
 	}
 
@@ -442,6 +490,7 @@ func TestSmartRouterLaneSnapshotParsesAccountExtra(t *testing.T) {
 	require.Equal(t, 3, lane.SourceGroupMaxConcurrency)
 	require.True(t, lane.Capabilities["image_generation"])
 	require.True(t, lane.Capabilities["image_edit"])
+	require.Equal(t, []string{"2K", "4K"}, lane.ImageSizeTiers)
 	require.Equal(t, 1, lane.CurrentConcurrency)
 	require.Equal(t, 0, lane.CurrentWaiting)
 	require.Equal(t, 30, lane.LoadRate)
