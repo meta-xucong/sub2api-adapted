@@ -17,9 +17,9 @@ Verified: 2026-07-12
 - Persistent runtime config: `/app/data/config.yaml`
 - Host volume path: `/var/lib/docker/volumes/deploy_sub2api_data/_data/config.yaml`
 - Upgrade backup root: `/opt/sub2api/backups/upgrade-v0.1.150-20260710T075612Z`
-- Latest image backup: `/opt/sub2api/deploy/backups/smart-router-2e0b87f3-20260712-165734`
-- Deployed image: `sub2api-adapted:v0.1.151-smart-router-2e0b87f3`
-- Deployed code commit: `2e0b87f3`
+- Latest image backup: `/opt/sub2api/deploy/backups/smart-router-ledger-e3da266f-20260712T103431Z`
+- Deployed image: `sub2api-adapted:v0.1.151-smart-router-ledger-e3da266f`
+- Deployed code commit: `e3da266f`
 
 Active Smart Router settings:
 
@@ -70,6 +70,11 @@ Post-upgrade verification:
 - After the Smart Router overlay deployment, `/health` returned HTTP 200, `/v1/models`
   returned HTTP 200 with six configured GPT model ids, and a Codex-style `gpt-5.5`
   `/responses` smoke request returned HTTP 200 with a response id.
+- Durable Smart Router health ledger deployment: `/health` returned HTTP 200;
+  restart count remained `0`; migration `174_smart_router_health_ledger.sql`
+  created all four ledger tables; and the application logged its internal
+  `0 4 * * * Asia/Shanghai` calibration schedule. No live calibration probe was
+  forced during deployment.
 
 Post-build host hygiene:
 
@@ -101,8 +106,8 @@ Replay after a future official upgrade:
 
 Repository/deployment boundary:
 
-- The aiself production runtime is pinned to `2e0b87f3` in image
-  `sub2api-adapted:v0.1.151-smart-router-2e0b87f3`; later repository commits may
+- The aiself production runtime is pinned to `e3da266f` in image
+  `sub2api-adapted:v0.1.151-smart-router-ledger-e3da266f`; later repository commits may
   contain documentation, replay SQL, build limits, or audit metadata only.
 
 ## 404token
