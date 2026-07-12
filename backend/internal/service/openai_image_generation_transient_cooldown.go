@@ -25,7 +25,7 @@ func (s *OpenAIGatewayService) TempUnscheduleImageGenerationTransientError(ctx c
 	if !isOpenAIImageGenerationTransientError(failoverErr) {
 		return
 	}
-	cooldown := s.openAIImageGenerationTransientCooldown()
+	cooldown := s.openAIImageTransientCooldownForAccount(account, s.openAIImageGenerationTransientCooldown())
 	if cooldown <= 0 {
 		return
 	}

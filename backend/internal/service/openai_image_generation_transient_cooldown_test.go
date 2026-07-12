@@ -96,3 +96,17 @@ func TestTempUnscheduleImageGenerationTransientError_DisabledByConfig(t *testing
 	require.Empty(t, repo.tempUnschedCalls)
 	require.False(t, svc.isOpenAIAccountRuntimeBlocked(account))
 }
+
+func TestOpenAIImageTransientCooldown_ExpandsWithRecentFailures(t *testing.T) {
+	stats := newOpenAIAccountRuntimeStats()
+	svc := &OpenAIGatewayService{openaiAccountStats: stats}
+	account := &Account{ID: 9292, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+
+	require.Equal(t, 7*time.Second, svc.openAIImageTransientCooldownForAccount(account, 7*time.Second))
+	stats.report(account.ID, false, nil)
+	stats.report(account.ID, false, nil)
+	require.Equal(t, 14*time.Second, svc.openAIImageTransientCooldownForAccount(account, 7*time.Second))
+	stats.report(account.ID, false, nil)
+	stats.report(account.ID, false, nil)
+	require.Equal(t, 28*time.Second, svc.openAIImageTransientCooldownForAccount(account, 7*time.Second))
+}

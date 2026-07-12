@@ -28,7 +28,7 @@ func (s *OpenAIGatewayService) TempUnscheduleImageEditTransientError(ctx context
 	if !isOpenAIImageTransientStatus(failoverErr.StatusCode) {
 		return
 	}
-	cooldown := s.openAIImageEditTransientCooldown()
+	cooldown := s.openAIImageTransientCooldownForAccount(account, s.openAIImageEditTransientCooldown())
 	if cooldown <= 0 {
 		return
 	}

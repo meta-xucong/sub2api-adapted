@@ -42,7 +42,9 @@ The router first considers the lowest numeric priority layer. It advances only a
   now apply a separate short per-account scheduling cooldown via
   `gateway.image_generation_transient_cooldown_seconds` (default `30`) before
   failover. The account stays active and is automatically eligible again after
-  the cooldown expires; deterministic parameter errors are not cooled down.
+  the cooldown expires; repeated recent failures expand the temporary backoff
+  up to `10` minutes, while successful traffic naturally lowers the health
+  penalty. Deterministic parameter errors are not cooled down.
 - OpenAI-compatible image upstream calls have a bounded request timeout via
   `gateway.image_upstream_timeout_seconds` (default `180`). A stuck API-key or
   OAuth image upstream becomes a failover event before the client-side timeout,
