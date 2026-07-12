@@ -17,9 +17,9 @@ Verified: 2026-07-12
 - Persistent runtime config: `/app/data/config.yaml`
 - Host volume path: `/var/lib/docker/volumes/deploy_sub2api_data/_data/config.yaml`
 - Upgrade backup root: `/opt/sub2api/backups/upgrade-v0.1.150-20260710T075612Z`
-- Latest image backup: `/opt/sub2api/deploy/backups/image-total-budget-20260712-135457`
-- Deployed image: `sub2api-adapted:v0.1.150-image-total-budget-9b8ad3fe`
-- Deployed code commit: `9b8ad3fe`
+- Latest image backup: `/opt/sub2api/deploy/backups/smart-router-2e0b87f3-20260712-165734`
+- Deployed image: `sub2api-adapted:v0.1.151-smart-router-2e0b87f3`
+- Deployed code commit: `2e0b87f3`
 
 Active Smart Router settings:
 
@@ -33,6 +33,9 @@ Active Smart Router settings:
 - `gateway.image_edit_transient_cooldown_seconds=30`
 - `gateway.image_upstream_timeout_seconds=180`
 - `gateway.image_request_timeout_seconds=600` (shared total budget across image failover attempts)
+- `gateway.smart_router.image_total_budget_seconds=600`
+- `gateway.smart_router.image_attempt_seconds=180`
+- `gateway.smart_router.image_finalization_reserve_seconds=15`
 
 Active Smart Router scoring weights:
 
@@ -59,6 +62,9 @@ Post-upgrade verification:
 - A body-signal compact request failed over after two upstream HTTP 503 responses, succeeded on account `83`, and completed without a recovered panic or container restart.
 - After the total image budget patch, a minimal `gpt-image-2` generation returned HTTP 200
   with image data in about 33 seconds; the application remained healthy with restart count `0`.
+- After the Smart Router overlay deployment, `/health` returned HTTP 200, `/v1/models`
+  returned HTTP 200 with six configured GPT model ids, and a Codex-style `gpt-5.5`
+  `/responses` smoke request returned HTTP 200 with a response id.
 
 Post-build host hygiene:
 
@@ -95,7 +101,9 @@ Repository/deployment boundary:
 
 ## 404token
 
-Deployed and verified: 2026-07-10
+Last deployed and verified: 2026-07-10. The 2026-07-12 Smart Router overlay
+has not been deployed here because the current resolved host exposes HTTP/HTTPS
+but all known SSH entry ports are unreachable; no production change was made.
 
 - Deploy directory: `/opt/sub2api-deploy`
 - Persistent data mount: `/opt/sub2api-deploy/data` -> `/app/data`
@@ -145,6 +153,11 @@ GPT-5.6 test-selector patch deployed: `44eb5aaa`.
 - The new container was healthy with restart count `0`; Postgres and Redis
   remained healthy and application logs had no panic/fatal/runtime-error
   markers in the final ten-minute check.
+
+Current access evidence: `https://404token.xyz/health` and `/login` return HTTP
+200, but the resolved address `141.11.138.220` rejects or times out on ports
+22, 22022, 27793, 2222, 2022, 18789, 8080, 8443, 10022, and 20022. Deploy only
+after the dedicated SSH host/key or jump path is restored.
 
 ### Aiself source-aligned routing sync (historical)
 
