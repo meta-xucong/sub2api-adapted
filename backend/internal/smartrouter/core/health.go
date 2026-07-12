@@ -27,12 +27,14 @@ type HealthPolicy struct {
 
 func DefaultHealthPolicy() HealthPolicy {
 	return HealthPolicy{
-		TransientCooldown:         30 * time.Second,
-		RateLimitCooldown:         5 * time.Minute,
-		CapabilityQuarantine:      24 * time.Hour,
-		AuthQuarantine:            24 * time.Hour,
-		MaxCooldown:               6 * time.Hour,
-		MaxPenalty:                3,
+		TransientCooldown:    30 * time.Second,
+		RateLimitCooldown:    5 * time.Minute,
+		CapabilityQuarantine: 24 * time.Hour,
+		AuthQuarantine:       24 * time.Hour,
+		MaxCooldown:          6 * time.Hour,
+		// Leave room to move a lane behind a growing pool of alternatives. This
+		// changes only effective routing priority, never persisted account priority.
+		MaxPenalty:                32,
 		RecoverySuccessesToNormal: 3,
 		ErrorRateAlpha:            0.2,
 	}

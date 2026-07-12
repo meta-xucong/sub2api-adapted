@@ -42,6 +42,9 @@ Active Smart Router settings:
 - `gateway.smart_router.calibration.enabled=true`, scheduled for `04:00 Asia/Shanghai`
 - `gateway.smart_router.calibration.total_budget_seconds=1800`
 - `gateway.smart_router.calibration.probe_timeout_seconds=180`
+- Transient image failures are soft penalties: lanes remain in the Smart Router
+  candidate pool with lower effective priority; no automatic permanent disable
+  or legacy temp-unschedulable write is used while Smart Router is enabled.
 
 Active Smart Router scoring weights:
 

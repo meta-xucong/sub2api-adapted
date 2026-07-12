@@ -65,10 +65,9 @@ func Order(req RouteRequest, lanes []LaneSnapshot, policy Policy) RoutePlan {
 			plan.SkipReasons[lane.LaneID] = "image_size_mismatch"
 			continue
 		}
-		if lane.CooldownUntilUnix > nowUnix {
-			plan.SkipReasons[lane.LaneID] = "cooldown"
-			continue
-		}
+		// Health cooldown is a soft penalty, not a hard exclusion. The health
+		// snapshot raises effective priority and lowers recovery weight, while
+		// retaining the lane as a last-resort candidate when every lane is bad.
 		if lane.MaxConcurrency > 0 && lane.CurrentConcurrency >= lane.MaxConcurrency {
 			plan.SkipReasons[lane.LaneID] = "lane_concurrency_full"
 			continue

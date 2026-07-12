@@ -110,3 +110,20 @@ func TestOpenAIImageTransientCooldown_ExpandsWithRecentFailures(t *testing.T) {
 	stats.report(account.ID, false, nil)
 	require.Equal(t, 28*time.Second, svc.openAIImageTransientCooldownForAccount(account, 7*time.Second))
 }
+
+func TestTempUnscheduleImageGenerationTransientError_SmartRouterUsesSoftPenalty(t *testing.T) {
+	repo := &imageEditCooldownAccountRepoStub{}
+	cfg := &config.Config{}
+	cfg.Gateway.ImageGenerationTransientCooldownSeconds = 7
+	cfg.Gateway.SmartRouter.Enabled = true
+	svc := &OpenAIGatewayService{accountRepo: repo, cfg: cfg}
+	account := &Account{ID: 9393, Name: "smart-router-lane", Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+
+	svc.TempUnscheduleImageGenerationTransientError(context.Background(), account, &UpstreamFailoverError{
+		StatusCode:   http.StatusBadGateway,
+		ResponseBody: []byte(`gateway unavailable`),
+	})
+
+	require.Empty(t, repo.tempUnschedCalls)
+	require.False(t, svc.isOpenAIAccountRuntimeBlocked(account))
+}

@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestOrder_FiltersCapabilityModelCooldownAndConcurrency(t *testing.T) {
+func TestOrder_FiltersCapabilityModelAndConcurrencyButRetainsCooldown(t *testing.T) {
 	policy := DefaultPolicy()
 	policy.Enabled = true
 	plan := Order(RouteRequest{
@@ -16,18 +16,36 @@ func TestOrder_FiltersCapabilityModelCooldownAndConcurrency(t *testing.T) {
 		NowUnix:    100,
 		Seed:       42,
 	}, []LaneSnapshot{
-		{LaneID: "ok", AccountID: 1, Capabilities: map[Capability]bool{CapabilityImageEdit: true}, ModelPatterns: []string{"gpt-image-*"}, MaxConcurrency: 2, CurrentConcurrency: 1},
+		{LaneID: "ok", AccountID: 1, SourceGroup: "ok", Capabilities: map[Capability]bool{CapabilityImageEdit: true}, ModelPatterns: []string{"gpt-image-*"}, MaxConcurrency: 2, CurrentConcurrency: 1},
 		{LaneID: "chat", AccountID: 2, Capabilities: map[Capability]bool{CapabilityChat: true}, ModelPatterns: []string{"gpt-image-*"}},
 		{LaneID: "model", AccountID: 3, Capabilities: map[Capability]bool{CapabilityImageEdit: true}, ModelPatterns: []string{"gpt-5.*"}},
-		{LaneID: "cool", AccountID: 4, Capabilities: map[Capability]bool{CapabilityImageEdit: true}, ModelPatterns: []string{"gpt-image-*"}, CooldownUntilUnix: 200},
+		{LaneID: "cool", AccountID: 4, SourceGroup: "cool", Capabilities: map[Capability]bool{CapabilityImageEdit: true}, ModelPatterns: []string{"gpt-image-*"}, CooldownUntilUnix: 200},
 		{LaneID: "full", AccountID: 5, Capabilities: map[Capability]bool{CapabilityImageEdit: true}, ModelPatterns: []string{"gpt-image-*"}, MaxConcurrency: 1, CurrentConcurrency: 1},
 	}, policy)
 
-	require.Equal(t, []string{"ok"}, plan.OrderedLaneIDs)
+	require.NotEmpty(t, plan.OrderedLaneIDs)
+	require.Contains(t, plan.OrderedLaneIDs, "ok")
+	require.Contains(t, plan.OrderedLaneIDs, "cool")
 	require.Equal(t, "capability_mismatch", plan.SkipReasons["chat"])
 	require.Equal(t, "model_mismatch", plan.SkipReasons["model"])
-	require.Equal(t, "cooldown", plan.SkipReasons["cool"])
+	require.NotContains(t, plan.SkipReasons, "cool")
 	require.Equal(t, "lane_concurrency_full", plan.SkipReasons["full"])
+}
+
+func TestOrder_AllLanesCoolingStillLeavesLastResortCandidates(t *testing.T) {
+	policy := DefaultPolicy()
+	policy.Enabled = true
+	plan := Order(RouteRequest{Capability: CapabilityImageGeneration, NowUnix: 100, Seed: 43}, []LaneSnapshot{
+		{LaneID: "cool-a", AccountID: 1, Priority: 30, SourceGroup: "a", CooldownUntilUnix: 200},
+		{LaneID: "cool-b", AccountID: 2, Priority: 31, SourceGroup: "b", CooldownUntilUnix: 200},
+		{LaneID: "cool-c", AccountID: 3, Priority: 32, SourceGroup: "c", CooldownUntilUnix: 200},
+	}, policy)
+
+	require.NotEmpty(t, plan.OrderedLaneIDs)
+	require.Contains(t, plan.OrderedLaneIDs, "cool-a")
+	// Priority layering still chooses the least-bad lane first; a failed
+	// attempt excludes it and the next scheduling pass advances to the next.
+	require.Len(t, plan.Candidates, 1)
 }
 
 func TestOrder_RespectsAttemptBudget(t *testing.T) {
