@@ -311,7 +311,10 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 						}
 						return
 					}
-					h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
+					concurrencyRateLimited := h.gatewayService.IsSmartRouterConcurrencyRateLimit(failoverErr)
+					if !concurrencyRateLimited {
+						h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
+					}
 					if c.Writer.Size() != writerSizeBeforeForward {
 						reqLog.Warn("openai.images.upstream_failover_skipped_after_flush",
 							zap.Int64("account_id", account.ID),
@@ -319,6 +322,19 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 						)
 						h.handleFailoverExhausted(c, failoverErr, true)
 						return
+					}
+					if delay := h.gatewayService.SmartRouterRateLimitBackoffDelay(failoverErr, switchCount, uint64(account.ID)); delay > 0 {
+						reqLog.Warn("openai.images.upstream_429_backoff",
+							zap.Int64("account_id", account.ID),
+							zap.Duration("backoff_delay", delay),
+							zap.Int("attempt", switchCount),
+							zap.Bool("concurrency_rate_limited", concurrencyRateLimited),
+						)
+						select {
+						case <-requestCtx.Done():
+							return
+						case <-time.After(delay):
+						}
 					}
 					if failoverErr.RetryableOnSameAccount {
 						retryLimit := account.GetPoolModeRetryCount()
@@ -338,10 +354,12 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 							continue
 						}
 					}
-					if parsed.IsEdits() {
-						h.gatewayService.TempUnscheduleImageEditTransientError(requestCtx, account, failoverErr)
-					} else {
-						h.gatewayService.TempUnscheduleImageGenerationTransientError(requestCtx, account, failoverErr)
+					if !concurrencyRateLimited {
+						if parsed.IsEdits() {
+							h.gatewayService.TempUnscheduleImageEditTransientError(requestCtx, account, failoverErr)
+						} else {
+							h.gatewayService.TempUnscheduleImageGenerationTransientError(requestCtx, account, failoverErr)
+						}
 					}
 					h.gatewayService.RecordOpenAIAccountSwitch()
 					failedAccountIDs[account.ID] = struct{}{}

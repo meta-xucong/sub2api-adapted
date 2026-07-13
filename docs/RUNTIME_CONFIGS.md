@@ -41,6 +41,12 @@ Active Smart Router settings:
 - `gateway.smart_router.recovery.second_failure_cooldown_seconds=600`
 - `gateway.smart_router.recovery.sustained_failure_threshold=3`
 - `gateway.smart_router.recovery.image_sustained_failure_threshold=2`
+- `gateway.smart_router.rate_limit_backoff.enabled=true`
+- `gateway.smart_router.rate_limit_backoff.initial_seconds=5`
+- `gateway.smart_router.rate_limit_backoff.max_seconds=60`
+- `gateway.smart_router.rate_limit_backoff.max_attempts=4`
+- `gateway.smart_router.rate_limit_backoff.jitter_ratio=0.25`
+- `gateway.smart_router.rate_limit_backoff.retry_after_max_seconds=90`
 - `gateway.smart_router.calibration.enabled=true`, scheduled for `04:00 Asia/Shanghai`
 - `gateway.smart_router.calibration.total_budget_seconds=1800`
 - `gateway.smart_router.calibration.probe_timeout_seconds=180`

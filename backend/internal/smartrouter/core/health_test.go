@@ -45,6 +45,27 @@ func TestHealthTrackerCancelledDoesNotPenalizeLane(t *testing.T) {
 	require.Equal(t, 1.0, snapshot.HealthScore)
 }
 
+func TestHealthTrackerConcurrency429DoesNotDemoteLane(t *testing.T) {
+	now := time.Unix(2_500, 0)
+	var events []HealthEvent
+	tracker := NewHealthTracker(HealthPolicy{}, func() time.Time { return now }, func(event HealthEvent) { events = append(events, event) })
+	result := RouteResult{
+		LaneID:      "busy-lane",
+		SourceGroup: "source",
+		Capability:  CapabilityImageGeneration,
+		Model:       "gpt-image-2",
+		StatusCode:  http.StatusTooManyRequests,
+		ErrorClass:  ClassifyFailureDetails(http.StatusTooManyRequests, CapabilityImageGeneration, "Concurrency limit exceeded for user, please retry later", "", false),
+	}
+	snapshot := tracker.Observe(result)
+	if snapshot.RecoveryPriority != 0 || snapshot.HealthPenalty != 0 || snapshot.RecoveryStage != RecoveryNormal {
+		t.Fatalf("concurrency 429 changed health state: %#v", snapshot)
+	}
+	if len(events) != 1 || events[0].Action != "rate_limit_backoff" {
+		t.Fatalf("unexpected concurrency 429 event: %#v", events)
+	}
+}
+
 func TestHealthTrackerTransientBackoffAndRecoveryRamp(t *testing.T) {
 	now := time.Unix(3_000, 0)
 	tracker := NewHealthTracker(HealthPolicy{TransientCooldown: time.Minute, MaxCooldown: 10 * time.Minute}, func() time.Time { return now }, nil)

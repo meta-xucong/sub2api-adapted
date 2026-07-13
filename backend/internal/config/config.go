@@ -883,21 +883,22 @@ type GatewayConfig struct {
 
 // GatewaySmartRouterConfig configures the optional Smart Router module.
 type GatewaySmartRouterConfig struct {
-	Enabled                 bool                                    `mapstructure:"enabled"`
-	TopK                    int                                     `mapstructure:"top_k"`
-	MaxAttemptsImage        int                                     `mapstructure:"max_attempts_image"`
-	MaxAttemptsChat         int                                     `mapstructure:"max_attempts_chat"`
-	MaxAttemptsCompact      int                                     `mapstructure:"max_attempts_compact"`
-	MaxAttemptsDefault      int                                     `mapstructure:"max_attempts_default"`
-	SameSourceGroupAttempts int                                     `mapstructure:"same_source_group_attempts"`
-	CostBiasMax             float64                                 `mapstructure:"cost_bias_max"`
-	ImageTotalBudgetSeconds int                                     `mapstructure:"image_total_budget_seconds"`
-	ImageAttemptSeconds     int                                     `mapstructure:"image_attempt_seconds"`
-	ImageReserveSeconds     int                                     `mapstructure:"image_finalization_reserve_seconds"`
-	Recovery                GatewaySmartRouterRecoveryConfig        `mapstructure:"recovery"`
-	Calibration             GatewaySmartRouterCalibrationConfig     `mapstructure:"calibration"`
-	Scoring                 GatewaySmartRouterScoringConfig         `mapstructure:"scoring"`
-	AdaptiveTimeout         GatewaySmartRouterAdaptiveTimeoutConfig `mapstructure:"adaptive_timeout"`
+	Enabled                 bool                                     `mapstructure:"enabled"`
+	TopK                    int                                      `mapstructure:"top_k"`
+	MaxAttemptsImage        int                                      `mapstructure:"max_attempts_image"`
+	MaxAttemptsChat         int                                      `mapstructure:"max_attempts_chat"`
+	MaxAttemptsCompact      int                                      `mapstructure:"max_attempts_compact"`
+	MaxAttemptsDefault      int                                      `mapstructure:"max_attempts_default"`
+	SameSourceGroupAttempts int                                      `mapstructure:"same_source_group_attempts"`
+	CostBiasMax             float64                                  `mapstructure:"cost_bias_max"`
+	ImageTotalBudgetSeconds int                                      `mapstructure:"image_total_budget_seconds"`
+	ImageAttemptSeconds     int                                      `mapstructure:"image_attempt_seconds"`
+	ImageReserveSeconds     int                                      `mapstructure:"image_finalization_reserve_seconds"`
+	Recovery                GatewaySmartRouterRecoveryConfig         `mapstructure:"recovery"`
+	Calibration             GatewaySmartRouterCalibrationConfig      `mapstructure:"calibration"`
+	Scoring                 GatewaySmartRouterScoringConfig          `mapstructure:"scoring"`
+	AdaptiveTimeout         GatewaySmartRouterAdaptiveTimeoutConfig  `mapstructure:"adaptive_timeout"`
+	RateLimitBackoff        GatewaySmartRouterRateLimitBackoffConfig `mapstructure:"rate_limit_backoff"`
 }
 
 // GatewaySmartRouterRecoveryConfig governs capability-scoped penalties. It
@@ -934,6 +935,18 @@ type GatewaySmartRouterAdaptiveTimeoutConfig struct {
 	FailureBackoffMultiplier float64 `mapstructure:"failure_backoff_multiplier"`
 	WindowSize               int     `mapstructure:"window_size"`
 	ReserveSeconds           int     `mapstructure:"reserve_seconds"`
+}
+
+// GatewaySmartRouterRateLimitBackoffConfig controls upstream 429 recovery.
+// It is separate from health demotion because a concurrency 429 is usually a
+// temporary busy signal, not proof that the account or lane is unhealthy.
+type GatewaySmartRouterRateLimitBackoffConfig struct {
+	Enabled              bool    `mapstructure:"enabled"`
+	InitialSeconds       int     `mapstructure:"initial_seconds"`
+	MaxSeconds           int     `mapstructure:"max_seconds"`
+	MaxAttempts          int     `mapstructure:"max_attempts"`
+	JitterRatio          float64 `mapstructure:"jitter_ratio"`
+	RetryAfterMaxSeconds int     `mapstructure:"retry_after_max_seconds"`
 }
 
 // GatewaySmartRouterScoringConfig controls lane scoring weights.
@@ -2160,6 +2173,12 @@ func setDefaults() {
 	viper.SetDefault("gateway.smart_router.adaptive_timeout.failure_backoff_multiplier", 0.5)
 	viper.SetDefault("gateway.smart_router.adaptive_timeout.window_size", 32)
 	viper.SetDefault("gateway.smart_router.adaptive_timeout.reserve_seconds", 30)
+	viper.SetDefault("gateway.smart_router.rate_limit_backoff.enabled", true)
+	viper.SetDefault("gateway.smart_router.rate_limit_backoff.initial_seconds", 5)
+	viper.SetDefault("gateway.smart_router.rate_limit_backoff.max_seconds", 60)
+	viper.SetDefault("gateway.smart_router.rate_limit_backoff.max_attempts", 4)
+	viper.SetDefault("gateway.smart_router.rate_limit_backoff.jitter_ratio", 0.25)
+	viper.SetDefault("gateway.smart_router.rate_limit_backoff.retry_after_max_seconds", 90)
 	viper.SetDefault("gateway.max_line_size", 500*1024*1024)
 	viper.SetDefault("gateway.scheduling.sticky_session_max_waiting", 3)
 	viper.SetDefault("gateway.scheduling.sticky_session_wait_timeout", 120*time.Second)
@@ -2934,6 +2953,23 @@ func (c *Config) Validate() error {
 	}
 	if adaptiveTimeout.Enabled && adaptiveTimeout.MinSeconds > adaptiveTimeout.MaxSeconds {
 		return fmt.Errorf("gateway.smart_router.adaptive_timeout.min_seconds must be <= max_seconds")
+	}
+	rateLimitBackoff := c.Gateway.SmartRouter.RateLimitBackoff
+	if rateLimitBackoff.InitialSeconds < 0 || rateLimitBackoff.MaxSeconds < 0 ||
+		rateLimitBackoff.MaxAttempts < 0 || rateLimitBackoff.RetryAfterMaxSeconds < 0 {
+		return fmt.Errorf("gateway.smart_router.rate_limit_backoff durations and max_attempts must be non-negative")
+	}
+	if rateLimitBackoff.JitterRatio < 0 || rateLimitBackoff.JitterRatio > 1 ||
+		math.IsNaN(rateLimitBackoff.JitterRatio) || math.IsInf(rateLimitBackoff.JitterRatio, 0) {
+		return fmt.Errorf("gateway.smart_router.rate_limit_backoff.jitter_ratio must be between 0 and 1")
+	}
+	if rateLimitBackoff.Enabled {
+		if rateLimitBackoff.InitialSeconds == 0 || rateLimitBackoff.MaxSeconds == 0 || rateLimitBackoff.MaxAttempts == 0 {
+			return fmt.Errorf("gateway.smart_router.rate_limit_backoff initial/max/max_attempts must be positive when enabled")
+		}
+		if rateLimitBackoff.InitialSeconds > rateLimitBackoff.MaxSeconds {
+			return fmt.Errorf("gateway.smart_router.rate_limit_backoff.initial_seconds must be <= max_seconds")
+		}
 	}
 	smartRouterWeights := c.Gateway.SmartRouter.Scoring
 	if smartRouterWeights.Priority < 0 || smartRouterWeights.Cost < 0 || smartRouterWeights.Health < 0 ||

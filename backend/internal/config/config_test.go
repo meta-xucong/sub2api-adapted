@@ -2114,6 +2114,10 @@ func TestLoad_DefaultGatewayImageStreamConfig(t *testing.T) {
 	if cfg.Gateway.SmartRouter.AdaptiveTimeout.FailureBackoffMultiplier != 0.5 {
 		t.Fatalf("adaptive timeout failure_backoff_multiplier = %v, want 0.5", cfg.Gateway.SmartRouter.AdaptiveTimeout.FailureBackoffMultiplier)
 	}
+	backoff := cfg.Gateway.SmartRouter.RateLimitBackoff
+	if !backoff.Enabled || backoff.InitialSeconds != 5 || backoff.MaxSeconds != 60 || backoff.MaxAttempts != 4 || backoff.JitterRatio != 0.25 || backoff.RetryAfterMaxSeconds != 90 {
+		t.Fatalf("unexpected smart router 429 backoff defaults: %#v", backoff)
+	}
 	if cfg.Gateway.ImageConcurrency.Enabled {
 		t.Fatalf("image_concurrency.enabled = true, want false")
 	}

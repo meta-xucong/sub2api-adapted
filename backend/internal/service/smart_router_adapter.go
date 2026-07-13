@@ -114,6 +114,40 @@ func (s *OpenAIGatewayService) smartRouterPolicy() smartrouter.Policy {
 	return policy.Normalize()
 }
 
+// IsSmartRouterConcurrencyRateLimit identifies an upstream 429 that means
+// "busy" rather than quota exhaustion. It is enabled only with Smart Router
+// so disabling the module preserves the historical scheduler behavior.
+func (s *OpenAIGatewayService) IsSmartRouterConcurrencyRateLimit(err *UpstreamFailoverError) bool {
+	if s == nil || !s.isSmartRouterEnabled() || err == nil || err.StatusCode != http.StatusTooManyRequests {
+		return false
+	}
+	return smartrouter.IsConcurrencyRateLimit(string(err.ResponseBody), "")
+}
+
+// SmartRouterRateLimitBackoffDelay returns the bounded, jittered wait before
+// moving on from an upstream 429. This is intentionally separate from the
+// health tracker: concurrency 429s should get a chance to clear without
+// consuming a 30/31/32 recovery slot.
+func (s *OpenAIGatewayService) SmartRouterRateLimitBackoffDelay(err *UpstreamFailoverError, attempt int, seed uint64) time.Duration {
+	if s == nil || err == nil || err.StatusCode != http.StatusTooManyRequests || !s.isSmartRouterEnabled() || s.cfg == nil {
+		return 0
+	}
+	configured := s.cfg.Gateway.SmartRouter.RateLimitBackoff
+	policy := smartrouter.RateLimitBackoffConfig{
+		Enabled:       configured.Enabled,
+		Initial:       time.Duration(configured.InitialSeconds) * time.Second,
+		Max:           time.Duration(configured.MaxSeconds) * time.Second,
+		MaxAttempts:   configured.MaxAttempts,
+		JitterRatio:   configured.JitterRatio,
+		RetryAfterMax: time.Duration(configured.RetryAfterMaxSeconds) * time.Second,
+	}.Normalize()
+	if !policy.Enabled {
+		return 0
+	}
+	retryAfter := smartrouter.ParseRetryAfter(err.ResponseHeaders, time.Now(), policy.RetryAfterMax)
+	return policy.Delay(attempt, retryAfter, seed)
+}
+
 // OpenAIImageSmartRouterBudget returns the configured end-to-end image budget.
 // A disabled Smart Router returns a zero value so ordinary image scheduling
 // keeps its historical behavior.

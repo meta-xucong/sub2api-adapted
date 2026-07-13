@@ -327,6 +327,14 @@ func (t *HealthTracker) Observe(result RouteResult) HealthSnapshot {
 			state.CooldownUntilUnix = now.Add(t.policy.AuthQuarantine).Unix()
 			state.RecoveryStage = RecoveryCooling
 			action = "auth_quarantine"
+		case FailureConcurrencyLimited:
+			// An explicit concurrency/busy 429 is not evidence that the lane is
+			// broken. The request layer applies bounded exponential backoff;
+			// keep the lane at its configured priority and do not allocate a
+			// recovery slot.
+			state.ConsecutiveFailures = 0
+			state.ConsecutiveSuccesses = 0
+			action = "rate_limit_backoff"
 		case FailureRateLimited:
 			state.ConsecutiveFailures++
 			state.ConsecutiveSuccesses = 0
@@ -358,7 +366,7 @@ func (t *HealthTracker) Observe(result RouteResult) HealthSnapshot {
 				action = "transient_cooldown"
 			}
 		}
-		if action != "no_penalty" {
+		if action != "no_penalty" && action != "rate_limit_backoff" {
 			t.ensureRecoverySlotLocked(state, key, result.Capability)
 		}
 		state.lastFailureUnix = now.Unix()

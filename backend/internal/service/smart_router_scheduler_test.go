@@ -109,6 +109,25 @@ func TestOpenAIGatewayService_SmartRouterTracksCompactFailuresSeparately(t *test
 	require.Equal(t, lane.Priority, ordinary.Priority, "compact failure must not downgrade ordinary responses")
 }
 
+func TestOpenAIGatewayService_SmartRouterRateLimitBackoffUsesRetryAfter(t *testing.T) {
+	cfg := newSmartRouterSchedulerTestConfig()
+	cfg.Gateway.SmartRouter.RateLimitBackoff.Enabled = true
+	cfg.Gateway.SmartRouter.RateLimitBackoff.InitialSeconds = 5
+	cfg.Gateway.SmartRouter.RateLimitBackoff.MaxSeconds = 60
+	cfg.Gateway.SmartRouter.RateLimitBackoff.MaxAttempts = 4
+	cfg.Gateway.SmartRouter.RateLimitBackoff.JitterRatio = 0
+	cfg.Gateway.SmartRouter.RateLimitBackoff.RetryAfterMaxSeconds = 90
+	svc := &OpenAIGatewayService{cfg: cfg}
+	err := &UpstreamFailoverError{
+		StatusCode:      http.StatusTooManyRequests,
+		ResponseBody:    []byte(`{"error":{"message":"Concurrency limit exceeded for user, please retry later"}}`),
+		ResponseHeaders: http.Header{"Retry-After": []string{"12"}},
+	}
+	require.True(t, svc.IsSmartRouterConcurrencyRateLimit(err))
+	require.Equal(t, 12*time.Second, svc.SmartRouterRateLimitBackoffDelay(err, 0, 123))
+	require.Equal(t, 0, int(svc.SmartRouterRateLimitBackoffDelay(err, 4, 123)))
+}
+
 func newSmartRouterSchedulerTestConfig() *config.Config {
 	cfg := &config.Config{}
 	cfg.Gateway.SmartRouter.Enabled = true

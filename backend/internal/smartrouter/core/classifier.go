@@ -33,6 +33,9 @@ func ClassifyFailureDetails(statusCode int, capability Capability, message strin
 	if strings.Contains(lower, "moderation") || strings.Contains(lower, "content policy") || strings.Contains(lower, "safety violation") {
 		return FailureContentRejected
 	}
+	if statusCode == http.StatusTooManyRequests && IsConcurrencyRateLimit(message, code) {
+		return FailureConcurrencyLimited
+	}
 	switch statusCode {
 	case http.StatusBadRequest:
 		if strings.Contains(lower, "unsupported") || strings.Contains(lower, "invalid parameter") || strings.Contains(lower, "invalid size") {

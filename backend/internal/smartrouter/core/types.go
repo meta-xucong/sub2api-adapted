@@ -20,6 +20,7 @@ const (
 	FailureContentRejected    FailureClass = "content_rejected"
 	FailureAuthForbidden      FailureClass = "auth_forbidden"
 	FailureTransientForbidden FailureClass = "transient_forbidden"
+	FailureConcurrencyLimited FailureClass = "concurrency_limited"
 	FailureRateLimited        FailureClass = "rate_limited"
 	FailureUpstream5xx        FailureClass = "upstream_5xx"
 	FailureTimeout            FailureClass = "timeout"
