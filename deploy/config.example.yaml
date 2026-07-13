@@ -383,6 +383,17 @@ gateway:
       queue: 0.6
       latency: 0.4
       recovery: 0.8
+    # Optional per-lane/per-capability latency policy; disabled for compatibility.
+    adaptive_timeout:
+      enabled: false
+      default_seconds: 180
+      min_seconds: 30
+      max_seconds: 300
+      safety_margin_seconds: 20
+      multiplier: 1.25
+      failure_backoff_multiplier: 0.5
+      window_size: 32
+      reserve_seconds: 30
   # OpenAI HTTP upstream protocol strategy.
   # OpenAI HTTP 上游协议策略（默认 HTTP/2；代理明确不兼容时可临时回退 HTTP/1.1）。
   openai_http2:

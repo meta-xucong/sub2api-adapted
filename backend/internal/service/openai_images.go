@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	smartrouter "github.com/Wei-Shaw/sub2api/internal/smartrouter/core"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
 	"github.com/imroc/req/v3"
@@ -639,7 +640,11 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 	if err != nil {
 		return nil, err
 	}
-	imageUpstreamCtx, cancelImageUpstream := s.withOpenAIImageUpstreamTimeout(upstreamCtx)
+	imageCapability := smartrouter.CapabilityImageGeneration
+	if upstreamParsed.IsEdits() {
+		imageCapability = smartrouter.CapabilityImageEdit
+	}
+	imageUpstreamCtx, cancelImageUpstream := s.withOpenAIImageUpstreamTimeoutFor(upstreamCtx, account, imageCapability)
 	defer cancelImageUpstream()
 	upstreamReq, err := s.buildOpenAIImagesRequest(imageUpstreamCtx, c, account, forwardBody, forwardContentType, token, upstreamParsed.Endpoint)
 	if err != nil {
@@ -652,6 +657,11 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 	}
 	upstreamStart := time.Now()
 	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
+	statusCode := 0
+	if resp != nil {
+		statusCode = resp.StatusCode
+	}
+	s.observeSmartRouterImageAttempt(account, imageCapability, time.Since(upstreamStart), statusCode, err == nil && statusCode < 400, err)
 	SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
 	if err != nil {
 		return nil, s.handleOpenAIUpstreamTransportError(upstreamCtx, c, account, err, false)
@@ -683,7 +693,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 		return s.handleOpenAIImagesErrorResponse(upstreamCtx, resp, c, account, upstreamModel)
 	}
 	if aiaiAsync {
-		polledResp, pollErr := s.pollAIAIImagesAsyncResponse(upstreamCtx, account, resp, token)
+		polledResp, pollErr := s.pollAIAIImagesAsyncResponse(imageUpstreamCtx, account, resp, token)
 		_ = resp.Body.Close()
 		if pollErr != nil {
 			return nil, pollErr

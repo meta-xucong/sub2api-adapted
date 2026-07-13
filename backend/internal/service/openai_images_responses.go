@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	smartrouter "github.com/Wei-Shaw/sub2api/internal/smartrouter/core"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
@@ -1529,7 +1530,11 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 	if err != nil {
 		return nil, err
 	}
-	imageUpstreamCtx, cancelImageUpstream := s.withOpenAIImageUpstreamTimeout(upstreamCtx)
+	imageCapability := smartrouter.CapabilityImageGeneration
+	if parsed.IsEdits() {
+		imageCapability = smartrouter.CapabilityImageEdit
+	}
+	imageUpstreamCtx, cancelImageUpstream := s.withOpenAIImageUpstreamTimeoutFor(upstreamCtx, account, imageCapability)
 	defer cancelImageUpstream()
 	upstreamReq, err := s.buildUpstreamRequest(imageUpstreamCtx, c, account, responsesBody, token, true, parsed.StickySessionSeed(), false)
 	if err != nil {
@@ -1544,6 +1549,11 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 	}
 	upstreamStart := time.Now()
 	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
+	statusCode := 0
+	if resp != nil {
+		statusCode = resp.StatusCode
+	}
+	s.observeSmartRouterImageAttempt(account, imageCapability, time.Since(upstreamStart), statusCode, err == nil && statusCode < 400, err)
 	SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
 	if err != nil {
 		return nil, s.handleOpenAIUpstreamTransportError(imageUpstreamCtx, c, account, err, false)

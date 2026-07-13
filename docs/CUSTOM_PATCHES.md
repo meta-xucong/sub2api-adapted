@@ -12,6 +12,14 @@ Code:
 
 Enable with `gateway.smart_router.enabled: true`. Existing accounts work without manual metadata. Optional `account.extra.smart_router` fields can override `source_group`, capabilities, cost multiplier, and concurrency. `image_size_tiers: ["1K", "2K", "4K"]` optionally marks a lane as a specialist for explicit OpenAI Images output sizes: matching specialists are chosen before generic lanes, while generic lanes remain automatic fallbacks when every specialist is unavailable. Implicit image sizes retain the original routing behavior.
 
+The optional adaptive timeout plugin is maintained with the core module. It
+keeps independent latency profiles for each lane and capability, applies a
+bounded backoff after transient 5xx/rate-limit/timeout/transport failures, and
+reserves remaining request budget for failover. It never changes the stored
+account priority or `schedulable` flag. The feature is disabled by default and
+is enabled with `gateway.smart_router.adaptive_timeout.enabled: true` only
+after the outer client timeout is longer than the gateway image budget.
+
 The router first considers the lowest numeric priority layer. It advances only after that layer has no eligible lane. Retries can exclude an entire source group so multiple accounts backed by the same upstream are not hammered repeatedly.
 
 ### Durable image health and 04:00 calibration

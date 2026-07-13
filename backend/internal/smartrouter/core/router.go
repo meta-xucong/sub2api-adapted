@@ -86,15 +86,16 @@ func Order(req RouteRequest, lanes []LaneSnapshot, policy Policy) RoutePlan {
 	filtered = preferExplicitImageSizeTier(filtered, req.ImageSizeTier)
 	filtered = filterLowestPriorityLayer(filtered)
 
-	minPriority, maxPriority := filtered[0].Priority, filtered[0].Priority
+	minPriority, maxPriority := effectivePriority(filtered[0]), effectivePriority(filtered[0])
 	minLatency, maxLatency := 0.0, 0.0
 	hasLatency := false
 	for _, lane := range filtered {
-		if lane.Priority < minPriority {
-			minPriority = lane.Priority
+		priority := effectivePriority(lane)
+		if priority < minPriority {
+			minPriority = priority
 		}
-		if lane.Priority > maxPriority {
-			maxPriority = lane.Priority
+		if priority > maxPriority {
+			maxPriority = priority
 		}
 		if lane.LatencyEWMAms > 0 {
 			if !hasLatency {
@@ -166,15 +167,15 @@ func filterLowestPriorityLayer(lanes []LaneSnapshot) []LaneSnapshot {
 	if len(lanes) <= 1 {
 		return lanes
 	}
-	minPriority := lanes[0].Priority
+	minPriority := effectivePriority(lanes[0])
 	for _, lane := range lanes[1:] {
-		if lane.Priority < minPriority {
-			minPriority = lane.Priority
+		if priority := effectivePriority(lane); priority < minPriority {
+			minPriority = priority
 		}
 	}
 	out := lanes[:0]
 	for _, lane := range lanes {
-		if lane.Priority == minPriority {
+		if effectivePriority(lane) == minPriority {
 			out = append(out, lane)
 		}
 	}
@@ -185,7 +186,7 @@ func scoreLane(lane LaneSnapshot, policy Policy, minPriority int, maxPriority in
 	w := policy.Weights
 	priorityFactor := 1.0
 	if maxPriority > minPriority {
-		priorityFactor = 1 + float64(maxPriority-lane.Priority)/float64(maxPriority-minPriority)
+		priorityFactor = 1 + float64(maxPriority-effectivePriority(lane))/float64(maxPriority-minPriority)
 	}
 
 	cost := lane.CostMultiplier
@@ -247,6 +248,13 @@ func scoreLane(lane LaneSnapshot, policy Policy, minPriority int, maxPriority in
 		return 0.01
 	}
 	return score
+}
+
+func effectivePriority(lane LaneSnapshot) int {
+	if lane.PriorityPenalty <= 0 {
+		return lane.Priority
+	}
+	return lane.Priority + lane.PriorityPenalty
 }
 
 func weightedOrder(candidates []CandidateDecision, req RouteRequest) []CandidateDecision {

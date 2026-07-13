@@ -1492,6 +1492,27 @@ func TestValidateConfigErrors(t *testing.T) {
 			wantErr: "gateway.smart_router.top_k must be non-negative",
 		},
 		{
+			name:    "gateway smart router adaptive timeout window negative",
+			mutate:  func(c *Config) { c.Gateway.SmartRouter.AdaptiveTimeout.WindowSize = -1 },
+			wantErr: "gateway.smart_router.adaptive_timeout durations and window_size must be non-negative",
+		},
+		{
+			name: "gateway smart router adaptive timeout enabled without default",
+			mutate: func(c *Config) {
+				c.Gateway.SmartRouter.AdaptiveTimeout.Enabled = true
+				c.Gateway.SmartRouter.AdaptiveTimeout.DefaultSeconds = 0
+			},
+			wantErr: "gateway.smart_router.adaptive_timeout.default_seconds must be positive",
+		},
+		{
+			name: "gateway smart router adaptive timeout failure multiplier out of range",
+			mutate: func(c *Config) {
+				c.Gateway.SmartRouter.AdaptiveTimeout.Enabled = true
+				c.Gateway.SmartRouter.AdaptiveTimeout.FailureBackoffMultiplier = 1.1
+			},
+			wantErr: "gateway.smart_router.adaptive_timeout.failure_backoff_multiplier must be greater than 0 and at most 1",
+		},
+		{
 			name: "gateway smart router zero weights",
 			mutate: func(c *Config) {
 				c.Gateway.SmartRouter.Enabled = true
@@ -2083,6 +2104,15 @@ func TestLoad_DefaultGatewayImageStreamConfig(t *testing.T) {
 		cfg.Gateway.SmartRouter.Calibration.ProbeTimeoutSeconds != 180 {
 		t.Fatalf("unexpected smart router recovery/calibration defaults: %#v %#v",
 			cfg.Gateway.SmartRouter.Recovery, cfg.Gateway.SmartRouter.Calibration)
+	}
+	if cfg.Gateway.SmartRouter.AdaptiveTimeout.Enabled {
+		t.Fatalf("smart_router.adaptive_timeout.enabled = true, want false")
+	}
+	if cfg.Gateway.SmartRouter.AdaptiveTimeout.DefaultSeconds != 180 || cfg.Gateway.SmartRouter.AdaptiveTimeout.MaxSeconds != 300 {
+		t.Fatalf("unexpected adaptive timeout defaults: default=%d max=%d", cfg.Gateway.SmartRouter.AdaptiveTimeout.DefaultSeconds, cfg.Gateway.SmartRouter.AdaptiveTimeout.MaxSeconds)
+	}
+	if cfg.Gateway.SmartRouter.AdaptiveTimeout.FailureBackoffMultiplier != 0.5 {
+		t.Fatalf("adaptive timeout failure_backoff_multiplier = %v, want 0.5", cfg.Gateway.SmartRouter.AdaptiveTimeout.FailureBackoffMultiplier)
 	}
 	if cfg.Gateway.ImageConcurrency.Enabled {
 		t.Fatalf("image_concurrency.enabled = true, want false")

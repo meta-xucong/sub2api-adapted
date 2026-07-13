@@ -210,6 +210,17 @@ func TestOrder_AdvancesPriorityLayerAfterCurrentLayerExcluded(t *testing.T) {
 	require.Equal(t, "fallback", plan.Candidates[0].LaneID)
 }
 
+func TestOrder_TemporaryPriorityPenaltyMovesFlappingLaneBehindFallback(t *testing.T) {
+	policy := DefaultPolicy()
+	policy.Enabled = true
+	plan := Order(RouteRequest{Capability: CapabilityImageGeneration, Seed: 23}, []LaneSnapshot{
+		{LaneID: "cheap-flapping", AccountID: 1, Priority: 1, PriorityPenalty: 30},
+		{LaneID: "stable-fallback", AccountID: 2, Priority: 2},
+	}, policy)
+
+	require.Equal(t, []string{"stable-fallback"}, plan.OrderedLaneIDs)
+}
+
 func TestClassifyFailure(t *testing.T) {
 	require.Equal(t, FailureTransientForbidden, ClassifyFailure(http.StatusForbidden, CapabilityImageEdit, false))
 	require.Equal(t, FailureAuthForbidden, ClassifyFailure(http.StatusForbidden, CapabilityChat, false))

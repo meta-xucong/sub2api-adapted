@@ -1,0 +1,168 @@
+package core
+
+import (
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+)
+
+func testAdaptiveConfig() AdaptiveTimeoutConfig {
+	return AdaptiveTimeoutConfig{
+		Enabled:           true,
+		Default:           180 * time.Second,
+		Min:               30 * time.Second,
+		Max:               300 * time.Second,
+		SafetyMargin:      10 * time.Second,
+		Multiplier:        1.25,
+		WindowSize:        4,
+		ReservePerAttempt: 30 * time.Second,
+	}
+}
+
+func TestAdaptiveTimeoutEngineSeparatesLaneAndCapability(t *testing.T) {
+	engine := NewAdaptiveTimeoutEngine(testAdaptiveConfig())
+	for _, duration := range []time.Duration{20 * time.Second, 25 * time.Second, 30 * time.Second, 35 * time.Second} {
+		engine.Observe(AttemptObservation{
+			LaneID:     "liuyun",
+			Capability: CapabilityImageGeneration,
+			Duration:   duration,
+			Success:    true,
+		})
+	}
+
+	generation := engine.TimeoutFor(TimeoutRequest{
+		LaneID:         "liuyun",
+		Capability:     CapabilityImageGeneration,
+		DefaultTimeout: 180 * time.Second,
+	})
+	edit := engine.TimeoutFor(TimeoutRequest{
+		LaneID:         "liuyun",
+		Capability:     CapabilityImageEdit,
+		DefaultTimeout: 180 * time.Second,
+	})
+
+	require.Equal(t, "observed_p95", generation.Reason)
+	require.Greater(t, generation.Timeout, 40*time.Second)
+	require.Less(t, generation.Timeout, 100*time.Second)
+	require.Equal(t, 180*time.Second, edit.Timeout)
+}
+
+func TestAdaptiveTimeoutEngineClampsToRemainingBudgetAndKeepsFallbackRoom(t *testing.T) {
+	engine := NewAdaptiveTimeoutEngine(testAdaptiveConfig())
+	for i := 0; i < 4; i++ {
+		engine.Observe(AttemptObservation{
+			LaneID:     "slow",
+			Capability: CapabilityImageEdit,
+			Duration:   150 * time.Second,
+			Success:    true,
+		})
+	}
+	decision := engine.TimeoutFor(TimeoutRequest{
+		LaneID:            "slow",
+		Capability:        CapabilityImageEdit,
+		DefaultTimeout:    180 * time.Second,
+		RemainingBudget:   100 * time.Second,
+		RemainingAttempts: 1,
+	})
+	require.Equal(t, 70*time.Second, decision.Timeout)
+	require.LessOrEqual(t, decision.Timeout+30*time.Second, 100*time.Second)
+}
+
+func TestAdaptiveTimeoutEngineBacksOffAfterTransientFailures(t *testing.T) {
+	engine := NewAdaptiveTimeoutEngine(testAdaptiveConfig())
+	engine.Observe(AttemptObservation{
+		LaneID:       "flapping",
+		Capability:   CapabilityImageGeneration,
+		Duration:     180 * time.Second,
+		FailureClass: FailureUpstream5xx,
+		StatusCode:   502,
+	})
+
+	decision := engine.TimeoutFor(TimeoutRequest{
+		LaneID:         "flapping",
+		Capability:     CapabilityImageGeneration,
+		DefaultTimeout: 180 * time.Second,
+	})
+	require.Equal(t, "failure_backoff", decision.Reason)
+	require.Equal(t, 90*time.Second, decision.Timeout)
+
+	engine.Observe(AttemptObservation{
+		LaneID:       "flapping",
+		Capability:   CapabilityImageGeneration,
+		Duration:     180 * time.Second,
+		FailureClass: FailureTimeout,
+	})
+	decision = engine.TimeoutFor(TimeoutRequest{
+		LaneID:         "flapping",
+		Capability:     CapabilityImageGeneration,
+		DefaultTimeout: 180 * time.Second,
+	})
+	require.Equal(t, 45*time.Second, decision.Timeout)
+}
+
+func TestAdaptiveTimeoutEngineReservesOneWindowWhenAttemptsAreUnknown(t *testing.T) {
+	engine := NewAdaptiveTimeoutEngine(testAdaptiveConfig())
+	decision := engine.TimeoutFor(TimeoutRequest{
+		LaneID:          "lane",
+		Capability:      CapabilityImageGeneration,
+		DefaultTimeout:  180 * time.Second,
+		RemainingBudget: 100 * time.Second,
+	})
+	require.Equal(t, 70*time.Second, decision.Timeout)
+}
+
+func TestAdaptiveTimeoutEngineIgnoresDeterministicFailuresAndCancellation(t *testing.T) {
+	engine := NewAdaptiveTimeoutEngine(testAdaptiveConfig())
+	for _, class := range []FailureClass{FailureClientError, FailureAuthForbidden, FailureCancelled} {
+		engine.Observe(AttemptObservation{
+			LaneID:       "lane",
+			Capability:   CapabilityImageGeneration,
+			Duration:     180 * time.Second,
+			FailureClass: class,
+		})
+	}
+
+	decision := engine.TimeoutFor(TimeoutRequest{
+		LaneID:         "lane",
+		Capability:     CapabilityImageGeneration,
+		DefaultTimeout: 180 * time.Second,
+	})
+	require.Equal(t, "default", decision.Reason)
+	require.Equal(t, 180*time.Second, decision.Timeout)
+}
+
+func TestAdaptiveTimeoutEngineLedgerIsBoundedAndSummariesAreSanitized(t *testing.T) {
+	engine := NewAdaptiveTimeoutEngine(testAdaptiveConfig())
+	for i := 0; i < 40; i++ {
+		engine.Observe(AttemptObservation{
+			LaneID:       "lane",
+			Capability:   CapabilityImageGeneration,
+			Duration:     time.Second,
+			Success:      false,
+			ErrorSummary: "  status=502\nsecret=should-not-be-logged " + string(make([]byte, 300)),
+		})
+	}
+	ledger := engine.Ledger()
+	require.Len(t, ledger, 16)
+	require.LessOrEqual(t, len(ledger[len(ledger)-1].ErrorSummary), 256)
+	require.NotContains(t, ledger[len(ledger)-1].ErrorSummary, "\n")
+}
+
+func TestStrategyChainUsesShortestTimeoutAndReportsToPlugin(t *testing.T) {
+	engine := NewAdaptiveTimeoutEngine(testAdaptiveConfig())
+	chain := NewStrategyChain(AdaptiveTimeoutPlugin{Engine: engine})
+	ctx := AttemptContext{
+		Request: RouteRequest{Capability: CapabilityImageGeneration},
+		Lane:    LaneSnapshot{LaneID: "lane"},
+	}
+	directive := chain.BeforeAttempt(ctx)
+	require.Equal(t, 180*time.Second, directive.Timeout)
+	chain.AfterAttempt(ctx, RouteResult{
+		LaneID:         "lane",
+		Capability:     CapabilityImageGeneration,
+		Success:        true,
+		TotalLatencyMs: 40000,
+	})
+	require.Len(t, engine.Ledger(), 1)
+}

@@ -353,18 +353,20 @@ type OpenAIGatewayService struct {
 	settingService        *SettingService
 	userPlatformQuotaRepo UserPlatformQuotaRepository
 
-	openaiWSPoolOnce              sync.Once
-	openaiWSStateStoreOnce        sync.Once
-	openaiSchedulerOnce           sync.Once
-	openaiWSPassthroughDialerOnce sync.Once
-	openaiWSPool                  *openAIWSConnPool
-	openaiWSStateStore            OpenAIWSStateStore
-	openaiScheduler               OpenAIAccountScheduler
-	openaiWSPassthroughDialer     openAIWSClientDialer
-	openaiAccountStats            *openAIAccountRuntimeStats
-	smartRouterHealthOnce         sync.Once
-	smartRouterHealthTracker      *smartrouter.HealthTracker
-	smartRouterHealthLedger       SmartRouterHealthLedger
+	openaiWSPoolOnce               sync.Once
+	openaiWSStateStoreOnce         sync.Once
+	openaiSchedulerOnce            sync.Once
+	smartRouterAdaptiveTimeoutOnce sync.Once
+	openaiWSPassthroughDialerOnce  sync.Once
+	openaiWSPool                   *openAIWSConnPool
+	openaiWSStateStore             OpenAIWSStateStore
+	openaiScheduler                OpenAIAccountScheduler
+	openaiWSPassthroughDialer      openAIWSClientDialer
+	openaiAccountStats             *openAIAccountRuntimeStats
+	smartRouterAdaptiveTimeout     *smartrouter.AdaptiveTimeoutEngine
+	smartRouterHealthOnce          sync.Once
+	smartRouterHealthTracker       *smartrouter.HealthTracker
+	smartRouterHealthLedger        SmartRouterHealthLedger
 
 	openaiWSFallbackUntil               sync.Map // key: int64(accountID), value: time.Time
 	openaiAccountRuntimeBlockUntil      sync.Map // key: int64(accountID), value: time.Time

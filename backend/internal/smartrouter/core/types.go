@@ -67,9 +67,12 @@ type LaneSnapshot struct {
 	Capabilities map[Capability]bool
 	// ImageSizeTiers optionally makes a lane specialized for explicit image
 	// output tiers. An empty slice means the lane remains a generic fallback.
-	ImageSizeTiers            []string
-	ModelPatterns             []string
-	Priority                  int
+	ImageSizeTiers []string
+	ModelPatterns  []string
+	Priority       int
+	// PriorityPenalty is a temporary, in-memory shift applied after the
+	// configured priority. It must never be persisted as the account priority.
+	PriorityPenalty           int
 	CostMultiplier            float64
 	BaseWeight                float64
 	MaxConcurrency            int
@@ -82,6 +85,7 @@ type LaneSnapshot struct {
 	LatencyEWMAms             float64
 	CooldownUntilUnix         int64
 	RecoveryStage             RecoveryStage
+	RecentFailureStreak       int
 	Metadata                  map[string]string
 }
 

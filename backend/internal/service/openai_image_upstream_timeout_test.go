@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	smartrouter "github.com/Wei-Shaw/sub2api/internal/smartrouter/core"
 	"github.com/stretchr/testify/require"
 )
 
@@ -71,6 +72,31 @@ func TestOpenAIImageRequestTimeout_CanBeDisabled(t *testing.T) {
 
 	_, ok := ctx.Deadline()
 	require.False(t, ok)
+}
+
+func TestOpenAIImageUpstreamTimeout_UsesLaneCapabilityProfileWhenEnabled(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.ImageUpstreamTimeoutSeconds = 180
+	cfg.Gateway.SmartRouter.Enabled = true
+	cfg.Gateway.SmartRouter.AdaptiveTimeout.Enabled = true
+	cfg.Gateway.SmartRouter.AdaptiveTimeout.DefaultSeconds = 180
+	cfg.Gateway.SmartRouter.AdaptiveTimeout.MinSeconds = 30
+	cfg.Gateway.SmartRouter.AdaptiveTimeout.MaxSeconds = 300
+	cfg.Gateway.SmartRouter.AdaptiveTimeout.SafetyMarginSeconds = 10
+	cfg.Gateway.SmartRouter.AdaptiveTimeout.Multiplier = 1.25
+	cfg.Gateway.SmartRouter.AdaptiveTimeout.WindowSize = 4
+	cfg.Gateway.SmartRouter.AdaptiveTimeout.ReserveSeconds = 30
+	svc := &OpenAIGatewayService{cfg: cfg}
+	account := &Account{ID: 88001}
+	for i := 0; i < 4; i++ {
+		svc.observeSmartRouterImageAttempt(account, smartrouter.CapabilityImageGeneration, 30*time.Second, 200, true, nil)
+	}
+
+	ctx, cancel := svc.withOpenAIImageUpstreamTimeoutFor(context.Background(), account, smartrouter.CapabilityImageGeneration)
+	defer cancel()
+	deadline, ok := ctx.Deadline()
+	require.True(t, ok)
+	require.WithinDuration(t, time.Now().Add(47*time.Second), deadline, 2*time.Second)
 }
 
 func TestDetachOpenAIImageUpstreamContext_PreservesDeadline(t *testing.T) {

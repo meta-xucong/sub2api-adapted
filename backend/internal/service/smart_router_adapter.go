@@ -275,6 +275,24 @@ func (s *OpenAIGatewayService) reportSmartRouterImageResult(source string, accou
 	})
 }
 
+func (s *OpenAIGatewayService) smartRouterAdaptiveTimeoutConfig() smartrouter.AdaptiveTimeoutConfig {
+	config := smartrouter.DefaultAdaptiveTimeoutConfig()
+	if s == nil || s.cfg == nil {
+		return config
+	}
+	cfg := s.cfg.Gateway.SmartRouter.AdaptiveTimeout
+	config.Enabled = cfg.Enabled
+	config.Default = time.Duration(cfg.DefaultSeconds) * time.Second
+	config.Min = time.Duration(cfg.MinSeconds) * time.Second
+	config.Max = time.Duration(cfg.MaxSeconds) * time.Second
+	config.SafetyMargin = time.Duration(cfg.SafetyMarginSeconds) * time.Second
+	config.Multiplier = cfg.Multiplier
+	config.FailureBackoffMultiplier = cfg.FailureBackoffMultiplier
+	config.WindowSize = cfg.WindowSize
+	config.ReservePerAttempt = time.Duration(cfg.ReserveSeconds) * time.Second
+	return config.Normalize()
+}
+
 func (s *OpenAIGatewayService) smartRouterExcludedSourceGroups(accounts []Account, excludedIDs map[int64]struct{}) map[string]struct{} {
 	if !s.isSmartRouterEnabled() || len(accounts) == 0 || len(excludedIDs) == 0 {
 		return nil
@@ -345,6 +363,7 @@ func smartRouterLaneSnapshot(account *Account, loadInfo *AccountLoadInfo, errorR
 		ImageSizeTiers:            extra.ImageSizeTiers,
 		ModelPatterns:             smartRouterModelPatterns(account),
 		Priority:                  account.Priority,
+		PriorityPenalty:           smartRouterPriorityPenalty(errorRate),
 		CostMultiplier:            costMultiplier,
 		BaseWeight:                baseWeight,
 		MaxConcurrency:            maxConcurrency,
@@ -356,6 +375,22 @@ func smartRouterLaneSnapshot(account *Account, loadInfo *AccountLoadInfo, errorR
 		ErrorRateEWMA:             errorRate,
 		LatencyEWMAms:             latency,
 	}, true
+}
+
+// smartRouterPriorityPenalty is a temporary ordering shift. It makes a
+// flapping low-cost lane yield to the next configured priority layer without
+// mutating account.priority or making the lane permanently unavailable.
+func smartRouterPriorityPenalty(errorRate float64) int {
+	switch {
+	case errorRate >= 0.50:
+		return 30
+	case errorRate >= 0.35:
+		return 20
+	case errorRate >= 0.20:
+		return 10
+	default:
+		return 0
+	}
 }
 
 func smartRouterSourceGroup(account *Account) string {

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/url"
 	"os"
 	"strings"
@@ -882,19 +883,20 @@ type GatewayConfig struct {
 
 // GatewaySmartRouterConfig configures the optional Smart Router module.
 type GatewaySmartRouterConfig struct {
-	Enabled                 bool                                `mapstructure:"enabled"`
-	TopK                    int                                 `mapstructure:"top_k"`
-	MaxAttemptsImage        int                                 `mapstructure:"max_attempts_image"`
-	MaxAttemptsChat         int                                 `mapstructure:"max_attempts_chat"`
-	MaxAttemptsDefault      int                                 `mapstructure:"max_attempts_default"`
-	SameSourceGroupAttempts int                                 `mapstructure:"same_source_group_attempts"`
-	CostBiasMax             float64                             `mapstructure:"cost_bias_max"`
-	ImageTotalBudgetSeconds int                                 `mapstructure:"image_total_budget_seconds"`
-	ImageAttemptSeconds     int                                 `mapstructure:"image_attempt_seconds"`
-	ImageReserveSeconds     int                                 `mapstructure:"image_finalization_reserve_seconds"`
-	Recovery                GatewaySmartRouterRecoveryConfig    `mapstructure:"recovery"`
-	Calibration             GatewaySmartRouterCalibrationConfig `mapstructure:"calibration"`
-	Scoring                 GatewaySmartRouterScoringConfig     `mapstructure:"scoring"`
+	Enabled                 bool                                    `mapstructure:"enabled"`
+	TopK                    int                                     `mapstructure:"top_k"`
+	MaxAttemptsImage        int                                     `mapstructure:"max_attempts_image"`
+	MaxAttemptsChat         int                                     `mapstructure:"max_attempts_chat"`
+	MaxAttemptsDefault      int                                     `mapstructure:"max_attempts_default"`
+	SameSourceGroupAttempts int                                     `mapstructure:"same_source_group_attempts"`
+	CostBiasMax             float64                                 `mapstructure:"cost_bias_max"`
+	ImageTotalBudgetSeconds int                                     `mapstructure:"image_total_budget_seconds"`
+	ImageAttemptSeconds     int                                     `mapstructure:"image_attempt_seconds"`
+	ImageReserveSeconds     int                                     `mapstructure:"image_finalization_reserve_seconds"`
+	Recovery                GatewaySmartRouterRecoveryConfig        `mapstructure:"recovery"`
+	Calibration             GatewaySmartRouterCalibrationConfig     `mapstructure:"calibration"`
+	Scoring                 GatewaySmartRouterScoringConfig         `mapstructure:"scoring"`
+	AdaptiveTimeout         GatewaySmartRouterAdaptiveTimeoutConfig `mapstructure:"adaptive_timeout"`
 }
 
 // GatewaySmartRouterRecoveryConfig governs capability-scoped penalties. It
@@ -914,6 +916,21 @@ type GatewaySmartRouterCalibrationConfig struct {
 	Minute              int  `mapstructure:"minute"`
 	TotalBudgetSeconds  int  `mapstructure:"total_budget_seconds"`
 	ProbeTimeoutSeconds int  `mapstructure:"probe_timeout_seconds"`
+}
+
+// GatewaySmartRouterAdaptiveTimeoutConfig controls the optional per-lane,
+// per-capability timeout profile. It never changes the total image request
+// budget and is disabled by default for compatibility with existing installs.
+type GatewaySmartRouterAdaptiveTimeoutConfig struct {
+	Enabled                  bool    `mapstructure:"enabled"`
+	DefaultSeconds           int     `mapstructure:"default_seconds"`
+	MinSeconds               int     `mapstructure:"min_seconds"`
+	MaxSeconds               int     `mapstructure:"max_seconds"`
+	SafetyMarginSeconds      int     `mapstructure:"safety_margin_seconds"`
+	Multiplier               float64 `mapstructure:"multiplier"`
+	FailureBackoffMultiplier float64 `mapstructure:"failure_backoff_multiplier"`
+	WindowSize               int     `mapstructure:"window_size"`
+	ReserveSeconds           int     `mapstructure:"reserve_seconds"`
 }
 
 // GatewaySmartRouterScoringConfig controls lane scoring weights.
@@ -2128,6 +2145,15 @@ func setDefaults() {
 	viper.SetDefault("gateway.image_request_timeout_seconds", 600)
 	viper.SetDefault("gateway.image_edit_transient_cooldown_seconds", 12)
 	viper.SetDefault("gateway.image_generation_transient_cooldown_seconds", 30)
+	viper.SetDefault("gateway.smart_router.adaptive_timeout.enabled", false)
+	viper.SetDefault("gateway.smart_router.adaptive_timeout.default_seconds", 180)
+	viper.SetDefault("gateway.smart_router.adaptive_timeout.min_seconds", 30)
+	viper.SetDefault("gateway.smart_router.adaptive_timeout.max_seconds", 300)
+	viper.SetDefault("gateway.smart_router.adaptive_timeout.safety_margin_seconds", 20)
+	viper.SetDefault("gateway.smart_router.adaptive_timeout.multiplier", 1.25)
+	viper.SetDefault("gateway.smart_router.adaptive_timeout.failure_backoff_multiplier", 0.5)
+	viper.SetDefault("gateway.smart_router.adaptive_timeout.window_size", 32)
+	viper.SetDefault("gateway.smart_router.adaptive_timeout.reserve_seconds", 30)
 	viper.SetDefault("gateway.max_line_size", 500*1024*1024)
 	viper.SetDefault("gateway.scheduling.sticky_session_max_waiting", 3)
 	viper.SetDefault("gateway.scheduling.sticky_session_wait_timeout", 120*time.Second)
@@ -2879,6 +2905,23 @@ func (c *Config) Validate() error {
 		c.Gateway.SmartRouter.ImageAttemptSeconds > 0 &&
 		c.Gateway.SmartRouter.ImageTotalBudgetSeconds <= c.Gateway.SmartRouter.ImageAttemptSeconds+c.Gateway.SmartRouter.ImageReserveSeconds {
 		return fmt.Errorf("gateway.smart_router.image_total_budget_seconds must exceed image_attempt_seconds plus image_finalization_reserve_seconds")
+	}
+	adaptiveTimeout := c.Gateway.SmartRouter.AdaptiveTimeout
+	if adaptiveTimeout.DefaultSeconds < 0 || adaptiveTimeout.MinSeconds < 0 || adaptiveTimeout.MaxSeconds < 0 ||
+		adaptiveTimeout.SafetyMarginSeconds < 0 || adaptiveTimeout.WindowSize < 0 || adaptiveTimeout.ReserveSeconds < 0 {
+		return fmt.Errorf("gateway.smart_router.adaptive_timeout durations and window_size must be non-negative")
+	}
+	if adaptiveTimeout.Multiplier < 0 || math.IsNaN(adaptiveTimeout.Multiplier) || math.IsInf(adaptiveTimeout.Multiplier, 0) {
+		return fmt.Errorf("gateway.smart_router.adaptive_timeout.multiplier must be finite and non-negative")
+	}
+	if adaptiveTimeout.Enabled && (adaptiveTimeout.FailureBackoffMultiplier <= 0 || adaptiveTimeout.FailureBackoffMultiplier > 1) {
+		return fmt.Errorf("gateway.smart_router.adaptive_timeout.failure_backoff_multiplier must be greater than 0 and at most 1")
+	}
+	if adaptiveTimeout.Enabled && adaptiveTimeout.DefaultSeconds == 0 {
+		return fmt.Errorf("gateway.smart_router.adaptive_timeout.default_seconds must be positive when enabled")
+	}
+	if adaptiveTimeout.Enabled && adaptiveTimeout.MinSeconds > adaptiveTimeout.MaxSeconds {
+		return fmt.Errorf("gateway.smart_router.adaptive_timeout.min_seconds must be <= max_seconds")
 	}
 	smartRouterWeights := c.Gateway.SmartRouter.Scoring
 	if smartRouterWeights.Priority < 0 || smartRouterWeights.Cost < 0 || smartRouterWeights.Health < 0 ||

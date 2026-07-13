@@ -2,7 +2,12 @@ package service
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"strconv"
 	"time"
+
+	smartrouter "github.com/Wei-Shaw/sub2api/internal/smartrouter/core"
 )
 
 const defaultOpenAIImageUpstreamTimeout = 180 * time.Second
@@ -28,6 +33,85 @@ func (s *OpenAIGatewayService) withOpenAIImageUpstreamTimeout(ctx context.Contex
 		return ctx, func() {}
 	}
 	return context.WithTimeout(ctx, timeout)
+}
+
+func (s *OpenAIGatewayService) withOpenAIImageUpstreamTimeoutFor(ctx context.Context, account *Account, capability smartrouter.Capability) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	timeout := s.openAIImageUpstreamTimeout()
+	engine := s.smartRouterAdaptiveTimeoutEngine()
+	if engine != nil && engine.Config().Enabled && s.isSmartRouterEnabled() {
+		laneID := ""
+		if account != nil {
+			laneID = "account:" + formatAccountID(account.ID)
+		}
+		remaining := time.Duration(0)
+		if deadline, ok := ctx.Deadline(); ok {
+			remaining = time.Until(deadline)
+		}
+		decision := engine.TimeoutFor(smartrouter.TimeoutRequest{
+			LaneID:          laneID,
+			Capability:      capability,
+			DefaultTimeout:  timeout,
+			RemainingBudget: remaining,
+		})
+		timeout = decision.Timeout
+	}
+	if timeout <= 0 {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, timeout)
+}
+
+func (s *OpenAIGatewayService) smartRouterAdaptiveTimeoutEngine() *smartrouter.AdaptiveTimeoutEngine {
+	if s == nil {
+		return nil
+	}
+	s.smartRouterAdaptiveTimeoutOnce.Do(func() {
+		s.smartRouterAdaptiveTimeout = smartrouter.NewAdaptiveTimeoutEngine(s.smartRouterAdaptiveTimeoutConfig())
+	})
+	return s.smartRouterAdaptiveTimeout
+}
+
+func (s *OpenAIGatewayService) observeSmartRouterImageAttempt(account *Account, capability smartrouter.Capability, duration time.Duration, statusCode int, success bool, requestErr error) {
+	engine := s.smartRouterAdaptiveTimeoutEngine()
+	if engine == nil || !engine.Config().Enabled || !s.isSmartRouterEnabled() || account == nil {
+		return
+	}
+	failureClass := smartrouter.FailureClass("")
+	if !success {
+		if errors.Is(requestErr, context.Canceled) {
+			failureClass = smartrouter.FailureCancelled
+		} else if errors.Is(requestErr, context.DeadlineExceeded) {
+			failureClass = smartrouter.FailureTimeout
+		} else {
+			failureClass = smartrouter.ClassifyFailure(statusCode, capability, false)
+		}
+	}
+	engine.Observe(smartrouter.AttemptObservation{
+		LaneID:       "account:" + formatAccountID(account.ID),
+		Capability:   capability,
+		Duration:     duration,
+		Success:      success,
+		FailureClass: failureClass,
+		StatusCode:   statusCode,
+		ErrorSummary: imageAttemptErrorSummary(statusCode, requestErr),
+	})
+}
+
+func imageAttemptErrorSummary(statusCode int, requestErr error) string {
+	if requestErr != nil {
+		return requestErr.Error()
+	}
+	if statusCode >= 400 {
+		return fmt.Sprintf("status=%d", statusCode)
+	}
+	return ""
+}
+
+func formatAccountID(accountID int64) string {
+	return strconv.FormatInt(accountID, 10)
 }
 
 func (s *OpenAIGatewayService) openAIImageRequestTimeout() time.Duration {
