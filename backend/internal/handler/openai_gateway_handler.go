@@ -17,6 +17,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	smartrouter "github.com/Wei-Shaw/sub2api/internal/smartrouter/core"
 
 	coderws "github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
@@ -287,6 +288,8 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		defer cancelImageRequest()
 		requestCtx = service.WithOpenAIImageGenerationIntent(requestCtx)
 		routingContext = requestCtx
+	} else {
+		routingContext = service.WithOpenAIResponsesIntent(routingContext)
 	}
 
 	// 解析渠道级模型映射
@@ -436,6 +439,8 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
 		if requireCompact {
 			h.gatewayService.ReportSmartRouterCompactResult(account, reqModel, result, err, forwardDurationMs)
+		} else {
+			h.gatewayService.ReportSmartRouterTextResult(account, smartrouter.CapabilityResponses, reqModel, result, err, forwardDurationMs)
 		}
 		upstreamLatencyMs, _ := getContextInt64(c, service.OpsUpstreamLatencyMsKey)
 		responseLatencyMs := forwardDurationMs

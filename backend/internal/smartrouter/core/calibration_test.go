@@ -85,3 +85,39 @@ func TestBuildCalibrationPlanProbesCompactCapabilityWhenLaneDeclaresIt(t *testin
 		Reason:     "unknown_capability",
 	}}, probes)
 }
+
+func TestBuildCalibrationPlanProbesDeclaredChatAndResponsesIndependently(t *testing.T) {
+	now := time.Date(2026, 7, 12, 4, 0, 0, 0, time.FixedZone("Asia/Shanghai", 8*60*60))
+	lanes := []LaneSnapshot{{
+		LaneID: "dual-protocol",
+		Capabilities: map[Capability]bool{
+			CapabilityChat:      true,
+			CapabilityResponses: true,
+		},
+	}}
+
+	probes := BuildCalibrationPlan(now, lanes, nil, CalibrationPolicy{})
+	require.ElementsMatch(t, []CalibrationProbe{
+		{LaneID: "dual-protocol", Capability: CapabilityChat, Reason: "unknown_capability"},
+		{LaneID: "dual-protocol", Capability: CapabilityResponses, Reason: "unknown_capability"},
+	}, probes)
+}
+
+func TestBuildCalibrationPlanRechecksRecoverySlotEvenWithFreshSuccess(t *testing.T) {
+	now := time.Date(2026, 7, 12, 4, 0, 0, 0, time.FixedZone("Asia/Shanghai", 8*60*60))
+	lanes := []LaneSnapshot{{
+		LaneID:       "demoted-image",
+		Capabilities: map[Capability]bool{CapabilityImageGeneration: true},
+	}}
+	evidence := []CapabilityEvidence{{
+		LaneID:                     "demoted-image",
+		GenerationKnown:            true,
+		GenerationLastSuccess:      now.Add(-time.Hour),
+		GenerationRecoveryPriority: 30,
+	}}
+
+	probes := BuildCalibrationPlan(now, lanes, evidence, CalibrationPolicy{FreshEvidenceWindow: 24 * time.Hour})
+	require.Equal(t, []CalibrationProbe{{
+		LaneID: "demoted-image", Capability: CapabilityImageGeneration, Reason: "recovery_slot_due",
+	}}, probes)
+}

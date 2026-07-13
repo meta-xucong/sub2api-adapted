@@ -1780,6 +1780,8 @@ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForCapability(
 		smartCapability = smartrouter.CapabilityResponsesCompact
 	} else if OpenAIImageGenerationIntentFromContext(ctx) {
 		smartCapability = smartrouter.CapabilityImageGeneration
+	} else if OpenAIResponsesIntentFromContext(ctx) {
+		smartCapability = smartrouter.CapabilityResponses
 	}
 	return s.selectAccountWithScheduler(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, requiredCapability, "", requireCompact, platform, previousResponseCanMove, smartCapability)
 }

@@ -25,16 +25,27 @@ type SmartRouterHealthState struct {
 // SmartRouterCapabilityEvidence is the compact ledger view that decides which
 // daily probes are necessary for a lane.
 type SmartRouterCapabilityEvidence struct {
-	LaneID                string
-	GenerationKnown       bool
-	EditKnown             bool
-	GenerationLastSuccess time.Time
-	GenerationLastFailure time.Time
-	EditLastSuccess       time.Time
-	EditLastFailure       time.Time
-	CompactKnown          bool
-	CompactLastSuccess    time.Time
-	CompactLastFailure    time.Time
+	LaneID                     string
+	ChatKnown                  bool
+	ChatLastSuccess            time.Time
+	ChatLastFailure            time.Time
+	ChatRecoveryPriority       int
+	ResponsesKnown             bool
+	ResponsesLastSuccess       time.Time
+	ResponsesLastFailure       time.Time
+	ResponsesRecoveryPriority  int
+	GenerationKnown            bool
+	EditKnown                  bool
+	GenerationLastSuccess      time.Time
+	GenerationLastFailure      time.Time
+	GenerationRecoveryPriority int
+	EditLastSuccess            time.Time
+	EditLastFailure            time.Time
+	EditRecoveryPriority       int
+	CompactKnown               bool
+	CompactLastSuccess         time.Time
+	CompactLastFailure         time.Time
+	CompactRecoveryPriority    int
 }
 
 type SmartRouterCalibrationRun struct {

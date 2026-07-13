@@ -25,7 +25,7 @@ func TestHealthTrackerCapabilityFailureQuarantinesOnlyGeneration(t *testing.T) {
 
 	generation := tracker.Snapshot(LaneSnapshot{LaneID: "flowyun", Priority: 2}, CapabilityImageGeneration, "gpt-image-2", now.Unix())
 	edit := tracker.Snapshot(LaneSnapshot{LaneID: "flowyun", Priority: 2}, CapabilityImageEdit, "gpt-image-2", now.Unix())
-	require.Equal(t, 4, generation.Priority)
+	require.Equal(t, 30, generation.Priority)
 	require.Equal(t, RecoveryCooling, generation.RecoveryStage)
 	require.Equal(t, 2, edit.Priority)
 	require.Equal(t, RecoveryNormal, edit.RecoveryStage)
@@ -133,6 +133,47 @@ func TestHealthTrackerRestorePreservesCapabilityScopedCooldown(t *testing.T) {
 	require.Equal(t, 4, generation.Priority)
 	require.Equal(t, RecoveryCooling, generation.RecoveryStage)
 	require.Equal(t, 2, edit.Priority)
+}
+
+func TestHealthTrackerAssignsSequentialRecoveryPrioritiesPerCapability(t *testing.T) {
+	now := time.Unix(15_000, 0)
+	tracker := NewHealthTracker(HealthPolicy{}, func() time.Time { return now }, nil)
+	failed := func(lane string) {
+		tracker.Observe(RouteResult{
+			LaneID:      lane,
+			SourceGroup: "same-upstream",
+			Capability:  CapabilityResponses,
+			Model:       "gpt-5.5",
+			StatusCode:  http.StatusBadGateway,
+			ErrorClass:  FailureUpstream5xx,
+		})
+	}
+	failed("line-a")
+	failed("line-b")
+	first := tracker.Snapshot(LaneSnapshot{LaneID: "line-a", SourceGroup: "same-upstream", Priority: 1}, CapabilityResponses, "gpt-5.5", now.Unix())
+	second := tracker.Snapshot(LaneSnapshot{LaneID: "line-b", SourceGroup: "same-upstream", Priority: 2}, CapabilityResponses, "gpt-5.5", now.Unix())
+	require.Equal(t, 30, first.Priority)
+	require.Equal(t, 31, second.Priority)
+
+	tracker.Observe(RouteResult{Source: "calibration", LaneID: "line-a", SourceGroup: "same-upstream", Capability: CapabilityResponses, Model: "gpt-5.5", Success: true, StatusCode: http.StatusOK})
+	recovered := tracker.Snapshot(LaneSnapshot{LaneID: "line-a", SourceGroup: "same-upstream", Priority: 1}, CapabilityResponses, "gpt-5.5", now.Unix())
+	require.Equal(t, 1, recovered.Priority)
+	failed("line-c")
+	third := tracker.Snapshot(LaneSnapshot{LaneID: "line-c", SourceGroup: "same-upstream", Priority: 3}, CapabilityResponses, "gpt-5.5", now.Unix())
+	require.Equal(t, 30, third.Priority)
+}
+
+func TestHealthTrackerCalibrationSuccessImmediatelyRestoresCapability(t *testing.T) {
+	now := time.Unix(16_000, 0)
+	tracker := NewHealthTracker(HealthPolicy{}, func() time.Time { return now }, nil)
+	tracker.Observe(RouteResult{LaneID: "line", SourceGroup: "source", Capability: CapabilityResponsesCompact, Model: "gpt-5.5", StatusCode: http.StatusServiceUnavailable, ErrorClass: FailureUpstream5xx})
+	degraded := tracker.Snapshot(LaneSnapshot{LaneID: "line", SourceGroup: "source", Priority: 2}, CapabilityResponsesCompact, "gpt-5.5", now.Unix())
+	require.Equal(t, 30, degraded.Priority)
+
+	event := tracker.Observe(RouteResult{Source: "calibration", LaneID: "line", SourceGroup: "source", Capability: CapabilityResponsesCompact, Model: "gpt-5.5", Success: true, StatusCode: http.StatusOK})
+	require.Equal(t, RecoveryNormal, event.RecoveryStage)
+	require.Zero(t, event.RecoveryPriority)
+	require.Equal(t, 2, tracker.Snapshot(LaneSnapshot{LaneID: "line", SourceGroup: "source", Priority: 2}, CapabilityResponsesCompact, "gpt-5.5", now.Unix()).Priority)
 }
 
 func TestClassifyFailureDetailsDetectsTextReplyCapabilityMismatch(t *testing.T) {

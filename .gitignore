@@ -134,6 +134,7 @@ docs/*
 !docs/PAYMENT_CN.md
 !docs/ADMIN_PAYMENT_INTEGRATION_API.md
 !docs/SMART_ROUTER_ADAPTIVE_POLICY.md
+!docs/SMART_ROUTER_IMAGE_ENDPOINT_HARDENING_DEVELOPMENT.md
 !docs/legal/
 !docs/legal/*.md
 .serena/

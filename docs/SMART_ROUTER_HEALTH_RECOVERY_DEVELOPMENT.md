@@ -2,7 +2,7 @@
 
 ## 1. 文档定位
 
-本文是 Smart Router 的第二阶段开发规格，建立在以下基础能力之上：
+本文是 Smart Router 的第二阶段开发规格，建立在以下基础能力之上。当前实现以本文件和 `SMART_ROUTER_ADAPTIVE_POLICY.md` 的“绝对恢复槽位”规则为准；本文早期的百分比灰度描述已被下面的能力隔离和恢复规则取代。
 
 - lane、capability、source group 抽象；
 - 成本、负载、健康度综合选择；
@@ -22,13 +22,14 @@
 
 ### 2.1 原始优先级不可被覆盖
 
-账号或线路的原始价格优先级称为 `base_priority`。Smart Router 只能计算临时的 `health_penalty`，不能直接修改价格配置、分组优先级或人工开关。
+账号或线路的原始价格优先级称为 `base_priority`。Smart Router 不能直接修改价格配置、分组优先级或人工开关；失败时只在对应 `source_group + capability` 池内分配临时绝对恢复槽位。
 
 ```text
-effective_priority = base_priority + health_penalty
+healthy:   effective_priority = base_priority
+degraded:  effective_priority = 30, 31, 32, ...
 ```
 
-恢复时只清除 `health_penalty`，从而回到原始价格排序。
+每个新的软降权 lane 分配下一个空闲槽位，且槽位按 capability 隔离。生产成功遵循 warming 状态逐步回流；上海时间 04:00 的校准成功直接释放槽位并恢复 `base_priority`，失败则保留后置状态并等待下一次校准。原始价格优先级始终不被写回。
 
 人工关闭使用独立的 `manual_disabled` 状态，自动校准不得覆盖。
 
@@ -88,11 +89,12 @@ manual_disabled  -> manual_disabled      -> manual_enable_only
 
 ### 3.2 恢复的滞后保护
 
-一次成功不能立即恢复满流量：
+生产流量中的一次成功不能立即恢复满流量；但 04:00 校准是专门的恢复探测：
 
-- 一次探针成功：进入 `warming_5`；
+- 一次生产探针成功：进入 `warming_5`；
 - 再一次探针或真实生产成功：进入 `warming_25`；
 - 连续成功并经过安静窗口：回到 `healthy`；
+- 04:00 校准成功：直接释放 `30/31/32` 恢复槽位并恢复 `base_priority`；
 - 任一阶段出现同类失败：重新进入冷却。
 
 这样可以避免“刚恢复就被打满、再次失败、再次永久关闭”的循环。
@@ -121,7 +123,7 @@ manual_disabled  -> manual_disabled      -> manual_enable_only
 第一次失败       -> 有效优先级后置一档
 15 分钟内两次失败 -> 再后置一档并降低并发
 连续三次失败     -> 继续后置，但仍保留最低权重尝试机会
-校准成功         -> 5% 灰度回流
+校准成功         -> 释放恢复槽位，恢复 base_priority
 连续成功         -> 恢复原始优先级
 ```
 
@@ -285,8 +287,8 @@ updated_at_utc
 
 ### 7.4 校准结果
 
-- 成功：清除对应动态惩罚，进入 `warming_5`；
-- 连续成功：逐步恢复到 `warming_25`、`healthy`；
+- 生产成功：按 warming 规则逐步清除动态惩罚；
+- 04:00 校准成功：立即清除对应 capability 的动态后置槽位，恢复原始优先级；
 - 继续失败：延长冷却或保持 `quarantined_capability`；
 - 结果必须关联 `calibration_run_id`，便于追溯“为什么恢复或后置”。
 
@@ -346,9 +348,9 @@ gateway:
       image_edit: 2
       same_source_group: 1
     recovery:
-      first_success_weight: 0.05
-      second_success_weight: 0.25
-      success_to_normal: 3
+      first_recovery_priority: 30
+      production_successes_to_normal: 3
+      calibration_success_restores_base_priority: true
       quiet_window_seconds: 900
     failure_policy:
       transient_cooldown_seconds: 30
@@ -390,7 +392,7 @@ gateway:
 ### 必测用例
 
 - 7646881 连续 502 后临时后置；
-- 7646881 校准成功后 5% 回流；
+- 7646881 校准成功后恢复原始优先级；
 - 流云 `upstream_text_reply` 只隔离文生图；
 - 图生图失败不影响文生图；
 - 客户端 `context canceled` 不降低上游健康分；

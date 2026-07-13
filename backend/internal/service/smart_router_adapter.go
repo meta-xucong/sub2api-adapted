@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -76,6 +77,7 @@ type smartRouterAccountExtra struct {
 	Present                   bool
 	EnabledSet                bool
 	Enabled                   bool
+	CapabilitiesSet           bool
 	LaneID                    string
 	SourceGroup               string
 	BaseWeight                float64
@@ -157,10 +159,11 @@ func (s *OpenAIGatewayService) smartRouterHealth() *smartrouter.HealthTracker {
 				logger.LegacyPrintf("service.openai_gateway", "Smart Router ledger restore failed: %v", err)
 			} else {
 				for _, state := range states {
-					tracker.Restore(
+					tracker.RestoreWithSourceGroup(
 						smartrouter.NewHealthKey(state.LaneID, state.Capability, state.ModelFamily),
 						state.Snapshot,
 						state.LastFailureUnix,
+						state.SourceGroup,
 					)
 				}
 			}
@@ -237,6 +240,59 @@ func (s *OpenAIGatewayService) ReportSmartRouterCompactResult(account *Account, 
 // without treating the probe as user traffic.
 func (s *OpenAIGatewayService) ReportSmartRouterCompactCalibrationResult(account *Account, requestedModel string, result *OpenAIForwardResult, err error, durationMs int64) {
 	s.reportSmartRouterCompactResult("calibration", account, requestedModel, result, err, durationMs)
+}
+
+// ReportSmartRouterTextResult feeds ordinary Responses/chat traffic into the
+// capability-specific health lane. It deliberately does not share state with
+// image generation, image edit, or compact.
+func (s *OpenAIGatewayService) ReportSmartRouterTextResult(account *Account, capability smartrouter.Capability, requestedModel string, result *OpenAIForwardResult, err error, durationMs int64) {
+	s.reportSmartRouterTextResult("production", account, capability, requestedModel, result, err, durationMs)
+}
+
+func (s *OpenAIGatewayService) ReportSmartRouterTextCalibrationResult(account *Account, capability smartrouter.Capability, requestedModel string, result *OpenAIForwardResult, err error, durationMs int64) {
+	s.reportSmartRouterTextResult("calibration", account, capability, requestedModel, result, err, durationMs)
+}
+
+func (s *OpenAIGatewayService) reportSmartRouterTextResult(source string, account *Account, capability smartrouter.Capability, requestedModel string, result *OpenAIForwardResult, err error, durationMs int64) {
+	if s == nil || !s.isSmartRouterEnabled() || account == nil || (capability != smartrouter.CapabilityChat && capability != smartrouter.CapabilityResponses) {
+		return
+	}
+	lane, ok := smartRouterLaneSnapshot(account, nil, 0, 0, false)
+	if !ok {
+		return
+	}
+	statusCode := 0
+	message := ""
+	var failoverErr *UpstreamFailoverError
+	if errors.As(err, &failoverErr) && failoverErr != nil {
+		statusCode = failoverErr.StatusCode
+		message = string(failoverErr.ResponseBody)
+	}
+	if err != nil && message == "" {
+		message = err.Error()
+	}
+	clientCancelled := errors.Is(err, context.Canceled) || strings.Contains(strings.ToLower(message), "context canceled")
+	success := err == nil
+	if success {
+		statusCode = http.StatusOK
+	}
+	errorClass := smartrouter.FailureClass("")
+	if !success {
+		errorClass = smartrouter.ClassifyFailureDetails(statusCode, capability, message, "", clientCancelled)
+	}
+	s.smartRouterHealth().Observe(smartrouter.RouteResult{
+		Source:         source,
+		LaneID:         lane.LaneID,
+		AccountID:      lane.AccountID,
+		SourceGroup:    lane.SourceGroup,
+		Capability:     capability,
+		Model:          requestedModel,
+		Success:        success,
+		StatusCode:     statusCode,
+		ErrorClass:     errorClass,
+		TotalLatencyMs: durationMs,
+		ErrorSummary:   message,
+	})
 }
 
 func (s *OpenAIGatewayService) reportSmartRouterCompactResult(source string, account *Account, requestedModel string, result *OpenAIForwardResult, err error, durationMs int64) {
@@ -412,24 +468,26 @@ func smartRouterLaneSnapshot(account *Account, loadInfo *AccountLoadInfo, errorR
 		latency = ttft
 	}
 	capabilities := extra.Capabilities
-	if len(capabilities) > 0 {
+	if len(capabilities) > 0 || extra.CapabilitiesSet {
 		capabilities = cloneSmartRouterCapabilities(capabilities)
 		// Capability maps created before the compact lane existed must not
 		// silently exclude otherwise eligible OpenAI compact accounts.
-		if account.IsOpenAI() && account.AllowsOpenAICompact() {
+		if !extra.CapabilitiesSet && account.IsOpenAI() && account.AllowsOpenAICompact() {
 			capabilities[smartrouter.CapabilityResponsesCompact] = true
 		}
 	}
 	return smartrouter.LaneSnapshot{
-		LaneID:                    laneID,
-		AccountID:                 account.ID,
-		Name:                      account.Name,
-		SourceGroup:               sourceGroup,
-		Capabilities:              capabilities,
-		ImageSizeTiers:            extra.ImageSizeTiers,
-		ModelPatterns:             smartRouterModelPatterns(account),
-		Priority:                  account.Priority,
-		PriorityPenalty:           smartRouterPriorityPenalty(errorRate),
+		LaneID:         laneID,
+		AccountID:      account.ID,
+		Name:           account.Name,
+		SourceGroup:    sourceGroup,
+		Capabilities:   capabilities,
+		ImageSizeTiers: extra.ImageSizeTiers,
+		ModelPatterns:  smartRouterModelPatterns(account),
+		Priority:       account.Priority,
+		// HealthTracker owns the absolute 30/31/32 recovery slot. Do not add a
+		// second EWMA-derived 10/20/30 penalty here.
+		PriorityPenalty:           0,
 		CostMultiplier:            costMultiplier,
 		BaseWeight:                baseWeight,
 		MaxConcurrency:            maxConcurrency,
@@ -441,22 +499,6 @@ func smartRouterLaneSnapshot(account *Account, loadInfo *AccountLoadInfo, errorR
 		ErrorRateEWMA:             errorRate,
 		LatencyEWMAms:             latency,
 	}, true
-}
-
-// smartRouterPriorityPenalty is a temporary ordering shift. It makes a
-// flapping low-cost lane yield to the next configured priority layer without
-// mutating account.priority or making the lane permanently unavailable.
-func smartRouterPriorityPenalty(errorRate float64) int {
-	switch {
-	case errorRate >= 0.50:
-		return 30
-	case errorRate >= 0.35:
-		return 20
-	case errorRate >= 0.20:
-		return 10
-	default:
-		return 0
-	}
 }
 
 func smartRouterSourceGroup(account *Account) string {
@@ -597,6 +639,9 @@ func parseSmartRouterAccountExtra(account *Account) smartRouterAccountExtra {
 	if enabled, ok := smartRouterBool(block["enabled"]); ok {
 		cfg.EnabledSet = true
 		cfg.Enabled = enabled
+	}
+	if _, exists := block["capabilities"]; exists {
+		cfg.CapabilitiesSet = true
 	}
 	cfg.LaneID = smartRouterString(block["lane_id"])
 	cfg.SourceGroup = smartRouterString(block["source_group"])

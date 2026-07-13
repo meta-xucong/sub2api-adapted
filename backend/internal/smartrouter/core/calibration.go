@@ -19,17 +19,28 @@ func DefaultCalibrationPolicy() CalibrationPolicy {
 }
 
 type CapabilityEvidence struct {
-	LaneID                string
-	GenerationKnown       bool
-	EditKnown             bool
-	GenerationLastSuccess time.Time
-	GenerationLastFailure time.Time
-	EditLastSuccess       time.Time
-	EditLastFailure       time.Time
-	CompactKnown          bool
-	CompactLastSuccess    time.Time
-	CompactLastFailure    time.Time
-	ModesDiverged         bool
+	LaneID                     string
+	ChatKnown                  bool
+	ChatLastSuccess            time.Time
+	ChatLastFailure            time.Time
+	ChatRecoveryPriority       int
+	ResponsesKnown             bool
+	ResponsesLastSuccess       time.Time
+	ResponsesLastFailure       time.Time
+	ResponsesRecoveryPriority  int
+	GenerationKnown            bool
+	EditKnown                  bool
+	GenerationRecoveryPriority int
+	EditRecoveryPriority       int
+	GenerationLastSuccess      time.Time
+	GenerationLastFailure      time.Time
+	EditLastSuccess            time.Time
+	EditLastFailure            time.Time
+	CompactKnown               bool
+	CompactLastSuccess         time.Time
+	CompactLastFailure         time.Time
+	CompactRecoveryPriority    int
+	ModesDiverged              bool
 }
 
 type CalibrationProbe struct {
@@ -62,28 +73,34 @@ func BuildCalibrationPlan(now time.Time, lanes []LaneSnapshot, evidence []Capabi
 	probes := make([]CalibrationProbe, 0, len(lanes)*3)
 	for _, lane := range lanes {
 		item := evidenceByLane[lane.LaneID]
+		if lane.Capabilities[CapabilityChat] && needsCapabilityProbe(now, item.ChatKnown, item.ChatLastSuccess, item.ChatLastFailure, item.ChatRecoveryPriority, policy.FreshEvidenceWindow) {
+			probes = append(probes, CalibrationProbe{LaneID: lane.LaneID, Capability: CapabilityChat, Reason: capabilityProbeReason(item.ChatKnown, item.ChatLastFailure, item.ChatRecoveryPriority)})
+		}
+		if lane.Capabilities[CapabilityResponses] && needsCapabilityProbe(now, item.ResponsesKnown, item.ResponsesLastSuccess, item.ResponsesLastFailure, item.ResponsesRecoveryPriority, policy.FreshEvidenceWindow) {
+			probes = append(probes, CalibrationProbe{LaneID: lane.LaneID, Capability: CapabilityResponses, Reason: capabilityProbeReason(item.ResponsesKnown, item.ResponsesLastFailure, item.ResponsesRecoveryPriority)})
+		}
 		generationKnown := lane.Capabilities[CapabilityImageGeneration]
 		editKnown := lane.Capabilities[CapabilityImageEdit]
 		if len(lane.Capabilities) == 0 {
 			generationKnown = true
 			editKnown = true
 		}
-		if generationKnown && needsProbe(now, item.GenerationKnown, item.GenerationLastSuccess, item.GenerationLastFailure, policy.FreshEvidenceWindow) {
-			probes = append(probes, CalibrationProbe{LaneID: lane.LaneID, Capability: CapabilityImageGeneration, Reason: probeReason(item.GenerationKnown, item.GenerationLastFailure)})
+		if generationKnown && needsCapabilityProbe(now, item.GenerationKnown, item.GenerationLastSuccess, item.GenerationLastFailure, item.GenerationRecoveryPriority, policy.FreshEvidenceWindow) {
+			probes = append(probes, CalibrationProbe{LaneID: lane.LaneID, Capability: CapabilityImageGeneration, Reason: capabilityProbeReason(item.GenerationKnown, item.GenerationLastFailure, item.GenerationRecoveryPriority)})
 		}
 		// A lane with fresh, consistent text-to-image and image-edit evidence only
 		// receives the inexpensive text-to-image daily probe. Image edit is added
 		// when it is unknown, has failed since its last success, or diverges from
 		// generation. This keeps calibration useful without creating needless edits.
-		needEditProbe := !item.EditKnown || item.ModesDiverged || (!item.EditLastFailure.IsZero() && item.EditLastFailure.After(item.EditLastSuccess))
+		needEditProbe := item.EditRecoveryPriority >= firstRecoveryPriority || !item.EditKnown || item.ModesDiverged || (!item.EditLastFailure.IsZero() && item.EditLastFailure.After(item.EditLastSuccess))
 		if editKnown && needEditProbe {
-			probes = append(probes, CalibrationProbe{LaneID: lane.LaneID, Capability: CapabilityImageEdit, Reason: probeReason(item.EditKnown, item.EditLastFailure)})
+			probes = append(probes, CalibrationProbe{LaneID: lane.LaneID, Capability: CapabilityImageEdit, Reason: capabilityProbeReason(item.EditKnown, item.EditLastFailure, item.EditRecoveryPriority)})
 		} else if editKnown && item.ModesDiverged && item.EditLastSuccess.IsZero() {
 			probes = append(probes, CalibrationProbe{LaneID: lane.LaneID, Capability: CapabilityImageEdit, Reason: "mode_divergence_requires_edit_probe"})
 		}
 		compactKnown := lane.Capabilities[CapabilityResponsesCompact]
-		if compactKnown && needsProbe(now, item.CompactKnown, item.CompactLastSuccess, item.CompactLastFailure, policy.FreshEvidenceWindow) {
-			probes = append(probes, CalibrationProbe{LaneID: lane.LaneID, Capability: CapabilityResponsesCompact, Reason: probeReason(item.CompactKnown, item.CompactLastFailure)})
+		if compactKnown && needsCapabilityProbe(now, item.CompactKnown, item.CompactLastSuccess, item.CompactLastFailure, item.CompactRecoveryPriority, policy.FreshEvidenceWindow) {
+			probes = append(probes, CalibrationProbe{LaneID: lane.LaneID, Capability: CapabilityResponsesCompact, Reason: capabilityProbeReason(item.CompactKnown, item.CompactLastFailure, item.CompactRecoveryPriority)})
 		}
 	}
 	return probes
@@ -116,6 +133,10 @@ func needsProbe(now time.Time, known bool, lastSuccess, lastFailure time.Time, f
 	return now.Sub(lastSuccess) >= freshWindow
 }
 
+func needsCapabilityProbe(now time.Time, known bool, lastSuccess, lastFailure time.Time, recoveryPriority int, freshWindow time.Duration) bool {
+	return recoveryPriority >= firstRecoveryPriority || needsProbe(now, known, lastSuccess, lastFailure, freshWindow)
+}
+
 func probeReason(known bool, lastFailure time.Time) string {
 	if !known {
 		return "unknown_capability"
@@ -124,4 +145,11 @@ func probeReason(known bool, lastFailure time.Time) string {
 		return "failure_after_last_success"
 	}
 	return "stale_success_evidence"
+}
+
+func capabilityProbeReason(known bool, lastFailure time.Time, recoveryPriority int) string {
+	if recoveryPriority >= firstRecoveryPriority {
+		return "recovery_slot_due"
+	}
+	return probeReason(known, lastFailure)
 }

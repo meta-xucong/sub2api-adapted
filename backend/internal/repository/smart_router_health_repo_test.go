@@ -19,11 +19,11 @@ func TestSmartRouterHealthRepositoryLoadStatesRestoresCooldown(t *testing.T) {
 	mock.ExpectQuery("SELECT lane_id, account_id").WillReturnRows(sqlmock.NewRows([]string{
 		"lane_id", "account_id", "source_group", "capability", "model_family",
 		"health_penalty", "health_score", "error_rate_ewma", "consecutive_failures",
-		"consecutive_successes", "cooldown_until", "recovery_stage", "last_success_at",
+		"consecutive_successes", "cooldown_until", "recovery_stage", "recovery_priority", "last_success_at",
 		"last_failure_at", "last_failure_unix",
 	}).AddRow(
 		"764-generation", int64(764), "7646881", "image_generation", "gpt-image",
-		2, 0.42, 0.6, 3, 0, now.Add(time.Hour), "cooling", now.Add(-2*time.Hour), now.Add(-time.Minute), now.Add(-time.Minute).Unix(),
+		2, 0.42, 0.6, 3, 0, now.Add(time.Hour), "cooling", 30, now.Add(-2*time.Hour), now.Add(-time.Minute), now.Add(-time.Minute).Unix(),
 	))
 
 	states, err := NewSmartRouterHealthRepository(db).LoadStates(context.Background())
@@ -33,6 +33,7 @@ func TestSmartRouterHealthRepositoryLoadStatesRestoresCooldown(t *testing.T) {
 	require.Equal(t, smartrouter.CapabilityImageGeneration, states[0].Capability)
 	require.Equal(t, now.Add(time.Hour).Unix(), states[0].Snapshot.CooldownUntilUnix)
 	require.Equal(t, smartrouter.RecoveryCooling, states[0].Snapshot.RecoveryStage)
+	require.Equal(t, 30, states[0].Snapshot.RecoveryPriority)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -76,12 +77,14 @@ func TestSmartRouterHealthRepositoryListsCompactCapabilityEvidence(t *testing.T)
 
 	now := time.Date(2026, 7, 13, 4, 0, 0, 0, time.UTC)
 	mock.ExpectQuery("SELECT lane_id,").WillReturnRows(sqlmock.NewRows([]string{
-		"lane_id", "generation_known", "edit_known", "compact_known",
+		"lane_id", "chat_known", "responses_known", "generation_known", "edit_known", "compact_known",
+		"chat_recovery_priority", "responses_recovery_priority", "generation_recovery_priority", "edit_recovery_priority", "compact_recovery_priority",
+		"chat_last_success", "chat_last_failure", "responses_last_success", "responses_last_failure",
 		"generation_last_success", "generation_last_failure", "edit_last_success", "edit_last_failure",
 		"compact_last_success", "compact_last_failure",
 	}).AddRow(
-		"oauth-compact", false, false, true,
-		nil, nil, nil, nil,
+		"oauth-compact", false, false, false, false, true, 0, 0, 0, 0, 30,
+		nil, nil, nil, nil, nil, nil, nil, nil,
 		now.Add(-time.Hour), now.Add(-2*time.Hour),
 	))
 
@@ -90,6 +93,7 @@ func TestSmartRouterHealthRepositoryListsCompactCapabilityEvidence(t *testing.T)
 	require.Len(t, evidence, 1)
 	require.Equal(t, "oauth-compact", evidence[0].LaneID)
 	require.True(t, evidence[0].CompactKnown)
+	require.Equal(t, 30, evidence[0].CompactRecoveryPriority)
 	require.Equal(t, now.Add(-time.Hour), evidence[0].CompactLastSuccess)
 	require.Equal(t, now.Add(-2*time.Hour), evidence[0].CompactLastFailure)
 	require.NoError(t, mock.ExpectationsWereMet())

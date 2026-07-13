@@ -2,6 +2,7 @@ package service
 
 import (
 	"math"
+	"net/http"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -29,6 +30,10 @@ func TestBuildOpenAISelectionOrder_CompactUsesSmartRouterInsideSupportedTier(t *
 	good := &Account{ID: 81002, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Priority: 10, Extra: map[string]any{"openai_compact_supported": true}}
 	badStat := scheduler.stats.loadOrCreate(bad.ID)
 	badStat.errorRateEWMABits.Store(math.Float64bits(0.8))
+	service.ReportSmartRouterCompactResult(bad, "gpt-5.5", nil, &UpstreamFailoverError{
+		StatusCode:   http.StatusServiceUnavailable,
+		ResponseBody: []byte(`{"error":{"message":"service temporarily unavailable"}}`),
+	}, 120000)
 
 	plan := openAIAccountLoadPlan{
 		allCandidates: []openAIAccountCandidateScore{

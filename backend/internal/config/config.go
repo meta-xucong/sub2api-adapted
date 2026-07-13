@@ -912,11 +912,13 @@ type GatewaySmartRouterRecoveryConfig struct {
 
 // GatewaySmartRouterCalibrationConfig controls the durable daily health probes.
 type GatewaySmartRouterCalibrationConfig struct {
-	Enabled             bool `mapstructure:"enabled"`
-	Hour                int  `mapstructure:"hour"`
-	Minute              int  `mapstructure:"minute"`
-	TotalBudgetSeconds  int  `mapstructure:"total_budget_seconds"`
-	ProbeTimeoutSeconds int  `mapstructure:"probe_timeout_seconds"`
+	Enabled                   bool `mapstructure:"enabled"`
+	AutoEnrollEnabled         bool `mapstructure:"auto_enroll_enabled"`
+	AutoEnrollIntervalSeconds int  `mapstructure:"auto_enroll_interval_seconds"`
+	Hour                      int  `mapstructure:"hour"`
+	Minute                    int  `mapstructure:"minute"`
+	TotalBudgetSeconds        int  `mapstructure:"total_budget_seconds"`
+	ProbeTimeoutSeconds       int  `mapstructure:"probe_timeout_seconds"`
 }
 
 // GatewaySmartRouterAdaptiveTimeoutConfig controls the optional per-lane,
@@ -2045,6 +2047,8 @@ func setDefaults() {
 	viper.SetDefault("gateway.smart_router.recovery.sustained_failure_threshold", 3)
 	viper.SetDefault("gateway.smart_router.recovery.image_sustained_failure_threshold", 0)
 	viper.SetDefault("gateway.smart_router.calibration.enabled", true)
+	viper.SetDefault("gateway.smart_router.calibration.auto_enroll_enabled", true)
+	viper.SetDefault("gateway.smart_router.calibration.auto_enroll_interval_seconds", 300)
 	viper.SetDefault("gateway.smart_router.calibration.hour", 4)
 	viper.SetDefault("gateway.smart_router.calibration.minute", 0)
 	viper.SetDefault("gateway.smart_router.calibration.total_budget_seconds", 1800)
@@ -2904,6 +2908,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.SmartRouter.Calibration.ProbeTimeoutSeconds < 0 {
 		return fmt.Errorf("gateway.smart_router.calibration.probe_timeout_seconds must be non-negative")
+	}
+	if c.Gateway.SmartRouter.Calibration.AutoEnrollIntervalSeconds < 0 {
+		return fmt.Errorf("gateway.smart_router.calibration.auto_enroll_interval_seconds must be non-negative")
 	}
 	if c.Gateway.SmartRouter.Enabled &&
 		c.Gateway.SmartRouter.ImageTotalBudgetSeconds > 0 &&
