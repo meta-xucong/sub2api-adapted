@@ -19,6 +19,7 @@ Verified: 2026-07-12
 - Upgrade backup root: `/opt/sub2api/backups/upgrade-v0.1.150-20260710T075612Z`
 - Latest image backup: `/opt/sub2api/backups/smart-router-280a5ccc-20260713-002438`
 - Deployed image: `sub2api-adapted:v0.1.151-smart-router-280a5ccc`
+- Hot-updated runtime code commit: `5c43c54b` (2026-07-14; no image pull/rebuild)
 - Image-baked code commit: `280a5ccc`
 - Hot-updated runtime code commit: `5c43c54b` (2026-07-14; no image pull/rebuild)
 - Runtime image uses the locally cross-compiled Linux binary with the unchanged
@@ -164,6 +165,7 @@ ports.
 - Official baseline: `v0.1.151` (`deff3123`)
 - Deployed image: `sub2api-adapted:v0.1.151-smart-router-280a5ccc`
 - Deployment backup: `/opt/sub2api-deploy/backups/smart-router-280a5ccc-20260713-002446`
+- Latest hot-update backup: `/opt/sub2api-deploy/backups/hot-429-5c43c54b`
 - Rollback image tag: `sub2api-adapted:v0.1.151-smart-router-image-recovery-9c600574`
 - Runtime image uses the locally cross-compiled Linux binary; no VPS-side Go
   compilation is required for this deployment path.
