@@ -69,6 +69,32 @@ func TestSmartRouterHealthRepositoryRecordsEventAndProjectionAtomically(t *testi
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestSmartRouterHealthRepositoryListsCompactCapabilityEvidence(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	now := time.Date(2026, 7, 13, 4, 0, 0, 0, time.UTC)
+	mock.ExpectQuery("SELECT lane_id,").WillReturnRows(sqlmock.NewRows([]string{
+		"lane_id", "generation_known", "edit_known", "compact_known",
+		"generation_last_success", "generation_last_failure", "edit_last_success", "edit_last_failure",
+		"compact_last_success", "compact_last_failure",
+	}).AddRow(
+		"oauth-compact", false, false, true,
+		nil, nil, nil, nil,
+		now.Add(-time.Hour), now.Add(-2*time.Hour),
+	))
+
+	evidence, err := NewSmartRouterHealthRepository(db).ListCapabilityEvidence(context.Background())
+	require.NoError(t, err)
+	require.Len(t, evidence, 1)
+	require.Equal(t, "oauth-compact", evidence[0].LaneID)
+	require.True(t, evidence[0].CompactKnown)
+	require.Equal(t, now.Add(-time.Hour), evidence[0].CompactLastSuccess)
+	require.Equal(t, now.Add(-2*time.Hour), evidence[0].CompactLastFailure)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestSmartRouterHealthRepositoryCalibrationRunIsIdempotent(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)

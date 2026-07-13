@@ -22,6 +22,23 @@ after the outer client timeout is longer than the gateway image budget.
 
 The router first considers the lowest numeric priority layer. It advances only after that layer has no eligible lane. Retries can exclude an entire source group so multiple accounts backed by the same upstream are not hammered repeatedly.
 
+### Responses compact lane regression overlay
+
+`responses/compact` is a separate Smart Router capability, `responses_compact`,
+with its own attempt budget (`gateway.smart_router.max_attempts_compact`, default
+`2`), health ledger, failure classification, and 04:00 calibration probe. Compact
+requests keep the existing supported/unknown capability tiers, but Smart Router
+now ranks lanes inside each tier. This fixes the regression where compact requests
+were filtered by the OpenAI scheduler but bypassed Smart Router, causing a failing
+lane to look like a model-wide or upstream-wide failure. Compact failures never
+change ordinary `responses` health for the same account; client cancellation and
+request-specific `400` errors do not penalize a lane.
+
+The compact probe accepts only a real compaction response with non-empty
+`encrypted_content`; an HTTP 2xx response containing only usage or ordinary text is
+not marked healthy. A transient probe failure records evidence but does not
+permanently disable the account, so the next scheduled calibration can retry it.
+
 ### Durable image health and 04:00 calibration
 
 The image lane health overlay is durable across container restarts. It records only

@@ -96,6 +96,7 @@ func (s *OpenAIGatewayService) smartRouterPolicy() smartrouter.Policy {
 	policy.TopK = cfg.TopK
 	policy.MaxAttemptsImage = cfg.MaxAttemptsImage
 	policy.MaxAttemptsChat = cfg.MaxAttemptsChat
+	policy.MaxAttemptsCompact = cfg.MaxAttemptsCompact
 	policy.MaxAttemptsDefault = cfg.MaxAttemptsDefault
 	policy.SameSourceGroupAttempts = cfg.SameSourceGroupAttempts
 	policy.CostBiasMax = cfg.CostBiasMax
@@ -223,6 +224,62 @@ func (s *OpenAIGatewayService) ReportSmartRouterImageResult(account *Account, pa
 // without changing the account's configured priority or enabled state.
 func (s *OpenAIGatewayService) ReportSmartRouterImageCalibrationResult(account *Account, parsed *OpenAIImagesRequest, result *OpenAIForwardResult, err error, durationMs int64) {
 	s.reportSmartRouterImageResult("calibration", account, parsed, result, err, durationMs)
+}
+
+// ReportSmartRouterCompactResult feeds a remote compaction attempt into the
+// dedicated capability lane. A compact failure must affect compact routing
+// only; it must not downgrade ordinary /responses traffic for the same account.
+func (s *OpenAIGatewayService) ReportSmartRouterCompactResult(account *Account, requestedModel string, result *OpenAIForwardResult, err error, durationMs int64) {
+	s.reportSmartRouterCompactResult("production", account, requestedModel, result, err, durationMs)
+}
+
+// ReportSmartRouterCompactCalibrationResult records a direct compact probe
+// without treating the probe as user traffic.
+func (s *OpenAIGatewayService) ReportSmartRouterCompactCalibrationResult(account *Account, requestedModel string, result *OpenAIForwardResult, err error, durationMs int64) {
+	s.reportSmartRouterCompactResult("calibration", account, requestedModel, result, err, durationMs)
+}
+
+func (s *OpenAIGatewayService) reportSmartRouterCompactResult(source string, account *Account, requestedModel string, result *OpenAIForwardResult, err error, durationMs int64) {
+	if s == nil || !s.isSmartRouterEnabled() || account == nil {
+		return
+	}
+	lane, ok := smartRouterLaneSnapshot(account, nil, 0, 0, false)
+	if !ok {
+		return
+	}
+	statusCode := 0
+	message := ""
+	code := ""
+	var failoverErr *UpstreamFailoverError
+	if errors.As(err, &failoverErr) && failoverErr != nil {
+		statusCode = failoverErr.StatusCode
+		message = string(failoverErr.ResponseBody)
+	}
+	if err != nil && message == "" {
+		message = err.Error()
+	}
+	clientCancelled := errors.Is(err, context.Canceled) || strings.Contains(strings.ToLower(message), "context canceled")
+	success := err == nil
+	if success {
+		statusCode = 200
+	}
+	errorClass := smartrouter.FailureClass("")
+	if !success {
+		errorClass = smartrouter.ClassifyFailureDetails(statusCode, smartrouter.CapabilityResponsesCompact, message, code, clientCancelled)
+	}
+	s.smartRouterHealth().Observe(smartrouter.RouteResult{
+		Source:         source,
+		LaneID:         lane.LaneID,
+		AccountID:      lane.AccountID,
+		SourceGroup:    lane.SourceGroup,
+		Capability:     smartrouter.CapabilityResponsesCompact,
+		Model:          requestedModel,
+		Success:        success,
+		StatusCode:     statusCode,
+		ErrorClass:     errorClass,
+		TotalLatencyMs: durationMs,
+		ErrorSummary:   code,
+	})
 }
 
 func (s *OpenAIGatewayService) reportSmartRouterImageResult(source string, account *Account, parsed *OpenAIImagesRequest, result *OpenAIForwardResult, err error, durationMs int64) {
@@ -354,12 +411,21 @@ func smartRouterLaneSnapshot(account *Account, loadInfo *AccountLoadInfo, errorR
 	if hasTTFT && ttft > 0 {
 		latency = ttft
 	}
+	capabilities := extra.Capabilities
+	if len(capabilities) > 0 {
+		capabilities = cloneSmartRouterCapabilities(capabilities)
+		// Capability maps created before the compact lane existed must not
+		// silently exclude otherwise eligible OpenAI compact accounts.
+		if account.IsOpenAI() && account.AllowsOpenAICompact() {
+			capabilities[smartrouter.CapabilityResponsesCompact] = true
+		}
+	}
 	return smartrouter.LaneSnapshot{
 		LaneID:                    laneID,
 		AccountID:                 account.ID,
 		Name:                      account.Name,
 		SourceGroup:               sourceGroup,
-		Capabilities:              extra.Capabilities,
+		Capabilities:              capabilities,
 		ImageSizeTiers:            extra.ImageSizeTiers,
 		ModelPatterns:             smartRouterModelPatterns(account),
 		Priority:                  account.Priority,
@@ -636,6 +702,8 @@ func smartRouterCapabilities(raw any) map[smartrouter.Capability]bool {
 			capabilities[smartrouter.CapabilityChat] = true
 		case string(smartrouter.CapabilityResponses):
 			capabilities[smartrouter.CapabilityResponses] = true
+		case string(smartrouter.CapabilityResponsesCompact), "compact", "responses/compact", "openai_compact":
+			capabilities[smartrouter.CapabilityResponsesCompact] = true
 		case string(smartrouter.CapabilityImageGeneration):
 			capabilities[smartrouter.CapabilityImageGeneration] = true
 		case string(smartrouter.CapabilityImageEdit):
@@ -648,6 +716,19 @@ func smartRouterCapabilities(raw any) map[smartrouter.Capability]bool {
 		return nil
 	}
 	return capabilities
+}
+
+func cloneSmartRouterCapabilities(input map[smartrouter.Capability]bool) map[smartrouter.Capability]bool {
+	if len(input) == 0 {
+		return input
+	}
+	output := make(map[smartrouter.Capability]bool, len(input))
+	for capability, enabled := range input {
+		if enabled {
+			output[capability] = true
+		}
+	}
+	return output
 }
 
 func smartRouterString(value any) string {

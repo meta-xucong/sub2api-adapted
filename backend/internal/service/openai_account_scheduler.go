@@ -899,7 +899,10 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAISelectionOrder(
 	req OpenAIAccountScheduleRequest,
 	plan openAIAccountLoadPlan,
 ) []openAIAccountCandidateScore {
-	// Compact requests retain the official supported/unknown tier ordering.
+	// Compact requests retain the official supported/unknown capability tier
+	// ordering, while Smart Router still ranks lanes inside each tier. Compact
+	// used to bypass Smart Router entirely, so failures were attributed to the
+	// model instead of the selected lane.
 	if !req.RequireCompact {
 		if order, applied := s.buildSmartRouterSelectionOrder(req, plan); applied {
 			return order
@@ -942,9 +945,21 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAISelectionOrder(
 				unknown = append(unknown, candidate)
 			}
 		}
+		orderTier := func(pool []openAIAccountCandidateScore) []openAIAccountCandidateScore {
+			if len(pool) == 0 {
+				return nil
+			}
+			compactPlan := plan
+			compactPlan.candidates = pool
+			compactPlan.allCandidates = pool
+			if order, applied := s.buildSmartRouterSelectionOrder(req, compactPlan); applied {
+				return order
+			}
+			return buildSelectionOrder(pool)
+		}
 		selectionOrder := make([]openAIAccountCandidateScore, 0, len(plan.allCandidates))
-		selectionOrder = append(selectionOrder, buildSelectionOrder(supported)...)
-		selectionOrder = append(selectionOrder, buildSelectionOrder(unknown)...)
+		selectionOrder = append(selectionOrder, orderTier(supported)...)
+		selectionOrder = append(selectionOrder, orderTier(unknown)...)
 		if len(plan.staleSnapshotCompactRetry) > 0 && s.service.schedulerSnapshot != nil {
 			selectionOrder = append(selectionOrder, sortOpenAICompactRetryCandidates(plan.staleSnapshotCompactRetry)...)
 		}
@@ -998,7 +1013,9 @@ func (s *defaultOpenAIAccountScheduler) buildSmartRouterSelectionOrder(
 
 func (s *defaultOpenAIAccountScheduler) smartRouterRouteRequest(req OpenAIAccountScheduleRequest) smartrouter.RouteRequest {
 	capability := req.SmartRouterCapability
-	if capability == "" {
+	if req.RequireCompact {
+		capability = smartrouter.CapabilityResponsesCompact
+	} else if capability == "" {
 		switch {
 		case req.RequiredImageCapability != "":
 			capability = smartrouter.CapabilityImageGeneration
@@ -1759,7 +1776,9 @@ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForCapability(
 		platform = platformOverride[0]
 	}
 	var smartCapability smartrouter.Capability
-	if OpenAIImageGenerationIntentFromContext(ctx) {
+	if requireCompact {
+		smartCapability = smartrouter.CapabilityResponsesCompact
+	} else if OpenAIImageGenerationIntentFromContext(ctx) {
 		smartCapability = smartrouter.CapabilityImageGeneration
 	}
 	return s.selectAccountWithScheduler(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, requiredCapability, "", requireCompact, platform, previousResponseCanMove, smartCapability)
@@ -1914,7 +1933,9 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
 	}
 
 	var smartCapability smartrouter.Capability
-	if len(smartRouterCapability) > 0 {
+	if requireCompact {
+		smartCapability = smartrouter.CapabilityResponsesCompact
+	} else if len(smartRouterCapability) > 0 {
 		smartCapability = smartRouterCapability[0]
 	}
 	imageBudget, _ := OpenAIImageSmartRouterBudgetFromContext(ctx)

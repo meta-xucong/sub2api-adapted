@@ -3,11 +3,12 @@ package core
 type Capability string
 
 const (
-	CapabilityChat            Capability = "chat"
-	CapabilityResponses       Capability = "responses"
-	CapabilityImageGeneration Capability = "image_generation"
-	CapabilityImageEdit       Capability = "image_edit"
-	CapabilityEmbedding       Capability = "embedding"
+	CapabilityChat             Capability = "chat"
+	CapabilityResponses        Capability = "responses"
+	CapabilityResponsesCompact Capability = "responses_compact"
+	CapabilityImageGeneration  Capability = "image_generation"
+	CapabilityImageEdit        Capability = "image_edit"
+	CapabilityEmbedding        Capability = "embedding"
 )
 
 type FailureClass string

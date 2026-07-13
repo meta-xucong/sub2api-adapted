@@ -23,6 +23,13 @@ func ClassifyFailureDetails(statusCode int, capability Capability, message strin
 		(strings.Contains(lower, "upload the reference image") && capability == CapabilityImageGeneration) {
 		return FailureCapabilityError
 	}
+	if capability == CapabilityResponsesCompact && strings.Contains(lower, "compact") {
+		for _, marker := range []string{"unsupported", "not support", "not available", "disabled", "unknown parameter", "no matching"} {
+			if strings.Contains(lower, marker) {
+				return FailureCapabilityError
+			}
+		}
+	}
 	if strings.Contains(lower, "moderation") || strings.Contains(lower, "content policy") || strings.Contains(lower, "safety violation") {
 		return FailureContentRejected
 	}

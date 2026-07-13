@@ -4,8 +4,10 @@ import (
 	"context"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	smartrouter "github.com/Wei-Shaw/sub2api/internal/smartrouter/core"
 	"github.com/stretchr/testify/require"
 )
 
@@ -80,6 +82,31 @@ func TestOpenAIGatewayService_SmartRouterDemotesImageGenerationCapabilityAfterDe
 	if selection.ReleaseFunc != nil {
 		selection.ReleaseFunc()
 	}
+}
+
+func TestOpenAIGatewayService_SmartRouterTracksCompactFailuresSeparately(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+	cfg := newSmartRouterSchedulerTestConfig()
+	svc := &OpenAIGatewayService{cfg: cfg}
+	account := &Account{
+		ID:       73101,
+		Name:     "compact-lane",
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Extra:    map[string]any{"openai_compact_supported": true},
+	}
+
+	svc.ReportSmartRouterCompactResult(account, "gpt-5.5", nil, &UpstreamFailoverError{
+		StatusCode:   http.StatusServiceUnavailable,
+		ResponseBody: []byte(`{"error":{"message":"service temporarily unavailable"}}`),
+	}, 120000)
+
+	lane, ok := smartRouterLaneSnapshot(account, nil, 0, 0, false)
+	require.True(t, ok)
+	compact := svc.smartRouterHealth().Snapshot(lane, smartrouter.CapabilityResponsesCompact, "gpt-5.5", time.Now().Unix())
+	ordinary := svc.smartRouterHealth().Snapshot(lane, smartrouter.CapabilityResponses, "gpt-5.5", time.Now().Unix())
+	require.Greater(t, compact.Priority, lane.Priority)
+	require.Equal(t, lane.Priority, ordinary.Priority, "compact failure must not downgrade ordinary responses")
 }
 
 func newSmartRouterSchedulerTestConfig() *config.Config {

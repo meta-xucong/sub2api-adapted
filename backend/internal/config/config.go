@@ -887,6 +887,7 @@ type GatewaySmartRouterConfig struct {
 	TopK                    int                                     `mapstructure:"top_k"`
 	MaxAttemptsImage        int                                     `mapstructure:"max_attempts_image"`
 	MaxAttemptsChat         int                                     `mapstructure:"max_attempts_chat"`
+	MaxAttemptsCompact      int                                     `mapstructure:"max_attempts_compact"`
 	MaxAttemptsDefault      int                                     `mapstructure:"max_attempts_default"`
 	SameSourceGroupAttempts int                                     `mapstructure:"same_source_group_attempts"`
 	CostBiasMax             float64                                 `mapstructure:"cost_bias_max"`
@@ -2033,6 +2034,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.smart_router.top_k", 5)
 	viper.SetDefault("gateway.smart_router.max_attempts_image", 2)
 	viper.SetDefault("gateway.smart_router.max_attempts_chat", 3)
+	viper.SetDefault("gateway.smart_router.max_attempts_compact", 2)
 	viper.SetDefault("gateway.smart_router.max_attempts_default", 3)
 	viper.SetDefault("gateway.smart_router.same_source_group_attempts", 1)
 	viper.SetDefault("gateway.smart_router.cost_bias_max", 3.0)
@@ -2860,6 +2862,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.SmartRouter.MaxAttemptsChat < 0 {
 		return fmt.Errorf("gateway.smart_router.max_attempts_chat must be non-negative")
+	}
+	if c.Gateway.SmartRouter.MaxAttemptsCompact < 0 {
+		return fmt.Errorf("gateway.smart_router.max_attempts_compact must be non-negative")
 	}
 	if c.Gateway.SmartRouter.MaxAttemptsDefault < 0 {
 		return fmt.Errorf("gateway.smart_router.max_attempts_default must be non-negative")

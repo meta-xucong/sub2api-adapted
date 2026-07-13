@@ -19,6 +19,7 @@ import (
 	smartrouter "github.com/Wei-Shaw/sub2api/internal/smartrouter/core"
 	"github.com/gin-gonic/gin"
 	"github.com/robfig/cron/v3"
+	"github.com/tidwall/gjson"
 )
 
 const smartRouterCalibrationModel = "gpt-image-2"
@@ -134,6 +135,8 @@ func (s *SmartRouterCalibrationService) runCalibration() {
 		return
 	}
 	lanes, accountsByLane := s.imageCalibrationLanes(accounts)
+	compactLanes, compactAccounts := s.compactCalibrationLanes(accounts)
+	lanes, accountsByLane = mergeSmartRouterCalibrationLanes(lanes, accountsByLane, compactLanes, compactAccounts)
 	evidenceRows, err := s.ledger.ListCapabilityEvidence(ctx)
 	if err != nil {
 		success = false
@@ -170,6 +173,14 @@ func (s *SmartRouterCalibrationService) runCalibration() {
 			success = false
 			logger.LegacyPrintf("service.smart_router_calibration", "record calibration result failed: %v", err)
 		}
+		if probe.Capability == smartrouter.CapabilityResponsesCompact {
+			if updates := buildSmartRouterCompactProbeExtraUpdates(result, time.Now()); len(updates) > 0 {
+				if err := s.accountRepo.UpdateExtra(ctx, account.ID, updates); err != nil {
+					success = false
+					logger.LegacyPrintf("service.smart_router_calibration", "persist compact probe result failed: %v", err)
+				}
+			}
+		}
 	}
 }
 
@@ -193,11 +204,70 @@ func (s *SmartRouterCalibrationService) imageCalibrationLanes(accounts []Account
 				smartrouter.CapabilityImageGeneration: true,
 				smartrouter.CapabilityImageEdit:       true,
 			}
+			if account.AllowsOpenAICompact() {
+				lane.Capabilities[smartrouter.CapabilityResponsesCompact] = true
+			}
 		}
 		lanes = append(lanes, lane)
 		accountsByLane[lane.LaneID] = account
 	}
 	return lanes, accountsByLane
+}
+
+func (s *SmartRouterCalibrationService) compactCalibrationLanes(accounts []Account) ([]smartrouter.LaneSnapshot, map[string]*Account) {
+	lanes := make([]smartrouter.LaneSnapshot, 0)
+	accountsByLane := make(map[string]*Account)
+	for index := range accounts {
+		account := &accounts[index]
+		if !account.IsOpenAI() || !account.AllowsOpenAICompact() {
+			continue
+		}
+		lane, ok := smartRouterLaneSnapshot(account, nil, 0, 0, false)
+		if !ok || strings.TrimSpace(lane.LaneID) == "" {
+			continue
+		}
+		if lane.Capabilities == nil {
+			lane.Capabilities = map[smartrouter.Capability]bool{}
+		}
+		lane.Capabilities[smartrouter.CapabilityResponsesCompact] = true
+		lanes = append(lanes, lane)
+		accountsByLane[lane.LaneID] = account
+	}
+	return lanes, accountsByLane
+}
+
+func mergeSmartRouterCalibrationLanes(
+	base []smartrouter.LaneSnapshot,
+	accountsByLane map[string]*Account,
+	additional []smartrouter.LaneSnapshot,
+	additionalAccounts map[string]*Account,
+) ([]smartrouter.LaneSnapshot, map[string]*Account) {
+	indexByLane := make(map[string]int, len(base))
+	for index := range base {
+		indexByLane[base[index].LaneID] = index
+	}
+	for _, lane := range additional {
+		if index, exists := indexByLane[lane.LaneID]; exists {
+			if base[index].Capabilities == nil {
+				base[index].Capabilities = map[smartrouter.Capability]bool{}
+			}
+			for capability, enabled := range lane.Capabilities {
+				if enabled {
+					base[index].Capabilities[capability] = true
+				}
+			}
+			continue
+		}
+		indexByLane[lane.LaneID] = len(base)
+		base = append(base, lane)
+	}
+	if accountsByLane == nil {
+		accountsByLane = make(map[string]*Account)
+	}
+	for laneID, account := range additionalAccounts {
+		accountsByLane[laneID] = account
+	}
+	return base, accountsByLane
 }
 
 func (s *SmartRouterCalibrationService) runProbe(ctx context.Context, account *Account, probe smartrouter.CalibrationProbe) SmartRouterCalibrationResult {
@@ -215,7 +285,15 @@ func (s *SmartRouterCalibrationService) runProbe(ctx context.Context, account *A
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	statusCode, latencyMs, err := s.gateway.RunSmartRouterImageCalibrationProbe(probeCtx, account, probe.Capability)
+	var statusCode int
+	var latencyMs int64
+	var err error
+	if probe.Capability == smartrouter.CapabilityResponsesCompact {
+		result.ModelFamily = "gpt-5"
+		statusCode, latencyMs, err = s.gateway.RunSmartRouterCompactCalibrationProbe(probeCtx, account, s.compactCalibrationModel())
+	} else {
+		statusCode, latencyMs, err = s.gateway.RunSmartRouterImageCalibrationProbe(probeCtx, account, probe.Capability)
+	}
 	result.StatusCode = statusCode
 	result.LatencyMs = latencyMs
 	result.Success = err == nil
@@ -223,6 +301,15 @@ func (s *SmartRouterCalibrationService) runProbe(ctx context.Context, account *A
 		result.ErrorSummary = safeSmartRouterProbeError(err)
 	}
 	return result
+}
+
+func (s *SmartRouterCalibrationService) compactCalibrationModel() string {
+	if s != nil && s.cfg != nil {
+		if model := strings.TrimSpace(s.cfg.Gateway.OpenAICompactModel); model != "" {
+			return model
+		}
+	}
+	return "gpt-5.4"
 }
 
 // RunSmartRouterImageCalibrationProbe directly tests one account so a daily
@@ -259,6 +346,85 @@ func (s *OpenAIGatewayService) RunSmartRouterImageCalibrationProbe(ctx context.C
 	}
 	s.ReportSmartRouterImageCalibrationResult(account, parsed, forwardResult, forwardErr, latencyMs)
 	return statusCode, latencyMs, forwardErr
+}
+
+// RunSmartRouterCompactCalibrationProbe directly tests one account's compact
+// endpoint. It validates that the response contains a compaction output item,
+// not merely a successful HTTP status or usage object.
+func (s *OpenAIGatewayService) RunSmartRouterCompactCalibrationProbe(ctx context.Context, account *Account, model string) (int, int64, error) {
+	if s == nil || account == nil {
+		return 0, 0, errors.New("smart router compact calibration account is required")
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		model = "gpt-5.4"
+	}
+	body, err := json.Marshal(createOpenAICompactProbePayload(model))
+	if err != nil {
+		return 0, 0, err
+	}
+	recorder := httptest.NewRecorder()
+	ginCtx, _ := gin.CreateTestContext(recorder)
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses/compact", bytes.NewReader(body)).WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
+	ginCtx.Request = req
+
+	startedAt := time.Now()
+	forwardResult, forwardErr := s.Forward(ctx, ginCtx, account, body)
+	latencyMs := time.Since(startedAt).Milliseconds()
+	statusCode := smartRouterProbeStatusCode(forwardErr)
+	if forwardErr == nil && !openAICompactResponseContainsItem(recorder.Body.Bytes()) {
+		forwardErr = errors.New("compact calibration returned no compaction output item")
+		statusCode = http.StatusBadGateway
+	}
+	if forwardErr == nil {
+		statusCode = http.StatusOK
+	}
+	s.ReportSmartRouterCompactCalibrationResult(account, model, forwardResult, forwardErr, latencyMs)
+	return statusCode, latencyMs, forwardErr
+}
+
+func openAICompactResponseContainsItem(body []byte) bool {
+	if len(body) == 0 {
+		return false
+	}
+	if gjson.ValidBytes(body) {
+		if strings.TrimSpace(gjson.GetBytes(body, "compaction.encrypted_content").String()) != "" {
+			return true
+		}
+		for _, item := range gjson.GetBytes(body, "output").Array() {
+			if !isResponsesCompactionItemType(item.Get("type").String()) {
+				continue
+			}
+			if strings.TrimSpace(item.Get("encrypted_content").String()) != "" {
+				return true
+			}
+		}
+		return false
+	}
+	item, found := findRawCompactionItemFromSSE(string(body))
+	return found && strings.TrimSpace(gjson.GetBytes(item, "encrypted_content").String()) != ""
+}
+
+func buildSmartRouterCompactProbeExtraUpdates(result SmartRouterCalibrationResult, now time.Time) map[string]any {
+	updates := map[string]any{
+		"openai_compact_checked_at":  now.Format(time.RFC3339),
+		"openai_compact_last_status": nil,
+	}
+	if result.StatusCode > 0 {
+		updates["openai_compact_last_status"] = result.StatusCode
+	}
+	if result.Success {
+		updates["openai_compact_supported"] = true
+		updates["openai_compact_last_error"] = ""
+		return updates
+	}
+	errorSummary := truncateString(sanitizeUpstreamErrorMessage(result.ErrorSummary), 2048)
+	updates["openai_compact_last_error"] = errorSummary
+	if result.StatusCode == http.StatusNotFound || result.StatusCode == http.StatusMethodNotAllowed || result.StatusCode == http.StatusNotImplemented || strings.Contains(strings.ToLower(errorSummary), "compact") && strings.Contains(strings.ToLower(errorSummary), "unsupported") {
+		updates["openai_compact_supported"] = false
+	}
+	return updates
 }
 
 func smartRouterCalibrationRequest(capability smartrouter.Capability) ([]byte, string, string, error) {
@@ -356,6 +522,9 @@ func toCoreCapabilityEvidence(rows []SmartRouterCapabilityEvidence) []smartroute
 			GenerationLastFailure: row.GenerationLastFailure,
 			EditLastSuccess:       row.EditLastSuccess,
 			EditLastFailure:       row.EditLastFailure,
+			CompactKnown:          row.CompactKnown,
+			CompactLastSuccess:    row.CompactLastSuccess,
+			CompactLastFailure:    row.CompactLastFailure,
 			ModesDiverged:         modesDiverged,
 		})
 	}

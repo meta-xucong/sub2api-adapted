@@ -140,12 +140,15 @@ func (r *smartRouterHealthRepository) ListCapabilityEvidence(ctx context.Context
 SELECT lane_id,
        BOOL_OR(capability = 'image_generation') AS generation_known,
        BOOL_OR(capability = 'image_edit') AS edit_known,
+       BOOL_OR(capability = 'responses_compact') AS compact_known,
        MAX(last_success_at) FILTER (WHERE capability = 'image_generation') AS generation_last_success,
        MAX(last_failure_at) FILTER (WHERE capability = 'image_generation') AS generation_last_failure,
        MAX(last_success_at) FILTER (WHERE capability = 'image_edit') AS edit_last_success,
-       MAX(last_failure_at) FILTER (WHERE capability = 'image_edit') AS edit_last_failure
+       MAX(last_failure_at) FILTER (WHERE capability = 'image_edit') AS edit_last_failure,
+       MAX(last_success_at) FILTER (WHERE capability = 'responses_compact') AS compact_last_success,
+       MAX(last_failure_at) FILTER (WHERE capability = 'responses_compact') AS compact_last_failure
 FROM smart_router_lane_state
-WHERE capability IN ('image_generation', 'image_edit')
+WHERE capability IN ('image_generation', 'image_edit', 'responses_compact')
 GROUP BY lane_id`)
 	if err != nil {
 		return nil, err
@@ -155,10 +158,11 @@ GROUP BY lane_id`)
 	evidence := make([]service.SmartRouterCapabilityEvidence, 0)
 	for rows.Next() {
 		var item service.SmartRouterCapabilityEvidence
-		var generationSuccess, generationFailure, editSuccess, editFailure sql.NullTime
+		var generationSuccess, generationFailure, editSuccess, editFailure, compactSuccess, compactFailure sql.NullTime
 		if err := rows.Scan(
 			&item.LaneID, &item.GenerationKnown, &item.EditKnown,
-			&generationSuccess, &generationFailure, &editSuccess, &editFailure,
+			&item.CompactKnown, &generationSuccess, &generationFailure, &editSuccess, &editFailure,
+			&compactSuccess, &compactFailure,
 		); err != nil {
 			return nil, err
 		}
@@ -173,6 +177,12 @@ GROUP BY lane_id`)
 		}
 		if editFailure.Valid {
 			item.EditLastFailure = editFailure.Time
+		}
+		if compactSuccess.Valid {
+			item.CompactLastSuccess = compactSuccess.Time
+		}
+		if compactFailure.Valid {
+			item.CompactLastFailure = compactFailure.Time
 		}
 		evidence = append(evidence, item)
 	}

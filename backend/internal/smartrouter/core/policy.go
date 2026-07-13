@@ -20,6 +20,7 @@ type Policy struct {
 	TopK                    int
 	MaxAttemptsImage        int
 	MaxAttemptsChat         int
+	MaxAttemptsCompact      int
 	MaxAttemptsDefault      int
 	SameSourceGroupAttempts int
 	CostBiasMax             float64
@@ -32,6 +33,7 @@ func DefaultPolicy() Policy {
 		TopK:                    5,
 		MaxAttemptsImage:        2,
 		MaxAttemptsChat:         3,
+		MaxAttemptsCompact:      2,
 		MaxAttemptsDefault:      3,
 		SameSourceGroupAttempts: 1,
 		CostBiasMax:             3,
@@ -58,6 +60,9 @@ func (p Policy) Normalize() Policy {
 	if p.MaxAttemptsChat <= 0 {
 		p.MaxAttemptsChat = defaults.MaxAttemptsChat
 	}
+	if p.MaxAttemptsCompact <= 0 {
+		p.MaxAttemptsCompact = defaults.MaxAttemptsCompact
+	}
 	if p.MaxAttemptsDefault <= 0 {
 		p.MaxAttemptsDefault = defaults.MaxAttemptsDefault
 	}
@@ -83,6 +88,9 @@ func (p Policy) Validate() error {
 	if p.MaxAttemptsChat < 0 {
 		return fmt.Errorf("max_attempts_chat must be non-negative")
 	}
+	if p.MaxAttemptsCompact < 0 {
+		return fmt.Errorf("max_attempts_compact must be non-negative")
+	}
 	if p.MaxAttemptsDefault < 0 {
 		return fmt.Errorf("max_attempts_default must be non-negative")
 	}
@@ -105,6 +113,8 @@ func (p Policy) AttemptBudget(capability Capability) int {
 		return p.MaxAttemptsImage
 	case CapabilityChat, CapabilityResponses:
 		return p.MaxAttemptsChat
+	case CapabilityResponsesCompact:
+		return p.MaxAttemptsCompact
 	default:
 		return p.MaxAttemptsDefault
 	}

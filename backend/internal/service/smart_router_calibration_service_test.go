@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"mime"
 	"mime/multipart"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -41,6 +42,31 @@ func TestSmartRouterCalibrationEditRequestContainsTinyImageFixture(t *testing.T)
 	require.Equal(t, []string{"1"}, form.Value["n"])
 	require.Len(t, form.File["image"], 1)
 	require.Equal(t, "smart-router-probe.png", form.File["image"][0].Filename)
+}
+
+func TestOpenAICompactResponseContainsItemRequiresEncryptedContent(t *testing.T) {
+	require.True(t, openAICompactResponseContainsItem([]byte(`{"object":"response.compaction","compaction":{"encrypted_content":"opaque"}}`)))
+	require.True(t, openAICompactResponseContainsItem([]byte(`{"output":[{"type":"compaction","encrypted_content":"opaque"}]}`)))
+	require.False(t, openAICompactResponseContainsItem([]byte(`{"output":[{"type":"compaction"}]}`)))
+	require.True(t, openAICompactResponseContainsItem([]byte("data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"compaction\",\"encrypted_content\":\"opaque\"}}\n\n")))
+}
+
+func TestBuildSmartRouterCompactProbeExtraUpdatesDoesNotQuarantineTransientFailure(t *testing.T) {
+	now := time.Date(2026, 7, 13, 4, 0, 0, 0, time.UTC)
+	transient := buildSmartRouterCompactProbeExtraUpdates(SmartRouterCalibrationResult{
+		StatusCode:   http.StatusServiceUnavailable,
+		ErrorSummary: "service temporarily unavailable",
+	}, now)
+	require.NotContains(t, transient, "openai_compact_supported")
+
+	unsupported := buildSmartRouterCompactProbeExtraUpdates(SmartRouterCalibrationResult{
+		StatusCode:   http.StatusNotFound,
+		ErrorSummary: "compact endpoint not found",
+	}, now)
+	require.Equal(t, false, unsupported["openai_compact_supported"])
+
+	success := buildSmartRouterCompactProbeExtraUpdates(SmartRouterCalibrationResult{Success: true, StatusCode: http.StatusOK}, now)
+	require.Equal(t, true, success["openai_compact_supported"])
 }
 
 func TestSmartRouterCalibrationScheduleUsesShanghaiTime(t *testing.T) {

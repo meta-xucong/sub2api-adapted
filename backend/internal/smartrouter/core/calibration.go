@@ -26,6 +26,9 @@ type CapabilityEvidence struct {
 	GenerationLastFailure time.Time
 	EditLastSuccess       time.Time
 	EditLastFailure       time.Time
+	CompactKnown          bool
+	CompactLastSuccess    time.Time
+	CompactLastFailure    time.Time
 	ModesDiverged         bool
 }
 
@@ -56,7 +59,7 @@ func BuildCalibrationPlan(now time.Time, lanes []LaneSnapshot, evidence []Capabi
 	for _, item := range evidence {
 		evidenceByLane[item.LaneID] = item
 	}
-	probes := make([]CalibrationProbe, 0, len(lanes)*2)
+	probes := make([]CalibrationProbe, 0, len(lanes)*3)
 	for _, lane := range lanes {
 		item := evidenceByLane[lane.LaneID]
 		generationKnown := lane.Capabilities[CapabilityImageGeneration]
@@ -77,6 +80,10 @@ func BuildCalibrationPlan(now time.Time, lanes []LaneSnapshot, evidence []Capabi
 			probes = append(probes, CalibrationProbe{LaneID: lane.LaneID, Capability: CapabilityImageEdit, Reason: probeReason(item.EditKnown, item.EditLastFailure)})
 		} else if editKnown && item.ModesDiverged && item.EditLastSuccess.IsZero() {
 			probes = append(probes, CalibrationProbe{LaneID: lane.LaneID, Capability: CapabilityImageEdit, Reason: "mode_divergence_requires_edit_probe"})
+		}
+		compactKnown := lane.Capabilities[CapabilityResponsesCompact]
+		if compactKnown && needsProbe(now, item.CompactKnown, item.CompactLastSuccess, item.CompactLastFailure, policy.FreshEvidenceWindow) {
+			probes = append(probes, CalibrationProbe{LaneID: lane.LaneID, Capability: CapabilityResponsesCompact, Reason: probeReason(item.CompactKnown, item.CompactLastFailure)})
 		}
 	}
 	return probes

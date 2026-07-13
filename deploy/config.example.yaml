@@ -353,6 +353,7 @@ gateway:
     top_k: 5
     max_attempts_image: 2
     max_attempts_chat: 3
+    max_attempts_compact: 2
     max_attempts_default: 3
     same_source_group_attempts: 1
     cost_bias_max: 3.0

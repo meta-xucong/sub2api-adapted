@@ -69,3 +69,19 @@ func TestBuildCalibrationPlanUsesOneGenerationProbeForStableLane(t *testing.T) {
 		Reason:     "stale_success_evidence",
 	}}, probes)
 }
+
+func TestBuildCalibrationPlanProbesCompactCapabilityWhenLaneDeclaresIt(t *testing.T) {
+	now := time.Date(2026, 7, 12, 4, 0, 0, 0, time.FixedZone("Asia/Shanghai", 8*60*60))
+	lanes := []LaneSnapshot{{
+		LaneID: "oauth-compact",
+		Capabilities: map[Capability]bool{
+			CapabilityResponsesCompact: true,
+		},
+	}}
+	probes := BuildCalibrationPlan(now, lanes, nil, CalibrationPolicy{})
+	require.Equal(t, []CalibrationProbe{{
+		LaneID:     "oauth-compact",
+		Capability: CapabilityResponsesCompact,
+		Reason:     "unknown_capability",
+	}}, probes)
+}

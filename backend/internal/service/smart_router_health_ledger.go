@@ -32,6 +32,9 @@ type SmartRouterCapabilityEvidence struct {
 	GenerationLastFailure time.Time
 	EditLastSuccess       time.Time
 	EditLastFailure       time.Time
+	CompactKnown          bool
+	CompactLastSuccess    time.Time
+	CompactLastFailure    time.Time
 }
 
 type SmartRouterCalibrationRun struct {
