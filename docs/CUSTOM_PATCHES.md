@@ -31,7 +31,10 @@ protection, per-lane/size/input-mode adaptive attempt timeouts, optional
 half-open recovery probes, and the existing ledger-driven 04:00 restoration.
 It does not change chat, Responses, compact, stored account priorities, billing
 groups, or manual `schedulable` state. The image feature flags default to off;
-deployments can enable them after the image-only regression suite passes.
+deployments can enable them after the image-only regression suite passes. The
+recommended production overlay is `enabled=true`, with 150s/45s/240s for
+ordinary generation/edit requests and 210s/75s/360s for specialist 4K lanes;
+the total image request budget remains the separate 600-second gateway limit.
 
 ### Upstream 429 backoff overlay
 

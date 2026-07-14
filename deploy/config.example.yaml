@@ -395,6 +395,25 @@ gateway:
       failure_backoff_multiplier: 0.5
       window_size: 32
       reserve_seconds: 30
+    # Optional image-only resilience overlay. Keep it disabled in the
+    # generic example; production Smart Router deployments can enable it for
+    # /v1/images/generations and /v1/images/edits only.
+    image_resilience:
+      enabled: false
+      generation_enabled: true
+      edit_enabled: true
+      standard_default_seconds: 150
+      standard_min_seconds: 45
+      standard_max_seconds: 240
+      specialist_default_seconds: 210
+      specialist_min_seconds: 75
+      specialist_max_seconds: 360
+      p90_multiplier: 1.25
+      safety_margin_seconds: 20
+      fallback_reserve_seconds: 45
+      sample_window_size: 32
+      max_same_source_attempts: 1
+      half_open_enabled: true
   # OpenAI HTTP upstream protocol strategy.
   # OpenAI HTTP 上游协议策略（默认 HTTP/2；代理明确不兼容时可临时回退 HTTP/1.1）。
   openai_http2:
