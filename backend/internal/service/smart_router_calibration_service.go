@@ -263,8 +263,10 @@ func smartRouterAutoEnrollmentProbes(account *Account) []smartrouter.Calibration
 			capabilities[smartrouter.CapabilityImageEdit] = true
 		}
 	}
-	extra := parseSmartRouterAccountExtra(account)
-	if account.AllowsOpenAICompact() && (!extra.CapabilitiesSet || extra.Capabilities[smartrouter.CapabilityResponsesCompact]) {
+	// A configured chat/responses capability list predates the compact lane in
+	// some installations. Missing compact is unknown, not unsupported; the
+	// daily probe must still give that account a chance to prove itself.
+	if account.AllowsOpenAICompact() {
 		capabilities[smartrouter.CapabilityResponsesCompact] = true
 	}
 	ordered := []smartrouter.Capability{

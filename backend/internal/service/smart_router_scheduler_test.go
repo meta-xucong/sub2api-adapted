@@ -583,3 +583,65 @@ func TestSmartRouterLaneSnapshotAutoInfersHostWhenNoNameKey(t *testing.T) {
 	require.Equal(t, 4, lane.MaxConcurrency)
 	require.Equal(t, 0, lane.SourceGroupMaxConcurrency)
 }
+
+func TestSmartRouterLaneSnapshotTreatsMissingCompactCapabilityAsUnknown(t *testing.T) {
+	account := &Account{
+		ID:       73004,
+		Name:     "legacy-chat-capability-map",
+		Platform: PlatformOpenAI,
+		Extra: map[string]any{
+			"smart_router": map[string]any{
+				"capabilities": []any{"chat", "responses"},
+			},
+		},
+	}
+
+	lane, ok := smartRouterLaneSnapshot(account, nil, 0, 0, false)
+	require.True(t, ok)
+	require.True(t, lane.Capabilities[smartrouter.CapabilityResponsesCompact])
+}
+
+func TestSmartRouterAutoEnrollmentProbesCompactForLegacyCapabilityMap(t *testing.T) {
+	account := &Account{
+		ID:       73005,
+		Name:     "legacy-chat-capability-map",
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{"gpt-5.6-terra": "gpt-5.6-terra"},
+		},
+		Extra: map[string]any{
+			"smart_router": map[string]any{
+				"capabilities": []any{"chat", "responses"},
+			},
+		},
+	}
+
+	probes := smartRouterAutoEnrollmentProbes(account)
+	seenCompact := false
+	for _, probe := range probes {
+		if probe.Capability == smartrouter.CapabilityResponsesCompact {
+			seenCompact = true
+		}
+	}
+	require.True(t, seenCompact)
+}
+
+func TestOpenAIImageCooldownDoesNotBlockNonImageScheduling(t *testing.T) {
+	until := time.Now().Add(time.Minute)
+	account := &Account{
+		ID:                      73006,
+		Platform:                PlatformOpenAI,
+		Type:                    AccountTypeAPIKey,
+		Status:                  StatusActive,
+		Schedulable:             true,
+		TempUnschedulableUntil:  &until,
+		TempUnschedulableReason: "OpenAI 403 temporary cooldown: Image generation is not enabled",
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{"gpt-5.6-terra": "gpt-5.6-terra", "gpt-image-2": "gpt-image-2"},
+		},
+	}
+
+	require.True(t, isOpenAIAccountSchedulableForRequest(context.Background(), account, "gpt-5.6-terra", true))
+	require.False(t, isOpenAIAccountSchedulableForRequest(context.Background(), account, "gpt-image-2", false))
+}

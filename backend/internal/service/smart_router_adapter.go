@@ -504,9 +504,11 @@ func smartRouterLaneSnapshot(account *Account, loadInfo *AccountLoadInfo, errorR
 	capabilities := extra.Capabilities
 	if len(capabilities) > 0 || extra.CapabilitiesSet {
 		capabilities = cloneSmartRouterCapabilities(capabilities)
-		// Capability maps created before the compact lane existed must not
-		// silently exclude otherwise eligible OpenAI compact accounts.
-		if !extra.CapabilitiesSet && account.IsOpenAI() && account.AllowsOpenAICompact() {
+		// Compact is an independent lane, but an older capability map may only
+		// list chat/responses. Treat a missing compact flag as unknown rather
+		// than unsupported; explicit openai_compact_mode=force_off or
+		// openai_compact_supported=false still excludes the account upstream.
+		if account.IsOpenAI() && account.AllowsOpenAICompact() {
 			capabilities[smartrouter.CapabilityResponsesCompact] = true
 		}
 	}

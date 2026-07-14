@@ -191,7 +191,7 @@ func openAICompactSupportTier(account *Account) int {
 // 检查母账号凭据可用性；该检查未内置于本函数，以避免注入 DB 依赖。
 func isOpenAICompatibleAccountEligibleForRequest(ctx context.Context, account *Account, platform string, requestedModel string, requireCompact bool, requiredCapability OpenAIEndpointCapability) bool {
 	platform = normalizeOpenAICompatiblePlatform(platform)
-	if account == nil || account.Platform != platform || !account.IsOpenAICompatible() || !account.IsSchedulableForModelWithContext(ctx, requestedModel) {
+	if account == nil || account.Platform != platform || !account.IsOpenAICompatible() || !isOpenAIAccountSchedulableForRequest(ctx, account, requestedModel, requireCompact) {
 		return false
 	}
 	if account.IsOpenAI() {
@@ -228,6 +228,46 @@ func isOpenAICompatibleAccountEligibleForRequest(ctx context.Context, account *A
 		return false
 	}
 	return true
+}
+
+// isOpenAIAccountSchedulableForRequest keeps a legacy account-level image
+// cooldown from removing the same credentials from non-image scheduling.
+// Older image handlers persisted a global temp_unschedulable flag; Smart
+// Router's capability-scoped health state cannot see through that flag unless
+// chat/compact explicitly recheck the account without the stale image-only
+// cooldown. Image requests still honor it.
+func isOpenAIAccountSchedulableForRequest(ctx context.Context, account *Account, requestedModel string, requireCompact bool) bool {
+	if account == nil {
+		return false
+	}
+	if account.IsSchedulableForModelWithContext(ctx, requestedModel) {
+		return true
+	}
+	if isOpenAIImageModelName(requestedModel) || !isLegacyImageOnlyTempCooldown(account) {
+		return false
+	}
+	withoutImageCooldown := *account
+	withoutImageCooldown.TempUnschedulableUntil = nil
+	withoutImageCooldown.TempUnschedulableReason = ""
+	return withoutImageCooldown.IsSchedulableForModelWithContext(ctx, requestedModel)
+}
+
+func isOpenAIImageModelName(model string) bool {
+	lower := strings.ToLower(strings.TrimSpace(model))
+	return strings.HasPrefix(lower, "gpt-image-") || strings.HasPrefix(lower, "image-")
+}
+
+func isLegacyImageOnlyTempCooldown(account *Account) bool {
+	if account == nil || account.TempUnschedulableUntil == nil || !time.Now().Before(*account.TempUnschedulableUntil) {
+		return false
+	}
+	reason := strings.ToLower(strings.TrimSpace(account.TempUnschedulableReason))
+	if reason == "" {
+		return false
+	}
+	hasImageReason := strings.Contains(reason, "image generation") || strings.Contains(reason, "image edit")
+	hasCooldownReason := strings.Contains(reason, "cooldown") || strings.Contains(reason, "transient")
+	return hasImageReason && hasCooldownReason
 }
 
 type openAIQuotaAutoPauseDecision struct {

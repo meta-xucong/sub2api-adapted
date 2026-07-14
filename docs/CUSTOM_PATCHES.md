@@ -49,6 +49,22 @@ The compact probe accepts only a real compaction response with non-empty
 not marked healthy. A transient probe failure records evidence but does not
 permanently disable the account, so the next scheduled calibration can retry it.
 
+### Compact candidate enrollment and legacy image-cooldown isolation
+
+Accounts with an existing `smart_router.capabilities` list such as
+`["chat", "responses"]` remain eligible for the independent `responses_compact`
+lane unless compact is explicitly disabled with `openai_compact_mode=force_off`
+or `openai_compact_supported=false`. This keeps older capability metadata from
+turning “not yet probed” into “unsupported”. Auto-enrollment and the daily
+calibration therefore probe these accounts as well.
+
+Older image handlers could persist an account-level temporary cooldown for an
+image-only failure. The scheduler now ignores that legacy image cooldown for
+ordinary chat/Responses and compact requests, while still honoring it for
+image requests. Smart Router's capability-scoped health state remains the
+source of image routing penalties; no account priority or `schedulable` flag is
+changed.
+
 ### Durable image health and 04:00 calibration
 
 The image lane health overlay is durable across container restarts. It records only
