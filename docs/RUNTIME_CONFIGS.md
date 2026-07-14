@@ -143,6 +143,7 @@ Gateway verification with the ordinary user API path:
 - Streaming Responses with `reasoning.effort=xhigh` completed for Sol, Terra, and Luna; all three selected account `84`.
 - A body-signal `gpt-5.6-sol` compact request completed on account `84` without a recovered panic or container restart.
 - A compact smoke request selected account `83`, received upstream HTTP 503, then failed over to account `19` and returned HTTP 200 in about 125 seconds. A follow-up request completed on account `19` in about 3 seconds; the container remained healthy with restart count `0`.
+- The 2026-07-14 direct compact sweep covered every active non-image API-key lane in group `2`: valid compaction output was returned by accounts `84`, `18`, `19`, and `85`; account `103` returned HTTP 200 without a usable compaction item; account `102` returned HTTP 404 because it is an image-only endpoint; the remaining tested lanes returned upstream HTTP 503. These are upstream capability/availability results, not scheduler filtering.
 
 Replay after a future official upgrade:
 
