@@ -25,7 +25,7 @@ func TestHealthTrackerCapabilityFailureQuarantinesOnlyGeneration(t *testing.T) {
 
 	generation := tracker.Snapshot(LaneSnapshot{LaneID: "flowyun", Priority: 2}, CapabilityImageGeneration, "gpt-image-2", now.Unix())
 	edit := tracker.Snapshot(LaneSnapshot{LaneID: "flowyun", Priority: 2}, CapabilityImageEdit, "gpt-image-2", now.Unix())
-	require.Equal(t, 30, generation.Priority)
+	require.Equal(t, 4, generation.Priority)
 	require.Equal(t, RecoveryCooling, generation.RecoveryStage)
 	require.Equal(t, 2, edit.Priority)
 	require.Equal(t, RecoveryNormal, edit.RecoveryStage)
@@ -184,10 +184,122 @@ func TestHealthTrackerAssignsSequentialRecoveryPrioritiesPerCapability(t *testin
 	require.Equal(t, 30, third.Priority)
 }
 
+func TestHealthTrackerRecoveryFIFOIsGlobalAcrossSourceGroups(t *testing.T) {
+	now := time.Unix(15_500, 0)
+	tracker := NewHealthTracker(HealthPolicy{}, func() time.Time { return now }, nil)
+	fail := func(lane, sourceGroup string) {
+		tracker.Observe(RouteResult{
+			LaneID:      lane,
+			SourceGroup: sourceGroup,
+			Capability:  CapabilityImageGeneration,
+			Model:       "gpt-image-2",
+			StatusCode:  http.StatusBadGateway,
+			ErrorClass:  FailureUpstream5xx,
+		})
+	}
+	for _, item := range []struct{ lane, source string }{
+		{lane: "flowyun", source: "flowyun-source"},
+		{lane: "764", source: "764-source"},
+		{lane: "aiai", source: "aiai-source"},
+	} {
+		for i := 0; i < 3; i++ {
+			fail(item.lane, item.source)
+		}
+	}
+	require.Equal(t, 30, tracker.Snapshot(LaneSnapshot{LaneID: "flowyun", Priority: 1}, CapabilityImageGeneration, "gpt-image-2", now.Unix()).Priority)
+	require.Equal(t, 31, tracker.Snapshot(LaneSnapshot{LaneID: "764", Priority: 1}, CapabilityImageGeneration, "gpt-image-2", now.Unix()).Priority)
+	require.Equal(t, 32, tracker.Snapshot(LaneSnapshot{LaneID: "aiai", Priority: 1}, CapabilityImageGeneration, "gpt-image-2", now.Unix()).Priority)
+}
+
+func TestHealthTrackerImageWaitsThreeFailuresBeforeFirstPlusThirty(t *testing.T) {
+	now := time.Unix(16_000, 0)
+	tracker := NewHealthTracker(HealthPolicy{}, func() time.Time { return now }, nil)
+	fail := func() HealthSnapshot {
+		return tracker.Observe(RouteResult{
+			LaneID:       "yetoken-1k",
+			BasePriority: 2,
+			Capability:   CapabilityImageGeneration,
+			Model:        "gpt-image-2",
+			StatusCode:   http.StatusBadGateway,
+			ErrorClass:   FailureUpstream5xx,
+		})
+	}
+
+	firstObserved := fail()
+	first := tracker.Snapshot(LaneSnapshot{LaneID: "yetoken-1k", Priority: 2}, CapabilityImageGeneration, "gpt-image-2", now.Unix())
+	require.Equal(t, 3, first.Priority)
+	require.Zero(t, firstObserved.RecoveryPriority)
+	secondObserved := fail()
+	second := tracker.Snapshot(LaneSnapshot{LaneID: "yetoken-1k", Priority: 2}, CapabilityImageGeneration, "gpt-image-2", now.Unix())
+	require.Equal(t, 4, second.Priority)
+	require.Zero(t, secondObserved.RecoveryPriority)
+	thirdObserved := fail()
+	third := tracker.Snapshot(LaneSnapshot{LaneID: "yetoken-1k", Priority: 2}, CapabilityImageGeneration, "gpt-image-2", now.Unix())
+	require.Equal(t, 32, third.Priority)
+	require.Equal(t, 32, thirdObserved.RecoveryPriority)
+}
+
+func TestHealthTrackerRecoveryPriorityEscalatesByThirtyAndKeepsFIFO(t *testing.T) {
+	now := time.Unix(16_500, 0)
+	tracker := NewHealthTracker(HealthPolicy{
+		RecoveryEscalationFailureThreshold: 3,
+		RecoveryPriorityStep:               30,
+	}, func() time.Time { return now }, nil)
+	fail := func(lane string) HealthSnapshot {
+		return tracker.Observe(RouteResult{
+			LaneID:       lane,
+			BasePriority: 2,
+			Capability:   CapabilityImageGeneration,
+			Model:        "gpt-image-2",
+			StatusCode:   http.StatusBadGateway,
+			ErrorClass:   FailureUpstream5xx,
+		})
+	}
+
+	for i := 0; i < 3; i++ {
+		fail("line-a")
+	}
+	for i := 0; i < 3; i++ {
+		fail("line-b")
+	}
+	require.Equal(t, 32, tracker.Snapshot(LaneSnapshot{LaneID: "line-a", Priority: 2}, CapabilityImageGeneration, "gpt-image-2", now.Unix()).Priority)
+	require.Equal(t, 33, tracker.Snapshot(LaneSnapshot{LaneID: "line-b", Priority: 2}, CapabilityImageGeneration, "gpt-image-2", now.Unix()).Priority)
+
+	// The sixth failure is the first escalation window: line-a moves from 32
+	// to 60 and frees its old FIFO slot for a newly degraded lane.
+	for i := 0; i < 3; i++ {
+		fail("line-a")
+	}
+	require.Equal(t, 62, tracker.Snapshot(LaneSnapshot{LaneID: "line-a", Priority: 2}, CapabilityImageGeneration, "gpt-image-2", now.Unix()).Priority)
+
+	for i := 0; i < 3; i++ {
+		fail("line-c")
+	}
+	require.Equal(t, 32, tracker.Snapshot(LaneSnapshot{LaneID: "line-c", Priority: 2}, CapabilityImageGeneration, "gpt-image-2", now.Unix()).Priority)
+
+	// The next three failures advance the same lane by another +30, not by a
+	// fixed band or a permanent disable.
+	for i := 0; i < 3; i++ {
+		fail("line-a")
+	}
+	require.Equal(t, 92, tracker.Snapshot(LaneSnapshot{LaneID: "line-a", Priority: 2}, CapabilityImageGeneration, "gpt-image-2", now.Unix()).Priority)
+}
+
+func TestHealthTrackerRestoreDeduplicatesGlobalRecoveryFIFO(t *testing.T) {
+	now := time.Unix(17_500, 0)
+	tracker := NewHealthTracker(HealthPolicy{}, func() time.Time { return now }, nil)
+	tracker.RestoreWithSourceGroup(NewHealthKey("a", CapabilityImageGeneration, "gpt-image-2"), HealthSnapshot{RecoveryPriority: 30, RecoveryStage: RecoveryCooling}, 0, "source-a")
+	tracker.RestoreWithSourceGroup(NewHealthKey("b", CapabilityImageGeneration, "gpt-image-2"), HealthSnapshot{RecoveryPriority: 30, RecoveryStage: RecoveryCooling}, 0, "source-b")
+	require.Equal(t, 30, tracker.Snapshot(LaneSnapshot{LaneID: "a", Priority: 1}, CapabilityImageGeneration, "gpt-image-2", now.Unix()).Priority)
+	require.Equal(t, 31, tracker.Snapshot(LaneSnapshot{LaneID: "b", Priority: 1}, CapabilityImageGeneration, "gpt-image-2", now.Unix()).Priority)
+}
+
 func TestHealthTrackerCalibrationSuccessImmediatelyRestoresCapability(t *testing.T) {
 	now := time.Unix(16_000, 0)
 	tracker := NewHealthTracker(HealthPolicy{}, func() time.Time { return now }, nil)
-	tracker.Observe(RouteResult{LaneID: "line", SourceGroup: "source", Capability: CapabilityResponsesCompact, Model: "gpt-5.5", StatusCode: http.StatusServiceUnavailable, ErrorClass: FailureUpstream5xx})
+	for i := 0; i < 3; i++ {
+		tracker.Observe(RouteResult{LaneID: "line", SourceGroup: "source", Capability: CapabilityResponsesCompact, Model: "gpt-5.5", StatusCode: http.StatusServiceUnavailable, ErrorClass: FailureUpstream5xx})
+	}
 	degraded := tracker.Snapshot(LaneSnapshot{LaneID: "line", SourceGroup: "source", Priority: 2}, CapabilityResponsesCompact, "gpt-5.5", now.Unix())
 	require.Equal(t, 30, degraded.Priority)
 

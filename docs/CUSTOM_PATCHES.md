@@ -136,6 +136,11 @@ bypass the protected account adapter and can duplicate chargeable probes.
 
 - OpenAI image `403` now cools only the model-scoped image capability for
   10 minutes instead of escalating the whole account into `error`.
+- Image recovery uses a capability/model-family FIFO overlay. The first three
+  consecutive image failures move a lane from base priority `P` to `P+30`;
+  each further three-failure round adds another `30`. Slots are global across
+  source groups, collisions are resolved FIFO-style, and calibration/success
+  releases the overlay without changing the account's configured priority.
 - OpenAI images responses that finish without any image output now return a
   failover signal instead of a terminal generic `502`, so any `gpt-image-*`
   account can be skipped temporarily when its upstream task silently produces

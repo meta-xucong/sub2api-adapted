@@ -283,6 +283,12 @@ func (s *OpenAIGatewayService) smartRouterHealthPolicy() smartrouter.HealthPolic
 	if recovery.ImageSustainedFailureThreshold > 0 {
 		policy.ImageSustainedFailureThreshold = recovery.ImageSustainedFailureThreshold
 	}
+	if recovery.RecoveryEscalationFailureThreshold > 0 {
+		policy.RecoveryEscalationFailureThreshold = recovery.RecoveryEscalationFailureThreshold
+	}
+	if recovery.RecoveryPriorityStep > 0 {
+		policy.RecoveryPriorityStep = recovery.RecoveryPriorityStep
+	}
 	return policy
 }
 
@@ -379,6 +385,7 @@ func (s *OpenAIGatewayService) reportSmartRouterTextResult(source string, accoun
 		LaneID:         lane.LaneID,
 		AccountID:      lane.AccountID,
 		SourceGroup:    lane.SourceGroup,
+		BasePriority:   lane.Priority,
 		Capability:     capability,
 		Model:          requestedModel,
 		Success:        success,
@@ -422,6 +429,7 @@ func (s *OpenAIGatewayService) reportSmartRouterCompactResult(source string, acc
 		LaneID:         lane.LaneID,
 		AccountID:      lane.AccountID,
 		SourceGroup:    lane.SourceGroup,
+		BasePriority:   lane.Priority,
 		Capability:     smartrouter.CapabilityResponsesCompact,
 		Model:          requestedModel,
 		Success:        success,
@@ -472,6 +480,7 @@ func (s *OpenAIGatewayService) reportSmartRouterImageResult(source string, accou
 		LaneID:         lane.LaneID,
 		AccountID:      lane.AccountID,
 		SourceGroup:    lane.SourceGroup,
+		BasePriority:   lane.Priority,
 		Capability:     capability,
 		Model:          parsed.Model,
 		Success:        success,

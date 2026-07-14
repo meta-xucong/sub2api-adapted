@@ -44,6 +44,8 @@ Active Smart Router settings:
 - `gateway.smart_router.recovery.second_failure_cooldown_seconds=600`
 - `gateway.smart_router.recovery.sustained_failure_threshold=3`
 - `gateway.smart_router.recovery.image_sustained_failure_threshold=2`
+- `gateway.smart_router.recovery.recovery_escalation_failure_threshold=3`
+- `gateway.smart_router.recovery.recovery_priority_step=30`
 - `gateway.smart_router.image_resilience.enabled=true`
 - `gateway.smart_router.image_resilience.generation_enabled=true`
 - `gateway.smart_router.image_resilience.edit_enabled=true`
@@ -71,6 +73,11 @@ Active Smart Router settings:
 - Transient image failures are soft penalties: lanes remain in the Smart Router
   candidate pool with lower effective priority; no automatic permanent disable
   or legacy temp-unschedulable write is used while Smart Router is enabled.
+- Recovery priority is dynamic and based on the account's original priority:
+  after three consecutive failures, a lane at base priority `2` routes at
+  `32`; each further three-failure round adds another `30` (`62`, `92`, ...).
+  The queue is global within capability and model family, with collisions
+  resolved FIFO-style. A successful calibration releases the dynamic offset.
 
 Active Smart Router scoring weights:
 

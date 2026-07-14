@@ -1462,6 +1462,16 @@ func TestValidateConfigErrors(t *testing.T) {
 			wantErr: "gateway.smart_router.recovery.image_sustained_failure_threshold must be non-negative",
 		},
 		{
+			name:    "gateway smart router recovery escalation threshold negative",
+			mutate:  func(c *Config) { c.Gateway.SmartRouter.Recovery.RecoveryEscalationFailureThreshold = -1 },
+			wantErr: "gateway.smart_router.recovery.recovery_escalation_failure_threshold must be non-negative",
+		},
+		{
+			name:    "gateway smart router recovery priority step negative",
+			mutate:  func(c *Config) { c.Gateway.SmartRouter.Recovery.RecoveryPriorityStep = -1 },
+			wantErr: "gateway.smart_router.recovery.recovery_priority_step must be non-negative",
+		},
+		{
 			name:    "gateway smart router calibration hour invalid",
 			mutate:  func(c *Config) { c.Gateway.SmartRouter.Calibration.Hour = 24 },
 			wantErr: "gateway.smart_router.calibration.hour must be between 0 and 23",

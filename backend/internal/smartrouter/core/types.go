@@ -107,10 +107,13 @@ type LaneSnapshot struct {
 }
 
 type RouteResult struct {
-	Source         string
-	LaneID         string
-	AccountID      int64
-	SourceGroup    string
+	Source      string
+	LaneID      string
+	AccountID   int64
+	SourceGroup string
+	// BasePriority is the manually configured account priority. Smart Router
+	// adds recovery steps to this value; it never overwrites the account data.
+	BasePriority   int
 	Capability     Capability
 	Model          string
 	Success        bool

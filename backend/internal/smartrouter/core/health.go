@@ -22,7 +22,12 @@ type HealthPolicy struct {
 	MaxCooldown                    time.Duration
 	MaxPenalty                     int
 	RecoverySuccessesToNormal      int
-	ErrorRateAlpha                 float64
+	// RecoveryEscalationFailureThreshold is the number of consecutive
+	// failures required to move an already degraded lane another recovery
+	// step backward in the FIFO. Each step adds RecoveryPriorityStep.
+	RecoveryEscalationFailureThreshold int
+	RecoveryPriorityStep               int
+	ErrorRateAlpha                     float64
 }
 
 func DefaultHealthPolicy() HealthPolicy {
@@ -34,9 +39,11 @@ func DefaultHealthPolicy() HealthPolicy {
 		MaxCooldown:          6 * time.Hour,
 		// Leave room to move a lane behind a growing pool of alternatives. This
 		// changes only effective routing priority, never persisted account priority.
-		MaxPenalty:                32,
-		RecoverySuccessesToNormal: 3,
-		ErrorRateAlpha:            0.2,
+		MaxPenalty:                         32,
+		RecoverySuccessesToNormal:          3,
+		RecoveryEscalationFailureThreshold: 3,
+		RecoveryPriorityStep:               30,
+		ErrorRateAlpha:                     0.2,
 	}
 }
 
@@ -63,6 +70,12 @@ func (p HealthPolicy) normalize() HealthPolicy {
 	if p.RecoverySuccessesToNormal <= 0 {
 		p.RecoverySuccessesToNormal = d.RecoverySuccessesToNormal
 	}
+	if p.RecoveryEscalationFailureThreshold <= 0 {
+		p.RecoveryEscalationFailureThreshold = d.RecoveryEscalationFailureThreshold
+	}
+	if p.RecoveryPriorityStep <= 0 {
+		p.RecoveryPriorityStep = d.RecoveryPriorityStep
+	}
 	if p.ErrorRateAlpha <= 0 || p.ErrorRateAlpha > 1 || math.IsNaN(p.ErrorRateAlpha) || math.IsInf(p.ErrorRateAlpha, 0) {
 		p.ErrorRateAlpha = d.ErrorRateAlpha
 	}
@@ -85,9 +98,10 @@ func NewHealthKey(laneID string, capability Capability, model string) HealthKey 
 
 type HealthSnapshot struct {
 	HealthPenalty int
-	// RecoveryPriority is an absolute, temporary priority slot (30, 31, 32,
-	// ...) assigned by Smart Router. It never overwrites the account's base
-	// price priority and is scoped to one lane capability.
+	// RecoveryPriority is an absolute, temporary priority slot assigned by
+	// Smart Router. The first degraded lane enters the global capability/model
+	// FIFO at base priority + 30; repeated failure windows add another 30.
+	// It never overwrites the account's base price priority.
 	RecoveryPriority     int
 	HealthScore          float64
 	ErrorRateEWMA        float64
@@ -139,7 +153,7 @@ func (t *HealthTracker) RestoreWithSourceGroup(key HealthKey, snapshot HealthSna
 	}
 	t.states[key] = state
 	if snapshot.RecoveryPriority >= firstRecoveryPriority {
-		t.registerRecoverySlotLocked(state.sourceGroup, key, snapshot.RecoveryPriority)
+		state.RecoveryPriority = t.registerRecoverySlotLocked(key, snapshot.RecoveryPriority)
 	}
 	t.mu.Unlock()
 }
@@ -150,13 +164,15 @@ type HealthEventSink func(HealthEvent)
 
 type healthState struct {
 	HealthSnapshot
-	lastFailureUnix int64
-	sourceGroup     string
+	lastFailureUnix           int64
+	sourceGroup               string
+	recoveryFailuresSinceStep int
+	basePriority              int
 }
 
 type recoverySlotKey struct {
-	sourceGroup string
 	capability  Capability
+	modelFamily string
 }
 
 type HealthTracker struct {
@@ -262,6 +278,9 @@ func (t *HealthTracker) Observe(result RouteResult) HealthSnapshot {
 	} else if strings.TrimSpace(result.SourceGroup) != "" {
 		state.sourceGroup = normalizeRecoverySourceGroup(result.SourceGroup, key)
 	}
+	if result.BasePriority > 0 && state.basePriority == 0 {
+		state.basePriority = result.BasePriority
+	}
 	class := result.ErrorClass
 	if !result.Success && class == "" {
 		class = ClassifyFailure(result.StatusCode, result.Capability, false)
@@ -270,6 +289,7 @@ func (t *HealthTracker) Observe(result RouteResult) HealthSnapshot {
 	if result.Success {
 		state.ConsecutiveSuccesses++
 		state.ConsecutiveFailures = 0
+		state.recoveryFailuresSinceStep = 0
 		state.ErrorRateEWMA *= 1 - t.policy.ErrorRateAlpha
 		state.HealthScore = minFloat(1, maxFloat(0.05, state.HealthScore+0.12))
 		state.CooldownUntilUnix = 0
@@ -278,6 +298,7 @@ func (t *HealthTracker) Observe(result RouteResult) HealthSnapshot {
 			state.RecoveryStage = RecoveryNormal
 			t.releaseRecoverySlotLocked(state, key)
 			state.RecoveryPriority = 0
+			state.recoveryFailuresSinceStep = 0
 			action = "calibration_recovered"
 		} else {
 			switch state.RecoveryStage {
@@ -301,6 +322,7 @@ func (t *HealthTracker) Observe(result RouteResult) HealthSnapshot {
 			if state.RecoveryStage == RecoveryNormal && state.RecoveryPriority >= firstRecoveryPriority {
 				t.releaseRecoverySlotLocked(state, key)
 				state.RecoveryPriority = 0
+				state.recoveryFailuresSinceStep = 0
 			}
 		}
 	} else {
@@ -412,16 +434,51 @@ func normalizeRecoverySourceGroup(sourceGroup string, key HealthKey) string {
 }
 
 func (t *HealthTracker) ensureRecoverySlotLocked(state *healthState, key HealthKey, capability Capability) {
-	if state == nil || state.RecoveryPriority >= firstRecoveryPriority {
+	if state == nil {
 		return
 	}
-	pool := recoverySlotKey{sourceGroup: normalizeRecoverySourceGroup(state.sourceGroup, key), capability: capability}
+	pool := recoverySlotKey{capability: capability, modelFamily: key.Model}
+	threshold := t.policy.RecoveryEscalationFailureThreshold
+	// Preserve the established text/compact behavior: their first failure
+	// yields a recovery slot immediately, while image lanes require the full
+	// three-failure window before entering the +30 queue.
+	if state.RecoveryPriority < firstRecoveryPriority && capability != CapabilityImageGeneration && capability != CapabilityImageEdit {
+		threshold = 1
+	}
+	state.recoveryFailuresSinceStep++
+	if state.RecoveryPriority < firstRecoveryPriority {
+		if state.recoveryFailuresSinceStep < threshold {
+			return
+		}
+		start := firstRecoveryPriority
+		if state.basePriority > 0 {
+			start = state.basePriority + t.policy.RecoveryPriorityStep
+		}
+		state.RecoveryPriority = t.allocateRecoverySlotLocked(pool, key, start)
+		state.recoveryFailuresSinceStep = 0
+		return
+	}
+	if state.RecoveryPriority >= firstRecoveryPriority {
+		if state.recoveryFailuresSinceStep < t.policy.RecoveryEscalationFailureThreshold {
+			return
+		}
+		t.releaseRecoverySlotLocked(state, key)
+		state.RecoveryPriority = t.allocateRecoverySlotLocked(pool, key, state.RecoveryPriority+t.policy.RecoveryPriorityStep)
+		state.recoveryFailuresSinceStep = 0
+		return
+	}
+}
+
+func (t *HealthTracker) allocateRecoverySlotLocked(pool recoverySlotKey, key HealthKey, start int) int {
+	if start < firstRecoveryPriority {
+		start = firstRecoveryPriority
+	}
 	used := t.recoverySlots[pool]
 	if used == nil {
 		used = make(map[HealthKey]int)
 		t.recoverySlots[pool] = used
 	}
-	for priority := firstRecoveryPriority; ; priority++ {
+	for priority := start; ; priority++ {
 		occupied := false
 		for _, assigned := range used {
 			if assigned == priority {
@@ -433,29 +490,38 @@ func (t *HealthTracker) ensureRecoverySlotLocked(state *healthState, key HealthK
 			continue
 		}
 		used[key] = priority
-		state.RecoveryPriority = priority
-		return
+		return priority
 	}
 }
 
-func (t *HealthTracker) registerRecoverySlotLocked(sourceGroup string, key HealthKey, priority int) {
+func (t *HealthTracker) registerRecoverySlotLocked(key HealthKey, priority int) int {
 	if priority < firstRecoveryPriority {
-		return
+		return 0
 	}
-	pool := recoverySlotKey{sourceGroup: normalizeRecoverySourceGroup(sourceGroup, key), capability: key.Capability}
+	pool := recoverySlotKey{capability: key.Capability, modelFamily: key.Model}
 	used := t.recoverySlots[pool]
 	if used == nil {
 		used = make(map[HealthKey]int)
 		t.recoverySlots[pool] = used
 	}
+	for assignedKey, assignedPriority := range used {
+		if assignedKey == key {
+			delete(used, assignedKey)
+			continue
+		}
+		if assignedPriority == priority {
+			return t.allocateRecoverySlotLocked(pool, key, priority)
+		}
+	}
 	used[key] = priority
+	return priority
 }
 
 func (t *HealthTracker) releaseRecoverySlotLocked(state *healthState, key HealthKey) {
 	if state == nil || state.RecoveryPriority < firstRecoveryPriority {
 		return
 	}
-	pool := recoverySlotKey{sourceGroup: normalizeRecoverySourceGroup(state.sourceGroup, key), capability: key.Capability}
+	pool := recoverySlotKey{capability: key.Capability, modelFamily: key.Model}
 	if used := t.recoverySlots[pool]; used != nil {
 		delete(used, key)
 		if len(used) == 0 {

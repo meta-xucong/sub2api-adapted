@@ -348,10 +348,11 @@ gateway:
       image_edit: 2
       same_source_group: 1
     recovery:
-      first_recovery_priority: 30
       production_successes_to_normal: 3
       calibration_success_restores_base_priority: true
       quiet_window_seconds: 900
+      recovery_escalation_failure_threshold: 3
+      recovery_priority_step: 30
     failure_policy:
       transient_cooldown_seconds: 30
       capability_quarantine_seconds: 86400
@@ -359,6 +360,21 @@ gateway:
       auth_quarantine_seconds: 86400
       client_cancel_penalty: false
 ```
+
+### Dynamic FIFO recovery priority
+
+Recovery priority is an overlay on the account's configured priority. The
+configured value is never changed. A lane with base priority `2` enters the
+recovery queue at `32` after three consecutive failures, then advances to
+`62`, `92`, and so on after each additional three-failure round. The first
+failure round is counted from the moment the lane enters recovery; a success
+or the 04:00 calibration success releases the overlay and returns the lane to
+its base priority.
+
+The queue is global for the same capability and model family, not split by
+upstream source group. Lanes are assigned the lowest available slot at their
+target priority, so a newly degraded lane can use a slot freed when another
+lane escalates. No lane is permanently disabled by this mechanism.
 
 ## 10. 开发阶段与验收
 

@@ -368,6 +368,12 @@ gateway:
       sustained_failure_threshold: 3
       # Optional image-only override. 0 keeps the generic threshold.
       image_sustained_failure_threshold: 0
+      # After this many consecutive failures, move the lane another +30
+      # dynamic-priority step. Zero uses the default of 3.
+      recovery_escalation_failure_threshold: 3
+      # Dynamic recovery priority step. The first degraded slot is
+      # base_priority + 30; later rounds are +60, +90, and so on.
+      recovery_priority_step: 30
     # Runs inside the Sub2API process at the Shanghai calendar time below.
     # It writes only routing health metadata, never prompts or credentials.
     calibration:

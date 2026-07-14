@@ -910,6 +910,12 @@ type GatewaySmartRouterRecoveryConfig struct {
 	// ImageSustainedFailureThreshold overrides the generic threshold only for
 	// image generation and image edit lanes. Zero keeps the generic threshold.
 	ImageSustainedFailureThreshold int `mapstructure:"image_sustained_failure_threshold"`
+	// RecoveryEscalationFailureThreshold controls how many additional
+	// consecutive failures move a degraded lane another FIFO step backward.
+	RecoveryEscalationFailureThreshold int `mapstructure:"recovery_escalation_failure_threshold"`
+	// RecoveryPriorityStep is added to the lane's current recovery priority at
+	// each escalation. Zero uses the Smart Router default of 30.
+	RecoveryPriorityStep int `mapstructure:"recovery_priority_step"`
 }
 
 // GatewaySmartRouterCalibrationConfig controls the durable daily health probes.
@@ -2952,6 +2958,12 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.SmartRouter.Recovery.ImageSustainedFailureThreshold < 0 {
 		return fmt.Errorf("gateway.smart_router.recovery.image_sustained_failure_threshold must be non-negative")
+	}
+	if c.Gateway.SmartRouter.Recovery.RecoveryEscalationFailureThreshold < 0 {
+		return fmt.Errorf("gateway.smart_router.recovery.recovery_escalation_failure_threshold must be non-negative")
+	}
+	if c.Gateway.SmartRouter.Recovery.RecoveryPriorityStep < 0 {
+		return fmt.Errorf("gateway.smart_router.recovery.recovery_priority_step must be non-negative")
 	}
 	if c.Gateway.SmartRouter.Calibration.Hour < 0 || c.Gateway.SmartRouter.Calibration.Hour > 23 {
 		return fmt.Errorf("gateway.smart_router.calibration.hour must be between 0 and 23")
