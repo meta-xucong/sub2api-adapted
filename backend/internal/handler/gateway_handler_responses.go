@@ -87,6 +87,12 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 	requestCtx := c.Request.Context()
 	if service.IsImageGenerationIntent("/v1/responses", reqModel, body) {
 		requestCtx = service.WithOpenAIImageGenerationIntent(requestCtx)
+		mode := "text_only"
+		if service.IsOpenAIResponsesReferenceImageRequest(body) {
+			mode = "reference_image"
+		}
+		requestCtx = service.WithOpenAIImageSmartRouterInputMode(requestCtx, mode)
+		requestCtx = service.WithOpenAIImageSmartRouterModelFamily(requestCtx, service.ResolveOpenAIResponsesImageRoutingModel(reqModel, body))
 	}
 
 	// 解析渠道级模型映射

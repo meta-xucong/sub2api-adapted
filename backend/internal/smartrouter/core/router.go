@@ -84,12 +84,32 @@ func Order(req RouteRequest, lanes []LaneSnapshot, policy Policy) RoutePlan {
 	// Explicit size-specialized lanes get first use for their matching tier.
 	// Once all of them are unavailable, generic lanes become the fallback.
 	filtered = preferExplicitImageSizeTier(filtered, req.ImageSizeTier)
-	filtered = filterLowestPriorityLayer(filtered)
+	primaryLanes := filtered
+	probeLanes := []LaneSnapshot(nil)
+	imageResilience := isImageCapability(req.Capability) && policy.ImageResilienceEnabled && req.ImageResilience
+	if imageResilience && policy.ImageHalfOpenEnabled {
+		regularLanes := make([]LaneSnapshot, 0, len(filtered))
+		for _, lane := range filtered {
+			if lane.RecoveryStage == RecoveryProbeDue {
+				probeLanes = append(probeLanes, lane)
+				continue
+			}
+			regularLanes = append(regularLanes, lane)
+		}
+		if len(regularLanes) > 0 {
+			primaryLanes = regularLanes
+		}
+	}
+	primaryLanes = filterLowestPriorityLayer(primaryLanes)
+	if imageResilience && policy.ImageHalfOpenEnabled && len(primaryLanes) > 0 && len(probeLanes) > 0 {
+		probeLanes = selectHalfOpenProbe(probeLanes, primaryLanes)
+	}
+	candidateLanes := append(append([]LaneSnapshot(nil), primaryLanes...), probeLanes...)
 
-	minPriority, maxPriority := effectivePriority(filtered[0]), effectivePriority(filtered[0])
+	minPriority, maxPriority := effectivePriority(candidateLanes[0]), effectivePriority(candidateLanes[0])
 	minLatency, maxLatency := 0.0, 0.0
 	hasLatency := false
-	for _, lane := range filtered {
+	for _, lane := range candidateLanes {
 		priority := effectivePriority(lane)
 		if priority < minPriority {
 			minPriority = priority
@@ -112,8 +132,8 @@ func Order(req RouteRequest, lanes []LaneSnapshot, policy Policy) RoutePlan {
 		}
 	}
 
-	candidates := make([]CandidateDecision, 0, len(filtered))
-	for _, lane := range filtered {
+	candidates := make([]CandidateDecision, 0, len(candidateLanes))
+	for _, lane := range candidateLanes {
 		score := scoreLane(lane, policy, minPriority, maxPriority, minLatency, maxLatency, hasLatency)
 		candidates = append(candidates, CandidateDecision{
 			LaneID:      lane.LaneID,
@@ -139,8 +159,34 @@ func Order(req RouteRequest, lanes []LaneSnapshot, policy Policy) RoutePlan {
 	if topK <= 0 {
 		topK = 1
 	}
-	ordered := weightedOrder(candidates[:topK], req)
-	if plan.AttemptBudget > 0 {
+	orderedCandidates := candidates[:topK]
+	if imageResilience && policy.ImageHalfOpenEnabled && len(probeLanes) > 0 {
+		primaryIDs := make(map[string]struct{}, len(primaryLanes))
+		for _, lane := range primaryLanes {
+			primaryIDs[lane.LaneID] = struct{}{}
+		}
+		primaryCandidates := make([]CandidateDecision, 0, len(orderedCandidates))
+		probeCandidates := make([]CandidateDecision, 0, len(orderedCandidates))
+		for _, candidate := range orderedCandidates {
+			if _, ok := primaryIDs[candidate.LaneID]; ok {
+				primaryCandidates = append(primaryCandidates, candidate)
+			} else {
+				probeCandidates = append(probeCandidates, candidate)
+			}
+		}
+		ordered := weightedOrder(primaryCandidates, req)
+		if len(ordered) < topK {
+			ordered = append(ordered, probeCandidates...)
+		}
+		ordered = ordered[:minInt(len(ordered), topK)]
+		orderedCandidates = nil
+		orderedCandidates = ordered
+	}
+	ordered := orderedCandidates
+	if !imageResilience || !policy.ImageHalfOpenEnabled || len(probeLanes) == 0 {
+		ordered = weightedOrder(orderedCandidates, req)
+	}
+	if plan.AttemptBudget > 0 && !imageResilience {
 		remaining := plan.AttemptBudget - req.AttemptNumber
 		if remaining < len(ordered) {
 			ordered = ordered[:maxInt(remaining, 0)]
@@ -150,17 +196,48 @@ func Order(req RouteRequest, lanes []LaneSnapshot, policy Policy) RoutePlan {
 	plan.Candidates = candidates
 	plan.OrderedLaneIDs = make([]string, 0, len(ordered))
 	seenSourceGroups := make(map[string]int)
+	remainingAttempts := 0
+	if imageResilience && plan.AttemptBudget > 0 {
+		remainingAttempts = plan.AttemptBudget - req.AttemptNumber
+	}
 	for _, candidate := range ordered {
-		if policy.SameSourceGroupAttempts > 0 {
+		maxSameSourceAttempts := policy.SameSourceGroupAttempts
+		if imageResilience && policy.ImageSameSourceAttempts > 0 {
+			maxSameSourceAttempts = policy.ImageSameSourceAttempts
+		}
+		if maxSameSourceAttempts > 0 {
 			count := seenSourceGroups[candidate.SourceGroup]
-			if count >= policy.SameSourceGroupAttempts {
+			if count >= maxSameSourceAttempts {
 				continue
 			}
 			seenSourceGroups[candidate.SourceGroup] = count + 1
 		}
 		plan.OrderedLaneIDs = append(plan.OrderedLaneIDs, candidate.LaneID)
+		if remainingAttempts > 0 && len(plan.OrderedLaneIDs) >= remainingAttempts {
+			break
+		}
 	}
 	return plan
+}
+
+func isImageCapability(capability Capability) bool {
+	return capability == CapabilityImageGeneration || capability == CapabilityImageEdit
+}
+
+func selectHalfOpenProbe(probes []LaneSnapshot, primary []LaneSnapshot) []LaneSnapshot {
+	if len(probes) == 0 {
+		return nil
+	}
+	primaryGroups := make(map[string]struct{}, len(primary))
+	for _, lane := range primary {
+		primaryGroups[normalizeSourceGroup(lane)] = struct{}{}
+	}
+	for _, probe := range probes {
+		if _, sameGroup := primaryGroups[normalizeSourceGroup(probe)]; !sameGroup {
+			return []LaneSnapshot{probe}
+		}
+	}
+	return []LaneSnapshot{probes[0]}
 }
 
 func filterLowestPriorityLayer(lanes []LaneSnapshot) []LaneSnapshot {

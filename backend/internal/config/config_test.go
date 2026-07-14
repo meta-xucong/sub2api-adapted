@@ -1513,6 +1513,29 @@ func TestValidateConfigErrors(t *testing.T) {
 			wantErr: "gateway.smart_router.adaptive_timeout.failure_backoff_multiplier must be greater than 0 and at most 1",
 		},
 		{
+			name:    "gateway smart router image resilience negative",
+			mutate:  func(c *Config) { c.Gateway.SmartRouter.ImageResilience.StandardMinSeconds = -1 },
+			wantErr: "gateway.smart_router.image_resilience durations and limits must be non-negative",
+		},
+		{
+			name: "gateway smart router image resilience has no capability",
+			mutate: func(c *Config) {
+				c.Gateway.SmartRouter.ImageResilience.Enabled = true
+				c.Gateway.SmartRouter.ImageResilience.GenerationEnabled = false
+				c.Gateway.SmartRouter.ImageResilience.EditEnabled = false
+			},
+			wantErr: "gateway.smart_router.image_resilience must enable generation or edit",
+		},
+		{
+			name: "gateway smart router image resilience invalid range",
+			mutate: func(c *Config) {
+				c.Gateway.SmartRouter.ImageResilience.Enabled = true
+				c.Gateway.SmartRouter.ImageResilience.StandardMinSeconds = 250
+				c.Gateway.SmartRouter.ImageResilience.StandardMaxSeconds = 240
+			},
+			wantErr: "gateway.smart_router.image_resilience.standard_min_seconds must be <= standard_max_seconds",
+		},
+		{
 			name: "gateway smart router zero weights",
 			mutate: func(c *Config) {
 				c.Gateway.SmartRouter.Enabled = true
@@ -2113,6 +2136,14 @@ func TestLoad_DefaultGatewayImageStreamConfig(t *testing.T) {
 	}
 	if cfg.Gateway.SmartRouter.AdaptiveTimeout.FailureBackoffMultiplier != 0.5 {
 		t.Fatalf("adaptive timeout failure_backoff_multiplier = %v, want 0.5", cfg.Gateway.SmartRouter.AdaptiveTimeout.FailureBackoffMultiplier)
+	}
+	imageResilience := cfg.Gateway.SmartRouter.ImageResilience
+	if imageResilience.Enabled || !imageResilience.GenerationEnabled || !imageResilience.EditEnabled ||
+		imageResilience.StandardDefaultSeconds != 150 || imageResilience.StandardMinSeconds != 45 || imageResilience.StandardMaxSeconds != 240 ||
+		imageResilience.SpecialistDefaultSeconds != 210 || imageResilience.SpecialistMinSeconds != 75 || imageResilience.SpecialistMaxSeconds != 360 ||
+		imageResilience.P90Multiplier != 1.25 || imageResilience.SafetyMarginSeconds != 20 || imageResilience.FallbackReserveSeconds != 45 ||
+		imageResilience.SampleWindowSize != 32 || imageResilience.MaxSameSourceAttempts != 1 || imageResilience.HalfOpenEnabled {
+		t.Fatalf("unexpected smart router image resilience defaults: %#v", imageResilience)
 	}
 	backoff := cfg.Gateway.SmartRouter.RateLimitBackoff
 	if !backoff.Enabled || backoff.InitialSeconds != 5 || backoff.MaxSeconds != 60 || backoff.MaxAttempts != 4 || backoff.JitterRatio != 0.25 || backoff.RetryAfterMaxSeconds != 90 {

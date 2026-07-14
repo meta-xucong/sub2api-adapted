@@ -50,12 +50,30 @@ func (s *OpenAIGatewayService) withOpenAIImageUpstreamTimeoutFor(ctx context.Con
 		if deadline, ok := ctx.Deadline(); ok {
 			remaining = time.Until(deadline)
 		}
-		decision := engine.TimeoutFor(smartrouter.TimeoutRequest{
+		request := smartrouter.TimeoutRequest{
 			LaneID:          laneID,
 			Capability:      capability,
 			DefaultTimeout:  timeout,
 			RemainingBudget: remaining,
-		})
+		}
+		if tier, ok := OpenAIImageSmartRouterSizeTierFromContext(ctx); ok {
+			request.ImageSizeTier = tier
+		}
+		if mode, ok := OpenAIImageSmartRouterInputModeFromContext(ctx); ok {
+			request.ImageInputMode = mode
+		}
+		if model, ok := OpenAIImageSmartRouterModelFamilyFromContext(ctx); ok {
+			request.ImageModelFamily = model
+		}
+		if profile, ok := s.smartRouterImageTimeoutProfile(ctx, capability); ok {
+			request.ProfileDefault = profile.Default
+			request.ProfileMin = profile.Min
+			request.ProfileMax = profile.Max
+			request.ProfileSafetyMargin = profile.SafetyMargin
+			request.ProfileMultiplier = profile.Multiplier
+			request.ProfileReservePerAttempt = profile.ReservePerAttempt
+		}
+		decision := engine.TimeoutFor(request)
 		timeout = decision.Timeout
 	}
 	if timeout <= 0 {
@@ -74,7 +92,7 @@ func (s *OpenAIGatewayService) smartRouterAdaptiveTimeoutEngine() *smartrouter.A
 	return s.smartRouterAdaptiveTimeout
 }
 
-func (s *OpenAIGatewayService) observeSmartRouterImageAttempt(account *Account, capability smartrouter.Capability, duration time.Duration, statusCode int, success bool, requestErr error) {
+func (s *OpenAIGatewayService) observeSmartRouterImageAttempt(ctx context.Context, account *Account, capability smartrouter.Capability, duration time.Duration, statusCode int, success bool, requestErr error) {
 	engine := s.smartRouterAdaptiveTimeoutEngine()
 	if engine == nil || !engine.Config().Enabled || !s.isSmartRouterEnabled() || account == nil {
 		return
@@ -89,7 +107,7 @@ func (s *OpenAIGatewayService) observeSmartRouterImageAttempt(account *Account, 
 			failureClass = smartrouter.ClassifyFailure(statusCode, capability, false)
 		}
 	}
-	engine.Observe(smartrouter.AttemptObservation{
+	observation := smartrouter.AttemptObservation{
 		LaneID:       "account:" + formatAccountID(account.ID),
 		Capability:   capability,
 		Duration:     duration,
@@ -97,7 +115,17 @@ func (s *OpenAIGatewayService) observeSmartRouterImageAttempt(account *Account, 
 		FailureClass: failureClass,
 		StatusCode:   statusCode,
 		ErrorSummary: imageAttemptErrorSummary(statusCode, requestErr),
-	})
+	}
+	if tier, ok := OpenAIImageSmartRouterSizeTierFromContext(ctx); ok {
+		observation.ImageSizeTier = tier
+	}
+	if mode, ok := OpenAIImageSmartRouterInputModeFromContext(ctx); ok {
+		observation.ImageInputMode = mode
+	}
+	if model, ok := OpenAIImageSmartRouterModelFamilyFromContext(ctx); ok {
+		observation.ImageModelFamily = model
+	}
+	engine.Observe(observation)
 }
 
 func imageAttemptErrorSummary(statusCode int, requestErr error) string {

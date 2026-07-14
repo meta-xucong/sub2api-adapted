@@ -58,26 +58,28 @@ var openAIAdvancedSchedulerSettingCache atomic.Value // *cachedOpenAIAdvancedSch
 var openAIAdvancedSchedulerSettingSF singleflight.Group
 
 type OpenAIAccountScheduleRequest struct {
-	GroupID                  *int64
-	Platform                 string
-	SessionHash              string
-	StickyAccountID          int64
-	StickyPreviousAccountID  int64
-	StickyWeighted           bool
-	SubscriptionPriority     bool
-	PreserveStickyBinding    bool
-	PreviousResponseID       string
-	PreviousResponseCanMove  bool
-	RequestedModel           string
-	RequiredTransport        OpenAIUpstreamTransport
-	RequiredCapability       OpenAIEndpointCapability
-	RequiredImageCapability  OpenAIImagesCapability
-	SmartRouterCapability    smartrouter.Capability
-	SmartRouterImageSizeTier string
-	RequireCompact           bool
-	ExcludedIDs              map[int64]struct{}
-	ExcludedSourceGroups     map[string]struct{}
-	SmartRouterImageBudget   OpenAIImageSmartRouterBudgetState
+	GroupID                     *int64
+	Platform                    string
+	SessionHash                 string
+	StickyAccountID             int64
+	StickyPreviousAccountID     int64
+	StickyWeighted              bool
+	SubscriptionPriority        bool
+	PreserveStickyBinding       bool
+	PreviousResponseID          string
+	PreviousResponseCanMove     bool
+	RequestedModel              string
+	RequiredTransport           OpenAIUpstreamTransport
+	RequiredCapability          OpenAIEndpointCapability
+	RequiredImageCapability     OpenAIImagesCapability
+	SmartRouterCapability       smartrouter.Capability
+	SmartRouterImageSizeTier    string
+	SmartRouterImageInputMode   string
+	SmartRouterImageModelFamily string
+	RequireCompact              bool
+	ExcludedIDs                 map[int64]struct{}
+	ExcludedSourceGroups        map[string]struct{}
+	SmartRouterImageBudget      OpenAIImageSmartRouterBudgetState
 }
 
 type OpenAIAccountScheduleDecision struct {
@@ -1044,6 +1046,9 @@ func (s *defaultOpenAIAccountScheduler) smartRouterRouteRequest(req OpenAIAccoun
 		MinimumAttemptSeconds:      req.SmartRouterImageBudget.MinimumAttemptSeconds,
 		FinalizationReserveSeconds: req.SmartRouterImageBudget.FinalizationReserveSeconds,
 		ImageSizeTier:              req.SmartRouterImageSizeTier,
+		ImageInputMode:             smartrouter.ImageInputMode(req.SmartRouterImageInputMode),
+		ImageModelFamily:           req.SmartRouterImageModelFamily,
+		ImageResilience:            s.service.smartRouterImageResilienceEnabled(capability),
 	}
 }
 
@@ -1950,25 +1955,29 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
 	}
 	imageBudget, _ := OpenAIImageSmartRouterBudgetFromContext(ctx)
 	imageSizeTier, _ := OpenAIImageSmartRouterSizeTierFromContext(ctx)
+	imageInputMode, _ := OpenAIImageSmartRouterInputModeFromContext(ctx)
+	imageModelFamily, _ := OpenAIImageSmartRouterModelFamilyFromContext(ctx)
 	return scheduler.Select(ctx, OpenAIAccountScheduleRequest{
-		GroupID:                  groupID,
-		Platform:                 platform,
-		SessionHash:              sessionHash,
-		StickyAccountID:          stickyAccountID,
-		StickyPreviousAccountID:  stickyPreviousAccountID,
-		StickyWeighted:           stickyWeighted,
-		SubscriptionPriority:     subscriptionPriority,
-		PreviousResponseID:       previousResponseID,
-		PreviousResponseCanMove:  previousResponseCanMove,
-		RequestedModel:           requestedModel,
-		RequiredTransport:        requiredTransport,
-		RequiredCapability:       requiredCapability,
-		RequiredImageCapability:  requiredImageCapability,
-		SmartRouterCapability:    smartCapability,
-		RequireCompact:           requireCompact,
-		ExcludedIDs:              excludedIDs,
-		SmartRouterImageBudget:   imageBudget,
-		SmartRouterImageSizeTier: imageSizeTier,
+		GroupID:                     groupID,
+		Platform:                    platform,
+		SessionHash:                 sessionHash,
+		StickyAccountID:             stickyAccountID,
+		StickyPreviousAccountID:     stickyPreviousAccountID,
+		StickyWeighted:              stickyWeighted,
+		SubscriptionPriority:        subscriptionPriority,
+		PreviousResponseID:          previousResponseID,
+		PreviousResponseCanMove:     previousResponseCanMove,
+		RequestedModel:              requestedModel,
+		RequiredTransport:           requiredTransport,
+		RequiredCapability:          requiredCapability,
+		RequiredImageCapability:     requiredImageCapability,
+		SmartRouterCapability:       smartCapability,
+		RequireCompact:              requireCompact,
+		ExcludedIDs:                 excludedIDs,
+		SmartRouterImageBudget:      imageBudget,
+		SmartRouterImageSizeTier:    imageSizeTier,
+		SmartRouterImageInputMode:   string(imageInputMode),
+		SmartRouterImageModelFamily: imageModelFamily,
 	})
 }
 

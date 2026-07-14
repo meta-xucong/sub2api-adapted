@@ -81,6 +81,9 @@ func (p AdaptiveTimeoutPlugin) BeforeAttempt(ctx AttemptContext) AttemptDirectiv
 	decision := p.Engine.TimeoutFor(TimeoutRequest{
 		LaneID:            ctx.Lane.LaneID,
 		Capability:        ctx.Request.Capability,
+		ImageSizeTier:     ctx.Request.ImageSizeTier,
+		ImageInputMode:    ctx.Request.ImageInputMode,
+		ImageModelFamily:  ctx.Request.ImageModelFamily,
 		RemainingBudget:   ctx.RemainingBudget,
 		RemainingAttempts: ctx.RemainingAttempts,
 	})
@@ -92,12 +95,15 @@ func (p AdaptiveTimeoutPlugin) AfterAttempt(ctx AttemptContext, result RouteResu
 		return
 	}
 	p.Engine.Observe(AttemptObservation{
-		LaneID:       result.LaneID,
-		Capability:   result.Capability,
-		Duration:     time.Duration(result.TotalLatencyMs) * time.Millisecond,
-		Success:      result.Success,
-		FailureClass: result.ErrorClass,
-		StatusCode:   result.StatusCode,
-		ErrorSummary: result.ErrorSummary,
+		LaneID:           result.LaneID,
+		Capability:       result.Capability,
+		ImageSizeTier:    ctx.Request.ImageSizeTier,
+		ImageInputMode:   ctx.Request.ImageInputMode,
+		ImageModelFamily: ctx.Request.ImageModelFamily,
+		Duration:         time.Duration(result.TotalLatencyMs) * time.Millisecond,
+		Success:          result.Success,
+		FailureClass:     result.ErrorClass,
+		StatusCode:       result.StatusCode,
+		ErrorSummary:     result.ErrorSummary,
 	})
 }

@@ -287,6 +287,12 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		requestCtx, cancelImageRequest := h.gatewayService.WithOpenAIImageRequestTimeout(requestCtx)
 		defer cancelImageRequest()
 		requestCtx = service.WithOpenAIImageGenerationIntent(requestCtx)
+		mode := "text_only"
+		if service.IsOpenAIResponsesReferenceImageRequest(body) {
+			mode = "reference_image"
+		}
+		requestCtx = service.WithOpenAIImageSmartRouterInputMode(requestCtx, mode)
+		requestCtx = service.WithOpenAIImageSmartRouterModelFamily(requestCtx, routingModel)
 		routingContext = requestCtx
 	} else {
 		routingContext = service.WithOpenAIResponsesIntent(routingContext)

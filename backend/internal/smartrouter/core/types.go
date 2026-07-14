@@ -11,6 +11,13 @@ const (
 	CapabilityEmbedding        Capability = "embedding"
 )
 
+type ImageInputMode string
+
+const (
+	ImageInputTextOnly       ImageInputMode = "text_only"
+	ImageInputReferenceImage ImageInputMode = "reference_image"
+)
+
 type FailureClass string
 
 const (
@@ -59,6 +66,14 @@ type RouteRequest struct {
 	// for explicit OpenAI Images sizes. It is empty for non-image and
 	// implicit-size requests, preserving ordinary lane selection.
 	ImageSizeTier string
+	// ImageModelFamily is a normalized image model family used only by image
+	// timeout profiles. Non-image routing leaves it empty.
+	ImageModelFamily string
+	// ImageInputMode is populated only for image requests. Non-image routing
+	// leaves it empty, preserving the existing route key and behavior.
+	ImageInputMode ImageInputMode
+	// ImageResilience enables image-only probe fallback and source isolation.
+	ImageResilience bool
 }
 
 type LaneSnapshot struct {

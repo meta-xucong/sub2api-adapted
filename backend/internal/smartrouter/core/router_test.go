@@ -221,6 +221,46 @@ func TestOrder_TemporaryPriorityPenaltyMovesFlappingLaneBehindFallback(t *testin
 	require.Equal(t, []string{"stable-fallback"}, plan.OrderedLaneIDs)
 }
 
+func TestOrder_ImageResilienceAddsOnlyOneHalfOpenProbeAfterHealthyLayer(t *testing.T) {
+	policy := DefaultPolicy()
+	policy.Enabled = true
+	policy.TopK = 4
+	policy.ImageResilienceEnabled = true
+	policy.ImageHalfOpenEnabled = true
+	policy.ImageSameSourceAttempts = 1
+
+	plan := Order(RouteRequest{
+		Capability:      CapabilityImageGeneration,
+		ImageResilience: true,
+		Seed:            41,
+	}, []LaneSnapshot{
+		{LaneID: "healthy-a", AccountID: 1, Priority: 1, SourceGroup: "stable"},
+		{LaneID: "healthy-b", AccountID: 2, Priority: 1, SourceGroup: "stable"},
+		{LaneID: "probe-a", AccountID: 3, Priority: 30, SourceGroup: "recovery-a", RecoveryStage: RecoveryProbeDue},
+		{LaneID: "probe-b", AccountID: 4, Priority: 31, SourceGroup: "recovery-b", RecoveryStage: RecoveryProbeDue},
+	}, policy)
+
+	require.Len(t, plan.OrderedLaneIDs, 2)
+	require.Contains(t, []string{"healthy-a", "healthy-b"}, plan.OrderedLaneIDs[0])
+	require.Equal(t, "probe-a", plan.OrderedLaneIDs[1])
+	require.Len(t, plan.Candidates, 3)
+}
+
+func TestOrder_ImageResilienceDoesNotChangeChatProbeBehavior(t *testing.T) {
+	policy := DefaultPolicy()
+	policy.Enabled = true
+	policy.ImageResilienceEnabled = true
+	policy.ImageHalfOpenEnabled = true
+
+	plan := Order(RouteRequest{Capability: CapabilityChat, ImageResilience: true}, []LaneSnapshot{
+		{LaneID: "chat-primary", AccountID: 1, Priority: 1, SourceGroup: "stable"},
+		{LaneID: "chat-probe", AccountID: 2, Priority: 30, SourceGroup: "recovery", RecoveryStage: RecoveryProbeDue},
+	}, policy)
+
+	require.Equal(t, []string{"chat-primary"}, plan.OrderedLaneIDs)
+	require.Len(t, plan.Candidates, 1)
+}
+
 func TestClassifyFailure(t *testing.T) {
 	require.Equal(t, FailureTransientForbidden, ClassifyFailure(http.StatusForbidden, CapabilityImageEdit, false))
 	require.Equal(t, FailureAuthForbidden, ClassifyFailure(http.StatusForbidden, CapabilityChat, false))

@@ -898,6 +898,7 @@ type GatewaySmartRouterConfig struct {
 	Calibration             GatewaySmartRouterCalibrationConfig      `mapstructure:"calibration"`
 	Scoring                 GatewaySmartRouterScoringConfig          `mapstructure:"scoring"`
 	AdaptiveTimeout         GatewaySmartRouterAdaptiveTimeoutConfig  `mapstructure:"adaptive_timeout"`
+	ImageResilience         GatewaySmartRouterImageResilienceConfig  `mapstructure:"image_resilience"`
 	RateLimitBackoff        GatewaySmartRouterRateLimitBackoffConfig `mapstructure:"rate_limit_backoff"`
 }
 
@@ -935,6 +936,27 @@ type GatewaySmartRouterAdaptiveTimeoutConfig struct {
 	FailureBackoffMultiplier float64 `mapstructure:"failure_backoff_multiplier"`
 	WindowSize               int     `mapstructure:"window_size"`
 	ReserveSeconds           int     `mapstructure:"reserve_seconds"`
+}
+
+// GatewaySmartRouterImageResilienceConfig controls the optional image-only
+// resilience overlay. It never changes non-image routing or the stored
+// account priority.
+type GatewaySmartRouterImageResilienceConfig struct {
+	Enabled                  bool    `mapstructure:"enabled"`
+	GenerationEnabled        bool    `mapstructure:"generation_enabled"`
+	EditEnabled              bool    `mapstructure:"edit_enabled"`
+	StandardDefaultSeconds   int     `mapstructure:"standard_default_seconds"`
+	StandardMinSeconds       int     `mapstructure:"standard_min_seconds"`
+	StandardMaxSeconds       int     `mapstructure:"standard_max_seconds"`
+	SpecialistDefaultSeconds int     `mapstructure:"specialist_default_seconds"`
+	SpecialistMinSeconds     int     `mapstructure:"specialist_min_seconds"`
+	SpecialistMaxSeconds     int     `mapstructure:"specialist_max_seconds"`
+	P90Multiplier            float64 `mapstructure:"p90_multiplier"`
+	SafetyMarginSeconds      int     `mapstructure:"safety_margin_seconds"`
+	FallbackReserveSeconds   int     `mapstructure:"fallback_reserve_seconds"`
+	SampleWindowSize         int     `mapstructure:"sample_window_size"`
+	MaxSameSourceAttempts    int     `mapstructure:"max_same_source_attempts"`
+	HalfOpenEnabled          bool    `mapstructure:"half_open_enabled"`
 }
 
 // GatewaySmartRouterRateLimitBackoffConfig controls upstream 429 recovery.
@@ -2073,6 +2095,21 @@ func setDefaults() {
 	viper.SetDefault("gateway.smart_router.scoring.queue", 0.6)
 	viper.SetDefault("gateway.smart_router.scoring.latency", 0.4)
 	viper.SetDefault("gateway.smart_router.scoring.recovery", 0.8)
+	viper.SetDefault("gateway.smart_router.image_resilience.enabled", false)
+	viper.SetDefault("gateway.smart_router.image_resilience.generation_enabled", true)
+	viper.SetDefault("gateway.smart_router.image_resilience.edit_enabled", true)
+	viper.SetDefault("gateway.smart_router.image_resilience.standard_default_seconds", 150)
+	viper.SetDefault("gateway.smart_router.image_resilience.standard_min_seconds", 45)
+	viper.SetDefault("gateway.smart_router.image_resilience.standard_max_seconds", 240)
+	viper.SetDefault("gateway.smart_router.image_resilience.specialist_default_seconds", 210)
+	viper.SetDefault("gateway.smart_router.image_resilience.specialist_min_seconds", 75)
+	viper.SetDefault("gateway.smart_router.image_resilience.specialist_max_seconds", 360)
+	viper.SetDefault("gateway.smart_router.image_resilience.p90_multiplier", 1.25)
+	viper.SetDefault("gateway.smart_router.image_resilience.safety_margin_seconds", 20)
+	viper.SetDefault("gateway.smart_router.image_resilience.fallback_reserve_seconds", 45)
+	viper.SetDefault("gateway.smart_router.image_resilience.sample_window_size", 32)
+	viper.SetDefault("gateway.smart_router.image_resilience.max_same_source_attempts", 1)
+	viper.SetDefault("gateway.smart_router.image_resilience.half_open_enabled", false)
 	viper.SetDefault("gateway.force_codex_cli", false)
 	viper.SetDefault("gateway.codex_image_generation_bridge_enabled", false)
 	viper.SetDefault("gateway.openai_passthrough_allow_timeout_headers", false)
@@ -2953,6 +2990,27 @@ func (c *Config) Validate() error {
 	}
 	if adaptiveTimeout.Enabled && adaptiveTimeout.MinSeconds > adaptiveTimeout.MaxSeconds {
 		return fmt.Errorf("gateway.smart_router.adaptive_timeout.min_seconds must be <= max_seconds")
+	}
+	imageResilience := c.Gateway.SmartRouter.ImageResilience
+	if imageResilience.StandardDefaultSeconds < 0 || imageResilience.StandardMinSeconds < 0 || imageResilience.StandardMaxSeconds < 0 ||
+		imageResilience.SpecialistDefaultSeconds < 0 || imageResilience.SpecialistMinSeconds < 0 || imageResilience.SpecialistMaxSeconds < 0 ||
+		imageResilience.SafetyMarginSeconds < 0 || imageResilience.FallbackReserveSeconds < 0 || imageResilience.SampleWindowSize < 0 ||
+		imageResilience.MaxSameSourceAttempts < 0 {
+		return fmt.Errorf("gateway.smart_router.image_resilience durations and limits must be non-negative")
+	}
+	if imageResilience.P90Multiplier < 0 || math.IsNaN(imageResilience.P90Multiplier) || math.IsInf(imageResilience.P90Multiplier, 0) {
+		return fmt.Errorf("gateway.smart_router.image_resilience.p90_multiplier must be finite and non-negative")
+	}
+	if imageResilience.Enabled {
+		if !imageResilience.GenerationEnabled && !imageResilience.EditEnabled {
+			return fmt.Errorf("gateway.smart_router.image_resilience must enable generation or edit")
+		}
+		if imageResilience.StandardMinSeconds > imageResilience.StandardMaxSeconds {
+			return fmt.Errorf("gateway.smart_router.image_resilience.standard_min_seconds must be <= standard_max_seconds")
+		}
+		if imageResilience.SpecialistMinSeconds > imageResilience.SpecialistMaxSeconds {
+			return fmt.Errorf("gateway.smart_router.image_resilience.specialist_min_seconds must be <= specialist_max_seconds")
+		}
 	}
 	rateLimitBackoff := c.Gateway.SmartRouter.RateLimitBackoff
 	if rateLimitBackoff.InitialSeconds < 0 || rateLimitBackoff.MaxSeconds < 0 ||

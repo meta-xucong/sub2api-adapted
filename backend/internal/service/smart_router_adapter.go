@@ -36,6 +36,10 @@ type smartRouterImageBudgetContextKey struct{}
 
 type smartRouterImageSizeTierContextKey struct{}
 
+type smartRouterImageInputModeContextKey struct{}
+
+type smartRouterImageModelFamilyContextKey struct{}
+
 func WithOpenAIImageSmartRouterBudget(ctx context.Context, budget OpenAIImageSmartRouterBudgetState) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
@@ -73,6 +77,51 @@ func OpenAIImageSmartRouterSizeTierFromContext(ctx context.Context) (string, boo
 	return tier, ok && tier != ""
 }
 
+// WithOpenAIImageSmartRouterInputMode records whether an image request is a
+// pure generation or a reference-image edit. It is metadata only and is never
+// derived from the prompt text.
+func WithOpenAIImageSmartRouterInputMode(ctx context.Context, mode string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	switch strings.TrimSpace(strings.ToLower(mode)) {
+	case string(smartrouter.ImageInputTextOnly):
+		mode = string(smartrouter.ImageInputTextOnly)
+	case string(smartrouter.ImageInputReferenceImage):
+		mode = string(smartrouter.ImageInputReferenceImage)
+	default:
+		return ctx
+	}
+	return context.WithValue(ctx, smartRouterImageInputModeContextKey{}, smartrouter.ImageInputMode(mode))
+}
+
+func OpenAIImageSmartRouterInputModeFromContext(ctx context.Context) (smartrouter.ImageInputMode, bool) {
+	if ctx == nil {
+		return "", false
+	}
+	mode, ok := ctx.Value(smartRouterImageInputModeContextKey{}).(smartrouter.ImageInputMode)
+	return mode, ok && mode != ""
+}
+
+func WithOpenAIImageSmartRouterModelFamily(ctx context.Context, model string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	model = strings.ToLower(strings.TrimSpace(model))
+	if model == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, smartRouterImageModelFamilyContextKey{}, model)
+}
+
+func OpenAIImageSmartRouterModelFamilyFromContext(ctx context.Context) (string, bool) {
+	if ctx == nil {
+		return "", false
+	}
+	model, ok := ctx.Value(smartRouterImageModelFamilyContextKey{}).(string)
+	return strings.ToLower(strings.TrimSpace(model)), ok && strings.TrimSpace(model) != ""
+}
+
 type smartRouterAccountExtra struct {
 	Present                   bool
 	EnabledSet                bool
@@ -101,6 +150,9 @@ func (s *OpenAIGatewayService) smartRouterPolicy() smartrouter.Policy {
 	policy.MaxAttemptsCompact = cfg.MaxAttemptsCompact
 	policy.MaxAttemptsDefault = cfg.MaxAttemptsDefault
 	policy.SameSourceGroupAttempts = cfg.SameSourceGroupAttempts
+	policy.ImageResilienceEnabled = cfg.ImageResilience.Enabled && (cfg.ImageResilience.GenerationEnabled || cfg.ImageResilience.EditEnabled)
+	policy.ImageSameSourceAttempts = cfg.ImageResilience.MaxSameSourceAttempts
+	policy.ImageHalfOpenEnabled = policy.ImageResilienceEnabled && cfg.ImageResilience.HalfOpenEnabled
 	policy.CostBiasMax = cfg.CostBiasMax
 	policy.Weights = smartrouter.ScoreWeights{
 		Priority: cfg.Scoring.Priority,
@@ -167,6 +219,14 @@ func (s *OpenAIGatewayService) OpenAIImageSmartRouterBudget() OpenAIImageSmartRo
 	}
 	if reserve <= 0 {
 		reserve = defaultSmartRouterImageReserveSeconds
+	}
+	if cfg.ImageResilience.Enabled {
+		if minimum := cfg.ImageResilience.StandardMinSeconds; minimum > 0 {
+			attempt = minimum
+		}
+		if fallbackReserve := cfg.ImageResilience.FallbackReserveSeconds; fallbackReserve > reserve {
+			reserve = fallbackReserve
+		}
 	}
 	return OpenAIImageSmartRouterBudgetState{
 		TotalSeconds:               float64(total),
@@ -437,7 +497,68 @@ func (s *OpenAIGatewayService) smartRouterAdaptiveTimeoutConfig() smartrouter.Ad
 	config.FailureBackoffMultiplier = cfg.FailureBackoffMultiplier
 	config.WindowSize = cfg.WindowSize
 	config.ReservePerAttempt = time.Duration(cfg.ReserveSeconds) * time.Second
+	image := s.cfg.Gateway.SmartRouter.ImageResilience
+	if image.Enabled && (image.GenerationEnabled || image.EditEnabled) {
+		config.Enabled = true
+		if image.P90Multiplier > 0 {
+			config.Multiplier = image.P90Multiplier
+		}
+		if image.SafetyMarginSeconds > 0 {
+			config.SafetyMargin = time.Duration(image.SafetyMarginSeconds) * time.Second
+		}
+		if image.SampleWindowSize > 0 {
+			config.WindowSize = image.SampleWindowSize
+		}
+		if image.FallbackReserveSeconds > 0 {
+			config.ReservePerAttempt = time.Duration(image.FallbackReserveSeconds) * time.Second
+		}
+	}
 	return config.Normalize()
+}
+
+func (s *OpenAIGatewayService) smartRouterImageResilienceEnabled(capability smartrouter.Capability) bool {
+	if s == nil || s.cfg == nil || !s.isSmartRouterEnabled() {
+		return false
+	}
+	image := s.cfg.Gateway.SmartRouter.ImageResilience
+	switch capability {
+	case smartrouter.CapabilityImageGeneration:
+		return image.Enabled && image.GenerationEnabled
+	case smartrouter.CapabilityImageEdit:
+		return image.Enabled && image.EditEnabled
+	default:
+		return false
+	}
+}
+
+type smartRouterImageTimeoutProfile struct {
+	Default           time.Duration
+	Min               time.Duration
+	Max               time.Duration
+	SafetyMargin      time.Duration
+	Multiplier        float64
+	ReservePerAttempt time.Duration
+}
+
+func (s *OpenAIGatewayService) smartRouterImageTimeoutProfile(ctx context.Context, capability smartrouter.Capability) (smartRouterImageTimeoutProfile, bool) {
+	if !s.smartRouterImageResilienceEnabled(capability) {
+		return smartRouterImageTimeoutProfile{}, false
+	}
+	image := s.cfg.Gateway.SmartRouter.ImageResilience
+	profile := smartRouterImageTimeoutProfile{
+		Default:           time.Duration(image.StandardDefaultSeconds) * time.Second,
+		Min:               time.Duration(image.StandardMinSeconds) * time.Second,
+		Max:               time.Duration(image.StandardMaxSeconds) * time.Second,
+		SafetyMargin:      time.Duration(image.SafetyMarginSeconds) * time.Second,
+		Multiplier:        image.P90Multiplier,
+		ReservePerAttempt: time.Duration(image.FallbackReserveSeconds) * time.Second,
+	}
+	if tier, ok := OpenAIImageSmartRouterSizeTierFromContext(ctx); ok && tier == "4K" {
+		profile.Default = time.Duration(image.SpecialistDefaultSeconds) * time.Second
+		profile.Min = time.Duration(image.SpecialistMinSeconds) * time.Second
+		profile.Max = time.Duration(image.SpecialistMaxSeconds) * time.Second
+	}
+	return profile, true
 }
 
 func (s *OpenAIGatewayService) smartRouterExcludedSourceGroups(accounts []Account, excludedIDs map[int64]struct{}) map[string]struct{} {

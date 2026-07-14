@@ -71,8 +71,11 @@ func (c AdaptiveTimeoutConfig) Normalize() AdaptiveTimeoutConfig {
 }
 
 type timeoutKey struct {
-	laneID     string
-	capability Capability
+	laneID         string
+	capability     Capability
+	imageSizeTier  string
+	imageInputMode ImageInputMode
+	imageModel     string
 }
 
 type timeoutProfile struct {
@@ -85,35 +88,50 @@ type timeoutProfile struct {
 // AttemptObservation is the only input required to update the adaptive
 // profile. Callers should report the whole upstream attempt when possible.
 type AttemptObservation struct {
-	LaneID       string
-	Capability   Capability
-	At           time.Time
-	Duration     time.Duration
-	Success      bool
-	FailureClass FailureClass
-	StatusCode   int
-	ErrorSummary string
+	LaneID           string
+	Capability       Capability
+	ImageSizeTier    string
+	ImageInputMode   ImageInputMode
+	ImageModelFamily string
+	At               time.Time
+	Duration         time.Duration
+	Success          bool
+	FailureClass     FailureClass
+	StatusCode       int
+	ErrorSummary     string
 }
 
 // LedgerRecord is a bounded audit record. It intentionally contains no
 // request body, credential, URL, or user content.
 type LedgerRecord struct {
-	At           time.Time
-	LaneID       string
-	Capability   Capability
-	DurationMs   int64
-	Success      bool
-	FailureClass FailureClass
-	StatusCode   int
-	ErrorSummary string
+	At               time.Time
+	LaneID           string
+	Capability       Capability
+	ImageSizeTier    string
+	ImageInputMode   ImageInputMode
+	ImageModelFamily string
+	DurationMs       int64
+	Success          bool
+	FailureClass     FailureClass
+	StatusCode       int
+	ErrorSummary     string
 }
 
 type TimeoutRequest struct {
-	LaneID            string
-	Capability        Capability
-	DefaultTimeout    time.Duration
-	RemainingBudget   time.Duration
-	RemainingAttempts int
+	LaneID                   string
+	Capability               Capability
+	ImageSizeTier            string
+	ImageInputMode           ImageInputMode
+	ImageModelFamily         string
+	DefaultTimeout           time.Duration
+	RemainingBudget          time.Duration
+	RemainingAttempts        int
+	ProfileDefault           time.Duration
+	ProfileMin               time.Duration
+	ProfileMax               time.Duration
+	ProfileSafetyMargin      time.Duration
+	ProfileMultiplier        float64
+	ProfileReservePerAttempt time.Duration
 }
 
 type TimeoutDecision struct {
@@ -156,15 +174,25 @@ func (e *AdaptiveTimeoutEngine) TimeoutFor(request TimeoutRequest) TimeoutDecisi
 	}
 	e.mu.RLock()
 	config := e.config
-	profile := e.profiles[makeTimeoutKey(request.LaneID, request.Capability)]
+	profileConfig := config
+	if request.ProfileSafetyMargin > 0 {
+		profileConfig.SafetyMargin = request.ProfileSafetyMargin
+	}
+	if request.ProfileMultiplier > 0 {
+		profileConfig.Multiplier = request.ProfileMultiplier
+	}
+	profile := e.profiles[makeTimeoutKey(request.LaneID, request.Capability, request.ImageSizeTier, request.ImageInputMode, request.ImageModelFamily)]
 	var estimate time.Duration
 	failureBackoff := false
 	if profile != nil {
-		estimate, failureBackoff = adaptiveEstimate(profile, config)
+		estimate, failureBackoff = adaptiveEstimate(profile, profileConfig)
 	}
 	e.mu.RUnlock()
 
 	base := request.DefaultTimeout
+	if request.ProfileDefault > 0 {
+		base = request.ProfileDefault
+	}
 	if base <= 0 {
 		base = config.Default
 	}
@@ -174,11 +202,22 @@ func (e *AdaptiveTimeoutEngine) TimeoutFor(request TimeoutRequest) TimeoutDecisi
 	if estimate <= 0 {
 		estimate = base
 	}
-	if estimate < config.Min {
-		estimate = config.Min
+	minimum := config.Min
+	if request.ProfileMin > 0 {
+		minimum = request.ProfileMin
 	}
-	if estimate > config.Max {
-		estimate = config.Max
+	maximum := config.Max
+	if request.ProfileMax > 0 {
+		maximum = request.ProfileMax
+	}
+	if maximum < minimum {
+		maximum = minimum
+	}
+	if estimate < minimum {
+		estimate = minimum
+	}
+	if estimate > maximum {
+		estimate = maximum
 	}
 	if request.RemainingBudget > 0 {
 		available := request.RemainingBudget
@@ -186,7 +225,11 @@ func (e *AdaptiveTimeoutEngine) TimeoutFor(request TimeoutRequest) TimeoutDecisi
 		if remainingAttempts <= 0 {
 			remainingAttempts = 1
 		}
-		reserve := config.ReservePerAttempt * time.Duration(remainingAttempts)
+		reservePerAttempt := config.ReservePerAttempt
+		if request.ProfileReservePerAttempt > 0 {
+			reservePerAttempt = request.ProfileReservePerAttempt
+		}
+		reserve := reservePerAttempt * time.Duration(remainingAttempts)
 		if available > reserve {
 			available -= reserve
 		}
@@ -220,7 +263,7 @@ func (e *AdaptiveTimeoutEngine) Observe(observation AttemptObservation) {
 	if observation.Duration < 0 {
 		observation.Duration = 0
 	}
-	key := makeTimeoutKey(laneID, observation.Capability)
+	key := makeTimeoutKey(laneID, observation.Capability, observation.ImageSizeTier, observation.ImageInputMode, observation.ImageModelFamily)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	profile := e.profiles[key]
@@ -254,14 +297,17 @@ func (e *AdaptiveTimeoutEngine) Observe(observation AttemptObservation) {
 		}
 	}
 	e.records = append(e.records, LedgerRecord{
-		At:           observation.At,
-		LaneID:       laneID,
-		Capability:   observation.Capability,
-		DurationMs:   observation.Duration.Milliseconds(),
-		Success:      observation.Success,
-		FailureClass: observation.FailureClass,
-		StatusCode:   observation.StatusCode,
-		ErrorSummary: truncateLedgerSummary(observation.ErrorSummary),
+		At:               observation.At,
+		LaneID:           laneID,
+		Capability:       observation.Capability,
+		ImageSizeTier:    normalizeImageSizeTier(observation.ImageSizeTier),
+		ImageInputMode:   normalizeImageInputMode(observation.ImageInputMode),
+		ImageModelFamily: normalizeImageModelFamily(observation.ImageModelFamily),
+		DurationMs:       observation.Duration.Milliseconds(),
+		Success:          observation.Success,
+		FailureClass:     observation.FailureClass,
+		StatusCode:       observation.StatusCode,
+		ErrorSummary:     truncateLedgerSummary(observation.ErrorSummary),
 	})
 	if len(e.records) > e.config.WindowSize*4 {
 		copy(e.records, e.records[len(e.records)-e.config.WindowSize*4:])
@@ -308,8 +354,27 @@ func isAdaptiveFailure(class FailureClass) bool {
 	}
 }
 
-func makeTimeoutKey(laneID string, capability Capability) timeoutKey {
-	return timeoutKey{laneID: strings.TrimSpace(laneID), capability: capability}
+func makeTimeoutKey(laneID string, capability Capability, sizeTier string, inputMode ImageInputMode, modelFamily string) timeoutKey {
+	key := timeoutKey{laneID: strings.TrimSpace(laneID), capability: capability}
+	if capability == CapabilityImageGeneration || capability == CapabilityImageEdit {
+		key.imageSizeTier = normalizeImageSizeTier(sizeTier)
+		key.imageInputMode = normalizeImageInputMode(inputMode)
+		key.imageModel = normalizeImageModelFamily(modelFamily)
+	}
+	return key
+}
+
+func normalizeImageInputMode(value ImageInputMode) ImageInputMode {
+	switch value {
+	case ImageInputTextOnly, ImageInputReferenceImage:
+		return value
+	default:
+		return ""
+	}
+}
+
+func normalizeImageModelFamily(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
 }
 
 func minDuration(left, right time.Duration) time.Duration {

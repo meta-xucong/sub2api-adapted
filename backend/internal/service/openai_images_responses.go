@@ -1553,7 +1553,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 	if resp != nil {
 		statusCode = resp.StatusCode
 	}
-	s.observeSmartRouterImageAttempt(account, imageCapability, time.Since(upstreamStart), statusCode, err == nil && statusCode < 400, err)
+	s.observeSmartRouterImageAttempt(imageUpstreamCtx, account, imageCapability, time.Since(upstreamStart), statusCode, err == nil && statusCode < 400, err)
 	SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
 	if err != nil {
 		return nil, s.handleOpenAIUpstreamTransportError(imageUpstreamCtx, c, account, err, false)

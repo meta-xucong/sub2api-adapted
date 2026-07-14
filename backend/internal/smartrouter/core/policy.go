@@ -23,6 +23,9 @@ type Policy struct {
 	MaxAttemptsCompact      int
 	MaxAttemptsDefault      int
 	SameSourceGroupAttempts int
+	ImageResilienceEnabled  bool
+	ImageSameSourceAttempts int
+	ImageHalfOpenEnabled    bool
 	CostBiasMax             float64
 	Weights                 ScoreWeights
 }
@@ -36,6 +39,7 @@ func DefaultPolicy() Policy {
 		MaxAttemptsCompact:      2,
 		MaxAttemptsDefault:      3,
 		SameSourceGroupAttempts: 1,
+		ImageSameSourceAttempts: 1,
 		CostBiasMax:             3,
 		Weights: ScoreWeights{
 			Priority: 0.8,
@@ -69,6 +73,9 @@ func (p Policy) Normalize() Policy {
 	if p.SameSourceGroupAttempts <= 0 {
 		p.SameSourceGroupAttempts = defaults.SameSourceGroupAttempts
 	}
+	if p.ImageSameSourceAttempts <= 0 {
+		p.ImageSameSourceAttempts = defaults.ImageSameSourceAttempts
+	}
 	if p.CostBiasMax <= 0 {
 		p.CostBiasMax = defaults.CostBiasMax
 	}
@@ -96,6 +103,9 @@ func (p Policy) Validate() error {
 	}
 	if p.SameSourceGroupAttempts < 0 {
 		return fmt.Errorf("same_source_group_attempts must be non-negative")
+	}
+	if p.ImageSameSourceAttempts < 0 {
+		return fmt.Errorf("image_same_source_attempts must be non-negative")
 	}
 	if p.CostBiasMax < 0 {
 		return fmt.Errorf("cost_bias_max must be non-negative")

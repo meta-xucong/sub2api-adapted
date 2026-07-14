@@ -83,6 +83,51 @@ func ResolveOpenAIResponsesImageRoutingModel(requestedModel string, body []byte)
 	return "gpt-image-2"
 }
 
+// IsOpenAIResponsesReferenceImageRequest inspects structured Responses input
+// parts only. Prompt text is never used to infer image-edit mode.
+func IsOpenAIResponsesReferenceImageRequest(body []byte) bool {
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		return false
+	}
+	return openAIJSONInputContainsReferenceImage(gjson.GetBytes(body, "input"))
+}
+
+func openAIJSONInputContainsReferenceImage(value gjson.Result) bool {
+	if !value.Exists() {
+		return false
+	}
+	if value.IsArray() {
+		found := false
+		value.ForEach(func(_, item gjson.Result) bool {
+			if openAIJSONInputContainsReferenceImage(item) {
+				found = true
+				return false
+			}
+			return true
+		})
+		return found
+	}
+	if value.IsObject() {
+		typeValue := strings.TrimSpace(value.Get("type").String())
+		if typeValue == "input_image" || typeValue == "image_url" || typeValue == "image" {
+			return true
+		}
+		found := false
+		value.ForEach(func(key, item gjson.Result) bool {
+			switch key.String() {
+			case "input", "content", "message", "messages":
+				if openAIJSONInputContainsReferenceImage(item) {
+					found = true
+					return false
+				}
+			}
+			return true
+		})
+		return found
+	}
+	return false
+}
+
 // IsImageGenerationEndpoint identifies dedicated generated-image endpoints.
 func IsImageGenerationEndpoint(endpoint string) bool {
 	switch normalizeImageGenerationEndpoint(endpoint) {

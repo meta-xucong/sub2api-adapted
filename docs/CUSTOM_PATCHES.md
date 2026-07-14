@@ -22,6 +22,17 @@ after the outer client timeout is longer than the gateway image budget.
 
 The router first considers the lowest numeric priority layer. It advances only after that layer has no eligible lane. Retries can exclude an entire source group so multiple accounts backed by the same upstream are not hammered repeatedly.
 
+### Image resilience development specification
+
+The image-only resilience implementation is documented in
+`SMART_ROUTER_IMAGE_RESILIENCE_DEVELOPMENT.md`. It is feature-gated and limited
+to `image_generation` and `image_edit`, with independent source-group
+protection, per-lane/size/input-mode adaptive attempt timeouts, optional
+half-open recovery probes, and the existing ledger-driven 04:00 restoration.
+It does not change chat, Responses, compact, stored account priorities, billing
+groups, or manual `schedulable` state. The image feature flags default to off;
+deployments can enable them after the image-only regression suite passes.
+
 ### Upstream 429 backoff overlay
 
 Upstream concurrency-style 429 responses are handled by the independent

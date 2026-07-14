@@ -138,6 +138,12 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 	// pin later requests to a provider whose priority or health has changed.
 	sessionHash := ""
 	imageRequestContext := service.WithOpenAIImageGenerationIntent(c.Request.Context())
+	if parsed.IsEdits() {
+		imageRequestContext = service.WithOpenAIImageSmartRouterInputMode(imageRequestContext, "reference_image")
+	} else {
+		imageRequestContext = service.WithOpenAIImageSmartRouterInputMode(imageRequestContext, "text_only")
+	}
+	imageRequestContext = service.WithOpenAIImageSmartRouterModelFamily(imageRequestContext, parsed.Model)
 	if parsed.ExplicitSize {
 		imageRequestContext = service.WithOpenAIImageSmartRouterSizeTier(imageRequestContext, parsed.SizeTier)
 	}

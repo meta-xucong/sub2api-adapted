@@ -48,6 +48,50 @@ func TestAdaptiveTimeoutEngineSeparatesLaneAndCapability(t *testing.T) {
 	require.Equal(t, 180*time.Second, edit.Timeout)
 }
 
+func TestAdaptiveTimeoutEngineSeparatesImageSizeAndInputMode(t *testing.T) {
+	engine := NewAdaptiveTimeoutEngine(testAdaptiveConfig())
+	for i := 0; i < 4; i++ {
+		engine.Observe(AttemptObservation{
+			LaneID:         "image-lane",
+			Capability:     CapabilityImageGeneration,
+			ImageSizeTier:  "1K",
+			ImageInputMode: ImageInputTextOnly,
+			Duration:       80 * time.Second,
+			Success:        true,
+		})
+	}
+
+	textOnly := engine.TimeoutFor(TimeoutRequest{
+		LaneID:              "image-lane",
+		Capability:          CapabilityImageGeneration,
+		ImageSizeTier:       "1k",
+		ImageInputMode:      ImageInputTextOnly,
+		ProfileDefault:      150 * time.Second,
+		ProfileMin:          45 * time.Second,
+		ProfileMax:          240 * time.Second,
+		ProfileMultiplier:   1.25,
+		ProfileSafetyMargin: 20 * time.Second,
+	})
+	reference := engine.TimeoutFor(TimeoutRequest{
+		LaneID:         "image-lane",
+		Capability:     CapabilityImageGeneration,
+		ImageSizeTier:  "1K",
+		ImageInputMode: ImageInputReferenceImage,
+		ProfileDefault: 150 * time.Second,
+		ProfileMin:     45 * time.Second,
+		ProfileMax:     240 * time.Second,
+	})
+
+	require.Equal(t, "observed_p95", textOnly.Reason)
+	require.Equal(t, 120*time.Second, textOnly.Timeout)
+	require.Equal(t, "default", reference.Reason)
+	require.Equal(t, 150*time.Second, reference.Timeout)
+
+	ledger := engine.Ledger()
+	require.Len(t, ledger, 4)
+	require.Equal(t, ImageInputTextOnly, ledger[0].ImageInputMode)
+}
+
 func TestAdaptiveTimeoutEngineClampsToRemainingBudgetAndKeepsFallbackRoom(t *testing.T) {
 	engine := NewAdaptiveTimeoutEngine(testAdaptiveConfig())
 	for i := 0; i < 4; i++ {
