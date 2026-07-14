@@ -645,3 +645,59 @@ func TestOpenAIImageCooldownDoesNotBlockNonImageScheduling(t *testing.T) {
 	require.True(t, isOpenAIAccountSchedulableForRequest(context.Background(), account, "gpt-5.6-terra", true))
 	require.False(t, isOpenAIAccountSchedulableForRequest(context.Background(), account, "gpt-image-2", false))
 }
+
+func TestCompactSelectionBypassesStaleSchedulerSnapshot(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+	groupID := int64(7307)
+	stale := &Account{
+		ID:          73071,
+		Name:        "stale-snapshot-lane",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Priority:    1,
+		GroupIDs:    []int64{groupID},
+		Credentials: map[string]any{"model_mapping": map[string]any{"gpt-5.6-terra": "gpt-5.6-terra"}},
+	}
+	fresh := Account{
+		ID:          73072,
+		Name:        "fresh-db-lane",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Priority:    2,
+		GroupIDs:    []int64{groupID},
+		Credentials: map[string]any{"model_mapping": map[string]any{"gpt-5.6-terra": "gpt-5.6-terra"}},
+	}
+	repo := schedulerTestOpenAIAccountRepo{accounts: []Account{fresh}}
+	service := &OpenAIGatewayService{
+		accountRepo: repo,
+		cache:       &schedulerTestGatewayCache{},
+		cfg:         newSmartRouterSchedulerTestConfig(),
+		schedulerSnapshot: NewSchedulerSnapshotService(
+			&openAISnapshotCacheStub{snapshotAccounts: []*Account{stale}},
+			nil,
+			repo,
+			nil,
+			nil,
+		),
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+
+	selection, _, err := service.SelectAccountWithSchedulerForCapability(
+		context.Background(), &groupID, "", "", "gpt-5.6-terra", nil,
+		OpenAIUpstreamTransportAny, OpenAIEndpointCapabilityChatCompletions,
+		true, false,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.Equal(t, fresh.ID, selection.Account.ID)
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}

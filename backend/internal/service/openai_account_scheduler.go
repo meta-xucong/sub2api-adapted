@@ -1187,7 +1187,15 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	ctx context.Context,
 	req OpenAIAccountScheduleRequest,
 ) (*AccountSelectionResult, int, int, float64, error) {
-	accounts, err := s.service.listSchedulableAccounts(ctx, req.GroupID, req.Platform)
+	// Compact eligibility can change when an account-level legacy image
+	// cooldown expires. Do not let a stale Redis scheduler snapshot hide that
+	// account until the next full rebuild; compact traffic is low-volume and
+	// must see the current database candidate set before Smart Router ranks it.
+	listCtx := ctx
+	if req.RequireCompact {
+		listCtx = withOpenAIBypassSchedulerSnapshot(ctx)
+	}
+	accounts, err := s.service.listSchedulableAccounts(listCtx, req.GroupID, req.Platform)
 	if err != nil {
 		return nil, 0, 0, 0, err
 	}
