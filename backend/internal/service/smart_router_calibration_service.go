@@ -266,7 +266,7 @@ func smartRouterAutoEnrollmentProbes(account *Account) []smartrouter.Calibration
 	// A configured chat/responses capability list predates the compact lane in
 	// some installations. Missing compact is unknown, not unsupported; the
 	// daily probe must still give that account a chance to prove itself.
-	if account.AllowsOpenAICompact() {
+	if account.AllowsOpenAICompact() && smartRouterAccountHasTextCapability(account) {
 		capabilities[smartrouter.CapabilityResponsesCompact] = true
 	}
 	ordered := []smartrouter.Capability{
@@ -509,12 +509,20 @@ func smartRouterAccountHasImageMapping(account *Account) bool {
 	return false
 }
 
+// smartRouterAccountHasTextCapability keeps compact calibration limited to
+// accounts that can serve chat or Responses traffic. Image-only accounts may
+// still have an unknown compact flag, but probing them would only create
+// misleading 404/503 evidence and pollute compact scheduling.
+func smartRouterAccountHasTextCapability(account *Account) bool {
+	return len(smartRouterCalibrationTextCapabilities(account)) > 0
+}
+
 func (s *SmartRouterCalibrationService) compactCalibrationLanes(accounts []Account) ([]smartrouter.LaneSnapshot, map[string]*Account) {
 	lanes := make([]smartrouter.LaneSnapshot, 0)
 	accountsByLane := make(map[string]*Account)
 	for index := range accounts {
 		account := &accounts[index]
-		if !account.IsOpenAI() || !account.AllowsOpenAICompact() {
+		if !account.IsOpenAI() || !account.AllowsOpenAICompact() || !smartRouterAccountHasTextCapability(account) {
 			continue
 		}
 		lane, ok := smartRouterLaneSnapshot(account, nil, 0, 0, false)

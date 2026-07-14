@@ -58,6 +58,13 @@ or `openai_compact_supported=false`. This keeps older capability metadata from
 turning “not yet probed” into “unsupported”. Auto-enrollment and the daily
 calibration therefore probe these accounts as well.
 
+Compact enrollment is limited to accounts that also declare or infer chat/
+Responses capability. Image-only lanes are excluded from compact probes, so an
+image endpoint returning 404 cannot poison the compact ledger or make the
+chat pool look smaller than it is. Compact selection also refreshes its
+candidate set from the current database instead of relying only on a stale
+Redis scheduler snapshot, allowing a recovered lane to re-enter immediately.
+
 Older image handlers could persist an account-level temporary cooldown for an
 image-only failure. The scheduler now ignores that legacy image cooldown for
 ordinary chat/Responses and compact requests, while still honoring it for

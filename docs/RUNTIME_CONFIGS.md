@@ -21,7 +21,8 @@ Verified: 2026-07-12
 - Deployed image: `sub2api-adapted:v0.1.151-smart-router-280a5ccc`
 - Hot-updated runtime code commit: `5c43c54b` (2026-07-14; no image pull/rebuild)
 - Image-baked code commit: `280a5ccc`
-- Hot-updated runtime code commit: `5c43c54b` (2026-07-14; no image pull/rebuild)
+- Latest hot-updated runtime code commit: `656adf1b` (2026-07-14; no image pull/rebuild)
+- Latest hot-update backup: `/opt/sub2api/backups/hot-compact-refresh-656adf1b-20260714-102223`
 - Runtime image uses the locally cross-compiled Linux binary with the unchanged
   frontend dist; this avoids resource-heavy Node/Go compilation on the VPS.
 
@@ -141,6 +142,7 @@ Gateway verification with the ordinary user API path:
 - `/v1/models` returned all three GPT-5.6 model ids.
 - Streaming Responses with `reasoning.effort=xhigh` completed for Sol, Terra, and Luna; all three selected account `84`.
 - A body-signal `gpt-5.6-sol` compact request completed on account `84` without a recovered panic or container restart.
+- A compact smoke request selected account `83`, received upstream HTTP 503, then failed over to account `19` and returned HTTP 200 in about 125 seconds. A follow-up request completed on account `19` in about 3 seconds; the container remained healthy with restart count `0`.
 
 Replay after a future official upgrade:
 

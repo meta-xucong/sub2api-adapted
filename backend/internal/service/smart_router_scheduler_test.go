@@ -627,6 +627,32 @@ func TestSmartRouterAutoEnrollmentProbesCompactForLegacyCapabilityMap(t *testing
 	require.True(t, seenCompact)
 }
 
+func TestSmartRouterCompactCapabilityDoesNotEnrollImageOnlyLane(t *testing.T) {
+	account := &Account{
+		ID:       730051,
+		Name:     "image-only-lane",
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{"gpt-image-2": "gpt-image-2"},
+		},
+		Extra: map[string]any{
+			"smart_router": map[string]any{
+				"capabilities": []any{"image_generation", "image_edit"},
+			},
+		},
+	}
+
+	lane, ok := smartRouterLaneSnapshot(account, nil, 0, 0, false)
+	require.True(t, ok)
+	require.False(t, lane.Capabilities[smartrouter.CapabilityResponsesCompact])
+
+	probes := smartRouterAutoEnrollmentProbes(account)
+	for _, probe := range probes {
+		require.NotEqual(t, smartrouter.CapabilityResponsesCompact, probe.Capability)
+	}
+}
+
 func TestOpenAIImageCooldownDoesNotBlockNonImageScheduling(t *testing.T) {
 	until := time.Now().Add(time.Minute)
 	account := &Account{

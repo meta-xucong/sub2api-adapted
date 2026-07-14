@@ -508,7 +508,7 @@ func smartRouterLaneSnapshot(account *Account, loadInfo *AccountLoadInfo, errorR
 		// list chat/responses. Treat a missing compact flag as unknown rather
 		// than unsupported; explicit openai_compact_mode=force_off or
 		// openai_compact_supported=false still excludes the account upstream.
-		if account.IsOpenAI() && account.AllowsOpenAICompact() {
+		if account.IsOpenAI() && account.AllowsOpenAICompact() && smartRouterAccountHasTextCapability(account) {
 			capabilities[smartrouter.CapabilityResponsesCompact] = true
 		}
 	}

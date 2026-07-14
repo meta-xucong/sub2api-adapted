@@ -69,6 +69,41 @@ func TestBuildSmartRouterCompactProbeExtraUpdatesDoesNotQuarantineTransientFailu
 	require.Equal(t, true, success["openai_compact_supported"])
 }
 
+func TestCompactCalibrationLanesIncludeTextAndSkipImageOnlyAccounts(t *testing.T) {
+	service := &SmartRouterCalibrationService{}
+	accounts := []Account{
+		{
+			ID:       730052,
+			Name:     "image-only-lane",
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeAPIKey,
+			Credentials: map[string]any{
+				"model_mapping": map[string]any{"gpt-image-2": "gpt-image-2"},
+			},
+			Extra: map[string]any{
+				"smart_router": map[string]any{"capabilities": []any{"image_generation"}},
+			},
+		},
+		{
+			ID:       730053,
+			Name:     "legacy-text-lane",
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeAPIKey,
+			Credentials: map[string]any{
+				"model_mapping": map[string]any{"gpt-5.6-terra": "gpt-5.6-terra"},
+			},
+			Extra: map[string]any{
+				"smart_router": map[string]any{"capabilities": []any{"chat", "responses"}},
+			},
+		},
+	}
+
+	lanes, accountsByLane := service.compactCalibrationLanes(accounts)
+	require.Len(t, lanes, 1)
+	require.Equal(t, int64(730053), lanes[0].AccountID)
+	require.Equal(t, int64(730053), accountsByLane[lanes[0].LaneID].ID)
+}
+
 func TestSmartRouterCalibrationScheduleUsesShanghaiTime(t *testing.T) {
 	utcNow := time.Date(2026, 7, 11, 20, 5, 0, 0, time.UTC)
 	scheduledFor := smartRouterScheduledFor(utcNow, 4, 0)
