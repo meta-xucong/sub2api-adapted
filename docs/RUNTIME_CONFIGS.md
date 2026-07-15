@@ -211,6 +211,10 @@ Repository/deployment boundary:
 - Post-update: container `healthy`, restart count `0`, local/public `/health`
   returned HTTP 200, and the `0 4 * * * Asia/Shanghai` calibration schedule was
   registered.
+- Frontend embed hot-update on 2026-07-16: runtime commit `27fc2197`, SHA256
+  `6c6463f19e444bf85a3851ecbc91de4e96ac8f1cf95ea8c8921369be5884fce8`.
+  `/`, `/login`, and `/health` returned HTTP 200 after restart.
+- Rollback backup: `/opt/sub2api/backups/hot-frontend-embed-27fc2197-20260716-073248`.
 
 ## 404token
 
@@ -235,6 +239,10 @@ ports.
 - Post-update: container `healthy`, restart count `0`, local/public `/health`
   returned HTTP 200, and the `0 4 * * * Asia/Shanghai` calibration schedule was
   registered.
+- Frontend embed hot-update on 2026-07-16: runtime commit `27fc2197`, SHA256
+  `6c6463f19e444bf85a3851ecbc91de4e96ac8f1cf95ea8c8921369be5884fce8`.
+  `/`, `/login`, and `/health` returned HTTP 200 after restart.
+- Rollback backup: `/opt/sub2api-deploy/backups/hot-frontend-embed-27fc2197-20260716-073429`.
 - Rollback image tag: `sub2api-adapted:v0.1.151-smart-router-image-recovery-9c600574`
 - Runtime image uses the locally cross-compiled Linux binary; no VPS-side Go
   compilation is required for this deployment path.
