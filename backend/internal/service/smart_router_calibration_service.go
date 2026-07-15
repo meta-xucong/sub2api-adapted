@@ -362,6 +362,7 @@ func (s *SmartRouterCalibrationService) runCalibration() {
 		logger.LegacyPrintf("service.smart_router_calibration", "%s: %v", summary, err)
 		return
 	}
+	accounts = filterSmartRouterAccountsByModel(accounts)
 	lanes, accountsByLane := s.ordinaryCalibrationLanes(accounts)
 	imageLanes, imageAccounts := s.imageCalibrationLanes(accounts)
 	lanes, accountsByLane = mergeSmartRouterCalibrationLanes(lanes, accountsByLane, imageLanes, imageAccounts)
@@ -412,6 +413,16 @@ func (s *SmartRouterCalibrationService) runCalibration() {
 			}
 		}
 	}
+}
+
+func filterSmartRouterAccountsByModel(accounts []Account) []Account {
+	filtered := make([]Account, 0, len(accounts))
+	for index := range accounts {
+		if smartRouterAccountHasChatGPTModel(&accounts[index]) {
+			filtered = append(filtered, accounts[index])
+		}
+	}
+	return filtered
 }
 
 func (s *SmartRouterCalibrationService) imageCalibrationLanes(accounts []Account) ([]smartrouter.LaneSnapshot, map[string]*Account) {

@@ -950,6 +950,9 @@ func (s *defaultOpenAIAccountScheduler) buildSmartRouterSelectionOrder(
 	laneToCandidate := make(map[string]openAIAccountCandidateScore, len(plan.candidates))
 	lanes := make([]smartrouter.LaneSnapshot, 0, len(plan.candidates))
 	for _, candidate := range plan.candidates {
+		if !smartRouterAccountHasChatGPTModel(candidate.account) {
+			continue
+		}
 		lane, ok := smartRouterLaneSnapshot(candidate.account, candidate.loadInfo, candidate.errorRate, candidate.ttft, candidate.hasTTFT)
 		if !ok {
 			continue
@@ -961,7 +964,9 @@ func (s *defaultOpenAIAccountScheduler) buildSmartRouterSelectionOrder(
 		lanes = append(lanes, lane)
 	}
 	if len(lanes) == 0 {
-		return nil, true
+		// If no candidate has verifiable ChatGPT-family model evidence, leave
+		// the request to the ordinary scheduler instead of guessing.
+		return nil, false
 	}
 
 	result := smartrouter.Order(s.smartRouterRouteRequest(req), lanes, policy)

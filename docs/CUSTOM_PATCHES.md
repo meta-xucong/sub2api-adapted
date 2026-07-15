@@ -4,6 +4,18 @@ This repository tracks official Sub2API and keeps only the overlays that remain 
 
 ## Smart Router
 
+### Provider model auto-detection
+
+Smart Router does not use a deployment-specific group name as its routing
+boundary. An OpenAI account enters runtime ordering and daily calibration only
+when its effective model mapping contains a recognizable GPT/ChatGPT/Codex or
+GPT-Image family model. An unmapped API key is accepted only for the native
+OpenAI endpoint; other API-key endpoints are excluded until their mapping shows
+a GPT-family target. Native OpenAI OAuth accounts use their native OpenAI model
+capability as the fallback evidence. Kimi, Volcengine, Claude, and other
+non-GPT model families therefore remain on the ordinary scheduler even when a
+VPS renames their groups.
+
 Code:
 
 - `backend/internal/smartrouter/core`

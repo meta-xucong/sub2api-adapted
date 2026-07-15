@@ -33,6 +33,9 @@ Verified: 2026-07-15
 Active Smart Router settings:
 
 - `gateway.smart_router.enabled=true`
+- Smart Router scope is automatic: only OpenAI accounts with recognizable
+  GPT/ChatGPT/Codex/GPT-Image model evidence enter ordering and 04:00 calibration.
+  Unmapped non-OpenAI API-key endpoints, Kimi, Volcengine, and Claude stay on the ordinary scheduler.
 - `gateway.smart_router.top_k=8`
 - `gateway.smart_router.max_attempts_image=6`
 - `gateway.smart_router.max_attempts_chat=3`
