@@ -398,6 +398,11 @@ gateway:
       max_seconds: 300
       safety_margin_seconds: 20
       multiplier: 1.25
+      # Image timeout policy: success steps down; transient failure resets to the full base window.
+      success_step_seconds: 10
+      success_floor_margin_seconds: 30
+      # Legacy compatibility only; image timeout failures reset to the default
+      # window and do not shrink it with this multiplier.
       failure_backoff_multiplier: 0.5
       window_size: 32
       reserve_seconds: 30
@@ -408,15 +413,15 @@ gateway:
       enabled: false
       generation_enabled: true
       edit_enabled: true
-      standard_default_seconds: 150
-      standard_min_seconds: 45
+      standard_default_seconds: 180
+      standard_min_seconds: 60
       standard_max_seconds: 240
       specialist_default_seconds: 210
       specialist_min_seconds: 75
       specialist_max_seconds: 360
       p90_multiplier: 1.25
       safety_margin_seconds: 20
-      fallback_reserve_seconds: 45
+      fallback_reserve_seconds: 30
       sample_window_size: 32
       max_same_source_attempts: 1
       half_open_enabled: true

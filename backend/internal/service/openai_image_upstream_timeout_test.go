@@ -96,7 +96,7 @@ func TestOpenAIImageUpstreamTimeout_UsesLaneCapabilityProfileWhenEnabled(t *test
 	defer cancel()
 	deadline, ok := ctx.Deadline()
 	require.True(t, ok)
-	require.WithinDuration(t, time.Now().Add(47*time.Second), deadline, 2*time.Second)
+	require.WithinDuration(t, time.Now().Add(140*time.Second), deadline, 2*time.Second)
 }
 
 func TestOpenAIImageUpstreamTimeout_ImageResilienceUsesSizeAndInputProfiles(t *testing.T) {
@@ -106,15 +106,15 @@ func TestOpenAIImageUpstreamTimeout_ImageResilienceUsesSizeAndInputProfiles(t *t
 	cfg.Gateway.SmartRouter.ImageResilience.Enabled = true
 	cfg.Gateway.SmartRouter.ImageResilience.GenerationEnabled = true
 	cfg.Gateway.SmartRouter.ImageResilience.EditEnabled = true
-	cfg.Gateway.SmartRouter.ImageResilience.StandardDefaultSeconds = 150
-	cfg.Gateway.SmartRouter.ImageResilience.StandardMinSeconds = 45
+	cfg.Gateway.SmartRouter.ImageResilience.StandardDefaultSeconds = 180
+	cfg.Gateway.SmartRouter.ImageResilience.StandardMinSeconds = 60
 	cfg.Gateway.SmartRouter.ImageResilience.StandardMaxSeconds = 240
 	cfg.Gateway.SmartRouter.ImageResilience.SpecialistDefaultSeconds = 210
 	cfg.Gateway.SmartRouter.ImageResilience.SpecialistMinSeconds = 75
 	cfg.Gateway.SmartRouter.ImageResilience.SpecialistMaxSeconds = 360
 	cfg.Gateway.SmartRouter.ImageResilience.SafetyMarginSeconds = 20
 	cfg.Gateway.SmartRouter.ImageResilience.P90Multiplier = 1.25
-	cfg.Gateway.SmartRouter.ImageResilience.FallbackReserveSeconds = 45
+	cfg.Gateway.SmartRouter.ImageResilience.FallbackReserveSeconds = 30
 	svc := &OpenAIGatewayService{cfg: cfg}
 	account := &Account{ID: 88002}
 
@@ -126,7 +126,7 @@ func TestOpenAIImageUpstreamTimeout_ImageResilienceUsesSizeAndInputProfiles(t *t
 	defer textCancel()
 	textDeadline, ok := textUpstream.Deadline()
 	require.True(t, ok)
-	require.WithinDuration(t, time.Now().Add(150*time.Second), textDeadline, 2*time.Second)
+	require.WithinDuration(t, time.Now().Add(180*time.Second), textDeadline, 2*time.Second)
 
 	editCtx := WithOpenAIImageSmartRouterInputMode(
 		WithOpenAIImageSmartRouterSizeTier(context.Background(), "4K"),

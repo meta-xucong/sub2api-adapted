@@ -1,8 +1,6 @@
 package core
 
 import (
-	"math"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -11,12 +9,16 @@ import (
 // AdaptiveTimeoutConfig controls per-lane, per-capability upstream timeouts.
 // The engine is deliberately provider-neutral and can be used by a sidecar.
 type AdaptiveTimeoutConfig struct {
-	Enabled                  bool
-	Default                  time.Duration
-	Min                      time.Duration
-	Max                      time.Duration
-	SafetyMargin             time.Duration
-	Multiplier               float64
+	Enabled            bool
+	Default            time.Duration
+	Min                time.Duration
+	Max                time.Duration
+	SafetyMargin       time.Duration
+	Multiplier         float64
+	SuccessStep        time.Duration
+	SuccessFloorMargin time.Duration
+	// FailureBackoffMultiplier is retained for config compatibility. Image
+	// timeout failures now reset to Default and do not use this multiplier.
 	FailureBackoffMultiplier float64
 	WindowSize               int
 	ReservePerAttempt        time.Duration
@@ -29,6 +31,8 @@ func DefaultAdaptiveTimeoutConfig() AdaptiveTimeoutConfig {
 		Max:                      300 * time.Second,
 		SafetyMargin:             20 * time.Second,
 		Multiplier:               1.25,
+		SuccessStep:              10 * time.Second,
+		SuccessFloorMargin:       30 * time.Second,
 		FailureBackoffMultiplier: 0.5,
 		WindowSize:               32,
 		ReservePerAttempt:        30 * time.Second,
@@ -54,6 +58,12 @@ func (c AdaptiveTimeoutConfig) Normalize() AdaptiveTimeoutConfig {
 	}
 	if c.Multiplier <= 0 {
 		c.Multiplier = d.Multiplier
+	}
+	if c.SuccessStep <= 0 {
+		c.SuccessStep = d.SuccessStep
+	}
+	if c.SuccessFloorMargin <= 0 {
+		c.SuccessFloorMargin = d.SuccessFloorMargin
 	}
 	if c.FailureBackoffMultiplier <= 0 {
 		c.FailureBackoffMultiplier = d.FailureBackoffMultiplier
@@ -81,8 +91,8 @@ type timeoutKey struct {
 type timeoutProfile struct {
 	samples                []time.Duration
 	ewma                   time.Duration
-	lastFailure            time.Duration
 	transientFailureStreak int
+	successStreak          int
 }
 
 // AttemptObservation is the only input required to update the adaptive
@@ -174,18 +184,12 @@ func (e *AdaptiveTimeoutEngine) TimeoutFor(request TimeoutRequest) TimeoutDecisi
 	}
 	e.mu.RLock()
 	config := e.config
-	profileConfig := config
-	if request.ProfileSafetyMargin > 0 {
-		profileConfig.SafetyMargin = request.ProfileSafetyMargin
-	}
-	if request.ProfileMultiplier > 0 {
-		profileConfig.Multiplier = request.ProfileMultiplier
-	}
 	profile := e.profiles[makeTimeoutKey(request.LaneID, request.Capability, request.ImageSizeTier, request.ImageInputMode, request.ImageModelFamily)]
-	var estimate time.Duration
-	failureBackoff := false
 	if profile != nil {
-		estimate, failureBackoff = adaptiveEstimate(profile, profileConfig)
+		// Observe mutates profiles under the write lock. Work from a snapshot so
+		// timeout calculation does not race with a concurrent observation.
+		profileCopy := *profile
+		profile = &profileCopy
 	}
 	e.mu.RUnlock()
 
@@ -199,8 +203,25 @@ func (e *AdaptiveTimeoutEngine) TimeoutFor(request TimeoutRequest) TimeoutDecisi
 	if !config.Enabled {
 		return TimeoutDecision{Timeout: base, Reason: "disabled"}
 	}
-	if estimate <= 0 {
-		estimate = base
+	estimate := base
+	reason := "default"
+	if profile != nil {
+		switch {
+		case profile.transientFailureStreak > 0:
+			// A transient failure gets a full window on the next attempt. The
+			// health/cooldown policy decides whether this lane is tried again.
+			reason = "failure_reset"
+		case profile.successStreak > 0:
+			estimate = base - time.Duration(profile.successStreak)*config.SuccessStep
+			floor := config.AbsoluteMinimum()
+			if profile.ewma > 0 {
+				floor = maxDuration(floor, profile.ewma+config.SuccessFloorMargin)
+			}
+			if estimate < floor {
+				estimate = floor
+			}
+			reason = "success_step_down"
+		}
 	}
 	minimum := config.Min
 	if request.ProfileMin > 0 {
@@ -239,12 +260,6 @@ func (e *AdaptiveTimeoutEngine) TimeoutFor(request TimeoutRequest) TimeoutDecisi
 	}
 	if estimate <= 0 {
 		estimate = minDuration(base, request.RemainingBudget)
-	}
-	reason := "default"
-	if failureBackoff {
-		reason = "failure_backoff"
-	} else if profile != nil && len(profile.samples) > 0 {
-		reason = "observed_p95"
 	}
 	return TimeoutDecision{Timeout: estimate, EstimatedLatency: estimate, Reason: reason}
 }
@@ -287,13 +302,11 @@ func (e *AdaptiveTimeoutEngine) Observe(observation AttemptObservation) {
 			}
 		}
 		profile.transientFailureStreak = 0
-		profile.lastFailure = 0
+		profile.successStreak++
 	} else {
 		if isAdaptiveFailure(observation.FailureClass) {
 			profile.transientFailureStreak++
-			if observation.Duration > 0 {
-				profile.lastFailure = observation.Duration
-			}
+			profile.successStreak = 0
 		}
 	}
 	e.records = append(e.records, LedgerRecord{
@@ -322,27 +335,6 @@ func (e *AdaptiveTimeoutEngine) Ledger() []LedgerRecord {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return append([]LedgerRecord(nil), e.records...)
-}
-
-func adaptiveEstimate(profile *timeoutProfile, config AdaptiveTimeoutConfig) (time.Duration, bool) {
-	var estimate time.Duration
-	if len(profile.samples) > 0 {
-		samples := append([]time.Duration(nil), profile.samples...)
-		sort.Slice(samples, func(i, j int) bool { return samples[i] < samples[j] })
-		p95 := samples[(len(samples)*95+99)/100-1]
-		estimate = time.Duration(float64(p95)*config.Multiplier) + config.SafetyMargin
-		if profile.ewma > estimate {
-			estimate = profile.ewma + config.SafetyMargin
-		}
-	}
-	if profile.transientFailureStreak > 0 && profile.lastFailure > 0 {
-		failureEstimate := time.Duration(float64(profile.lastFailure) * math.Pow(config.FailureBackoffMultiplier, float64(profile.transientFailureStreak)))
-		if estimate <= 0 || failureEstimate < estimate {
-			estimate = failureEstimate
-		}
-		return estimate, true
-	}
-	return estimate, false
 }
 
 func isAdaptiveFailure(class FailureClass) bool {
@@ -382,6 +374,23 @@ func minDuration(left, right time.Duration) time.Duration {
 		return right
 	}
 	return left
+}
+
+func maxDuration(left, right time.Duration) time.Duration {
+	if left > right {
+		return left
+	}
+	return right
+}
+
+// AbsoluteMinimum prevents fast samples from producing an unsafe short image
+// timeout. Image profiles may supply a higher ProfileMin.
+func (c AdaptiveTimeoutConfig) AbsoluteMinimum() time.Duration {
+	minimum := c.Min
+	if minimum < 60*time.Second {
+		minimum = 60 * time.Second
+	}
+	return minimum
 }
 
 func truncateLedgerSummary(value string) string {

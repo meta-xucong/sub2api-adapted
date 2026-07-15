@@ -933,12 +933,16 @@ type GatewaySmartRouterCalibrationConfig struct {
 // per-capability timeout profile. It never changes the total image request
 // budget and is disabled by default for compatibility with existing installs.
 type GatewaySmartRouterAdaptiveTimeoutConfig struct {
-	Enabled                  bool    `mapstructure:"enabled"`
-	DefaultSeconds           int     `mapstructure:"default_seconds"`
-	MinSeconds               int     `mapstructure:"min_seconds"`
-	MaxSeconds               int     `mapstructure:"max_seconds"`
-	SafetyMarginSeconds      int     `mapstructure:"safety_margin_seconds"`
-	Multiplier               float64 `mapstructure:"multiplier"`
+	Enabled                   bool    `mapstructure:"enabled"`
+	DefaultSeconds            int     `mapstructure:"default_seconds"`
+	MinSeconds                int     `mapstructure:"min_seconds"`
+	MaxSeconds                int     `mapstructure:"max_seconds"`
+	SafetyMarginSeconds       int     `mapstructure:"safety_margin_seconds"`
+	Multiplier                float64 `mapstructure:"multiplier"`
+	SuccessStepSeconds        int     `mapstructure:"success_step_seconds"`
+	SuccessFloorMarginSeconds int     `mapstructure:"success_floor_margin_seconds"`
+	// FailureBackoffMultiplier is retained for config compatibility; image
+	// timeout failures now reset to the full base window instead of shrinking.
 	FailureBackoffMultiplier float64 `mapstructure:"failure_backoff_multiplier"`
 	WindowSize               int     `mapstructure:"window_size"`
 	ReserveSeconds           int     `mapstructure:"reserve_seconds"`
@@ -2106,15 +2110,15 @@ func setDefaults() {
 	viper.SetDefault("gateway.smart_router.image_resilience.enabled", false)
 	viper.SetDefault("gateway.smart_router.image_resilience.generation_enabled", true)
 	viper.SetDefault("gateway.smart_router.image_resilience.edit_enabled", true)
-	viper.SetDefault("gateway.smart_router.image_resilience.standard_default_seconds", 150)
-	viper.SetDefault("gateway.smart_router.image_resilience.standard_min_seconds", 45)
+	viper.SetDefault("gateway.smart_router.image_resilience.standard_default_seconds", 180)
+	viper.SetDefault("gateway.smart_router.image_resilience.standard_min_seconds", 60)
 	viper.SetDefault("gateway.smart_router.image_resilience.standard_max_seconds", 240)
 	viper.SetDefault("gateway.smart_router.image_resilience.specialist_default_seconds", 210)
 	viper.SetDefault("gateway.smart_router.image_resilience.specialist_min_seconds", 75)
 	viper.SetDefault("gateway.smart_router.image_resilience.specialist_max_seconds", 360)
 	viper.SetDefault("gateway.smart_router.image_resilience.p90_multiplier", 1.25)
 	viper.SetDefault("gateway.smart_router.image_resilience.safety_margin_seconds", 20)
-	viper.SetDefault("gateway.smart_router.image_resilience.fallback_reserve_seconds", 45)
+	viper.SetDefault("gateway.smart_router.image_resilience.fallback_reserve_seconds", 30)
 	viper.SetDefault("gateway.smart_router.image_resilience.sample_window_size", 32)
 	viper.SetDefault("gateway.smart_router.image_resilience.max_same_source_attempts", 1)
 	viper.SetDefault("gateway.smart_router.image_resilience.half_open_enabled", false)
@@ -2215,6 +2219,8 @@ func setDefaults() {
 	viper.SetDefault("gateway.smart_router.adaptive_timeout.max_seconds", 300)
 	viper.SetDefault("gateway.smart_router.adaptive_timeout.safety_margin_seconds", 20)
 	viper.SetDefault("gateway.smart_router.adaptive_timeout.multiplier", 1.25)
+	viper.SetDefault("gateway.smart_router.adaptive_timeout.success_step_seconds", 10)
+	viper.SetDefault("gateway.smart_router.adaptive_timeout.success_floor_margin_seconds", 30)
 	viper.SetDefault("gateway.smart_router.adaptive_timeout.failure_backoff_multiplier", 0.5)
 	viper.SetDefault("gateway.smart_router.adaptive_timeout.window_size", 32)
 	viper.SetDefault("gateway.smart_router.adaptive_timeout.reserve_seconds", 30)
@@ -2990,7 +2996,8 @@ func (c *Config) Validate() error {
 	}
 	adaptiveTimeout := c.Gateway.SmartRouter.AdaptiveTimeout
 	if adaptiveTimeout.DefaultSeconds < 0 || adaptiveTimeout.MinSeconds < 0 || adaptiveTimeout.MaxSeconds < 0 ||
-		adaptiveTimeout.SafetyMarginSeconds < 0 || adaptiveTimeout.WindowSize < 0 || adaptiveTimeout.ReserveSeconds < 0 {
+		adaptiveTimeout.SafetyMarginSeconds < 0 || adaptiveTimeout.SuccessStepSeconds < 0 ||
+		adaptiveTimeout.SuccessFloorMarginSeconds < 0 || adaptiveTimeout.WindowSize < 0 || adaptiveTimeout.ReserveSeconds < 0 {
 		return fmt.Errorf("gateway.smart_router.adaptive_timeout durations and window_size must be non-negative")
 	}
 	if adaptiveTimeout.Multiplier < 0 || math.IsNaN(adaptiveTimeout.Multiplier) || math.IsInf(adaptiveTimeout.Multiplier, 0) {

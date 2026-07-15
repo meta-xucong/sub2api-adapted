@@ -503,21 +503,14 @@ func (s *OpenAIGatewayService) smartRouterAdaptiveTimeoutConfig() smartrouter.Ad
 	config.Max = time.Duration(cfg.MaxSeconds) * time.Second
 	config.SafetyMargin = time.Duration(cfg.SafetyMarginSeconds) * time.Second
 	config.Multiplier = cfg.Multiplier
+	config.SuccessStep = time.Duration(cfg.SuccessStepSeconds) * time.Second
+	config.SuccessFloorMargin = time.Duration(cfg.SuccessFloorMarginSeconds) * time.Second
 	config.FailureBackoffMultiplier = cfg.FailureBackoffMultiplier
 	config.WindowSize = cfg.WindowSize
 	config.ReservePerAttempt = time.Duration(cfg.ReserveSeconds) * time.Second
 	image := s.cfg.Gateway.SmartRouter.ImageResilience
 	if image.Enabled && (image.GenerationEnabled || image.EditEnabled) {
 		config.Enabled = true
-		if image.P90Multiplier > 0 {
-			config.Multiplier = image.P90Multiplier
-		}
-		if image.SafetyMarginSeconds > 0 {
-			config.SafetyMargin = time.Duration(image.SafetyMarginSeconds) * time.Second
-		}
-		if image.SampleWindowSize > 0 {
-			config.WindowSize = image.SampleWindowSize
-		}
 		if image.FallbackReserveSeconds > 0 {
 			config.ReservePerAttempt = time.Duration(image.FallbackReserveSeconds) * time.Second
 		}

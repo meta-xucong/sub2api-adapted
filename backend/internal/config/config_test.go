@@ -1507,6 +1507,11 @@ func TestValidateConfigErrors(t *testing.T) {
 			wantErr: "gateway.smart_router.adaptive_timeout durations and window_size must be non-negative",
 		},
 		{
+			name:    "gateway smart router adaptive timeout success step negative",
+			mutate:  func(c *Config) { c.Gateway.SmartRouter.AdaptiveTimeout.SuccessStepSeconds = -1 },
+			wantErr: "gateway.smart_router.adaptive_timeout durations and window_size must be non-negative",
+		},
+		{
 			name: "gateway smart router adaptive timeout enabled without default",
 			mutate: func(c *Config) {
 				c.Gateway.SmartRouter.AdaptiveTimeout.Enabled = true
@@ -2141,7 +2146,8 @@ func TestLoad_DefaultGatewayImageStreamConfig(t *testing.T) {
 	if cfg.Gateway.SmartRouter.AdaptiveTimeout.Enabled {
 		t.Fatalf("smart_router.adaptive_timeout.enabled = true, want false")
 	}
-	if cfg.Gateway.SmartRouter.AdaptiveTimeout.DefaultSeconds != 180 || cfg.Gateway.SmartRouter.AdaptiveTimeout.MaxSeconds != 300 {
+	if cfg.Gateway.SmartRouter.AdaptiveTimeout.DefaultSeconds != 180 || cfg.Gateway.SmartRouter.AdaptiveTimeout.MaxSeconds != 300 ||
+		cfg.Gateway.SmartRouter.AdaptiveTimeout.SuccessStepSeconds != 10 || cfg.Gateway.SmartRouter.AdaptiveTimeout.SuccessFloorMarginSeconds != 30 {
 		t.Fatalf("unexpected adaptive timeout defaults: default=%d max=%d", cfg.Gateway.SmartRouter.AdaptiveTimeout.DefaultSeconds, cfg.Gateway.SmartRouter.AdaptiveTimeout.MaxSeconds)
 	}
 	if cfg.Gateway.SmartRouter.AdaptiveTimeout.FailureBackoffMultiplier != 0.5 {
@@ -2149,9 +2155,9 @@ func TestLoad_DefaultGatewayImageStreamConfig(t *testing.T) {
 	}
 	imageResilience := cfg.Gateway.SmartRouter.ImageResilience
 	if imageResilience.Enabled || !imageResilience.GenerationEnabled || !imageResilience.EditEnabled ||
-		imageResilience.StandardDefaultSeconds != 150 || imageResilience.StandardMinSeconds != 45 || imageResilience.StandardMaxSeconds != 240 ||
+		imageResilience.StandardDefaultSeconds != 180 || imageResilience.StandardMinSeconds != 60 || imageResilience.StandardMaxSeconds != 240 ||
 		imageResilience.SpecialistDefaultSeconds != 210 || imageResilience.SpecialistMinSeconds != 75 || imageResilience.SpecialistMaxSeconds != 360 ||
-		imageResilience.P90Multiplier != 1.25 || imageResilience.SafetyMarginSeconds != 20 || imageResilience.FallbackReserveSeconds != 45 ||
+		imageResilience.P90Multiplier != 1.25 || imageResilience.SafetyMarginSeconds != 20 || imageResilience.FallbackReserveSeconds != 30 ||
 		imageResilience.SampleWindowSize != 32 || imageResilience.MaxSameSourceAttempts != 1 || imageResilience.HalfOpenEnabled {
 		t.Fatalf("unexpected smart router image resilience defaults: %#v", imageResilience)
 	}

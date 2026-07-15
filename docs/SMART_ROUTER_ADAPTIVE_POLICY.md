@@ -93,50 +93,26 @@ disable the account. A cooldown is not a substitute for the recovery priority.
 
 ## Adaptive timeout algorithm
 
-The key is `(lane_id, capability)`. Generation and edit traffic never share a
-latency profile. Each successful attempt contributes to a bounded recent
-window. Transient failures and timeouts also enter a failure streak for the
-same lane and capability. The next timeout is:
+The previous failure-backoff algorithm in this document is retired. It made a
+transient failure shorten the next image attempt and could collapse a lane to
+45 seconds. The current image policy is specified in
+`SMART_ROUTER_IMAGE_TIMEOUT_POLICY.md`.
 
-```text
-min(max(p95(recent_successes) * multiplier + safety_margin, min_timeout), max_timeout)
-```
+The active rules are intentionally small:
 
-When a lane has transient failures but no successful samples, the first retry
-uses `last_failure_duration * failure_backoff_multiplier`; repeated transient
-failures contract it again, subject to `min_timeout`. This prevents a lane
-that just consumed a full 180-second attempt from consuming the same budget
-repeatedly. Client cancellations and deterministic 4xx/auth failures do not
-trigger this backoff.
+- no successful history: wait 180 seconds;
+- each consecutive success subtracts 10 seconds;
+- a transient timeout/transport/5xx/temporary-403/429 resets the next attempt
+  to 180 seconds;
+- the floor is `max(successful_EWMA + 30 seconds, 60 seconds)`;
+- deterministic 4xx, capability, authentication, balance, and client-cancel
+  outcomes do not modify the timeout profile;
+- the 600-second image request budget and one finalization reserve still cap
+  the whole failover chain.
 
-When the request has a deadline, the result is clamped to the remaining budget.
-When there are known fallback attempts, the engine reserves a small minimum
-window for each remaining attempt. If the caller does not provide the count,
-one reserve window is still kept. With no samples or failures, the configured
-default is used, preserving current behavior.
-
-The default feature flag is off for upgrade compatibility. Recommended image
-settings for a later controlled deployment are:
-
-```yaml
-gateway:
-  smart_router:
-    enabled: true
-    adaptive_timeout:
-      enabled: true
-      default_seconds: 180
-      min_seconds: 30
-      max_seconds: 300
-      safety_margin_seconds: 20
-      multiplier: 1.25
-      failure_backoff_multiplier: 0.5
-      window_size: 32
-      reserve_seconds: 30
-```
-
-This does not replace `gateway.image_request_timeout_seconds` (the total
-request budget). It only decides how long to wait for the current upstream
-attempt.
+The old behavior is retained only as a historical record in
+`SMART_ROUTER_IMAGE_RESILIENCE_45S_POLICY_RETIRED.md`; it must not be used for
+new deployments.
 
 ## Calibration and ledger policy
 

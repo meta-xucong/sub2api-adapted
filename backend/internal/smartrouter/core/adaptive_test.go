@@ -42,9 +42,8 @@ func TestAdaptiveTimeoutEngineSeparatesLaneAndCapability(t *testing.T) {
 		DefaultTimeout: 180 * time.Second,
 	})
 
-	require.Equal(t, "observed_p95", generation.Reason)
-	require.Greater(t, generation.Timeout, 40*time.Second)
-	require.Less(t, generation.Timeout, 100*time.Second)
+	require.Equal(t, "success_step_down", generation.Reason)
+	require.Equal(t, 140*time.Second, generation.Timeout)
 	require.Equal(t, 180*time.Second, edit.Timeout)
 }
 
@@ -66,8 +65,8 @@ func TestAdaptiveTimeoutEngineSeparatesImageSizeAndInputMode(t *testing.T) {
 		Capability:          CapabilityImageGeneration,
 		ImageSizeTier:       "1k",
 		ImageInputMode:      ImageInputTextOnly,
-		ProfileDefault:      150 * time.Second,
-		ProfileMin:          45 * time.Second,
+		ProfileDefault:      180 * time.Second,
+		ProfileMin:          60 * time.Second,
 		ProfileMax:          240 * time.Second,
 		ProfileMultiplier:   1.25,
 		ProfileSafetyMargin: 20 * time.Second,
@@ -77,15 +76,15 @@ func TestAdaptiveTimeoutEngineSeparatesImageSizeAndInputMode(t *testing.T) {
 		Capability:     CapabilityImageGeneration,
 		ImageSizeTier:  "1K",
 		ImageInputMode: ImageInputReferenceImage,
-		ProfileDefault: 150 * time.Second,
-		ProfileMin:     45 * time.Second,
+		ProfileDefault: 180 * time.Second,
+		ProfileMin:     60 * time.Second,
 		ProfileMax:     240 * time.Second,
 	})
 
-	require.Equal(t, "observed_p95", textOnly.Reason)
-	require.Equal(t, 120*time.Second, textOnly.Timeout)
+	require.Equal(t, "success_step_down", textOnly.Reason)
+	require.Equal(t, 140*time.Second, textOnly.Timeout)
 	require.Equal(t, "default", reference.Reason)
-	require.Equal(t, 150*time.Second, reference.Timeout)
+	require.Equal(t, 180*time.Second, reference.Timeout)
 
 	ledger := engine.Ledger()
 	require.Len(t, ledger, 4)
@@ -113,7 +112,7 @@ func TestAdaptiveTimeoutEngineClampsToRemainingBudgetAndKeepsFallbackRoom(t *tes
 	require.LessOrEqual(t, decision.Timeout+30*time.Second, 100*time.Second)
 }
 
-func TestAdaptiveTimeoutEngineBacksOffAfterTransientFailures(t *testing.T) {
+func TestAdaptiveTimeoutEngineResetsAfterTransientFailures(t *testing.T) {
 	engine := NewAdaptiveTimeoutEngine(testAdaptiveConfig())
 	engine.Observe(AttemptObservation{
 		LaneID:       "flapping",
@@ -128,8 +127,8 @@ func TestAdaptiveTimeoutEngineBacksOffAfterTransientFailures(t *testing.T) {
 		Capability:     CapabilityImageGeneration,
 		DefaultTimeout: 180 * time.Second,
 	})
-	require.Equal(t, "failure_backoff", decision.Reason)
-	require.Equal(t, 90*time.Second, decision.Timeout)
+	require.Equal(t, "failure_reset", decision.Reason)
+	require.Equal(t, 180*time.Second, decision.Timeout)
 
 	engine.Observe(AttemptObservation{
 		LaneID:       "flapping",
@@ -142,7 +141,21 @@ func TestAdaptiveTimeoutEngineBacksOffAfterTransientFailures(t *testing.T) {
 		Capability:     CapabilityImageGeneration,
 		DefaultTimeout: 180 * time.Second,
 	})
-	require.Equal(t, 45*time.Second, decision.Timeout)
+	require.Equal(t, 180*time.Second, decision.Timeout)
+
+	engine.Observe(AttemptObservation{
+		LaneID:     "flapping",
+		Capability: CapabilityImageGeneration,
+		Duration:   40 * time.Second,
+		Success:    true,
+	})
+	decision = engine.TimeoutFor(TimeoutRequest{
+		LaneID:         "flapping",
+		Capability:     CapabilityImageGeneration,
+		DefaultTimeout: 180 * time.Second,
+	})
+	require.Equal(t, "success_step_down", decision.Reason)
+	require.Equal(t, 170*time.Second, decision.Timeout)
 }
 
 func TestAdaptiveTimeoutEngineReservesOneWindowWhenAttemptsAreUnknown(t *testing.T) {
@@ -174,6 +187,24 @@ func TestAdaptiveTimeoutEngineIgnoresDeterministicFailuresAndCancellation(t *tes
 	})
 	require.Equal(t, "default", decision.Reason)
 	require.Equal(t, 180*time.Second, decision.Timeout)
+}
+
+func TestAdaptiveTimeoutEngineNeverDropsBelowAveragePlusSafetyMargin(t *testing.T) {
+	engine := NewAdaptiveTimeoutEngine(testAdaptiveConfig())
+	for i := 0; i < 20; i++ {
+		engine.Observe(AttemptObservation{
+			LaneID:     "fast",
+			Capability: CapabilityImageGeneration,
+			Duration:   80 * time.Second,
+			Success:    true,
+		})
+	}
+	decision := engine.TimeoutFor(TimeoutRequest{
+		LaneID:         "fast",
+		Capability:     CapabilityImageGeneration,
+		DefaultTimeout: 180 * time.Second,
+	})
+	require.Equal(t, 110*time.Second, decision.Timeout)
 }
 
 func TestAdaptiveTimeoutEngineLedgerIsBoundedAndSummariesAreSanitized(t *testing.T) {

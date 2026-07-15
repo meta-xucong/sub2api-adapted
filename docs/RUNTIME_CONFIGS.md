@@ -50,18 +50,22 @@ Active Smart Router settings:
 - `gateway.smart_router.image_resilience.enabled=true`
 - `gateway.smart_router.image_resilience.generation_enabled=true`
 - `gateway.smart_router.image_resilience.edit_enabled=true`
-- `gateway.smart_router.image_resilience.standard_default_seconds=150`
-- `gateway.smart_router.image_resilience.standard_min_seconds=45`
+- `gateway.smart_router.image_resilience.standard_default_seconds=180`
+- `gateway.smart_router.image_resilience.standard_min_seconds=60`
 - `gateway.smart_router.image_resilience.standard_max_seconds=240`
 - `gateway.smart_router.image_resilience.specialist_default_seconds=210`
 - `gateway.smart_router.image_resilience.specialist_min_seconds=75`
 - `gateway.smart_router.image_resilience.specialist_max_seconds=360`
 - `gateway.smart_router.image_resilience.p90_multiplier=1.25`
 - `gateway.smart_router.image_resilience.safety_margin_seconds=20`
-- `gateway.smart_router.image_resilience.fallback_reserve_seconds=45`
+- `gateway.smart_router.image_resilience.fallback_reserve_seconds=30`
 - `gateway.smart_router.image_resilience.sample_window_size=32`
 - `gateway.smart_router.image_resilience.max_same_source_attempts=1`
 - `gateway.smart_router.image_resilience.half_open_enabled=true`
+- Image timeout policy: consecutive success subtracts 10 seconds; transient
+  failure resets the next attempt to 180 seconds; the floor is successful EWMA
+  plus 30 seconds, with an absolute 60-second floor. The old 45-second failure
+  backoff is retired.
 - `gateway.smart_router.rate_limit_backoff.enabled=true`
 - `gateway.smart_router.rate_limit_backoff.initial_seconds=5`
 - `gateway.smart_router.rate_limit_backoff.max_seconds=60`
@@ -214,6 +218,11 @@ ports.
 - Image gateway budgets are explicit: `image_total_budget_seconds=600`,
   `image_attempt_seconds=180`, and `image_finalization_reserve_seconds=15`.
 - Per-upstream and end-to-end image timeouts are `180` and `600` seconds.
+- The simple image timeout policy is active: consecutive success subtracts
+  `10s`; transient failure resets the next attempt to `180s`; the floor is
+  successful average plus `30s`, never below `60s`.
+- `gateway.smart_router.adaptive_timeout.success_step_seconds=10`
+- `gateway.smart_router.adaptive_timeout.success_floor_margin_seconds=30`
 - Generic chat/Responses sustained failure threshold remains `3`; the
   capability-scoped image threshold is `2`, freezing a repeatedly failing image
   lane until the next `04:00 Asia/Shanghai` calibration.

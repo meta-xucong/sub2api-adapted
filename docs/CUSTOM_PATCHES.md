@@ -12,29 +12,21 @@ Code:
 
 Enable with `gateway.smart_router.enabled: true`. Existing accounts work without manual metadata. Optional `account.extra.smart_router` fields can override `source_group`, capabilities, cost multiplier, and concurrency. `image_size_tiers: ["1K", "2K", "4K"]` optionally marks a lane as a specialist for explicit OpenAI Images output sizes: matching specialists are chosen before generic lanes, while generic lanes remain automatic fallbacks when every specialist is unavailable. Implicit image sizes retain the original routing behavior.
 
-The optional adaptive timeout plugin is maintained with the core module. It
-keeps independent latency profiles for each lane and capability, applies a
-bounded backoff after transient 5xx/rate-limit/timeout/transport failures, and
-reserves remaining request budget for failover. It never changes the stored
-account priority or `schedulable` flag. The feature is disabled by default and
-is enabled with `gateway.smart_router.adaptive_timeout.enabled: true` only
-after the outer client timeout is longer than the gateway image budget.
+The image timeout policy is maintained with the core module. Each image lane
+starts at 180s, steps down by 10s after each consecutive success, and never
+drops below the successful EWMA latency plus 30s (or 60s, whichever is higher).
+Transient failure resets the next attempt to the full 180s window. The policy
+never changes stored account priority or `schedulable`; soft demotion, 429
+backoff, source-group exclusion, and 04:00 calibration remain independent.
 
 The router first considers the lowest numeric priority layer. It advances only after that layer has no eligible lane. Retries can exclude an entire source group so multiple accounts backed by the same upstream are not hammered repeatedly.
 
-### Image resilience development specification
+### Image timeout policy
 
-The image-only resilience implementation is documented in
-`SMART_ROUTER_IMAGE_RESILIENCE_DEVELOPMENT.md`. It is feature-gated and limited
-to `image_generation` and `image_edit`, with independent source-group
-protection, per-lane/size/input-mode adaptive attempt timeouts, optional
-half-open recovery probes, and the existing ledger-driven 04:00 restoration.
-It does not change chat, Responses, compact, stored account priorities, billing
-groups, or manual `schedulable` state. The image feature flags default to off;
-deployments can enable them after the image-only regression suite passes. The
-recommended production overlay is `enabled=true`, with 150s/45s/240s for
-ordinary generation/edit requests and 210s/75s/360s for specialist 4K lanes;
-the total image request budget remains the separate 600-second gateway limit.
+The current implementation is documented in
+`SMART_ROUTER_IMAGE_TIMEOUT_POLICY.md`. The previous 45-second failure-backoff
+design is explicitly retired in
+`SMART_ROUTER_IMAGE_RESILIENCE_45S_POLICY_RETIRED.md` and must not be restored.
 
 ### Upstream 429 backoff overlay
 
