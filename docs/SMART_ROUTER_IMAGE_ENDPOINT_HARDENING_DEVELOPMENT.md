@@ -306,6 +306,7 @@ compact 也属于 Smart Router 管理范围，但它必须使用独立的 `respo
 - compact 的 502/503/504、连接断开、上游超时和可确认的临时 429，可以触发 compact lane 自己的软降权；不能修改同账号普通 Responses、图片或图生图的优先级。
 - 软降权后仍保留该账号作为低优先级 compact 兜底，不把账号永久关闭，也不把 compact 账号从数据库删除。
 - 04:00 恢复探测必须真正调用 `/responses/compact`，并验证返回了可解析且有效的 `encrypted_content`；HTTP 200、普通文本或只有 usage 都不算成功。
+- compact 校准探针本身必须显式标记为 HTTP 入站请求；不能继承账号的 Responses WebSocket 开关。否则 WS-enabled API-key 账号会把校准请求错误发成 WebSocket，并将 404/1011 握手失败误记为 compact 不可用。
 - compact 探测成功，只恢复 `responses_compact` lane 的原始有效优先级；失败则继续保持降权，等待下一次恢复窗口。
 - `force_off`、人工禁用、删除、认证失效和确定性的端点/参数配置错误不由成功探针自动打开；需要配置修正或人工确认。
 - 客户端主动 `context canceled` 不应触发 compact 降权，也不能因此重放压缩请求。

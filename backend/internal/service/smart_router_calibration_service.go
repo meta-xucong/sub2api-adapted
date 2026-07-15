@@ -806,6 +806,10 @@ func (s *OpenAIGatewayService) RunSmartRouterCompactCalibrationProbe(ctx context
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses/compact", bytes.NewReader(body)).WithContext(ctx)
 	req.Header.Set("Content-Type", "application/json")
 	ginCtx.Request = req
+	// Calibration is an internal HTTP probe. Do not inherit the account's
+	// Responses WebSocket setting, or a WS-only account can turn a compact
+	// health check into a false 404/1011 failure.
+	SetOpenAIClientTransport(ginCtx, OpenAIClientTransportHTTP)
 
 	startedAt := time.Now()
 	forwardResult, forwardErr := s.Forward(ctx, ginCtx, account, body)

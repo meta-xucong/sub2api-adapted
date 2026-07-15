@@ -1,7 +1,9 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
+	"io"
 	"mime"
 	"mime/multipart"
 	"net/http"
@@ -9,7 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	smartrouter "github.com/Wei-Shaw/sub2api/internal/smartrouter/core"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
 
@@ -49,6 +53,43 @@ func TestOpenAICompactResponseContainsItemRequiresEncryptedContent(t *testing.T)
 	require.True(t, openAICompactResponseContainsItem([]byte(`{"output":[{"type":"compaction","encrypted_content":"opaque"}]}`)))
 	require.False(t, openAICompactResponseContainsItem([]byte(`{"output":[{"type":"compaction"}]}`)))
 	require.True(t, openAICompactResponseContainsItem([]byte("data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"compaction\",\"encrypted_content\":\"opaque\"}}\n\n")))
+}
+
+func TestRunSmartRouterCompactCalibrationProbeForcesHTTPTransport(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := &config.Config{}
+	cfg.Security.URLAllowlist.Enabled = false
+	cfg.Gateway.OpenAIWS.Enabled = true
+	cfg.Gateway.OpenAIWS.APIKeyEnabled = true
+	cfg.Gateway.OpenAIWS.ResponsesWebsocketsV2 = true
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"id":"resp_probe","object":"response","status":"completed","model":"gpt-5.4","output":[{"type":"compaction","encrypted_content":"opaque"}],"usage":{"input_tokens":1,"output_tokens":1}}`)),
+	}}
+	svc := &OpenAIGatewayService{cfg: cfg, httpUpstream: upstream}
+	account := &Account{
+		ID:          730060,
+		Name:        "ws-enabled-compact-lane",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":  "sk-test",
+			"base_url": "https://example.com/v1",
+		},
+		Extra: map[string]any{
+			"use_responses_api":                             true,
+			"openai_apikey_responses_websockets_v2_enabled": true,
+		},
+	}
+
+	statusCode, _, err := svc.RunSmartRouterCompactCalibrationProbe(context.Background(), account, "gpt-5.4")
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, statusCode)
+	require.Len(t, upstream.requests, 1)
+	require.Equal(t, "/v1/responses/compact", upstream.requests[0].URL.Path)
 }
 
 func TestBuildSmartRouterCompactProbeExtraUpdatesDoesNotQuarantineTransientFailure(t *testing.T) {

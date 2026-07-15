@@ -54,7 +54,8 @@ not an upstream lane signal and is left to that queue.
 
 `responses/compact` is a separate Smart Router capability, `responses_compact`,
 with its own attempt budget (`gateway.smart_router.max_attempts_compact`, default
-`2`), health ledger, failure classification, and 04:00 calibration probe. Compact
+`0`, meaning dynamic: try each eligible lane once), health ledger, failure
+classification, and 04:00 calibration probe. Compact
 requests keep the existing supported/unknown capability tiers, but Smart Router
 now ranks lanes inside each tier. This fixes the regression where compact requests
 were filtered by the OpenAI scheduler but bypassed Smart Router, causing a failing
@@ -66,6 +67,10 @@ The compact probe accepts only a real compaction response with non-empty
 `encrypted_content`; an HTTP 2xx response containing only usage or ordinary text is
 not marked healthy. A transient probe failure records evidence but does not
 permanently disable the account, so the next scheduled calibration can retry it.
+The internal calibration probe is explicitly marked as an HTTP client request;
+it must never inherit an account's Responses WebSocket setting. This prevents a
+WS-enabled API-key account from producing a false compact failure from a WebSocket
+404/1011 handshake when its HTTP `/responses/compact` endpoint is usable.
 
 ### Compact candidate enrollment and legacy image-cooldown isolation
 
