@@ -2,6 +2,15 @@
 
 This file records verified non-secret settings that live outside the source tree. Never store API keys, passwords, cookies, private keys, or internal tokens here.
 
+## Frontend Build Guard
+
+The Sub2API panel is compiled behind the Go `embed` build tag. A binary built
+without `-tags embed` can keep `/health` and API routes healthy while returning
+`404 page not found` for `/`, `/login`, and SPA routes. The repository build
+target and Dockerfile now enable `embed` by default. Any manual Linux binary
+hot-update must use the same tag and should verify `/`, `/login`, and at least
+one static asset before rollout.
+
 ## Repository Baseline
 
 - Current official baseline: `Wei-Shaw/sub2api` `v0.1.151` (`deff3123`).
