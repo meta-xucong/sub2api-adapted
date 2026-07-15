@@ -23,6 +23,7 @@ Verified: 2026-07-12
 - Image-baked code commit: `280a5ccc`
 - Latest hot-updated runtime code commit: `656adf1b` (2026-07-14; no image pull/rebuild)
 - Latest hot-update backup: `/opt/sub2api/backups/hot-compact-refresh-656adf1b-20260714-102223`
+- Latest hot-update backup: `/opt/sub2api/backups/hot-compact-dynamic-08c57921` (2026-07-15; dynamic compact failover and keepalive failure accounting)
 - Runtime image uses the locally cross-compiled Linux binary with the unchanged
   frontend dist; this avoids resource-heavy Node/Go compilation on the VPS.
 
@@ -191,6 +192,7 @@ ports.
 - Deployed image: `sub2api-adapted:v0.1.151-smart-router-280a5ccc`
 - Deployment backup: `/opt/sub2api-deploy/backups/smart-router-280a5ccc-20260713-002446`
 - Latest hot-update backup: `/opt/sub2api-deploy/backups/hot-429-5c43c54b`
+- Latest hot-update backup: `/opt/sub2api-deploy/backups/hot-compact-dynamic-08c57921` (2026-07-15; dynamic compact failover and keepalive failure accounting)
 - Rollback image tag: `sub2api-adapted:v0.1.151-smart-router-image-recovery-9c600574`
 - Runtime image uses the locally cross-compiled Linux binary; no VPS-side Go
   compilation is required for this deployment path.
