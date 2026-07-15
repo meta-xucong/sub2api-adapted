@@ -189,8 +189,7 @@ Repository/deployment boundary:
 
 ## 404token
 
-Verified and upgraded: 2026-07-12; timeout-policy update pending host SSH
-recovery. The correct SSH path is through the
+Verified and hot-updated: 2026-07-15. The correct SSH path is through the
 Philippines jump host; the target is not reachable through the common direct SSH
 ports.
 
@@ -222,11 +221,11 @@ ports.
 - Image gateway budgets are explicit: `image_total_budget_seconds=600`,
   `image_attempt_seconds=180`, and `image_finalization_reserve_seconds=15`.
 - Per-upstream and end-to-end image timeout targets are `180` and `600` seconds.
-- The simple image timeout policy is the pending hot-update target: consecutive
+- The simple image timeout policy is active: consecutive
   success subtracts `10s`; transient failure resets the next attempt to `180s`;
   the floor is successful average plus `30s`, never below `60s`.
-- Target config: `gateway.smart_router.adaptive_timeout.success_step_seconds=10`
-- Target config: `gateway.smart_router.adaptive_timeout.success_floor_margin_seconds=30`
+- Active config: `gateway.smart_router.adaptive_timeout.success_step_seconds=10`
+- Active config: `gateway.smart_router.adaptive_timeout.success_floor_margin_seconds=30`
 - Generic chat/Responses sustained failure threshold remains `3`; the
   capability-scoped image threshold is `2`, freezing a repeatedly failing image
   lane until the next `04:00 Asia/Shanghai` calibration.
@@ -292,11 +291,20 @@ jump host `141.11.138.152:13226`; `https://404token.xyz/health` returns HTTP
 ### Image timeout policy hot update
 
 - Repository commit: `9a5769b0`.
-- On 2026-07-15 the jump host was healthy and the target TCP port accepted
-  connections, but the target returned no SSH banner and then reset the
-  connection. No 404token binary or config was changed in this attempt.
-- Apply the same binary/config update after SSH recovery, with a fresh backup;
-  do not infer deployment success from the TCP port alone.
+- Hot-updated on 2026-07-15 without rebuilding the image. The running binary
+  SHA256 is `acd7b0e37e97ddd97b24f9d1f90caee4990dabf259901063ce43183a449f90e1`.
+- Runtime image remains `sub2api-adapted:v0.1.151-smart-router-280a5ccc`;
+  the application container is `running healthy`.
+- Active image settings are `standard_default_seconds=180`,
+  `standard_min_seconds=60`, `fallback_reserve_seconds=30`,
+  `success_step_seconds=10`, and `success_floor_margin_seconds=30`.
+- Backups: `/app/sub2api.bak_codex_image_timeout_20260715-235107` and
+  `/opt/sub2api-deploy/data/config.yaml.bak_codex_image_timeout_20260715-235107`.
+- The first hot-update attempt produced invalid YAML because a line-oriented
+  insertion used the wrong indentation. The service was restored from the
+  pre-update config backup, then the settings were rewritten with exact
+  indentation and revalidated by a healthy container. Future hot updates must
+  validate YAML before restarting and must never use unindented `sed` inserts.
 
 ### Aiself source-aligned routing sync (historical)
 
