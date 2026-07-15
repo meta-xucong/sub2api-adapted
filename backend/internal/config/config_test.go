@@ -2124,7 +2124,7 @@ func TestLoad_DefaultGatewayImageStreamConfig(t *testing.T) {
 	if cfg.Gateway.SmartRouter.Enabled {
 		t.Fatalf("smart_router.enabled = true, want false")
 	}
-	if cfg.Gateway.SmartRouter.TopK != 5 || cfg.Gateway.SmartRouter.MaxAttemptsImage != 2 || cfg.Gateway.SmartRouter.MaxAttemptsCompact != 2 {
+	if cfg.Gateway.SmartRouter.TopK != 5 || cfg.Gateway.SmartRouter.MaxAttemptsImage != 2 || cfg.Gateway.SmartRouter.MaxAttemptsCompact != 0 {
 		t.Fatalf("unexpected smart router defaults: top_k=%d max_attempts_image=%d max_attempts_compact=%d", cfg.Gateway.SmartRouter.TopK, cfg.Gateway.SmartRouter.MaxAttemptsImage, cfg.Gateway.SmartRouter.MaxAttemptsCompact)
 	}
 	if cfg.Gateway.SmartRouter.Recovery.SecondFailureCooldownSeconds != 600 ||

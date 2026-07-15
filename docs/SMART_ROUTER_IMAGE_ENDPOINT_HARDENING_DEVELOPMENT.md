@@ -356,7 +356,8 @@ compact 也属于 Smart Router 管理范围，但它必须使用独立的 `respo
 2. compact 仍强制 JSON `Accept`，不被图片 multipart 逻辑污染；
 3. compact 的失败只写 `responses_compact` 健康键；
 4. 图片 404/403/5xx 不改变同账号普通 responses/compact 的健康键；
-5. compact failover 仍只使用 `max_attempts_compact`；
+5. compact failover 默认按候选数量动态尝试，每条候选最多一次；设置正数
+   `max_attempts_compact` 时仍作为显式上限；
 6. 04:00 图片候选修正不会删除或跳过明确允许 compact 的账号；
 7. 真实 compact 响应必须包含非空 `encrypted_content` 才算成功。
 

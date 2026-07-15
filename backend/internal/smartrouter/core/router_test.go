@@ -65,6 +65,33 @@ func TestOrder_RespectsAttemptBudget(t *testing.T) {
 	require.Empty(t, exhausted.OrderedLaneIDs)
 }
 
+func TestOrder_CompactDynamicBudgetExposesAllEligibleLanes(t *testing.T) {
+	policy := DefaultPolicy()
+	policy.Enabled = true
+	lanes := []LaneSnapshot{
+		{LaneID: "compact-one", AccountID: 1, Priority: 4, Capabilities: map[Capability]bool{CapabilityResponsesCompact: true}},
+		{LaneID: "compact-two", AccountID: 2, Priority: 4, Capabilities: map[Capability]bool{CapabilityResponsesCompact: true}},
+		{LaneID: "compact-three", AccountID: 3, Priority: 4, Capabilities: map[Capability]bool{CapabilityResponsesCompact: true}},
+	}
+
+	plan := Order(RouteRequest{Capability: CapabilityResponsesCompact, AttemptNumber: 0, Seed: 17}, lanes, policy)
+	require.ElementsMatch(t, []string{"compact-one", "compact-two", "compact-three"}, plan.OrderedLaneIDs)
+}
+
+func TestOrder_CompactExplicitBudgetStillCapsCandidates(t *testing.T) {
+	policy := DefaultPolicy()
+	policy.Enabled = true
+	policy.MaxAttemptsCompact = 2
+	lanes := []LaneSnapshot{
+		{LaneID: "compact-one", AccountID: 1, Priority: 4, Capabilities: map[Capability]bool{CapabilityResponsesCompact: true}},
+		{LaneID: "compact-two", AccountID: 2, Priority: 4, Capabilities: map[Capability]bool{CapabilityResponsesCompact: true}},
+		{LaneID: "compact-three", AccountID: 3, Priority: 4, Capabilities: map[Capability]bool{CapabilityResponsesCompact: true}},
+	}
+
+	plan := Order(RouteRequest{Capability: CapabilityResponsesCompact, AttemptNumber: 0, Seed: 18}, lanes, policy)
+	require.Len(t, plan.OrderedLaneIDs, 2)
+}
+
 func TestOrder_BlocksAttemptWhenRemainingBudgetCannotFit(t *testing.T) {
 	policy := DefaultPolicy()
 	policy.Enabled = true

@@ -2001,6 +2001,9 @@ func (h *OpenAIGatewayHandler) handleStreamingAwareError(c *gin.Context, status 
 	// body-signal compact 心跳可能已把响应头提交为 200：先停心跳（建立
 	// happens-before，接管 ResponseWriter），并升级为流内错误处理。
 	if service.StopOpenAICompactSSEKeepaliveCommitted(c) {
+		// The keepalive fixes the wire status at 200, so the terminal outcome
+		// must be recorded explicitly for ops and compact outcome logging.
+		service.MarkOpsStreamError(c, errType, message, status)
 		streamStarted = true
 	}
 	if streamStarted {

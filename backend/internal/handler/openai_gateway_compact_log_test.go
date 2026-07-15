@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -169,6 +170,30 @@ func TestLogOpenAIRemoteCompactOutcome_NonCompactSkips(t *testing.T) {
 
 	require.False(t, logSink.ContainsMessageAtLevel("codex.remote_compact.succeeded", "info"))
 	require.False(t, logSink.ContainsMessageAtLevel("codex.remote_compact.failed", "warn"))
+}
+
+func TestStreamingAwareCompactFailureMarksOutcomeAfterKeepaliveCommit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	logSink, restore := captureHandlerStructuredLog(t)
+	defer restore()
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses/compact", nil)
+	service.MarkOpenAICompactClientStream(c)
+	stop := service.StartOpenAICompactSSEKeepalive(c, time.Millisecond)
+	defer stop()
+	time.Sleep(5 * time.Millisecond)
+
+	h := &OpenAIGatewayHandler{}
+	h.handleStreamingAwareError(c, http.StatusBadGateway, "upstream_error", "upstream unavailable", false)
+	h.logOpenAIRemoteCompactOutcome(c, time.Now())
+
+	require.True(t, logSink.ContainsMessageAtLevel("codex.remote_compact.failed", "warn"))
+	require.False(t, logSink.ContainsMessageAtLevel("codex.remote_compact.succeeded", "info"))
+	streamErr, ok := service.GetOpsStreamError(c)
+	require.True(t, ok)
+	require.Equal(t, http.StatusBadGateway, streamErr.IntendedStatus)
 }
 
 func TestOpenAIResponses_CompactUnauthorizedLogsFailed(t *testing.T) {

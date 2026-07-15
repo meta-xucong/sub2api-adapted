@@ -153,6 +153,12 @@ func Order(req RouteRequest, lanes []LaneSnapshot, policy Policy) RoutePlan {
 	})
 
 	topK := policy.TopK
+	// Compact requests must not silently stop at the generic TopK. Their
+	// default budget is dynamic (0), so expose every eligible candidate to the
+	// scheduler; the handler excludes each failed lane before the next pass.
+	if req.Capability == CapabilityResponsesCompact && plan.AttemptBudget == 0 {
+		topK = len(candidates)
+	}
 	if topK > len(candidates) {
 		topK = len(candidates)
 	}

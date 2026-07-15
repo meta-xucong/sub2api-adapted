@@ -2077,7 +2077,9 @@ func setDefaults() {
 	viper.SetDefault("gateway.smart_router.top_k", 5)
 	viper.SetDefault("gateway.smart_router.max_attempts_image", 2)
 	viper.SetDefault("gateway.smart_router.max_attempts_chat", 3)
-	viper.SetDefault("gateway.smart_router.max_attempts_compact", 2)
+	// 0 means dynamic: compact failover may try every eligible lane once;
+	// operators can set a positive value to impose an explicit upper bound.
+	viper.SetDefault("gateway.smart_router.max_attempts_compact", 0)
 	viper.SetDefault("gateway.smart_router.max_attempts_default", 3)
 	viper.SetDefault("gateway.smart_router.same_source_group_attempts", 1)
 	viper.SetDefault("gateway.smart_router.cost_bias_max", 3.0)

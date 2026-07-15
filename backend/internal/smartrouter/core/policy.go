@@ -32,11 +32,14 @@ type Policy struct {
 
 func DefaultPolicy() Policy {
 	return Policy{
-		Enabled:                 false,
-		TopK:                    5,
-		MaxAttemptsImage:        2,
-		MaxAttemptsChat:         3,
-		MaxAttemptsCompact:      2,
+		Enabled:          false,
+		TopK:             5,
+		MaxAttemptsImage: 2,
+		MaxAttemptsChat:  3,
+		// A zero compact budget means dynamic: try each eligible lane once,
+		// subject to the request's remaining time budget. A positive value is
+		// still honored as an explicit operator cap.
+		MaxAttemptsCompact:      0,
 		MaxAttemptsDefault:      3,
 		SameSourceGroupAttempts: 1,
 		ImageSameSourceAttempts: 1,
@@ -64,9 +67,8 @@ func (p Policy) Normalize() Policy {
 	if p.MaxAttemptsChat <= 0 {
 		p.MaxAttemptsChat = defaults.MaxAttemptsChat
 	}
-	if p.MaxAttemptsCompact <= 0 {
-		p.MaxAttemptsCompact = defaults.MaxAttemptsCompact
-	}
+	// Compact uses zero as the safe default for a dynamic candidate budget.
+	// Keep an explicit positive value as an operator-defined upper bound.
 	if p.MaxAttemptsDefault <= 0 {
 		p.MaxAttemptsDefault = defaults.MaxAttemptsDefault
 	}
