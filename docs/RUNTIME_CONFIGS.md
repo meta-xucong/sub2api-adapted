@@ -193,6 +193,15 @@ Repository/deployment boundary:
   `2852f2f2`, SHA256
   `439eee6b917b63bf19fbb17aac09f644f1b6bd0387a2194ab1afaf67aa937a70`.
 - Rollback backup: `/opt/sub2api/backups/hot-compact-failopen-2852f2f2-20260716-002515`.
+- Compact calibration HTTP-transport correction hot-updated on 2026-07-16:
+  runtime commit `63ca3b8c`, SHA256
+  `7c9b998323fb0282d855e64c20251bcb57789e7aaba149716447600e1d8f794b`.
+  The running image was not replaced; only `/app/sub2api` was atomically
+  replaced after backing up the binary and config.
+- Rollback backup: `/opt/sub2api/backups/hot-compact-http-63ca3b8c-20260716-072306`.
+- Post-update: container `healthy`, restart count `0`, local/public `/health`
+  returned HTTP 200, and the `0 4 * * * Asia/Shanghai` calibration schedule was
+  registered.
 
 ## 404token
 
@@ -208,6 +217,15 @@ ports.
 - Latest hot-update backup: `/opt/sub2api-deploy/backups/hot-429-5c43c54b`
 - Latest hot-update backup: `/opt/sub2api-deploy/backups/hot-compact-dynamic-08c57921` (2026-07-15; dynamic compact failover and keepalive failure accounting)
 - Latest hot-update backup: `/opt/sub2api-deploy/backups/hot-compact-failopen-2852f2f2-20260716-004535` (compact fail-open routing and protocol failover)
+- Compact calibration HTTP-transport correction hot-updated on 2026-07-16:
+  runtime commit `63ca3b8c`, SHA256
+  `7c9b998323fb0282d855e64c20251bcb57789e7aaba149716447600e1d8f794b`.
+  The running image was not replaced; only `/app/sub2api` was atomically
+  replaced after backing up the binary and config.
+- Rollback backup: `/opt/sub2api-deploy/backups/hot-compact-http-63ca3b8c-20260716-072443`.
+- Post-update: container `healthy`, restart count `0`, local/public `/health`
+  returned HTTP 200, and the `0 4 * * * Asia/Shanghai` calibration schedule was
+  registered.
 - Rollback image tag: `sub2api-adapted:v0.1.151-smart-router-image-recovery-9c600574`
 - Runtime image uses the locally cross-compiled Linux binary; no VPS-side Go
   compilation is required for this deployment path.
