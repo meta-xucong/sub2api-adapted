@@ -11,7 +11,7 @@ This file records verified non-secret settings that live outside the source tree
 
 ## aiself.vip
 
-Verified: 2026-07-12
+Verified: 2026-07-15
 
 - Deploy directory: `/opt/sub2api/deploy`
 - Persistent runtime config: `/app/data/config.yaml`
@@ -24,6 +24,9 @@ Verified: 2026-07-12
 - Latest hot-updated runtime code commit: `656adf1b` (2026-07-14; no image pull/rebuild)
 - Latest hot-update backup: `/opt/sub2api/backups/hot-compact-refresh-656adf1b-20260714-102223`
 - Latest hot-update backup: `/opt/sub2api/backups/hot-compact-dynamic-08c57921` (2026-07-15; dynamic compact failover and keepalive failure accounting)
+- Latest hot-updated runtime code commit: `9a5769b0` (2026-07-15; simple image timeout policy)
+- Latest in-container binary backup: `/app/sub2api.bak_codex_image_timeout_20260715-222521`
+- Latest in-container config backup: `/app/data/config.yaml.bak_codex_image_timeout_20260715-222521`
 - Runtime image uses the locally cross-compiled Linux binary with the unchanged
   frontend dist; this avoids resource-heavy Node/Go compilation on the VPS.
 
@@ -180,13 +183,14 @@ Replay after a future official upgrade:
 
 Repository/deployment boundary:
 
-- The aiself production runtime is pinned to `280a5ccc` in image
-  `sub2api-adapted:v0.1.151-smart-router-280a5ccc`; later repository commits may
-  contain documentation, replay SQL, build limits, or audit metadata only.
+- The aiself container image remains pinned to `280a5ccc`, but the running
+  binary is hot-updated to `9a5769b0`; this is intentional and avoids an image
+  pull/rebuild.
 
 ## 404token
 
-Verified and upgraded: 2026-07-12. The correct SSH path is through the
+Verified and upgraded: 2026-07-12; timeout-policy update pending host SSH
+recovery. The correct SSH path is through the
 Philippines jump host; the target is not reachable through the common direct SSH
 ports.
 
@@ -217,12 +221,12 @@ ports.
   and image-generation transient cooldowns `30` seconds.
 - Image gateway budgets are explicit: `image_total_budget_seconds=600`,
   `image_attempt_seconds=180`, and `image_finalization_reserve_seconds=15`.
-- Per-upstream and end-to-end image timeouts are `180` and `600` seconds.
-- The simple image timeout policy is active: consecutive success subtracts
-  `10s`; transient failure resets the next attempt to `180s`; the floor is
-  successful average plus `30s`, never below `60s`.
-- `gateway.smart_router.adaptive_timeout.success_step_seconds=10`
-- `gateway.smart_router.adaptive_timeout.success_floor_margin_seconds=30`
+- Per-upstream and end-to-end image timeout targets are `180` and `600` seconds.
+- The simple image timeout policy is the pending hot-update target: consecutive
+  success subtracts `10s`; transient failure resets the next attempt to `180s`;
+  the floor is successful average plus `30s`, never below `60s`.
+- Target config: `gateway.smart_router.adaptive_timeout.success_step_seconds=10`
+- Target config: `gateway.smart_router.adaptive_timeout.success_floor_margin_seconds=30`
 - Generic chat/Responses sustained failure threshold remains `3`; the
   capability-scoped image threshold is `2`, freezing a repeatedly failing image
   lane until the next `04:00 Asia/Shanghai` calibration.
@@ -284,6 +288,15 @@ GPT-5.6 test-selector patch deployed: `44eb5aaa`.
 Current access evidence: target `141.11.138.220:14161` is reachable through
 jump host `141.11.138.152:13226`; `https://404token.xyz/health` returns HTTP
 200. Credentials and private keys are intentionally not recorded here.
+
+### Image timeout policy hot update
+
+- Repository commit: `9a5769b0`.
+- On 2026-07-15 the jump host was healthy and the target TCP port accepted
+  connections, but the target returned no SSH banner and then reset the
+  connection. No 404token binary or config was changed in this attempt.
+- Apply the same binary/config update after SSH recovery, with a fresh backup;
+  do not infer deployment success from the TCP port alone.
 
 ### Aiself source-aligned routing sync (historical)
 
