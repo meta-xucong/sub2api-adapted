@@ -186,6 +186,10 @@ Repository/deployment boundary:
 - The aiself container image remains pinned to `280a5ccc`, but the running
   binary is hot-updated to `9a5769b0`; this is intentional and avoids an image
   pull/rebuild.
+- Compact fail-open hot update applied on 2026-07-16: running binary commit
+  `2852f2f2`, SHA256
+  `439eee6b917b63bf19fbb17aac09f644f1b6bd0387a2194ab1afaf67aa937a70`.
+- Rollback backup: `/opt/sub2api/backups/hot-compact-failopen-2852f2f2-20260716-002515`.
 
 ## 404token
 
@@ -200,6 +204,7 @@ ports.
 - Deployment backup: `/opt/sub2api-deploy/backups/smart-router-280a5ccc-20260713-002446`
 - Latest hot-update backup: `/opt/sub2api-deploy/backups/hot-429-5c43c54b`
 - Latest hot-update backup: `/opt/sub2api-deploy/backups/hot-compact-dynamic-08c57921` (2026-07-15; dynamic compact failover and keepalive failure accounting)
+- Latest hot-update backup: `/opt/sub2api-deploy/backups/hot-compact-failopen-2852f2f2-20260716-004535` (compact fail-open routing and protocol failover)
 - Rollback image tag: `sub2api-adapted:v0.1.151-smart-router-image-recovery-9c600574`
 - Runtime image uses the locally cross-compiled Linux binary; no VPS-side Go
   compilation is required for this deployment path.
@@ -305,6 +310,20 @@ jump host `141.11.138.152:13226`; `https://404token.xyz/health` returns HTTP
   pre-update config backup, then the settings were rewritten with exact
   indentation and revalidated by a healthy container. Future hot updates must
   validate YAML before restarting and must never use unindented `sed` inserts.
+
+### Compact fail-open hot update
+
+- Repository commit: `2852f2f2`.
+- Applied to aiself and 404token on 2026-07-16 without replacing the Docker
+  image. The application binary was copied into the existing container and the
+  `sub2api` service alone was restarted.
+- Running binary SHA256 on both hosts:
+  `439eee6b917b63bf19fbb17aac09f644f1b6bd0387a2194ab1afaf67aa937a70`.
+- Both containers remained on
+  `sub2api-adapted:v0.1.151-smart-router-280a5ccc`, returned healthy status,
+  and had no panic/fatal/runtime-error signatures in the post-update logs.
+- Backups are recorded above. A future image replacement will discard the
+  copied binary, so this commit must be reapplied after any container recreate.
 
 ### Aiself source-aligned routing sync (historical)
 
