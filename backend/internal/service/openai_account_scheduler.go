@@ -126,13 +126,12 @@ type openAIAccountSchedulerMetrics struct {
 }
 
 type openAIAccountLoadPlan struct {
-	allCandidates             []openAIAccountCandidateScore
-	candidates                []openAIAccountCandidateScore
-	staleSnapshotCompactRetry []openAIAccountCandidateScore
-	selectionOrder            []openAIAccountCandidateScore
-	candidateCount            int
-	topK                      int
-	loadSkew                  float64
+	allCandidates  []openAIAccountCandidateScore
+	candidates     []openAIAccountCandidateScore
+	selectionOrder []openAIAccountCandidateScore
+	candidateCount int
+	topK           int
+	loadSkew       float64
 }
 
 type openAIAccountLoadSelectionAttempt struct {
@@ -748,12 +747,10 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 	}
 
 	candidates := allCandidates
-	staleSnapshotCompactRetry := make([]openAIAccountCandidateScore, 0, len(allCandidates))
 	if req.RequireCompact {
 		candidates = make([]openAIAccountCandidateScore, 0, len(allCandidates))
 		for _, candidate := range allCandidates {
 			if openAICompactSupportTier(candidate.account) == 0 {
-				staleSnapshotCompactRetry = append(staleSnapshotCompactRetry, candidate)
 				continue
 			}
 			candidates = append(candidates, candidate)
@@ -761,10 +758,9 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 	}
 
 	plan := openAIAccountLoadPlan{
-		allCandidates:             allCandidates,
-		candidates:                candidates,
-		staleSnapshotCompactRetry: staleSnapshotCompactRetry,
-		candidateCount:            len(candidates),
+		allCandidates:  allCandidates,
+		candidates:     candidates,
+		candidateCount: len(candidates),
 	}
 	if len(candidates) == 0 {
 		plan.selectionOrder = s.buildOpenAISelectionOrder(req, plan)
@@ -901,14 +897,11 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAISelectionOrder(
 	req OpenAIAccountScheduleRequest,
 	plan openAIAccountLoadPlan,
 ) []openAIAccountCandidateScore {
-	// Compact requests retain the official supported/unknown capability tier
-	// ordering, while Smart Router still ranks lanes inside each tier. Compact
-	// used to bypass Smart Router entirely, so failures were attributed to the
-	// model instead of the selected lane.
-	if !req.RequireCompact {
-		if order, applied := s.buildSmartRouterSelectionOrder(req, plan); applied {
-			return order
-		}
+	// Compact is an endpoint capability, not a separate priority system. Keep
+	// the normal account priority as the first decision and let Smart Router
+	// apply health penalties only within that priority layer.
+	if order, applied := s.buildSmartRouterSelectionOrder(req, plan); applied {
+		return order
 	}
 	buildSelectionOrder := func(pool []openAIAccountCandidateScore) []openAIAccountCandidateScore {
 		if len(pool) == 0 || plan.topK <= 0 {
@@ -934,38 +927,6 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAISelectionOrder(
 			}
 		}
 		return buildOpenAIWeightedSelectionOrder(ranked, req)
-	}
-
-	if req.RequireCompact {
-		supported := make([]openAIAccountCandidateScore, 0, len(plan.candidates))
-		unknown := make([]openAIAccountCandidateScore, 0, len(plan.candidates))
-		for _, candidate := range plan.candidates {
-			switch openAICompactSupportTier(candidate.account) {
-			case 2:
-				supported = append(supported, candidate)
-			case 1:
-				unknown = append(unknown, candidate)
-			}
-		}
-		orderTier := func(pool []openAIAccountCandidateScore) []openAIAccountCandidateScore {
-			if len(pool) == 0 {
-				return nil
-			}
-			compactPlan := plan
-			compactPlan.candidates = pool
-			compactPlan.allCandidates = pool
-			if order, applied := s.buildSmartRouterSelectionOrder(req, compactPlan); applied {
-				return order
-			}
-			return buildSelectionOrder(pool)
-		}
-		selectionOrder := make([]openAIAccountCandidateScore, 0, len(plan.allCandidates))
-		selectionOrder = append(selectionOrder, orderTier(supported)...)
-		selectionOrder = append(selectionOrder, orderTier(unknown)...)
-		if len(plan.staleSnapshotCompactRetry) > 0 && s.service.schedulerSnapshot != nil {
-			selectionOrder = append(selectionOrder, sortOpenAICompactRetryCandidates(plan.staleSnapshotCompactRetry)...)
-		}
-		return selectionOrder
 	}
 
 	return buildSelectionOrder(plan.candidates)
@@ -1050,36 +1011,6 @@ func (s *defaultOpenAIAccountScheduler) smartRouterRouteRequest(req OpenAIAccoun
 		ImageModelFamily:           req.SmartRouterImageModelFamily,
 		ImageResilience:            s.service.smartRouterImageResilienceEnabled(capability),
 	}
-}
-
-func sortOpenAICompactRetryCandidates(pool []openAIAccountCandidateScore) []openAIAccountCandidateScore {
-	if len(pool) == 0 {
-		return nil
-	}
-	ordered := append([]openAIAccountCandidateScore(nil), pool...)
-	sort.SliceStable(ordered, func(i, j int) bool {
-		a, b := ordered[i], ordered[j]
-		if a.account.Priority != b.account.Priority {
-			return a.account.Priority < b.account.Priority
-		}
-		if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
-			return a.loadInfo.LoadRate < b.loadInfo.LoadRate
-		}
-		if a.loadInfo.WaitingCount != b.loadInfo.WaitingCount {
-			return a.loadInfo.WaitingCount < b.loadInfo.WaitingCount
-		}
-		switch {
-		case a.account.LastUsedAt == nil && b.account.LastUsedAt != nil:
-			return true
-		case a.account.LastUsedAt != nil && b.account.LastUsedAt == nil:
-			return false
-		case a.account.LastUsedAt == nil && b.account.LastUsedAt == nil:
-			return false
-		default:
-			return a.account.LastUsedAt.Before(*b.account.LastUsedAt)
-		}
-	})
-	return ordered
 }
 
 func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrder(
@@ -1338,7 +1269,7 @@ func (s *defaultOpenAIAccountScheduler) trySelectByLoadBalancePool(
 		topK:           plan.topK,
 		loadSkew:       plan.loadSkew,
 	}
-	if req.RequireCompact && len(plan.candidates) == 0 && len(plan.staleSnapshotCompactRetry) == 0 {
+	if req.RequireCompact && len(plan.candidates) == 0 {
 		attempt.noCompactCandidates = true
 		attempt.err = ErrNoAvailableCompactAccounts
 		return attempt

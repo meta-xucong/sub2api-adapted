@@ -3044,7 +3044,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_SubscriptionPriorityWai
 			Concurrency: 1,
 			Priority:    9,
 			GroupIDs:    []int64{groupID},
-			Extra:       map[string]any{"openai_compact_supported": false},
+			Extra:       map[string]any{"openai_compact_mode": OpenAICompactModeForceOff, "openai_compact_supported": false},
 		},
 	}
 	concurrencyCache := schedulerTestConcurrencyCache{

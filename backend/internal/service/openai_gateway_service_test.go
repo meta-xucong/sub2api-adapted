@@ -2927,7 +2927,7 @@ func TestHandleNonStreamingResponse_OAuthJSONBodyWithDataEventTextKeepsJSONUsage
 	// object and no upstream text/event-stream Content-Type.
 	jsonBody := `{"id":"resp_oauth_compact","object":"response","model":"gpt-5.4","status":"completed",` +
 		`"output":[{"type":"message","content":[{"type":"output_text",` +
-		`"text":"processing data: 1,2,3 then event: click finished"}]}],` +
+		`"text":"processing data: 1,2,3 then event: click finished"}]},{"type":"compaction","id":"cmp_oauth","summary":"compact summary"}],` +
 		`"usage":{"input_tokens":11,"output_tokens":22,"total_tokens":33}}`
 	resp := &http.Response{
 		StatusCode: http.StatusOK,

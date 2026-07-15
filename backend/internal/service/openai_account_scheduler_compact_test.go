@@ -9,9 +9,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestOpenAIGatewayService_SelectAccountWithScheduler_CompactPrefersSupportedOverUnknown
-// 验证 compact 调度时显式支持 (tier=2) 优先于未探测 (tier=1)。
-func TestOpenAIGatewayService_SelectAccountWithScheduler_CompactPrefersSupportedOverUnknown(t *testing.T) {
+// TestOpenAIGatewayService_SelectAccountWithScheduler_CompactPreservesManualPriority
+// 验证 compact 调度不会让能力探测结果覆盖人工优先级。
+func TestOpenAIGatewayService_SelectAccountWithScheduler_CompactPreservesManualPriority(t *testing.T) {
 	resetOpenAIAdvancedSchedulerSettingCacheForTest()
 
 	ctx := context.Background()
@@ -34,8 +34,8 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_CompactPrefersSupported
 			Status:      StatusActive,
 			Schedulable: true,
 			Concurrency: 1,
-			Priority:    0,
-			Extra:       map[string]any{"openai_compact_supported": true}, // tier=2
+			Priority:    9,
+			Extra:       map[string]any{"openai_compact_supported": true}, // probe telemetry only
 		},
 	}
 	cfg := &config.Config{}
@@ -60,11 +60,12 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_CompactPrefersSupported
 	require.NoError(t, err)
 	require.NotNil(t, selection)
 	require.NotNil(t, selection.Account)
-	require.Equal(t, int64(71002), selection.Account.ID, "compact-supported account should win over unknown")
+	require.Equal(t, int64(71001), selection.Account.ID, "compact metadata must not override manual priority")
 }
 
 // TestOpenAIGatewayService_SelectAccountWithScheduler_CompactRejectsExplicitlyUnsupported
-// 验证 force_off / 已探测不支持 (tier=0) 的账号不会被 compact 请求选中。
+// 验证 force_off 账号不会被 compact 请求选中。
+// Explicit hard opt-outs remain excluded from compact requests.
 func TestOpenAIGatewayService_SelectAccountWithScheduler_CompactRejectsExplicitlyUnsupported(t *testing.T) {
 	resetOpenAIAdvancedSchedulerSettingCacheForTest()
 
@@ -89,7 +90,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_CompactRejectsExplicitl
 			Schedulable: true,
 			Concurrency: 1,
 			Priority:    0,
-			Extra:       map[string]any{"openai_compact_supported": false},
+			Extra:       map[string]any{"openai_compact_mode": OpenAICompactModeForceOff, "openai_compact_supported": false},
 		},
 	}
 	cfg := &config.Config{}
@@ -117,7 +118,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_CompactRejectsExplicitl
 }
 
 // TestOpenAIGatewayService_SelectAccountWithScheduler_CompactFallsBackToUnknown
-// 验证当没有"已知支持"账号时，compact 请求会回退到"未探测"账号。
+// 验证探测失败不再是硬禁用，只有 force_off 才会被过滤。
 func TestOpenAIGatewayService_SelectAccountWithScheduler_CompactFallsBackToUnknown(t *testing.T) {
 	resetOpenAIAdvancedSchedulerSettingCacheForTest()
 
@@ -132,7 +133,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_CompactFallsBackToUnkno
 			Schedulable: true,
 			Concurrency: 1,
 			Priority:    0,
-			Extra:       map[string]any{"openai_compact_supported": false}, // tier=0
+			Extra:       map[string]any{"openai_compact_supported": false}, // failed probe remains eligible
 		},
 		{
 			ID:          71021,
@@ -141,7 +142,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_CompactFallsBackToUnkno
 			Status:      StatusActive,
 			Schedulable: true,
 			Concurrency: 1,
-			Priority:    0,
+			Priority:    9,
 			Extra:       map[string]any{}, // unknown -> tier=1
 		},
 	}
@@ -167,10 +168,10 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_CompactFallsBackToUnkno
 	require.NoError(t, err)
 	require.NotNil(t, selection)
 	require.NotNil(t, selection.Account)
-	require.Equal(t, int64(71021), selection.Account.ID, "unknown account should be picked when no supported account available")
+	require.Equal(t, int64(71020), selection.Account.ID, "probe failure must not override normal priority")
 }
 
-// TestOpenAICompactSupportTier 验证 tier 分类逻辑。
+// TestOpenAICompactSupportTier 验证 compact 硬禁用分类逻辑。
 func TestOpenAICompactSupportTier(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -180,9 +181,9 @@ func TestOpenAICompactSupportTier(t *testing.T) {
 		{name: "nil", account: nil, want: 0},
 		{name: "non openai", account: &Account{Platform: PlatformAnthropic}, want: 0},
 		{name: "openai unknown", account: &Account{Platform: PlatformOpenAI, Extra: map[string]any{}}, want: 1},
-		{name: "openai supported", account: &Account{Platform: PlatformOpenAI, Extra: map[string]any{"openai_compact_supported": true}}, want: 2},
-		{name: "openai unsupported", account: &Account{Platform: PlatformOpenAI, Extra: map[string]any{"openai_compact_supported": false}}, want: 0},
-		{name: "force on", account: &Account{Platform: PlatformOpenAI, Extra: map[string]any{"openai_compact_mode": OpenAICompactModeForceOn}}, want: 2},
+		{name: "openai supported probe", account: &Account{Platform: PlatformOpenAI, Extra: map[string]any{"openai_compact_supported": true}}, want: 1},
+		{name: "openai failed probe remains eligible", account: &Account{Platform: PlatformOpenAI, Extra: map[string]any{"openai_compact_supported": false}}, want: 1},
+		{name: "force on", account: &Account{Platform: PlatformOpenAI, Extra: map[string]any{"openai_compact_mode": OpenAICompactModeForceOn}}, want: 1},
 		{name: "force off overrides probe true", account: &Account{Platform: PlatformOpenAI, Extra: map[string]any{"openai_compact_mode": OpenAICompactModeForceOff, "openai_compact_supported": true}}, want: 0},
 	}
 	for _, tt := range tests {

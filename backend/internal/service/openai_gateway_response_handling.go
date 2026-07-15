@@ -845,6 +845,9 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 		return nil, fmt.Errorf("parse response: invalid json response")
 	}
 	usage := &usageValue
+	if compactErr := compactResponseProtocolError(c, body); compactErr != nil {
+		return nil, newOpenAICompactFailoverError(resp, compactErr.Error())
+	}
 
 	// Replace model in response if needed
 	if originalModel != mappedModel {
@@ -920,6 +923,9 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 		}
 		// Correct tool calls in final response
 		body = s.correctToolCallsInResponseBody(body)
+		if compactErr := compactResponseProtocolError(c, body); compactErr != nil {
+			return nil, newOpenAICompactFailoverError(resp, compactErr.Error())
+		}
 	} else {
 		terminalType, terminalPayload, terminalOK := extractOpenAISSETerminalEvent(bodyText)
 		if terminalOK && terminalType == "response.failed" {
@@ -956,6 +962,38 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 		imageCount:       countOpenAIImageOutputsFromSSEBody(bodyText),
 		imageOutputSizes: collectOpenAIImageOutputSizesFromSSEBody(bodyText),
 	}, nil
+}
+
+// compactResponseProtocolError validates only the compact endpoint. The
+// ordinary Responses endpoint is intentionally untouched. A 2xx response is
+// not enough: Codex remote compaction requires one compaction output item.
+func compactResponseProtocolError(c *gin.Context, body []byte) error {
+	if !isOpenAIResponsesCompactPath(c) {
+		return nil
+	}
+	items := gjson.GetBytes(body, "output").Array()
+	compactionItems := 0
+	for _, item := range items {
+		if isResponsesCompactionItemType(item.Get("type").String()) {
+			compactionItems++
+		}
+	}
+	if compactionItems == 1 {
+		return nil
+	}
+	return fmt.Errorf("compact response missing required compaction output item (got %d from %d output items)", compactionItems, len(items))
+}
+
+func newOpenAICompactFailoverError(resp *http.Response, message string) *UpstreamFailoverError {
+	var headers http.Header
+	if resp != nil {
+		headers = resp.Header
+	}
+	return &UpstreamFailoverError{
+		StatusCode:      http.StatusBadGateway,
+		ResponseBody:    []byte(`{"error":{"type":"upstream_protocol_error","message":"` + message + `"}}`),
+		ResponseHeaders: headers,
+	}
 }
 
 func extractOpenAISSETerminalEvent(body string) (string, []byte, bool) {

@@ -49,6 +49,8 @@ The adapted branch is rebuilt from this baseline. Legacy history is not merged i
 
 - Every custom feature has a default-off switch or an account/provider discriminator.
 - Smart Router never mixes capabilities: chat, responses, image generation, image edit, and embeddings are distinct lanes.
-- Compact requests keep upstream's supported/unknown tier ordering.
+- Compact requests use the normal operator priority layer. Compact probe
+  results are telemetry; only an explicit `force_off` mode is a hard opt-out.
+  Smart Router health penalties and failover apply after a real compact failure.
 - AIAI and Volcengine request rewriting is limited to explicitly detected provider accounts.
 - No deployment secrets are stored in this repository.

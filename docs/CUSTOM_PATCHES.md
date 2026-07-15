@@ -243,6 +243,26 @@ the exhausted aicodexvip accounts without deleting those plans.
 
 Ops response capture always restores the writer that existed before its middleware before returning the capture wrapper to the pool. This prevents compact SSE keepalive wrappers from retaining a released capture writer and panicking when outer access loggers read status or size.
 
+## Compact default pass-through and failure-only routing
+
+Compact is a separate endpoint capability, but it is not a separate priority
+system. The gateway forwards the model selected by the user and preserves the
+operator's normal account priority for the first attempt. Compact probe results
+are telemetry only: unknown and previously failed probes remain eligible by
+default so transient errors and new model aliases do not require a code change.
+Only an explicit `openai_compact_mode=force_off` is a hard exclusion.
+
+Smart Router is a recovery path: a real transport/5xx/timeout failure, or a
+completed response without the required compaction output item, excludes the
+failed account for the current request and applies the existing soft health
+penalty. Repeated failures can enter the normal sustained-failure cooldown;
+the 04:00 Asia/Shanghai calibration is for previously degraded lanes, not a
+default gate on every compact request.
+
+The `gateway.openai_compact_model` setting is intentionally empty by default.
+It is an explicit provider-specific override, not an automatic downgrade from
+newer user-selected models.
+
 ## Veyra
 
 Veyra is disabled by default. `veyra.enabled` enables its API bridge and `veyra.portal_enabled` enables the embedded aiself portal. The ordinary Sub2API login page is never replaced.
