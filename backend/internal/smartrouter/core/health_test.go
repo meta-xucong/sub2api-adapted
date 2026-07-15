@@ -45,6 +45,57 @@ func TestHealthTrackerCancelledDoesNotPenalizeLane(t *testing.T) {
 	require.Equal(t, 1.0, snapshot.HealthScore)
 }
 
+func TestHealthTrackerImagePolicyRejectSoftSkipsLaneWithoutHealthPenalty(t *testing.T) {
+	now := time.Unix(2_250, 0)
+	var events []HealthEvent
+	tracker := NewHealthTracker(HealthPolicy{}, func() time.Time { return now }, func(event HealthEvent) { events = append(events, event) })
+
+	snapshot := tracker.Observe(RouteResult{
+		LaneID:       "policy-lane",
+		Capability:   CapabilityImageGeneration,
+		Model:        "gpt-image-2",
+		StatusCode:   http.StatusBadRequest,
+		ErrorClass:   FailureContentRejected,
+		ErrorSummary: "content_policy_violation",
+	})
+	require.Equal(t, now.Add(10*time.Minute).Unix(), snapshot.PolicyRejectUntilUnix)
+	require.Zero(t, snapshot.HealthPenalty)
+	require.Zero(t, snapshot.RecoveryPriority)
+	require.Equal(t, RecoveryNormal, snapshot.RecoveryStage)
+
+	lane := tracker.Snapshot(LaneSnapshot{LaneID: "policy-lane", Priority: 2}, CapabilityImageGeneration, "gpt-image-2", now.Unix())
+	require.Equal(t, 2, lane.Priority)
+	require.Equal(t, 30, lane.PriorityPenalty)
+	require.Equal(t, "policy_reject_soft_skip", events[0].Action)
+}
+
+func TestHealthTrackerImagePolicyRejectExpiresAndSuccessClearsIt(t *testing.T) {
+	now := time.Unix(2_300, 0)
+	tracker := NewHealthTracker(HealthPolicy{}, func() time.Time { return now }, nil)
+	result := RouteResult{LaneID: "policy-lane", Capability: CapabilityImageEdit, Model: "gpt-image-2", StatusCode: http.StatusBadRequest, ErrorClass: FailureContentRejected}
+	tracker.Observe(result)
+
+	now = now.Add(10 * time.Minute)
+	expired := tracker.Snapshot(LaneSnapshot{LaneID: "policy-lane", Priority: 2}, CapabilityImageEdit, "gpt-image-2", now.Unix())
+	require.Zero(t, expired.PriorityPenalty)
+
+	tracker.Observe(result)
+	now = now.Add(time.Minute)
+	recovered := tracker.Observe(RouteResult{LaneID: "policy-lane", Capability: CapabilityImageEdit, Model: "gpt-image-2", Success: true, StatusCode: http.StatusOK})
+	require.Zero(t, recovered.PolicyRejectUntilUnix)
+	require.Equal(t, RecoveryNormal, recovered.RecoveryStage)
+}
+
+func TestHealthTrackerPolicyRejectDoesNotAffectChat(t *testing.T) {
+	now := time.Unix(2_350, 0)
+	tracker := NewHealthTracker(HealthPolicy{}, func() time.Time { return now }, nil)
+	snapshot := tracker.Observe(RouteResult{LaneID: "chat-lane", Capability: CapabilityResponses, Model: "gpt-5.5", StatusCode: http.StatusBadRequest, ErrorClass: FailureContentRejected})
+	require.Zero(t, snapshot.PolicyRejectUntilUnix)
+	lane := tracker.Snapshot(LaneSnapshot{LaneID: "chat-lane", Priority: 2}, CapabilityResponses, "gpt-5.5", now.Unix())
+	require.Equal(t, 2, lane.Priority)
+	require.Zero(t, lane.PriorityPenalty)
+}
+
 func TestHealthTrackerConcurrency429DoesNotDemoteLane(t *testing.T) {
 	now := time.Unix(2_500, 0)
 	var events []HealthEvent

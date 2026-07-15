@@ -11,8 +11,14 @@ import (
 // deliberately independent of the persistence layer so a deployment can use
 // memory, Redis, or PostgreSQL without changing routing behavior.
 type HealthPolicy struct {
-	TransientCooldown              time.Duration
-	SecondTransientCooldown        time.Duration
+	TransientCooldown       time.Duration
+	SecondTransientCooldown time.Duration
+	// PolicyRejectCooldown is a short, image-only soft skip for a lane that
+	// rejected the request because of its own policy. It is intentionally
+	// separate from upstream health so a request-specific refusal cannot
+	// permanently demote or disable an account.
+	PolicyRejectCooldown           time.Duration
+	PolicyRejectPriorityPenalty    int
 	SustainedFailureThreshold      int
 	ImageSustainedFailureThreshold int
 	SustainedFailureUntil          func(time.Time) time.Time
@@ -32,11 +38,13 @@ type HealthPolicy struct {
 
 func DefaultHealthPolicy() HealthPolicy {
 	return HealthPolicy{
-		TransientCooldown:    30 * time.Second,
-		RateLimitCooldown:    5 * time.Minute,
-		CapabilityQuarantine: 24 * time.Hour,
-		AuthQuarantine:       24 * time.Hour,
-		MaxCooldown:          6 * time.Hour,
+		TransientCooldown:           30 * time.Second,
+		RateLimitCooldown:           5 * time.Minute,
+		PolicyRejectCooldown:        10 * time.Minute,
+		PolicyRejectPriorityPenalty: 30,
+		CapabilityQuarantine:        24 * time.Hour,
+		AuthQuarantine:              24 * time.Hour,
+		MaxCooldown:                 6 * time.Hour,
 		// Leave room to move a lane behind a growing pool of alternatives. This
 		// changes only effective routing priority, never persisted account priority.
 		MaxPenalty:                         32,
@@ -54,6 +62,12 @@ func (p HealthPolicy) normalize() HealthPolicy {
 	}
 	if p.RateLimitCooldown <= 0 {
 		p.RateLimitCooldown = d.RateLimitCooldown
+	}
+	if p.PolicyRejectCooldown <= 0 {
+		p.PolicyRejectCooldown = d.PolicyRejectCooldown
+	}
+	if p.PolicyRejectPriorityPenalty <= 0 {
+		p.PolicyRejectPriorityPenalty = d.PolicyRejectPriorityPenalty
 	}
 	if p.CapabilityQuarantine <= 0 {
 		p.CapabilityQuarantine = d.CapabilityQuarantine
@@ -102,35 +116,39 @@ type HealthSnapshot struct {
 	// Smart Router. The first degraded lane enters the global capability/model
 	// FIFO at base priority + 30; repeated failure windows add another 30.
 	// It never overwrites the account's base price priority.
-	RecoveryPriority     int
-	HealthScore          float64
-	ErrorRateEWMA        float64
-	CooldownUntilUnix    int64
-	RecoveryStage        RecoveryStage
-	ConsecutiveFailures  int
-	ConsecutiveSuccesses int
+	RecoveryPriority  int
+	HealthScore       float64
+	ErrorRateEWMA     float64
+	CooldownUntilUnix int64
+	// PolicyRejectUntilUnix is an in-memory image-only soft skip. It does not
+	// change the account's persisted priority or schedulable state.
+	PolicyRejectUntilUnix int64
+	RecoveryStage         RecoveryStage
+	ConsecutiveFailures   int
+	ConsecutiveSuccesses  int
 }
 
 type HealthEvent struct {
-	OccurredAtUnix       int64
-	Source               string
-	Key                  HealthKey
-	AccountID            int64
-	SourceGroup          string
-	StatusCode           int
-	FailureClass         FailureClass
-	Success              bool
-	Action               string
-	CooldownUntilUnix    int64
-	HealthPenalty        int
-	RecoveryPriority     int
-	HealthScore          float64
-	ErrorRateEWMA        float64
-	ConsecutiveFailures  int
-	ConsecutiveSuccesses int
-	RecoveryStage        RecoveryStage
-	LatencyMs            int64
-	ErrorSummary         string
+	OccurredAtUnix        int64
+	Source                string
+	Key                   HealthKey
+	AccountID             int64
+	SourceGroup           string
+	StatusCode            int
+	FailureClass          FailureClass
+	Success               bool
+	Action                string
+	CooldownUntilUnix     int64
+	PolicyRejectUntilUnix int64
+	HealthPenalty         int
+	RecoveryPriority      int
+	HealthScore           float64
+	ErrorRateEWMA         float64
+	ConsecutiveFailures   int
+	ConsecutiveSuccesses  int
+	RecoveryStage         RecoveryStage
+	LatencyMs             int64
+	ErrorSummary          string
 }
 
 // Restore seeds a tracker from durable state after a process restart. The
@@ -243,6 +261,9 @@ func (t *HealthTracker) Snapshot(lane LaneSnapshot, capability Capability, model
 			state.RecoveryStage = RecoveryProbeDue
 		}
 	}
+	if state.PolicyRejectUntilUnix > 0 && state.PolicyRejectUntilUnix <= nowUnix {
+		state.PolicyRejectUntilUnix = 0
+	}
 	snapshot := state.HealthSnapshot
 	t.mu.Unlock()
 
@@ -251,6 +272,9 @@ func (t *HealthTracker) Snapshot(lane LaneSnapshot, capability Capability, model
 		lane.PriorityPenalty = 0
 	} else if snapshot.HealthPenalty > 0 {
 		lane.Priority += snapshot.HealthPenalty
+	}
+	if snapshot.RecoveryPriority < firstRecoveryPriority && snapshot.PolicyRejectUntilUnix > nowUnix {
+		lane.PriorityPenalty = maxInt(lane.PriorityPenalty, t.policy.PolicyRejectPriorityPenalty)
 	}
 	if snapshot.HealthScore > 0 {
 		lane.HealthScore = snapshot.HealthScore
@@ -287,19 +311,25 @@ func (t *HealthTracker) Observe(result RouteResult) HealthSnapshot {
 	}
 	action := "record_only"
 	if result.Success {
+		policyRejectActive := state.PolicyRejectUntilUnix > now.Unix()
+		state.PolicyRejectUntilUnix = 0
 		state.ConsecutiveSuccesses++
 		state.ConsecutiveFailures = 0
 		state.recoveryFailuresSinceStep = 0
 		state.ErrorRateEWMA *= 1 - t.policy.ErrorRateAlpha
 		state.HealthScore = minFloat(1, maxFloat(0.05, state.HealthScore+0.12))
 		state.CooldownUntilUnix = 0
-		if defaultSource(result.Source) == "calibration" && (state.RecoveryStage != RecoveryNormal || state.RecoveryPriority >= firstRecoveryPriority || state.HealthPenalty > 0) {
+		if defaultSource(result.Source) == "calibration" && (state.RecoveryStage != RecoveryNormal || state.RecoveryPriority >= firstRecoveryPriority || state.HealthPenalty > 0 || policyRejectActive) {
 			state.HealthPenalty = 0
 			state.RecoveryStage = RecoveryNormal
 			t.releaseRecoverySlotLocked(state, key)
 			state.RecoveryPriority = 0
 			state.recoveryFailuresSinceStep = 0
-			action = "calibration_recovered"
+			if policyRejectActive {
+				action = "calibration_policy_recovered"
+			} else {
+				action = "calibration_recovered"
+			}
 		} else {
 			switch state.RecoveryStage {
 			case RecoveryCooling, RecoveryProbeDue:
@@ -324,13 +354,25 @@ func (t *HealthTracker) Observe(result RouteResult) HealthSnapshot {
 				state.RecoveryPriority = 0
 				state.recoveryFailuresSinceStep = 0
 			}
+			if policyRejectActive && action == "record_only" {
+				action = "policy_reject_recovered"
+			}
 		}
 	} else {
 		switch class {
-		case FailureCancelled, FailureClientError, FailureContentRejected, FailurePayloadRejected:
+		case FailureContentRejected:
+			if isImageCapability(result.Capability) {
+				state.PolicyRejectUntilUnix = now.Add(t.policy.PolicyRejectCooldown).Unix()
+				action = "policy_reject_soft_skip"
+			} else {
+				action = "no_penalty"
+			}
+			// A policy refusal is not evidence that the lane is unhealthy. For
+			// images, remember it briefly so the next request gets another lane.
+		case FailureCancelled, FailureClientError, FailurePayloadRejected:
 			action = "no_penalty"
-			// Client cancellations, request-specific rejections, and content
-			// policy blocks are not evidence that the upstream lane is unhealthy.
+			// Client cancellations and request-specific rejections are not
+			// evidence that the upstream lane is unhealthy.
 		case FailureCapabilityError:
 			state.ConsecutiveFailures++
 			state.ConsecutiveSuccesses = 0
@@ -395,25 +437,26 @@ func (t *HealthTracker) Observe(result RouteResult) HealthSnapshot {
 	}
 	snapshot := state.HealthSnapshot
 	event := HealthEvent{
-		OccurredAtUnix:       now.Unix(),
-		Source:               defaultSource(result.Source),
-		Key:                  key,
-		AccountID:            result.AccountID,
-		SourceGroup:          result.SourceGroup,
-		StatusCode:           result.StatusCode,
-		FailureClass:         class,
-		Success:              result.Success,
-		Action:               action,
-		CooldownUntilUnix:    snapshot.CooldownUntilUnix,
-		HealthPenalty:        snapshot.HealthPenalty,
-		RecoveryPriority:     snapshot.RecoveryPriority,
-		HealthScore:          snapshot.HealthScore,
-		ErrorRateEWMA:        snapshot.ErrorRateEWMA,
-		ConsecutiveFailures:  snapshot.ConsecutiveFailures,
-		ConsecutiveSuccesses: snapshot.ConsecutiveSuccesses,
-		RecoveryStage:        snapshot.RecoveryStage,
-		LatencyMs:            result.TotalLatencyMs,
-		ErrorSummary:         truncateSummary(result.ErrorSummary, 256),
+		OccurredAtUnix:        now.Unix(),
+		Source:                defaultSource(result.Source),
+		Key:                   key,
+		AccountID:             result.AccountID,
+		SourceGroup:           result.SourceGroup,
+		StatusCode:            result.StatusCode,
+		FailureClass:          class,
+		Success:               result.Success,
+		Action:                action,
+		CooldownUntilUnix:     snapshot.CooldownUntilUnix,
+		PolicyRejectUntilUnix: snapshot.PolicyRejectUntilUnix,
+		HealthPenalty:         snapshot.HealthPenalty,
+		RecoveryPriority:      snapshot.RecoveryPriority,
+		HealthScore:           snapshot.HealthScore,
+		ErrorRateEWMA:         snapshot.ErrorRateEWMA,
+		ConsecutiveFailures:   snapshot.ConsecutiveFailures,
+		ConsecutiveSuccesses:  snapshot.ConsecutiveSuccesses,
+		RecoveryStage:         snapshot.RecoveryStage,
+		LatencyMs:             result.TotalLatencyMs,
+		ErrorSummary:          truncateSummary(result.ErrorSummary, 256),
 	}
 	t.events = append(t.events, event)
 	if len(t.events) > t.maxEvents {
