@@ -2,6 +2,25 @@
 
 This repository tracks official Sub2API and keeps only the overlays that remain useful after each upstream upgrade. See `UPSTREAM_0.1.151_AUDIT.md` for the current three-way audit. `UPSTREAM_0.1.150_AUDIT.md` is retained as the previous release record.
 
+## Responses image-generation protocol bridge
+
+Design document: `docs/RESPONSES_IMAGE_GENERATION_BRIDGE_DEVELOPMENT.md`.
+
+This overlay translates only explicit `/v1/responses` requests that
+contain `image_generation` when their selected lane supports only
+`/v1/images/generations`. It leaves ordinary Responses, compact, and existing
+Images API traffic unchanged. The protocol adapter belongs in the OpenAI
+gateway layer; Smart Router remains responsible for image lane selection,
+health penalties, concurrency, failover budgets, and 04:00 recovery probes.
+
+The implementation is opt-in with `gateway.responses_image_bridge.enabled`,
+and additionally requires account `extra.responses_image_mode=images_api`.
+Unknown or missing account mode means native/legacy behavior. The bridge uses
+the existing Images forwarding service inside an isolated response capture,
+then emits a Responses JSON or SSE response only after a complete image result
+is available. This preserves failover safety and downstream URL/API-key
+compatibility without a second public request or prompt-text heuristics.
+
 ## Smart Router
 
 ### Provider model auto-detection

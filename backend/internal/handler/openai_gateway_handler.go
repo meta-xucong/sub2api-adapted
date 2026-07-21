@@ -48,6 +48,19 @@ func resolveOpenAIMessagesDispatchMappedModel(apiKey *service.APIKey, requestedM
 	return strings.TrimSpace(apiKey.Group.ResolveMessagesDispatchModel(requestedModel))
 }
 
+func (h *OpenAIGatewayHandler) responsesImageBridgeEnabled(body []byte) bool {
+	if h == nil || h.cfg == nil || !h.cfg.Gateway.ResponsesImageBridge.Enabled {
+		return false
+	}
+	if !service.IsResponsesImageBridgeRequest(body) {
+		return false
+	}
+	return strings.EqualFold(
+		strings.TrimSpace(h.cfg.Gateway.ResponsesImageBridge.ApplyToProtocol),
+		"images_api_only",
+	)
+}
+
 type openAIModelBodyReplaceFunc func([]byte, string) []byte
 
 func openAIModelMappedBody(body []byte, mapped bool, mappedModel string, replace openAIModelBodyReplaceFunc) []byte {
@@ -268,6 +281,20 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		h.errorResponse(c, http.StatusForbidden, "permission_error", service.ImageGenerationPermissionMessage())
 		return
 	}
+	responsesImageBridge := false
+	var responsesImageParsed *service.OpenAIImagesRequest
+	if h.responsesImageBridgeEnabled(body) {
+		if maxBytes := h.cfg.Gateway.ResponsesImageBridge.MaxRequestBytes; maxBytes > 0 && len(body) > maxBytes {
+			h.errorResponse(c, http.StatusRequestEntityTooLarge, "invalid_request_error", "Responses image bridge request is too large")
+			return
+		}
+		_, responsesImageParsed, err = service.BuildOpenAIResponsesImageBridgeRequest(body)
+		if err != nil {
+			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+			return
+		}
+		responsesImageBridge = true
+	}
 	var imageReleaseFunc func()
 	if imageIntent {
 		var imageAcquired bool
@@ -355,19 +382,34 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	for {
 		// Select account supporting the requested model
 		reqLog.Debug("openai.account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
-		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForCapability(
-			routingContext,
-			apiKey.GroupID,
-			previousResponseID,
-			sessionHash,
-			routingModel,
-			failedAccountIDs,
-			service.OpenAIUpstreamTransportAny,
-			service.OpenAIEndpointCapabilityChatCompletions,
-			requireCompact,
-			false,
-			requestPlatform,
-		)
+		var selection *service.AccountSelectionResult
+		var scheduleDecision service.OpenAIAccountScheduleDecision
+		var err error
+		if responsesImageBridge {
+			selection, scheduleDecision, err = h.gatewayService.SelectAccountWithSchedulerForImageOperation(
+				routingContext,
+				apiKey.GroupID,
+				"",
+				routingModel,
+				failedAccountIDs,
+				service.OpenAIImagesCapabilityBasic,
+				responsesImageParsed.IsEdits(),
+			)
+		} else {
+			selection, scheduleDecision, err = h.gatewayService.SelectAccountWithSchedulerForCapability(
+				routingContext,
+				apiKey.GroupID,
+				previousResponseID,
+				sessionHash,
+				routingModel,
+				failedAccountIDs,
+				service.OpenAIUpstreamTransportAny,
+				service.OpenAIEndpointCapabilityChatCompletions,
+				requireCompact,
+				false,
+				requestPlatform,
+			)
+		}
 		if err != nil {
 			reqLog.Warn("openai.account_select_failed",
 				zap.Error(err),
@@ -435,6 +477,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					accountReleaseFunc()
 				}
 			}()
+			if responsesImageBridge && account.UsesResponsesImageBridge() {
+				return h.gatewayService.ForwardResponsesImageBridge(requestCtx, c, account, body, channelMapping.MappedModel)
+			}
 			return h.gatewayService.Forward(requestCtx, c, account, forwardBody)
 		}()
 		cyberBlockKeyHTTP := ""
@@ -443,7 +488,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		}
 		h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, err != nil, cyberBlockKeyHTTP, channelMapping.ToUsageFields(reqModel, ""), service.HashUsageRequestPayload(body))
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
-		if requireCompact {
+		if responsesImageBridge {
+			h.gatewayService.ReportSmartRouterImageResult(account, responsesImageParsed, result, err, forwardDurationMs)
+		} else if requireCompact {
 			h.gatewayService.ReportSmartRouterCompactResult(account, reqModel, result, err, forwardDurationMs)
 		} else {
 			h.gatewayService.ReportSmartRouterTextResult(account, smartrouter.CapabilityResponses, reqModel, result, err, forwardDurationMs)

@@ -774,6 +774,9 @@ type GatewayConfig struct {
 	// CodexImageGenerationBridgeEnabled: 是否为 Codex `/v1/responses` 自动注入 image_generation 工具和桥接指令。
 	// 默认关闭，避免纯文本 Codex 请求被意外改写；显式携带 image_generation 工具的请求仍按分组能力转发。
 	CodexImageGenerationBridgeEnabled bool `mapstructure:"codex_image_generation_bridge_enabled"`
+	// ResponsesImageBridge adapts explicit Responses image_generation requests to
+	// accounts that only expose the OpenAI Images API.
+	ResponsesImageBridge ResponsesImageBridgeConfig `mapstructure:"responses_image_bridge"`
 	// ForcedCodexInstructionsTemplateFile: 服务端强制附加到 Codex 顶层 instructions 的模板文件路径。
 	// 模板渲染后会直接覆盖最终 instructions；若需要保留客户端 system 转换结果，请在模板中显式引用 {{ .ExistingInstructions }}。
 	ForcedCodexInstructionsTemplateFile string `mapstructure:"forced_codex_instructions_template_file"`
@@ -879,6 +882,15 @@ type GatewayConfig struct {
 	// UserMessageQueue: 用户消息串行队列配置
 	// 对 role:"user" 的真实用户消息实施账号级串行化 + RPM 自适应延迟
 	UserMessageQueue UserMessageQueueConfig `mapstructure:"user_message_queue"`
+}
+
+// ResponsesImageBridgeConfig controls the opt-in Responses -> Images API
+// protocol adapter. Account-level capability marking remains mandatory.
+type ResponsesImageBridgeConfig struct {
+	Enabled            bool   `mapstructure:"enabled"`
+	ApplyToProtocol    string `mapstructure:"apply_to_protocol"`
+	MaxRequestBytes    int    `mapstructure:"max_request_bytes"`
+	PreserveStreaming  bool   `mapstructure:"preserve_streaming"`
 }
 
 // GatewaySmartRouterConfig configures the optional Smart Router module.
@@ -2124,6 +2136,10 @@ func setDefaults() {
 	viper.SetDefault("gateway.smart_router.image_resilience.half_open_enabled", false)
 	viper.SetDefault("gateway.force_codex_cli", false)
 	viper.SetDefault("gateway.codex_image_generation_bridge_enabled", false)
+	viper.SetDefault("gateway.responses_image_bridge.enabled", false)
+	viper.SetDefault("gateway.responses_image_bridge.apply_to_protocol", "images_api_only")
+	viper.SetDefault("gateway.responses_image_bridge.max_request_bytes", 16<<20)
+	viper.SetDefault("gateway.responses_image_bridge.preserve_streaming", true)
 	viper.SetDefault("gateway.openai_passthrough_allow_timeout_headers", false)
 	// Empty forwards the user's selected model unchanged. A compact-only model
 	// override is an explicit compatibility escape hatch, not a default route.
@@ -2929,6 +2945,14 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.ImageGenerationTransientCooldownSeconds < 0 {
 		return fmt.Errorf("gateway.image_generation_transient_cooldown_seconds must be non-negative")
+	}
+	if c.Gateway.ResponsesImageBridge.MaxRequestBytes <= 0 {
+		return fmt.Errorf("gateway.responses_image_bridge.max_request_bytes must be positive")
+	}
+	switch strings.ToLower(strings.TrimSpace(c.Gateway.ResponsesImageBridge.ApplyToProtocol)) {
+	case "images_api_only":
+	default:
+		return fmt.Errorf("gateway.responses_image_bridge.apply_to_protocol must be images_api_only")
 	}
 	if c.Gateway.SmartRouter.TopK < 0 {
 		return fmt.Errorf("gateway.smart_router.top_k must be non-negative")

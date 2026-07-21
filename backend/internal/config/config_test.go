@@ -1497,6 +1497,16 @@ func TestValidateConfigErrors(t *testing.T) {
 			wantErr: "gateway.image_generation_transient_cooldown_seconds must be non-negative",
 		},
 		{
+			name:    "gateway responses image bridge request limit invalid",
+			mutate:  func(c *Config) { c.Gateway.ResponsesImageBridge.MaxRequestBytes = 0 },
+			wantErr: "gateway.responses_image_bridge.max_request_bytes must be positive",
+		},
+		{
+			name:    "gateway responses image bridge protocol invalid",
+			mutate:  func(c *Config) { c.Gateway.ResponsesImageBridge.ApplyToProtocol = "all" },
+			wantErr: "gateway.responses_image_bridge.apply_to_protocol must be images_api_only",
+		},
+		{
 			name:    "gateway smart router top k negative",
 			mutate:  func(c *Config) { c.Gateway.SmartRouter.TopK = -1 },
 			wantErr: "gateway.smart_router.top_k must be non-negative",
@@ -2117,6 +2127,12 @@ func TestLoad_DefaultGatewayImageStreamConfig(t *testing.T) {
 	}
 	if cfg.Gateway.ImageGenerationTransientCooldownSeconds != 30 {
 		t.Fatalf("image_generation_transient_cooldown_seconds = %d, want 30", cfg.Gateway.ImageGenerationTransientCooldownSeconds)
+	}
+	if cfg.Gateway.ResponsesImageBridge.Enabled ||
+		cfg.Gateway.ResponsesImageBridge.ApplyToProtocol != "images_api_only" ||
+		cfg.Gateway.ResponsesImageBridge.MaxRequestBytes != 16<<20 ||
+		!cfg.Gateway.ResponsesImageBridge.PreserveStreaming {
+		t.Fatalf("unexpected responses image bridge defaults: %#v", cfg.Gateway.ResponsesImageBridge)
 	}
 	if cfg.Gateway.SmartRouter.ImageTotalBudgetSeconds != 600 ||
 		cfg.Gateway.SmartRouter.ImageAttemptSeconds != 180 ||

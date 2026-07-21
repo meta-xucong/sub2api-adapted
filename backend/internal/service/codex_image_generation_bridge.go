@@ -4,6 +4,13 @@ import "strings"
 
 const featureKeyCodexImageGenerationBridge = "codex_image_generation_bridge"
 
+const featureKeyResponsesImageMode = "responses_image_mode"
+
+const (
+	ResponsesImageModeNative    = "native"
+	ResponsesImageModeImagesAPI = "images_api"
+)
+
 const (
 	featureKeyCodexImageGenerationExplicitToolPolicy = "codex_image_generation_explicit_tool_policy"
 
@@ -106,4 +113,32 @@ func (a *Account) CodexImageGenerationExplicitToolPolicy() string {
 		return normalizeCodexImageGenerationExplicitToolPolicy(policy)
 	}
 	return codexImageGenerationExplicitToolPolicyAllow
+}
+
+// ResponsesImageMode declares which request protocol an OpenAI image lane
+// accepts. Unknown values deliberately mean native/legacy behavior so that
+// enabling the global bridge cannot rewrite an unclassified account.
+func (a *Account) ResponsesImageMode() string {
+	if a == nil || a.Platform != PlatformOpenAI || a.Extra == nil {
+		return ResponsesImageModeNative
+	}
+	if mode, ok := stringOverrideFromMap(a.Extra, featureKeyResponsesImageMode); ok {
+		return normalizeResponsesImageMode(mode)
+	}
+	openaiConfig, _ := a.Extra[PlatformOpenAI].(map[string]any)
+	if mode, ok := stringOverrideFromMap(openaiConfig, featureKeyResponsesImageMode); ok {
+		return normalizeResponsesImageMode(mode)
+	}
+	return ResponsesImageModeNative
+}
+
+func normalizeResponsesImageMode(value string) string {
+	if strings.EqualFold(strings.TrimSpace(value), ResponsesImageModeImagesAPI) {
+		return ResponsesImageModeImagesAPI
+	}
+	return ResponsesImageModeNative
+}
+
+func (a *Account) UsesResponsesImageBridge() bool {
+	return a != nil && a.ResponsesImageMode() == ResponsesImageModeImagesAPI
 }
