@@ -309,6 +309,25 @@ matches, so providers that reject OpenAI priority tiers still receive a standard
 compatible request. Explicit admin fast-policy rules continue to override this
 default.
 
+## Operator test key guard
+
+Local maintenance probes must never spend or attribute traffic to a customer
+API key. The 2026-07-22 404token bridge verification exposed the risk: an SSH
+operator script selected a normal user key because it matched the image-capable
+group, then sent local `curl` smoke requests through `/v1/responses` and
+`/v1/images/generations`. This was not a Sub2API self-scheduled task and not
+the customer's client traffic; the source was the VPS/jump-host maintenance
+path. It still produced usage log rows, so the mechanism is wrong even when the
+billing ledger is not debited.
+
+`gateway.operator_test_guard` is an opt-in runtime guard for production hosts.
+When enabled, script-like requests from trusted local/operator IPs to gateway
+API paths are rejected unless the API key belongs to a dedicated ops user or
+matches an ops-test key name. External downstream users, browser panel tests,
+ordinary scheduling, and account priorities are unchanged. Enable it only after
+creating a dedicated ops smoke-test key, and keep that key out of customer
+groups used for real billing plans.
+
 ## Veyra
 
 Veyra is disabled by default. `veyra.enabled` enables its API bridge and `veyra.portal_enabled` enables the embedded aiself portal. The ordinary Sub2API login page is never replaced.

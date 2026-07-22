@@ -843,6 +843,8 @@ type GatewayConfig struct {
 	ImageEditTransientCooldownSeconds int `mapstructure:"image_edit_transient_cooldown_seconds"`
 	// ImageGenerationTransientCooldownSeconds temporarily removes a failing text-to-image lane; 0 disables it.
 	ImageGenerationTransientCooldownSeconds int `mapstructure:"image_generation_transient_cooldown_seconds"`
+	// OperatorTestGuard prevents local maintenance probes from using real customer API keys.
+	OperatorTestGuard GatewayOperatorTestGuardConfig `mapstructure:"operator_test_guard"`
 	// MaxLineSize: 上游 SSE 单行最大字节数（0使用默认值）
 	MaxLineSize int `mapstructure:"max_line_size"`
 
@@ -887,10 +889,21 @@ type GatewayConfig struct {
 // ResponsesImageBridgeConfig controls the opt-in Responses -> Images API
 // protocol adapter. Account-level capability marking remains mandatory.
 type ResponsesImageBridgeConfig struct {
-	Enabled            bool   `mapstructure:"enabled"`
-	ApplyToProtocol    string `mapstructure:"apply_to_protocol"`
-	MaxRequestBytes    int    `mapstructure:"max_request_bytes"`
-	PreserveStreaming  bool   `mapstructure:"preserve_streaming"`
+	Enabled           bool   `mapstructure:"enabled"`
+	ApplyToProtocol   string `mapstructure:"apply_to_protocol"`
+	MaxRequestBytes   int    `mapstructure:"max_request_bytes"`
+	PreserveStreaming bool   `mapstructure:"preserve_streaming"`
+}
+
+// GatewayOperatorTestGuardConfig scopes local operator smoke tests to dedicated
+// ops keys so maintenance scripts cannot accidentally spend customer keys.
+type GatewayOperatorTestGuardConfig struct {
+	Enabled            bool     `mapstructure:"enabled"`
+	TrustedClientIPs   []string `mapstructure:"trusted_client_ips"`
+	BlockedUserAgents  []string `mapstructure:"blocked_user_agents"`
+	AllowedUserEmails  []string `mapstructure:"allowed_user_emails"`
+	AllowedAPIKeyNames []string `mapstructure:"allowed_api_key_names"`
+	Paths              []string `mapstructure:"paths"`
 }
 
 // GatewaySmartRouterConfig configures the optional Smart Router module.
@@ -1667,6 +1680,11 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 	cfg.CORS.AllowedOrigins = normalizeStringSlice(cfg.CORS.AllowedOrigins)
 	cfg.Security.ResponseHeaders.AdditionalAllowed = normalizeStringSlice(cfg.Security.ResponseHeaders.AdditionalAllowed)
 	cfg.Security.ResponseHeaders.ForceRemove = normalizeStringSlice(cfg.Security.ResponseHeaders.ForceRemove)
+	cfg.Gateway.OperatorTestGuard.TrustedClientIPs = normalizeStringSlice(cfg.Gateway.OperatorTestGuard.TrustedClientIPs)
+	cfg.Gateway.OperatorTestGuard.BlockedUserAgents = normalizeStringSlice(cfg.Gateway.OperatorTestGuard.BlockedUserAgents)
+	cfg.Gateway.OperatorTestGuard.AllowedUserEmails = normalizeStringSlice(cfg.Gateway.OperatorTestGuard.AllowedUserEmails)
+	cfg.Gateway.OperatorTestGuard.AllowedAPIKeyNames = normalizeStringSlice(cfg.Gateway.OperatorTestGuard.AllowedAPIKeyNames)
+	cfg.Gateway.OperatorTestGuard.Paths = normalizeStringSlice(cfg.Gateway.OperatorTestGuard.Paths)
 	cfg.Security.CSP.Policy = strings.TrimSpace(cfg.Security.CSP.Policy)
 	cfg.SetTrustForwardedIPForAPIKeyACL(cfg.Security.TrustForwardedIPForAPIKeyACL)
 	cfg.Log.Level = strings.ToLower(strings.TrimSpace(cfg.Log.Level))
@@ -2140,6 +2158,23 @@ func setDefaults() {
 	viper.SetDefault("gateway.responses_image_bridge.apply_to_protocol", "images_api_only")
 	viper.SetDefault("gateway.responses_image_bridge.max_request_bytes", 16<<20)
 	viper.SetDefault("gateway.responses_image_bridge.preserve_streaming", true)
+	viper.SetDefault("gateway.operator_test_guard.enabled", false)
+	viper.SetDefault("gateway.operator_test_guard.trusted_client_ips", []string{"127.0.0.1", "::1"})
+	viper.SetDefault("gateway.operator_test_guard.blocked_user_agents", []string{"curl/", "wget/", "python-requests/", "httpie/"})
+	viper.SetDefault("gateway.operator_test_guard.allowed_user_emails", []string{})
+	viper.SetDefault("gateway.operator_test_guard.allowed_api_key_names", []string{"ops-test*", "operator-test*", "运维测试*"})
+	viper.SetDefault("gateway.operator_test_guard.paths", []string{
+		"/v1/responses",
+		"/v1/responses/*",
+		"/responses",
+		"/responses/*",
+		"/backend-api/codex/responses",
+		"/backend-api/codex/responses/*",
+		"/v1/images/*",
+		"/images/*",
+		"/v1/chat/completions",
+		"/chat/completions",
+	})
 	viper.SetDefault("gateway.openai_passthrough_allow_timeout_headers", false)
 	// Empty forwards the user's selected model unchanged. A compact-only model
 	// override is an explicit compatibility escape hatch, not a default route.
@@ -2953,6 +2988,20 @@ func (c *Config) Validate() error {
 	case "images_api_only":
 	default:
 		return fmt.Errorf("gateway.responses_image_bridge.apply_to_protocol must be images_api_only")
+	}
+	if c.Gateway.OperatorTestGuard.Enabled {
+		if len(c.Gateway.OperatorTestGuard.TrustedClientIPs) == 0 {
+			return fmt.Errorf("gateway.operator_test_guard.trusted_client_ips is required when enabled")
+		}
+		if len(c.Gateway.OperatorTestGuard.BlockedUserAgents) == 0 {
+			return fmt.Errorf("gateway.operator_test_guard.blocked_user_agents is required when enabled")
+		}
+		if len(c.Gateway.OperatorTestGuard.Paths) == 0 {
+			return fmt.Errorf("gateway.operator_test_guard.paths is required when enabled")
+		}
+		if len(c.Gateway.OperatorTestGuard.AllowedUserEmails) == 0 && len(c.Gateway.OperatorTestGuard.AllowedAPIKeyNames) == 0 {
+			return fmt.Errorf("gateway.operator_test_guard.allowed_user_emails or allowed_api_key_names is required when enabled")
+		}
 	}
 	if c.Gateway.SmartRouter.TopK < 0 {
 		return fmt.Errorf("gateway.smart_router.top_k must be non-negative")

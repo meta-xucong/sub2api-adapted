@@ -99,6 +99,15 @@ Active Smart Router settings:
   The queue is global within capability and model family, with collisions
   resolved FIFO-style. A successful calibration releases the dynamic offset.
 
+Operator smoke tests:
+
+- Enable `gateway.operator_test_guard` before running local curl/script probes
+  against live gateway paths.
+- `trusted_client_ips` must include loopback and the VPS public self-call IP.
+- Only a dedicated ops user/key should match `allowed_user_emails` or
+  `allowed_api_key_names`; do not reuse a customer key for deployment
+  validation.
+
 Active Smart Router scoring weights:
 
 - `priority=0.8`
@@ -272,6 +281,46 @@ ports.
 - Generic chat/Responses sustained failure threshold remains `3`; the
   capability-scoped image threshold is `2`, freezing a repeatedly failing image
   lane until the next `04:00 Asia/Shanghai` calibration.
+
+### Operator smoke-test guard
+
+Enable on 404token after creating a dedicated non-customer ops key:
+
+```yaml
+gateway:
+  operator_test_guard:
+    enabled: true
+    trusted_client_ips:
+      - "127.0.0.1"
+      - "::1"
+      - "141.11.138.220"
+    blocked_user_agents:
+      - "curl/"
+      - "wget/"
+      - "python-requests/"
+      - "httpie/"
+    allowed_user_emails:
+      - "ops-test@404token.local"
+    allowed_api_key_names:
+      - "ops-test*"
+      - "operator-test*"
+      - "运维测试*"
+    paths:
+      - "/v1/responses"
+      - "/v1/responses/*"
+      - "/responses"
+      - "/responses/*"
+      - "/backend-api/codex/responses"
+      - "/backend-api/codex/responses/*"
+      - "/v1/images/*"
+      - "/images/*"
+      - "/v1/chat/completions"
+      - "/chat/completions"
+```
+
+This blocks only local/script-like operator traffic that presents a non-ops
+key. It does not alter external downstream users, account priority, Smart
+Router health, or model mappings.
 
 ### Responses image bridge model-selection hot update
 
