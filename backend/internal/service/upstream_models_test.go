@@ -243,7 +243,7 @@ func TestFetchUpstreamSupportedModelsParsesOpenAIResponse(t *testing.T) {
 	upstream := &httpUpstreamRecorder{resp: &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"application/json"}},
-		Body:       io.NopCloser(strings.NewReader(`{"data":[{"id":"gpt-5"},{"id":"gpt-5"},{"name":"o3"}]}`)),
+		Body:       io.NopCloser(strings.NewReader(`{"data":[{"id":"gpt-5.6-sol"},{"id":"gpt-5.6-sol"},{"name":"gpt-image-2"}]}`)),
 	}}
 	svc := &AccountTestService{
 		httpUpstream: upstream,
@@ -260,9 +260,44 @@ func TestFetchUpstreamSupportedModelsParsesOpenAIResponse(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	require.Equal(t, []string{"gpt-5", "o3"}, models)
+	require.Equal(t, []string{"gpt-5.6-sol", "gpt-image-2"}, models)
 	require.Equal(t, "https://openai.example.com/v1/models", upstream.lastReq.URL.String())
 	require.Equal(t, "Bearer openai-key", upstream.lastReq.Header.Get("Authorization"))
+}
+
+func TestFetchUpstreamSupportedModelsFiltersOpenAISnapshotNoise(t *testing.T) {
+	t.Parallel()
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body: io.NopCloser(strings.NewReader(`{"data":[
+			{"id":"gpt-5.6-sol"},
+			{"id":"gpt-5.6-sol-2026-07-09"},
+			{"id":"gpt-5.4-2026-03-05"},
+			{"id":"gpt-5.2-chat-latest"},
+			{"id":"gpt-image-1.5"},
+			{"id":"chatgpt-image-latest"},
+			{"id":"gpt-image-2"},
+			{"id":"custom-provider-model"}
+		]}`)),
+	}}
+	svc := &AccountTestService{
+		httpUpstream: upstream,
+		cfg:          upstreamModelSyncTestConfig(),
+	}
+
+	models, err := svc.FetchUpstreamSupportedModels(context.Background(), &Account{
+		ID:       9,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key":  "openai-key",
+			"base_url": "https://openai.example.com/v1",
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"custom-provider-model", "gpt-5.6-sol", "gpt-image-2"}, models)
 }
 
 func TestFetchUpstreamSupportedModelsDoesNotExposeUpstreamBody(t *testing.T) {

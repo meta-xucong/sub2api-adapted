@@ -21,6 +21,21 @@ then emits a Responses JSON or SSE response only after a complete image result
 is available. This preserves failover safety and downstream URL/API-key
 compatibility without a second public request or prompt-text heuristics.
 
+## OpenAI model catalog hygiene
+
+Automatic upstream model sync and group `/v1/models` candidates are filtered for
+OpenAI accounts before they are shown as selectable/latest models. The filter
+removes dated OpenAI snapshots, deprecated `gpt-image-1` / `gpt-image-1.5` /
+`chatgpt-image-latest` aliases, old GPT-5.1/5.2 chat/codex aliases, and
+fine-tuned model IDs. Current stable aliases such as `gpt-5.6-sol`,
+`gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.5-pro`, `gpt-5.4`,
+`gpt-5.4-mini`, and `gpt-image-2` remain visible.
+
+The filter is intentionally applied to automatic discovery and advertised model
+lists only. Existing manual `model_mapping` entries are not deleted, so unusual
+provider-specific aliases can still be called explicitly if an operator chooses
+to keep them.
+
 ## Smart Router
 
 ### Provider model auto-detection

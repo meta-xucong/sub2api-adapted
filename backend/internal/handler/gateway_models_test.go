@@ -177,6 +177,49 @@ func TestGatewayModels_CustomModelsListDisabledKeepsOriginalModels(t *testing.T)
 	require.Equal(t, []string{"gpt-5.4", "gpt-5.5"}, modelIDsForTest(got.Data))
 }
 
+func TestGatewayModels_OpenAIAdvertisedModelsFilterSnapshots(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	groupID := int64(31)
+	h := newGatewayModelsHandlerForTest(
+		&gatewayModelsAccountRepoStub{
+			byGroup: map[int64][]service.Account{
+				groupID: {
+					{
+						ID:       1,
+						Platform: service.PlatformOpenAI,
+						Credentials: map[string]any{
+							"model_mapping": map[string]any{
+								"gpt-5.6-sol":            "gpt-5.6-sol",
+								"gpt-5.6-sol-2026-07-09": "gpt-5.6-sol-2026-07-09",
+								"gpt-5.4-2026-03-05":     "gpt-5.4-2026-03-05",
+								"gpt-image-1.5":          "gpt-image-1.5",
+								"gpt-image-2":            "gpt-image-2",
+								"custom-provider-model":  "custom-provider-model",
+							},
+						},
+					},
+				},
+			},
+		},
+	)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{
+		Group: &service.Group{ID: groupID, Platform: service.PlatformOpenAI},
+	})
+
+	h.Models(c)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var got gatewayModelsResponseForTest
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	require.Equal(t, []string{"custom-provider-model", "gpt-5.6-sol", "gpt-image-2"}, modelIDsForTest(got.Data))
+}
+
 func TestGatewayModels_CustomModelsListFiltersAndOrdersMappedModels(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
