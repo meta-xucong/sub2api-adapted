@@ -36,6 +36,27 @@ lists only. Existing manual `model_mapping` entries are not deleted, so unusual
 provider-specific aliases can still be called explicitly if an operator chooses
 to keep them.
 
+## Codex auto-review model overlay
+
+Codex approval/review traffic can arrive as the synthetic model
+`codex-auto-review`. Most third-party OpenAI-compatible upstreams do not expose
+that exact model id, so a Sub2API deployment can fail at routing time even
+though the selected chat group has healthy GPT lanes. The maintained replay
+template is
+`deploy/sql/codex_auto_review_model_overlay.example.sql`.
+
+The overlay is configuration-only. It adds `codex-auto-review` to OpenAI chat
+groups that already advertise `gpt-5.5`, and maps each OpenAI account's
+`codex-auto-review` to the best explicit model it already supports:
+`gpt-5.6-sol`, then `gpt-5.6-terra`, then `gpt-5.6-luna`, then `gpt-5.5`.
+It deliberately avoids the bare `gpt-5.6` alias because upstream distributors
+can reject it while accepting the explicit Sol/Terra/Luna ids.
+
+The overlay does not change image-only lanes, account priority, group
+membership, schedulability, credentials, balances, or concurrency. After direct
+SQL, restart the application or invalidate auth/scheduler caches before testing
+`/v1/models` and `/v1/responses`.
+
 ## Smart Router
 
 ### Provider model auto-detection

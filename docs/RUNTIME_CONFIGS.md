@@ -108,6 +108,20 @@ Operator smoke tests:
   `allowed_api_key_names`; do not reuse a customer key for deployment
   validation.
 
+Codex auto-review model overlay:
+
+- Applied on 2026-07-22 with
+  [`deploy/sql/codex_auto_review_model_overlay.example.sql`](../deploy/sql/codex_auto_review_model_overlay.example.sql).
+- Runtime policy: OpenAI accounts that already support `gpt-5.6-sol` map
+  `codex-auto-review` to `gpt-5.6-sol`; remaining chat accounts map it to
+  `gpt-5.5`. The bare `gpt-5.6` alias is not used because upstream distributors
+  rejected it during verification.
+- Result after deployment: 11 accounts map `codex-auto-review` to
+  `gpt-5.6-sol`; 7 accounts map it to `gpt-5.5`.
+- Verification: `/health` returned HTTP 200; a minimal `/v1/responses`
+  `codex-auto-review` request returned HTTP 200 and recorded upstream model
+  `gpt-5.6-sol` on account `23`.
+
 Active Smart Router scoring weights:
 
 - `priority=0.8`
@@ -352,6 +366,20 @@ Smart Router health, or model mappings.
   fatal, or runtime-error signatures appeared in the post-update log window.
 - Rollback backup:
   `/opt/sub2api-deploy/backups/responses-image-bridge-deploy-20260722-092434`.
+
+### Codex auto-review model overlay
+
+- Applied on 2026-07-22 with
+  [`deploy/sql/codex_auto_review_model_overlay.example.sql`](../deploy/sql/codex_auto_review_model_overlay.example.sql).
+- Runtime policy: OpenAI accounts that already support `gpt-5.6-sol` map
+  `codex-auto-review` to `gpt-5.6-sol`; remaining chat accounts map it to
+  `gpt-5.5`. The bare `gpt-5.6` alias is not used because upstream distributors
+  rejected it during verification.
+- Result after deployment: 11 accounts map `codex-auto-review` to
+  `gpt-5.6-sol`; 2 accounts map it to `gpt-5.5`.
+- Verification: `/health` returned HTTP 200; a minimal `/v1/responses`
+  `codex-auto-review` request in the `chatgpt-plus` group returned HTTP 200
+  and recorded upstream model `gpt-5.6-sol` on account `15`.
 
 ### Capability And Priority Policy
 
