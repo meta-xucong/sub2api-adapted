@@ -96,3 +96,73 @@ func TestAccountResponsesImageModeDefaultsToNative(t *testing.T) {
 	account.Extra[featureKeyResponsesImageMode] = "unexpected"
 	require.Equal(t, ResponsesImageModeNative, account.ResponsesImageMode())
 }
+
+func TestAccountResponsesImageModeAutoDetectsThirdPartyImageOnlyAPIKey(t *testing.T) {
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"base_url": "https://image-provider.example/v1",
+			"model_mapping": map[string]any{
+				"gpt-image-2": "gpt-image-2",
+			},
+		},
+	}
+	require.Equal(t, ResponsesImageModeImagesAPI, account.ResponsesImageMode())
+	require.True(t, account.UsesResponsesImageBridge())
+}
+
+func TestAccountResponsesImageModeAutoDetectsUpstreamImageOnlyAccount(t *testing.T) {
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeUpstream,
+		Credentials: map[string]any{
+			"base_url": "https://image-provider.example/v1",
+			"model_mapping": map[string]any{
+				"gpt-image-2": "gpt-image-2",
+			},
+		},
+	}
+	require.Equal(t, ResponsesImageModeImagesAPI, account.ResponsesImageMode())
+}
+
+func TestAccountResponsesImageModeAutoDetectionDoesNotTouchChatOrOfficialAccounts(t *testing.T) {
+	chatAccount := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"base_url": "https://image-provider.example/v1",
+			"model_mapping": map[string]any{
+				"gpt-5.5": "gpt-5.5",
+			},
+		},
+	}
+	require.Equal(t, ResponsesImageModeNative, chatAccount.ResponsesImageMode())
+
+	officialAccount := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"base_url": "https://api.openai.com/v1",
+			"model_mapping": map[string]any{
+				"gpt-image-2": "gpt-image-2",
+			},
+		},
+	}
+	require.Equal(t, ResponsesImageModeNative, officialAccount.ResponsesImageMode())
+}
+
+func TestAccountResponsesImageModeExplicitNativeOverridesAutoDetection(t *testing.T) {
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"base_url": "https://image-provider.example/v1",
+			"model_mapping": map[string]any{
+				"gpt-image-2": "gpt-image-2",
+			},
+		},
+		Extra: map[string]any{featureKeyResponsesImageMode: ResponsesImageModeNative},
+	}
+	require.Equal(t, ResponsesImageModeNative, account.ResponsesImageMode())
+}

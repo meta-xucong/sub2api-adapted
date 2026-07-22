@@ -276,6 +276,12 @@ ports.
 ### Responses image bridge model-selection hot update
 
 - Repository commit: `5a780cf6`.
+- New third-party image-only API-key/upstream accounts can now use the bridge
+  without editing account `extra` JSON: when the account has a non-official
+  `base_url` and its allowed `model_mapping` contains only `gpt-image-*`, the
+  runtime automatically treats it as `images_api`. Explicit
+  `responses_image_mode` remains an override, and OAuth, chat, and official
+  `api.openai.com` accounts remain native.
 - Applied to 404token on 2026-07-22 without replacing the Docker image. The
   existing container binary was backed up, atomically replaced, and the
   `sub2api` service alone was restarted.

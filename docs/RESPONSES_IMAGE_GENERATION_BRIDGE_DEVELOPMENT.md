@@ -50,7 +50,9 @@ The bridge is activated only when all conditions are true:
 1. The inbound endpoint is `/v1/responses`.
 2. The request contains an `image_generation` tool or an equivalent explicit
    image-generation tool choice.
-3. The selected account/lane declares `responses_image_mode: images_api`.
+3. The selected account/lane declares `responses_image_mode: images_api`, or
+   the automatic classifier identifies a non-official OpenAI API-key/upstream
+   account whose allowed model mapping contains only `gpt-image-*` models.
 4. The request group permits image generation.
 
 All other requests keep the existing path:
@@ -62,8 +64,9 @@ All other requests keep the existing path:
 - `/v1/images/edits`;
 - chat completions and other API protocols.
 
-If the capability declaration is missing, preserve the current native Responses
-behavior. Unknown capability must never silently activate the bridge.
+If the capability declaration is missing and the account does not meet the
+conservative automatic-classification rules, preserve the current native
+Responses behavior. Unknown capability must never silently activate the bridge.
 
 ## 4. Capability model
 
@@ -215,8 +218,16 @@ gateway:
 The effective enablement order is:
 
 1. the global bridge switch must be enabled;
-2. the selected account must explicitly declare `responses_image_mode: images_api`;
-3. missing or unknown account metadata keeps the existing native path.
+2. an explicit account override wins (`native` or `images_api`);
+3. otherwise, an OpenAI API-key/upstream account with a non-official base URL
+   and only `gpt-image-*` allowed models is automatically treated as
+   `images_api`;
+4. all other accounts keep the existing native path.
+
+This automatic path is the normal admin-panel workflow: entering the URL,
+API key, and only `gpt-image-2` in the allowed-model mapping is sufficient.
+OAuth accounts, ordinary chat accounts, and official `api.openai.com` API-key
+accounts are excluded to prevent accidental protocol rewriting.
 
 Group-level rollout can be done by applying the account metadata only to the
 accounts in that group; no new group schema is required.
@@ -224,7 +235,8 @@ accounts in that group; no new group schema is required.
 Recommended aiself rollout:
 
 1. keep all existing account URLs, keys, groups, and priorities;
-2. mark only known Images-API-only lanes with `responses_image_mode: images_api`;
+2. use the automatic classifier for normal third-party image-only API-key
+   lanes; keep explicit metadata only for unusual providers;
 3. enable the bridge for one test API key or test group;
 4. validate ordinary chat, compact, direct Images API, Codex text, and Codex
    image generation;

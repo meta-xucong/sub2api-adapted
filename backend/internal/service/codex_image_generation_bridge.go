@@ -1,6 +1,9 @@
 package service
 
-import "strings"
+import (
+	"net/url"
+	"strings"
+)
 
 const featureKeyCodexImageGenerationBridge = "codex_image_generation_bridge"
 
@@ -119,17 +122,66 @@ func (a *Account) CodexImageGenerationExplicitToolPolicy() string {
 // accepts. Unknown values deliberately mean native/legacy behavior so that
 // enabling the global bridge cannot rewrite an unclassified account.
 func (a *Account) ResponsesImageMode() string {
+	if mode, ok := a.responsesImageModeOverride(); ok {
+		return normalizeResponsesImageMode(mode)
+	}
+	if a.isAutomaticallyImagesAPIOnly() {
+		return ResponsesImageModeImagesAPI
+	}
+	return ResponsesImageModeNative
+}
+
+func (a *Account) responsesImageModeOverride() (string, bool) {
 	if a == nil || a.Platform != PlatformOpenAI || a.Extra == nil {
-		return ResponsesImageModeNative
+		return "", false
 	}
 	if mode, ok := stringOverrideFromMap(a.Extra, featureKeyResponsesImageMode); ok {
-		return normalizeResponsesImageMode(mode)
+		return mode, true
 	}
 	openaiConfig, _ := a.Extra[PlatformOpenAI].(map[string]any)
 	if mode, ok := stringOverrideFromMap(openaiConfig, featureKeyResponsesImageMode); ok {
-		return normalizeResponsesImageMode(mode)
+		return mode, true
 	}
-	return ResponsesImageModeNative
+	return "", false
+}
+
+// isAutomaticallyImagesAPIOnly identifies the account shape produced by the
+// normal admin form for third-party image-only lines. The explicit metadata
+// remains available for exceptional providers, but new image lines do not
+// need an Extra JSON edit merely to use the Responses bridge.
+func (a *Account) isAutomaticallyImagesAPIOnly() bool {
+	if a == nil || a.Platform != PlatformOpenAI {
+		return false
+	}
+	if a.Type != AccountTypeAPIKey && a.Type != AccountTypeUpstream {
+		return false
+	}
+	baseURL := strings.TrimSpace(a.GetCredential("base_url"))
+	if baseURL == "" {
+		baseURL = strings.TrimSpace(a.GetOpenAIBaseURL())
+	}
+	if baseURL == "" || isOfficialOpenAIBaseURL(baseURL) {
+		return false
+	}
+	mapping := a.GetModelMapping()
+	if len(mapping) == 0 {
+		return false
+	}
+	for requestedModel := range mapping {
+		if !isOpenAIImageGenerationModel(requestedModel) {
+			return false
+		}
+	}
+	return true
+}
+
+func isOfficialOpenAIBaseURL(baseURL string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
+	return host == "api.openai.com"
 }
 
 func normalizeResponsesImageMode(value string) string {
