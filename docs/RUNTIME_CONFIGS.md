@@ -273,6 +273,30 @@ ports.
   capability-scoped image threshold is `2`, freezing a repeatedly failing image
   lane until the next `04:00 Asia/Shanghai` calibration.
 
+### Responses image bridge model-selection hot update
+
+- Repository commit: `5a780cf6`.
+- Applied to 404token on 2026-07-22 without replacing the Docker image. The
+  existing container binary was backed up, atomically replaced, and the
+  `sub2api` service alone was restarted.
+- Running binary SHA256:
+  `ee4c11e03a127ddaab97adb582b700791f98743d1411710abb3612b4d2e0c3b0`.
+- Runtime image remains
+  `sub2api-adapted:v0.1.151-smart-router-280a5ccc`; the container returned
+  `running healthy` with restart count `0`.
+- The bridge now ignores the top-level Responses text model when forwarding an
+  image tool. It uses the image tool model/default and then account-level image
+  mapping, preventing `gpt-5.5` from replacing `gpt-image-2`.
+- Configuration remains `gateway.responses_image_bridge.enabled=true` with
+  `apply_to_protocol=images_api_only`; accounts 10, 11, 18, and 19 remain in
+  `responses_image_mode=images_api`.
+- Verification: API key IDs 2, 11, and 14 each returned HTTP 200 from both
+  `Responses + image_generation` and `/v1/images/generations`, one output per
+  request, with bridge timings of 25.31s, 23.33s, and 22.41s. No bridge panic,
+  fatal, or runtime-error signatures appeared in the post-update log window.
+- Rollback backup:
+  `/opt/sub2api-deploy/backups/responses-image-bridge-deploy-20260722-092434`.
+
 ### Capability And Priority Policy
 
 Applied: 2026-07-12.
