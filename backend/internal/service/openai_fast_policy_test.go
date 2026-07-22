@@ -76,6 +76,16 @@ func openAIFastFilterPriorityPolicy() *OpenAIFastPolicySettings {
 	}
 }
 
+func thirdPartyOpenAIAPIKeyAccount() *Account {
+	return &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"base_url": "https://third-party.example/v1",
+		},
+	}
+}
+
 func TestEvaluateOpenAIFastPolicy_DefaultPassesKnownTiers(t *testing.T) {
 	require.Empty(t, DefaultOpenAIFastPolicySettings().Rules, "default policy must not rewrite service_tier unless admin configured rules")
 
@@ -96,6 +106,17 @@ func TestEvaluateOpenAIFastPolicy_DefaultPassesKnownTiers(t *testing.T) {
 
 	// empty tier → pass
 	action, _ = svc.evaluateOpenAIFastPolicy(context.Background(), account, "gpt-5.5", "")
+	require.Equal(t, BetaPolicyActionPass, action)
+}
+
+func TestEvaluateOpenAIFastPolicy_DefaultFiltersPriorityForThirdPartyAPIKey(t *testing.T) {
+	svc := newOpenAIGatewayServiceWithSettings(t, DefaultOpenAIFastPolicySettings())
+	account := thirdPartyOpenAIAPIKeyAccount()
+
+	action, _ := svc.evaluateOpenAIFastPolicy(context.Background(), account, "gpt-5.6-sol", OpenAIFastTierPriority)
+	require.Equal(t, BetaPolicyActionFilter, action)
+
+	action, _ = svc.evaluateOpenAIFastPolicy(context.Background(), account, "gpt-5.6-sol", OpenAIFastTierFlex)
 	require.Equal(t, BetaPolicyActionPass, action)
 }
 
@@ -194,6 +215,21 @@ func TestApplyOpenAIFastPolicyToBody_DefaultPassesPriorityAndFast(t *testing.T) 
 	updated, err = svc.applyOpenAIFastPolicyToBody(context.Background(), account, "gpt-5.5", body)
 	require.NoError(t, err)
 	require.Equal(t, string(body), string(updated))
+}
+
+func TestApplyOpenAIFastPolicyToBody_DefaultFiltersPriorityForThirdPartyAPIKey(t *testing.T) {
+	svc := newOpenAIGatewayServiceWithSettings(t, DefaultOpenAIFastPolicySettings())
+	account := thirdPartyOpenAIAPIKeyAccount()
+
+	body := []byte(`{"model":"gpt-5.6-sol","service_tier":"priority","input":[]}`)
+	updated, err := svc.applyOpenAIFastPolicyToBody(context.Background(), account, "gpt-5.6-sol", body)
+	require.NoError(t, err)
+	require.NotContains(t, string(updated), `"service_tier"`)
+
+	body = []byte(`{"model":"gpt-5.6-sol","service_tier":"fast","input":[]}`)
+	updated, err = svc.applyOpenAIFastPolicyToBody(context.Background(), account, "gpt-5.6-sol", body)
+	require.NoError(t, err)
+	require.NotContains(t, string(updated), `"service_tier"`)
 }
 
 func TestApplyOpenAIFastPolicyToBody_ExplicitFilterRemovesField(t *testing.T) {

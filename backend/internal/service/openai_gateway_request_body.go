@@ -700,7 +700,7 @@ func (s *OpenAIGatewayService) evaluateOpenAIFastPolicy(ctx context.Context, acc
 // openAIFastPolicySettingsFromContext for the caching glue.
 func evaluateOpenAIFastPolicyWithSettings(settings *OpenAIFastPolicySettings, userID int64, account *Account, model, tier string) (action, errMsg string) {
 	if settings == nil {
-		return BetaPolicyActionPass, ""
+		return defaultOpenAIFastPolicyAction(account, tier), ""
 	}
 	isOAuth := account != nil && account.IsOAuth()
 	isBedrock := account != nil && account.IsBedrock()
@@ -729,7 +729,27 @@ func evaluateOpenAIFastPolicyWithSettings(settings *OpenAIFastPolicySettings, us
 			return resolveRuleAction(eff, model)
 		}
 	}
-	return BetaPolicyActionPass, ""
+	return defaultOpenAIFastPolicyAction(account, tier), ""
+}
+
+func defaultOpenAIFastPolicyAction(account *Account, tier string) string {
+	if account == nil || account.Platform != PlatformOpenAI {
+		return BetaPolicyActionPass
+	}
+	if account.Type != AccountTypeAPIKey && account.Type != AccountTypeUpstream {
+		return BetaPolicyActionPass
+	}
+	if strings.ToLower(strings.TrimSpace(tier)) != OpenAIFastTierPriority {
+		return BetaPolicyActionPass
+	}
+	baseURL := strings.TrimSpace(account.GetCredential("base_url"))
+	if baseURL == "" {
+		baseURL = strings.TrimSpace(account.GetOpenAIBaseURL())
+	}
+	if baseURL == "" || isOfficialOpenAIBaseURL(baseURL) {
+		return BetaPolicyActionPass
+	}
+	return BetaPolicyActionFilter
 }
 
 func openAIFastPolicyUserID(ctx context.Context) int64 {

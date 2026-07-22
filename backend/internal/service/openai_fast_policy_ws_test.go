@@ -51,6 +51,23 @@ func TestWSResponseCreate_DefaultPassesPriorityAndNormalizesFast(t *testing.T) {
 	require.Equal(t, "priority", gjson.GetBytes(updated, "service_tier").String())
 }
 
+func TestWSResponseCreate_DefaultFiltersPriorityForThirdPartyAPIKey(t *testing.T) {
+	svc := newOpenAIGatewayServiceWithSettings(t, DefaultOpenAIFastPolicySettings())
+	account := thirdPartyOpenAIAPIKeyAccount()
+
+	frame := []byte(`{"type":"response.create","model":"gpt-5.6-sol","service_tier":"priority","input":[{"type":"input_text","text":"hi"}]}`)
+	updated, blocked, err := svc.applyOpenAIFastPolicyToWSResponseCreate(context.Background(), account, "gpt-5.6-sol", frame)
+	require.NoError(t, err)
+	require.Nil(t, blocked)
+	require.NotContains(t, string(updated), `"service_tier"`)
+
+	frame = []byte(`{"type":"response.create","model":"gpt-5.6-sol","service_tier":"fast"}`)
+	updated, blocked, err = svc.applyOpenAIFastPolicyToWSResponseCreate(context.Background(), account, "gpt-5.6-sol", frame)
+	require.NoError(t, err)
+	require.Nil(t, blocked)
+	require.NotContains(t, string(updated), `"service_tier"`)
+}
+
 func TestWSResponseCreate_ExplicitFilterStripsServiceTier(t *testing.T) {
 	svc := newOpenAIGatewayServiceWithSettings(t, openAIFastFilterPriorityPolicy())
 	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}

@@ -299,6 +299,16 @@ The `gateway.openai_compact_model` setting is intentionally empty by default.
 It is an explicit provider-specific override, not an automatic downgrade from
 newer user-selected models.
 
+## OpenAI fast mode compatibility
+
+Codex fast mode can arrive as `service_tier=priority` on `/v1/responses` or
+Responses WebSocket `response.create` frames. Official OpenAI accounts keep that
+field unchanged. Third-party OpenAI API-key/upstream accounts with a non-official
+`base_url` filter `priority` by default when no explicit fast-policy rule
+matches, so providers that reject OpenAI priority tiers still receive a standard
+compatible request. Explicit admin fast-policy rules continue to override this
+default.
+
 ## Veyra
 
 Veyra is disabled by default. `veyra.enabled` enables its API bridge and `veyra.portal_enabled` enables the embedded aiself portal. The ordinary Sub2API login page is never replaced.
