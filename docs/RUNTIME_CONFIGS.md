@@ -104,7 +104,7 @@ Operator smoke tests:
 - Enable `gateway.operator_test_guard` before running local curl/script probes
   against live gateway paths.
 - `trusted_client_ips` must include loopback and the VPS public self-call IP.
-- Only a dedicated ops user/key should match `allowed_user_emails` or
+- Only an admin-owned dedicated ops key should match `allowed_user_emails` or
   `allowed_api_key_names`; do not reuse a customer key for deployment
   validation.
 
@@ -284,12 +284,13 @@ ports.
 
 ### Operator smoke-test guard
 
-Enable on 404token after creating a dedicated non-customer ops key:
+Enable on 404token after creating a dedicated admin-owned non-customer ops key:
 
 ```yaml
 gateway:
   operator_test_guard:
     enabled: true
+    require_admin_user: true
     trusted_client_ips:
       - "127.0.0.1"
       - "::1"
@@ -318,9 +319,9 @@ gateway:
       - "/chat/completions"
 ```
 
-This blocks only local/script-like operator traffic that presents a non-ops
-key. It does not alter external downstream users, account priority, Smart
-Router health, or model mappings.
+This blocks only local/script-like operator traffic that presents a non-admin
+or non-ops key. It does not alter external downstream users, account priority,
+Smart Router health, or model mappings.
 
 ### Responses image bridge model-selection hot update
 

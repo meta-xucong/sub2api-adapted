@@ -322,11 +322,11 @@ billing ledger is not debited.
 
 `gateway.operator_test_guard` is an opt-in runtime guard for production hosts.
 When enabled, script-like requests from trusted local/operator IPs to gateway
-API paths are rejected unless the API key belongs to a dedicated ops user or
-matches an ops-test key name. External downstream users, browser panel tests,
+API paths are rejected unless the API key belongs to an admin user and matches
+a dedicated ops-test identity. External downstream users, browser panel tests,
 ordinary scheduling, and account priorities are unchanged. Enable it only after
-creating a dedicated ops smoke-test key, and keep that key out of customer
-groups used for real billing plans.
+creating a dedicated admin-owned smoke-test key, and keep that key out of
+customer billing plans.
 
 ## Veyra
 

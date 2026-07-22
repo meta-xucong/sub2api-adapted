@@ -899,6 +899,7 @@ type ResponsesImageBridgeConfig struct {
 // ops keys so maintenance scripts cannot accidentally spend customer keys.
 type GatewayOperatorTestGuardConfig struct {
 	Enabled            bool     `mapstructure:"enabled"`
+	RequireAdminUser   bool     `mapstructure:"require_admin_user"`
 	TrustedClientIPs   []string `mapstructure:"trusted_client_ips"`
 	BlockedUserAgents  []string `mapstructure:"blocked_user_agents"`
 	AllowedUserEmails  []string `mapstructure:"allowed_user_emails"`
@@ -2159,6 +2160,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.responses_image_bridge.max_request_bytes", 16<<20)
 	viper.SetDefault("gateway.responses_image_bridge.preserve_streaming", true)
 	viper.SetDefault("gateway.operator_test_guard.enabled", false)
+	viper.SetDefault("gateway.operator_test_guard.require_admin_user", true)
 	viper.SetDefault("gateway.operator_test_guard.trusted_client_ips", []string{"127.0.0.1", "::1"})
 	viper.SetDefault("gateway.operator_test_guard.blocked_user_agents", []string{"curl/", "wget/", "python-requests/", "httpie/"})
 	viper.SetDefault("gateway.operator_test_guard.allowed_user_emails", []string{})

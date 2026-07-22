@@ -32,7 +32,7 @@ func OperatorTestGuard(cfg *config.Config) gin.HandlerFunc {
 		if !operatorGuardPathMatches(c.Request.URL.Path, guard.Paths) ||
 			!operatorGuardUserAgentMatches(c.GetHeader("User-Agent"), guard.BlockedUserAgents) ||
 			!operatorGuardClientMatches(c, guard.TrustedClientIPs) ||
-			operatorGuardAPIKeyAllowed(apiKey, guard.AllowedUserEmails, guard.AllowedAPIKeyNames) {
+			operatorGuardAPIKeyAllowed(apiKey, guard.RequireAdminUser, guard.AllowedUserEmails, guard.AllowedAPIKeyNames) {
 			c.Next()
 			return
 		}
@@ -82,8 +82,11 @@ func operatorGuardUserAgentMatches(userAgent string, patterns []string) bool {
 	return false
 }
 
-func operatorGuardAPIKeyAllowed(apiKey *service.APIKey, allowedEmails, allowedKeyNames []string) bool {
+func operatorGuardAPIKeyAllowed(apiKey *service.APIKey, requireAdmin bool, allowedEmails, allowedKeyNames []string) bool {
 	if apiKey == nil {
+		return false
+	}
+	if requireAdmin && (apiKey.User == nil || apiKey.User.Role != service.RoleAdmin) {
 		return false
 	}
 	if apiKey.User != nil && operatorGuardStringAllowed(apiKey.User.Email, allowedEmails) {

@@ -28,6 +28,17 @@ func TestOperatorTestGuardAllowsDedicatedOpsKey(t *testing.T) {
 	require.Equal(t, http.StatusOK, response.Code)
 }
 
+func TestOperatorTestGuardRejectsOpsNamedCustomerKeyWhenAdminRequired(t *testing.T) {
+	apiKey := operatorTestGuardCustomerKey()
+	apiKey.Name = "ops-test-image"
+	router := newOperatorTestGuardRouter(t, apiKey)
+
+	response := serveOperatorTestGuardRequest(router, "/v1/images/generations", "141.11.138.220:45678", "curl/7.74.0")
+
+	require.Equal(t, http.StatusForbidden, response.Code)
+	require.Contains(t, response.Body.String(), "OPERATOR_TEST_KEY_REQUIRED")
+}
+
 func TestOperatorTestGuardAllowsExternalCustomerTraffic(t *testing.T) {
 	router := newOperatorTestGuardRouter(t, operatorTestGuardCustomerKey())
 
@@ -91,6 +102,7 @@ func operatorTestGuardConfig() *config.Config {
 	cfg := &config.Config{}
 	cfg.Gateway.OperatorTestGuard = config.GatewayOperatorTestGuardConfig{
 		Enabled:           true,
+		RequireAdminUser:  true,
 		TrustedClientIPs:  []string{"127.0.0.1", "::1", "141.11.138.220"},
 		BlockedUserAgents: []string{"curl/"},
 		AllowedUserEmails: []string{"ops-test@404token.local"},
