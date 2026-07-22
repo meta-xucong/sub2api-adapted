@@ -137,6 +137,14 @@ tool.output_compression      output_compression
 tool.n                       n
 ```
 
+The Responses top-level `request.model` is the text-orchestration model (for
+example `gpt-5.5`) and must never override the Images API model. The bridge
+uses `tool.model` when it names a supported image model, otherwise it uses
+the configured image default (`gpt-image-2`). After translation, normal
+account-level image model mapping and image Smart Router capability checks
+remain authoritative. A channel mapping calculated for the top-level text
+model must not be passed into the Images forwarding call.
+
 The bridge must not use natural-language prompt inspection to decide whether a
 request is text-to-image or image-to-image. Reference-image requests require
 an explicit supported image input and must be routed to an edit-capable lane.

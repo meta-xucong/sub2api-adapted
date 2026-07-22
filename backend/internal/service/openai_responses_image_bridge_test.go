@@ -27,6 +27,17 @@ func TestBuildOpenAIResponsesImageBridgeRequest_TextToImage(t *testing.T) {
 	require.False(t, gjson.GetBytes(imagesBody, "stream").Bool())
 }
 
+func TestBuildOpenAIResponsesImageBridgeRequest_DoesNotUseResponsesModelAsImageModel(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.5","input":"draw a mountain lake","tools":[{"type":"image_generation"}]}`)
+
+	imagesBody, parsed, err := BuildOpenAIResponsesImageBridgeRequest(body)
+	require.NoError(t, err)
+	// The text Responses model is not an Images API model. The bridge must
+	// select the image tool default and leave account mapping to ForwardImages.
+	require.Equal(t, "gpt-image-2", parsed.Model)
+	require.Equal(t, "gpt-image-2", gjson.GetBytes(imagesBody, "model").String())
+}
+
 func TestBuildOpenAIResponsesImageBridgeRequest_ImageEdit(t *testing.T) {
 	body := []byte(`{"input":[{"type":"message","content":[{"type":"input_text","text":"Make the sky warmer."},{"type":"input_image","image_url":"data:image/png;base64,abc"}]}],"tools":[{"type":"image_generation","action":"edit","model":"gpt-image-2"}]}`)
 

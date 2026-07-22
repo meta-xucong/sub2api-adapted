@@ -478,7 +478,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				}
 			}()
 			if responsesImageBridge && account.UsesResponsesImageBridge() {
-				return h.gatewayService.ForwardResponsesImageBridge(requestCtx, c, account, body, channelMapping.MappedModel)
+				return h.gatewayService.ForwardResponsesImageBridge(requestCtx, c, account, body)
 			}
 			return h.gatewayService.Forward(requestCtx, c, account, forwardBody)
 		}()

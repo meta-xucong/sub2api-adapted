@@ -195,7 +195,6 @@ func (s *OpenAIGatewayService) ForwardResponsesImageBridge(
 	c *gin.Context,
 	account *Account,
 	body []byte,
-	channelMappedModel string,
 ) (*OpenAIForwardResult, error) {
 	imageBody, parsed, err := BuildOpenAIResponsesImageBridgeRequest(body)
 	if err != nil {
@@ -222,7 +221,10 @@ func (s *OpenAIGatewayService) ForwardResponsesImageBridge(
 		bridgeContext.Set(key, value)
 	}
 
-	result, err := s.ForwardImages(ctx, bridgeContext, account, imageBody, parsed, channelMappedModel)
+	// The Responses model belongs to the text request (for example gpt-5.5).
+	// Images forwarding must use the explicit image tool model and account-level
+	// mapping; passing the Responses channel mapping here would overwrite it.
+	result, err := s.ForwardImages(ctx, bridgeContext, account, imageBody, parsed, "")
 	if err != nil {
 		return result, err
 	}
