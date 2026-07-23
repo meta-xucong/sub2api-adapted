@@ -408,6 +408,24 @@ func (t *HealthTracker) Observe(result RouteResult) HealthSnapshot {
 			state.CooldownUntilUnix = now.Add(t.policy.RateLimitCooldown).Unix()
 			state.RecoveryStage = RecoveryCooling
 			action = "rate_limit_cooldown"
+		case FailureStreamInterrupted:
+			state.ConsecutiveFailures += 2
+			state.ConsecutiveSuccesses = 0
+			state.ErrorRateEWMA = state.ErrorRateEWMA*(1-t.policy.ErrorRateAlpha) + t.policy.ErrorRateAlpha
+			state.HealthScore = maxFloat(0.05, state.HealthScore*0.45)
+			state.HealthPenalty = minInt(state.HealthPenalty+2, t.policy.MaxPenalty)
+			until := now.Add(t.streamInterruptedCooldown())
+			if threshold := t.policy.sustainedFailureThreshold(result.Capability); threshold > 0 && state.ConsecutiveFailures >= threshold && t.policy.SustainedFailureUntil != nil {
+				if sustainedUntil := t.policy.SustainedFailureUntil(now); sustainedUntil.After(now) {
+					until = sustainedUntil
+					action = "stream_interrupted_quarantine"
+				}
+			}
+			state.CooldownUntilUnix = until.Unix()
+			state.RecoveryStage = RecoveryCooling
+			if action == "record_only" {
+				action = "stream_interrupted_cooldown"
+			}
 		default:
 			state.ConsecutiveFailures++
 			state.ConsecutiveSuccesses = 0
@@ -589,6 +607,23 @@ func (t *HealthTracker) cooldownFor(consecutiveFailures int) time.Duration {
 		shift = 6
 	}
 	duration := t.policy.TransientCooldown * time.Duration(1<<shift)
+	if duration > t.policy.MaxCooldown {
+		return t.policy.MaxCooldown
+	}
+	return duration
+}
+
+func (t *HealthTracker) streamInterruptedCooldown() time.Duration {
+	if t == nil {
+		return 10 * time.Minute
+	}
+	if t.policy.SecondTransientCooldown > 0 {
+		return t.policy.SecondTransientCooldown
+	}
+	duration := t.policy.TransientCooldown * 20
+	if duration < 10*time.Minute {
+		duration = 10 * time.Minute
+	}
 	if duration > t.policy.MaxCooldown {
 		return t.policy.MaxCooldown
 	}

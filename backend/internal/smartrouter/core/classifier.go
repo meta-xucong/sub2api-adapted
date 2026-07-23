@@ -33,6 +33,9 @@ func ClassifyFailureDetails(statusCode int, capability Capability, message strin
 	if strings.Contains(lower, "moderation") || strings.Contains(lower, "content policy") || strings.Contains(lower, "safety violation") {
 		return FailureContentRejected
 	}
+	if isStreamingCapability(capability) && looksLikePostStartStreamFailure(lower) {
+		return FailureStreamInterrupted
+	}
 	if statusCode == http.StatusTooManyRequests && IsConcurrencyRateLimit(message, code) {
 		return FailureConcurrencyLimited
 	}
@@ -64,4 +67,31 @@ func ClassifyFailureDetails(statusCode int, capability Capability, message strin
 		}
 		return FailureUnknown
 	}
+}
+
+func isStreamingCapability(capability Capability) bool {
+	return capability == CapabilityChat ||
+		capability == CapabilityResponses ||
+		capability == CapabilityResponsesCompact
+}
+
+func looksLikePostStartStreamFailure(lower string) bool {
+	if lower == "" {
+		return false
+	}
+	for _, marker := range []string{
+		"upstream response failed:",
+		"stream read error",
+		"stream data interval timeout",
+		"stream usage incomplete",
+		"stream disconnected before completion",
+		"stream ended before a terminal event",
+		"missing terminal event",
+		"idle timeout waiting for sse",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }

@@ -127,6 +127,25 @@ it must never inherit an account's Responses WebSocket setting. This prevents a
 WS-enabled API-key account from producing a false compact failure from a WebSocket
 404/1011 handshake when its HTTP `/responses/compact` endpoint is usable.
 
+### Streaming response interruption penalty
+
+Development document: `docs/SMART_ROUTER_STREAM_FAILURE_DEVELOPMENT.md`.
+
+OpenAI chat, Responses, and compact streams that fail after SSE output has
+already started cannot be safely retried on another lane inside the same HTTP
+request. Smart Router now classifies these cases as `stream_interrupted` instead
+of a generic transient failure. The first interruption gets a heavier health
+penalty and longer cooldown; a repeated interruption reaches the existing
+sustained-failure quarantine and waits for the next 04:00 Asia/Shanghai
+calibration. The account's configured priority, schedulable flag, group
+membership, and credentials remain unchanged.
+
+This applies generically to upstream messages such as `upstream response
+failed`, `stream read error`, `stream data interval timeout`, and `idle timeout
+waiting for SSE`. User/client cancellation remains `cancelled` and does not
+penalize the lane. Image generation and image edit lanes keep their independent
+image health policy.
+
 ### Compact candidate enrollment and legacy image-cooldown isolation
 
 Accounts with an existing `smart_router.capabilities` list such as

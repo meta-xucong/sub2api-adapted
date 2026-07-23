@@ -162,6 +162,52 @@ func TestHealthTrackerSustainedTransientFailuresFreezeUntilCalibration(t *testin
 	require.Greater(t, blocked.Priority, 2)
 }
 
+func TestHealthTrackerStreamInterruptedIsHeavyChatFailure(t *testing.T) {
+	now := time.Date(2026, time.July, 23, 21, 24, 0, 0, time.FixedZone("Asia/Shanghai", 8*60*60))
+	calibrationAt := time.Date(2026, time.July, 24, 4, 0, 0, 0, now.Location())
+	var events []HealthEvent
+	tracker := NewHealthTracker(HealthPolicy{
+		TransientCooldown:         30 * time.Second,
+		SecondTransientCooldown:   10 * time.Minute,
+		SustainedFailureThreshold: 3,
+		SustainedFailureUntil: func(time.Time) time.Time {
+			return calibrationAt
+		},
+		RecoveryPriorityStep: 30,
+	}, func() time.Time { return now }, func(event HealthEvent) { events = append(events, event) })
+	result := RouteResult{
+		LaneID:       "liuyun-k12",
+		BasePriority: 6,
+		Capability:   CapabilityResponses,
+		Model:        "gpt-5.6-luna",
+		StatusCode:   0,
+		ErrorClass:   FailureStreamInterrupted,
+		ErrorSummary: "upstream response failed: request id req_123",
+	}
+
+	first := tracker.Observe(result)
+	require.Equal(t, 2, first.ConsecutiveFailures)
+	require.Equal(t, 2, first.HealthPenalty)
+	require.Equal(t, now.Add(10*time.Minute).Unix(), first.CooldownUntilUnix)
+	require.Equal(t, 36, first.RecoveryPriority)
+	require.Equal(t, "stream_interrupted_cooldown", events[0].Action)
+
+	second := tracker.Observe(result)
+	require.Equal(t, 4, second.ConsecutiveFailures)
+	require.Equal(t, calibrationAt.Unix(), second.CooldownUntilUnix)
+	require.Equal(t, 36, second.RecoveryPriority)
+	require.Equal(t, "stream_interrupted_quarantine", events[1].Action)
+
+	degraded := tracker.Snapshot(LaneSnapshot{LaneID: "liuyun-k12", Priority: 6}, CapabilityResponses, "gpt-5.6-luna", now.Unix())
+	require.Equal(t, 36, degraded.Priority)
+	require.Equal(t, RecoveryCooling, degraded.RecoveryStage)
+
+	tracker.Observe(RouteResult{Source: "calibration", LaneID: "liuyun-k12", Capability: CapabilityResponses, Model: "gpt-5.6-luna", Success: true, StatusCode: http.StatusOK})
+	recovered := tracker.Snapshot(LaneSnapshot{LaneID: "liuyun-k12", Priority: 6}, CapabilityResponses, "gpt-5.6-luna", now.Unix())
+	require.Equal(t, 6, recovered.Priority)
+	require.Equal(t, RecoveryNormal, recovered.RecoveryStage)
+}
+
 func TestHealthTrackerImageThresholdFreezesBeforeChat(t *testing.T) {
 	now := time.Date(2026, time.July, 12, 3, 55, 0, 0, time.FixedZone("Asia/Shanghai", 8*60*60))
 	calibrationAt := time.Date(2026, time.July, 12, 4, 0, 0, 0, now.Location())

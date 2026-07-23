@@ -31,6 +31,7 @@ const (
 	FailureRateLimited        FailureClass = "rate_limited"
 	FailureUpstream5xx        FailureClass = "upstream_5xx"
 	FailureTimeout            FailureClass = "timeout"
+	FailureStreamInterrupted  FailureClass = "stream_interrupted"
 	FailureCancelled          FailureClass = "cancelled"
 	FailureUnknown            FailureClass = "unknown"
 )
