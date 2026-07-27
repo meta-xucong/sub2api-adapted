@@ -358,6 +358,17 @@ func (t *HealthTracker) Observe(result RouteResult) HealthSnapshot {
 				action = "policy_reject_recovered"
 			}
 		}
+	} else if result.Capability == CapabilityResponsesCompact && shouldStrictCompactQuarantine(class) {
+		state.ConsecutiveFailures++
+		state.ConsecutiveSuccesses = 0
+		state.ErrorRateEWMA = state.ErrorRateEWMA*(1-t.policy.ErrorRateAlpha) + t.policy.ErrorRateAlpha
+		state.HealthScore = maxFloat(0.05, state.HealthScore*0.45)
+		state.HealthPenalty = minInt(state.HealthPenalty+2, t.policy.MaxPenalty)
+		state.CooldownUntilUnix = t.compactFailureUntil(now).Unix()
+		state.RecoveryStage = RecoveryCooling
+		action = "compact_failure_quarantine"
+		t.ensureRecoverySlotLocked(state, key, result.Capability)
+		state.lastFailureUnix = now.Unix()
 	} else {
 		switch class {
 		case FailureContentRejected:
@@ -628,6 +639,27 @@ func (t *HealthTracker) streamInterruptedCooldown() time.Duration {
 		return t.policy.MaxCooldown
 	}
 	return duration
+}
+
+func shouldStrictCompactQuarantine(class FailureClass) bool {
+	switch class {
+	case FailureCancelled, FailureClientError, FailurePayloadRejected:
+		return false
+	default:
+		return true
+	}
+}
+
+func (t *HealthTracker) compactFailureUntil(now time.Time) time.Time {
+	if t != nil && t.policy.SustainedFailureUntil != nil {
+		if until := t.policy.SustainedFailureUntil(now); until.After(now) {
+			return until
+		}
+	}
+	if t != nil && t.policy.MaxCooldown > 0 {
+		return now.Add(t.policy.MaxCooldown)
+	}
+	return now.Add(6 * time.Hour)
 }
 
 func defaultSource(source string) string {

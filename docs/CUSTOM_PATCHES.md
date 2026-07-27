@@ -118,6 +118,14 @@ lane to look like a model-wide or upstream-wide failure. Compact failures never
 change ordinary `responses` health for the same account; client cancellation and
 request-specific `400` errors do not penalize a lane.
 
+Compact health is deliberately stricter than ordinary chat health. Any
+non-client compact lane failure, including upstream 5xx, rate limits, capability
+errors, protocol failures, and stream interruptions, is cooled until the next
+04:00 Asia/Shanghai calibration on the first signal. This avoids repeatedly
+trying a flaky compact lane inside Codex's context-compression path, where one
+failure can hide or stall the task. The account's ordinary `responses` lane and
+configured priority remain untouched.
+
 The compact probe accepts only a real compaction response with non-empty
 `encrypted_content`; an HTTP 2xx response containing only usage or ordinary text is
 not marked healthy. A transient probe failure records evidence but does not

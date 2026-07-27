@@ -162,6 +162,68 @@ func TestHealthTrackerSustainedTransientFailuresFreezeUntilCalibration(t *testin
 	require.Greater(t, blocked.Priority, 2)
 }
 
+func TestHealthTrackerCompactFailureFreezesUntilCalibrationImmediately(t *testing.T) {
+	now := time.Date(2026, time.July, 27, 14, 41, 0, 0, time.FixedZone("Asia/Shanghai", 8*60*60))
+	calibrationAt := time.Date(2026, time.July, 28, 4, 0, 0, 0, now.Location())
+	var events []HealthEvent
+	tracker := NewHealthTracker(HealthPolicy{
+		TransientCooldown:         30 * time.Second,
+		SecondTransientCooldown:   10 * time.Minute,
+		SustainedFailureThreshold: 3,
+		SustainedFailureUntil: func(time.Time) time.Time {
+			return calibrationAt
+		},
+		RecoveryPriorityStep: 30,
+	}, func() time.Time { return now }, func(event HealthEvent) { events = append(events, event) })
+
+	snapshot := tracker.Observe(RouteResult{
+		LaneID:       "yetoken-value",
+		BasePriority: 3,
+		Capability:   CapabilityResponsesCompact,
+		Model:        "gpt-5.5",
+		StatusCode:   http.StatusBadGateway,
+		ErrorClass:   FailureUpstream5xx,
+		ErrorSummary: "upstream response failed",
+	})
+
+	require.Equal(t, calibrationAt.Unix(), snapshot.CooldownUntilUnix)
+	require.Equal(t, RecoveryCooling, snapshot.RecoveryStage)
+	require.Equal(t, 1, snapshot.ConsecutiveFailures)
+	require.Equal(t, 2, snapshot.HealthPenalty)
+	require.Equal(t, 33, snapshot.RecoveryPriority)
+	require.Len(t, events, 1)
+	require.Equal(t, "compact_failure_quarantine", events[0].Action)
+
+	degraded := tracker.Snapshot(LaneSnapshot{LaneID: "yetoken-value", Priority: 3}, CapabilityResponsesCompact, "gpt-5.5", now.Unix())
+	require.Equal(t, 33, degraded.Priority)
+	require.Equal(t, calibrationAt.Unix(), degraded.CooldownUntilUnix)
+}
+
+func TestHealthTrackerCompactCancelledDoesNotFreezeLane(t *testing.T) {
+	now := time.Date(2026, time.July, 27, 14, 41, 0, 0, time.FixedZone("Asia/Shanghai", 8*60*60))
+	calibrationAt := time.Date(2026, time.July, 28, 4, 0, 0, 0, now.Location())
+	var events []HealthEvent
+	tracker := NewHealthTracker(HealthPolicy{
+		SustainedFailureUntil: func(time.Time) time.Time {
+			return calibrationAt
+		},
+	}, func() time.Time { return now }, func(event HealthEvent) { events = append(events, event) })
+
+	snapshot := tracker.Observe(RouteResult{
+		LaneID:     "client-cancelled",
+		Capability: CapabilityResponsesCompact,
+		Model:      "gpt-5.5",
+		StatusCode: http.StatusBadGateway,
+		ErrorClass: FailureCancelled,
+	})
+
+	require.Zero(t, snapshot.CooldownUntilUnix)
+	require.Zero(t, snapshot.HealthPenalty)
+	require.Equal(t, RecoveryNormal, snapshot.RecoveryStage)
+	require.Len(t, events, 1)
+	require.Equal(t, "no_penalty", events[0].Action)
+}
+
 func TestHealthTrackerStreamInterruptedIsHeavyChatFailure(t *testing.T) {
 	now := time.Date(2026, time.July, 23, 21, 24, 0, 0, time.FixedZone("Asia/Shanghai", 8*60*60))
 	calibrationAt := time.Date(2026, time.July, 24, 4, 0, 0, 0, now.Location())

@@ -152,15 +152,17 @@ CapabilityFilter
 
 | 失败 | 影响范围 | 动作 |
 | --- | --- | --- |
-| `502/503/504` | 当前 lane + `responses_compact` | 软降权、短暂冷却、允许备用 lane |
-| 连接 EOF、stream disconnect | 当前 lane + `responses_compact` | 软降权，不并发重放 |
-| `No available channel` | 当前 lane + `responses_compact` | 标记能力不可用，等待校准 |
-| 合法但缺失 compaction item | 当前 lane + `responses_compact` | 协议失败，禁止继续使用该能力 |
-| `401`、持续性 `403` | 账号或凭据 | 长退避并告警，不由普通聊天自动恢复 |
+| `502/503/504` | 当前 lane + `responses_compact` | 立即冷却到下一次 04:00 校准，允许备用 lane |
+| 连接 EOF、stream disconnect | 当前 lane + `responses_compact` | 立即冷却到下一次 04:00 校准，不并发重放 |
+| `No available channel` | 当前 lane + `responses_compact` | 立即冷却到下一次 04:00 校准，等待探针恢复 |
+| 合法但缺失 compaction item | 当前 lane + `responses_compact` | 协议失败，立即冷却到下一次 04:00 校准 |
+| `401`、持续性 `403` | 账号或凭据 | 立即冷却到下一次 04:00 校准并告警，不由普通聊天自动恢复 |
 | 确定性参数 `400` | 请求特征或能力映射 | 不重试同一请求，记录 payload 特征 |
 | `context canceled` | 请求本身 | 不惩罚上游，不触发降权 |
 
 ### 5.3 软降权规则
+
+Compact 失败不使用普通聊天的短冷却。除客户端取消、请求格式本身错误等非线路健康问题外，任何 compact 上游/协议/限流/断流失败都会把该 lane 的 `responses_compact` 能力冷却到下一次 `04:00 Asia/Shanghai` 校准。这样可以优先保护 Codex 会话体验：一次压缩失败就把当前线路让给备用线路，普通聊天 `responses` 能力仍保持独立。
 
 软降权只改变运行时有效顺序：
 
@@ -320,7 +322,7 @@ gateway:
 - `/responses` 分类为 `responses`；
 - `/responses/compact` 分类为 `responses_compact`；
 - compact 失败不会改变普通 responses 的健康状态；
-- 502/503/EOF 只产生 compact penalty；
+- 502/503/EOF 让 compact lane 立即冷却到下一次 04:00 校准；
 - `context canceled` 不产生 penalty；
 - 原始 priority 不被修改；
 - `force_off` 永远不进入 compact 候选；
