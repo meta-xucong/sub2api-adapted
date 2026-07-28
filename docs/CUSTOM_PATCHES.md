@@ -168,9 +168,12 @@ image health policy.
 Accounts with an existing `smart_router.capabilities` list such as
 `["chat", "responses"]` remain eligible for the independent `responses_compact`
 lane unless compact is explicitly disabled with `openai_compact_mode=force_off`
-or `openai_compact_supported=false`. This keeps older capability metadata from
-turning “not yet probed” into “unsupported”. Auto-enrollment and the daily
-calibration therefore probe these accounts as well.
+or the account is not a ChatGPT/Responses text lane. A historical
+`openai_compact_supported=false` result is treated as health evidence, not as a
+permanent candidate gate. This keeps older capability metadata from turning
+“not yet probed” or “temporarily failed” into “unsupported”. Auto-enrollment
+and the daily calibration therefore probe these accounts as well, unless the
+operator explicitly sets `force_off`.
 
 Compact enrollment is limited to accounts that also declare or infer chat/
 Responses capability. Image-only lanes are excluded from compact probes, so an

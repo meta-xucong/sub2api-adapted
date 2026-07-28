@@ -140,13 +140,17 @@ CapabilityFilter
 按以下顺序处理：
 
 1. 过滤人工关闭、不可调度和模型不匹配的账号；
-2. 过滤不支持 `responses_compact` 的账号；
+2. 过滤显式 `openai_compact_mode=force_off` 或确定不具备文本 Responses 能力的账号；
 3. 应用该能力的临时 penalty 和 cooldown；
 4. 保持原始价格 priority 层级；
 5. 在同一有效 priority 层内按健康、负载、队列、延迟和成本择优；
 6. 当前请求已经尝试过的 lane 和 source group 不再重复尝试。
 
 未知 compact 能力的账号不能直接永久排除。首次部署或新账号接入时，状态为 `unknown`，允许一次受控真实请求或校准探针来建立证据。
+
+历史探测写入的 `openai_compact_supported=false` 只能作为健康证据和校准输入，不能作为 Smart Router 候选入口的永久硬过滤。只有人工 `force_off`、账号不可调度、模型不匹配、或账号本身不是 ChatGPT/Responses 文本线路时，才允许在候选装配阶段直接排除。否则会出现 404/503 抖动后状态永远卡死，后续即使上游恢复也无法被 04:00 校准自然拉回。
+
+每日校准必须绕过这种历史 false 证据，对 failed、unknown、degraded、stale false 的 compact lane 做受控探针。成功后清除旧的 false 结论并进入 warming；失败则继续保留到下一轮校准。
 
 ### 5.2 失败动作
 
