@@ -935,6 +935,9 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 			}
 			return nil, s.writeOpenAINonStreamingProtocolError(resp, c, msg)
 		}
+		if compactErr := compactSSEMissingTerminalError(c, terminalType, terminalOK); compactErr != nil {
+			return nil, newOpenAICompactFailoverError(resp, compactErr.Error())
+		}
 		usage = s.parseSSEUsageFromBody(bodyText)
 		if originalModel != mappedModel {
 			bodyText = s.replaceModelInSSEBody(bodyText, mappedModel, originalModel)
@@ -982,6 +985,19 @@ func compactResponseProtocolError(c *gin.Context, body []byte) error {
 		return nil
 	}
 	return fmt.Errorf("compact response missing required compaction output item (got %d from %d output items)", compactionItems, len(items))
+}
+
+func compactSSEMissingTerminalError(c *gin.Context, terminalType string, terminalOK bool) error {
+	if !isOpenAIResponsesCompactPath(c) {
+		return nil
+	}
+	if !terminalOK {
+		return errors.New("compact response stream closed before response.completed")
+	}
+	if terminalType == "response.completed" || terminalType == "response.done" {
+		return errors.New("compact response.completed event missing response payload")
+	}
+	return fmt.Errorf("compact response ended with %s before response.completed", terminalType)
 }
 
 func newOpenAICompactFailoverError(resp *http.Response, message string) *UpstreamFailoverError {

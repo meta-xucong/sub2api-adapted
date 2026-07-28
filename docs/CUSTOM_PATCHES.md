@@ -135,6 +135,15 @@ it must never inherit an account's Responses WebSocket setting. This prevents a
 WS-enabled API-key account from producing a false compact failure from a WebSocket
 404/1011 handshake when its HTTP `/responses/compact` endpoint is usable.
 
+For client-triggered Codex compact requests, a `200 text/event-stream` response is
+also insufficient on its own. The gateway must see a terminal
+`response.completed` event whose response contains exactly one compaction output
+item, or a valid upstream JSON response that can be bridged into that SSE shape.
+An empty/comment-only SSE stream, a stream that closes before
+`response.completed`, or a malformed completed event is treated as a compact
+protocol failure and is fed back into Smart Router failover and compact-lane
+health. Ordinary non-compact Responses streams remain unchanged.
+
 ### Streaming response interruption penalty
 
 Development document: `docs/SMART_ROUTER_STREAM_FAILURE_DEVELOPMENT.md`.
