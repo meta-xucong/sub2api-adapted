@@ -103,10 +103,14 @@ type HealthKey struct {
 }
 
 func NewHealthKey(laneID string, capability Capability, model string) HealthKey {
+	normalizedModel := modelFamily(model)
+	if isStreamingCapability(capability) {
+		normalizedModel = exactModelFamily(model)
+	}
 	return HealthKey{
 		LaneID:     strings.TrimSpace(laneID),
 		Capability: capability,
-		Model:      modelFamily(model),
+		Model:      normalizedModel,
 	}
 }
 
@@ -676,6 +680,14 @@ func modelFamily(model string) string {
 	}
 	if strings.HasPrefix(model, "gpt-5") {
 		return "gpt-5"
+	}
+	return model
+}
+
+func exactModelFamily(model string) string {
+	model = strings.ToLower(strings.TrimSpace(model))
+	if model == "" {
+		return modelFamily(model)
 	}
 	return model
 }

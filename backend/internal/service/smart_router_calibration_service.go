@@ -279,6 +279,12 @@ func smartRouterAutoEnrollmentProbes(account *Account) []smartrouter.Calibration
 	probes := make([]smartrouter.CalibrationProbe, 0, len(capabilities))
 	for _, capability := range ordered {
 		if capabilities[capability] {
+			if capability == smartrouter.CapabilityResponsesCompact {
+				for _, model := range smartRouterCompactProbeModelsForAccount(account, "gpt-5.4") {
+					probes = append(probes, smartrouter.CalibrationProbe{LaneID: lane.LaneID, Capability: capability, Model: model, Reason: "new_or_changed_lane"})
+				}
+				continue
+			}
 			probes = append(probes, smartrouter.CalibrationProbe{LaneID: lane.LaneID, Capability: capability, Reason: "new_or_changed_lane"})
 		}
 	}
@@ -286,9 +292,15 @@ func smartRouterAutoEnrollmentProbes(account *Account) []smartrouter.Calibration
 }
 
 func smartRouterEnrollmentCapabilityNames(probes []smartrouter.CalibrationProbe) []string {
+	seen := make(map[string]struct{}, len(probes))
 	result := make([]string, 0, len(probes))
 	for _, probe := range probes {
-		result = append(result, string(probe.Capability))
+		name := string(probe.Capability)
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		result = append(result, name)
 	}
 	return result
 }
@@ -381,6 +393,7 @@ func (s *SmartRouterCalibrationService) runCalibration() {
 		Minute:              s.cfg.Gateway.SmartRouter.Calibration.Minute,
 		FreshEvidenceWindow: 24 * time.Hour,
 	})
+	probes = s.ensureCompactModelCalibrationProbes(probes, compactLanes, accountsByLane)
 	if len(probes) == 0 {
 		return
 	}
@@ -585,7 +598,10 @@ func mergeSmartRouterCalibrationLanes(
 }
 
 func (s *SmartRouterCalibrationService) runProbe(ctx context.Context, account *Account, probe smartrouter.CalibrationProbe) SmartRouterCalibrationResult {
-	model := s.calibrationModelForCapability(account, probe.Capability)
+	model := strings.TrimSpace(probe.Model)
+	if model == "" {
+		model = s.calibrationModelForCapability(account, probe.Capability)
+	}
 	result := SmartRouterCalibrationResult{
 		LaneID:      probe.LaneID,
 		AccountID:   account.ID,
@@ -605,7 +621,9 @@ func (s *SmartRouterCalibrationService) runProbe(ctx context.Context, account *A
 	var err error
 	switch probe.Capability {
 	case smartrouter.CapabilityResponsesCompact:
-		model = s.compactCalibrationModel()
+		if strings.TrimSpace(probe.Model) == "" {
+			model = s.compactCalibrationModel()
+		}
 		result.ModelFamily = model
 		statusCode, latencyMs, err = s.gateway.RunSmartRouterCompactCalibrationProbe(probeCtx, account, model)
 	case smartrouter.CapabilityResponses:
@@ -675,6 +693,116 @@ func (s *SmartRouterCalibrationService) compactCalibrationModel() string {
 		}
 	}
 	return "gpt-5.4"
+}
+
+func (s *SmartRouterCalibrationService) ensureCompactModelCalibrationProbes(
+	probes []smartrouter.CalibrationProbe,
+	compactLanes []smartrouter.LaneSnapshot,
+	accountsByLane map[string]*Account,
+) []smartrouter.CalibrationProbe {
+	if len(compactLanes) == 0 {
+		return probes
+	}
+	seen := make(map[string]struct{}, len(probes))
+	for _, probe := range probes {
+		seen[smartRouterCalibrationProbeKey(probe)] = struct{}{}
+	}
+	for _, lane := range compactLanes {
+		account := accountsByLane[lane.LaneID]
+		if account == nil {
+			continue
+		}
+		for _, model := range smartRouterCompactProbeModelsForAccount(account, s.compactCalibrationModel()) {
+			probe := smartrouter.CalibrationProbe{
+				LaneID:     lane.LaneID,
+				Capability: smartrouter.CapabilityResponsesCompact,
+				Model:      model,
+				Reason:     "scheduled_model_compact_probe",
+			}
+			key := smartRouterCalibrationProbeKey(probe)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			probes = append(probes, probe)
+		}
+	}
+	return probes
+}
+
+func smartRouterCalibrationProbeKey(probe smartrouter.CalibrationProbe) string {
+	return strings.TrimSpace(probe.LaneID) + "|" + string(probe.Capability) + "|" + strings.ToLower(strings.TrimSpace(probe.Model))
+}
+
+func smartRouterCompactProbeModelsForAccount(account *Account, fallback string) []string {
+	fallback = strings.ToLower(strings.TrimSpace(fallback))
+	defaults := []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4"}
+	patterns := smartRouterCompactModelPatterns(account)
+	seen := make(map[string]struct{}, len(defaults)+len(patterns)+1)
+	models := make([]string, 0, len(defaults)+1)
+	add := func(model string) {
+		model = strings.ToLower(strings.TrimSpace(model))
+		if model == "" || isOpenAIImageModelName(model) || !isChatGPTModelIdentifier(model) {
+			return
+		}
+		if _, ok := seen[model]; ok {
+			return
+		}
+		seen[model] = struct{}{}
+		models = append(models, model)
+	}
+	if len(patterns) == 0 {
+		for _, model := range defaults {
+			add(model)
+		}
+		add(fallback)
+		return models
+	}
+	for _, model := range defaults {
+		for _, pattern := range patterns {
+			if smartRouterModelPatternMatches(pattern, model) {
+				add(model)
+				break
+			}
+		}
+	}
+	sort.Strings(patterns)
+	for _, pattern := range patterns {
+		if strings.Contains(pattern, "*") {
+			continue
+		}
+		add(pattern)
+	}
+	if len(models) == 0 {
+		add(fallback)
+	}
+	return models
+}
+
+func smartRouterCompactModelPatterns(account *Account) []string {
+	if account == nil {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	patterns := make([]string, 0)
+	add := func(pattern string) {
+		pattern = strings.ToLower(strings.TrimSpace(pattern))
+		if pattern == "" || isOpenAIImageModelName(pattern) {
+			return
+		}
+		if _, ok := seen[pattern]; ok {
+			return
+		}
+		seen[pattern] = struct{}{}
+		patterns = append(patterns, pattern)
+	}
+	for pattern := range account.GetModelMapping() {
+		add(pattern)
+	}
+	for pattern := range account.GetCompactModelMapping() {
+		add(pattern)
+	}
+	return patterns
 }
 
 // RunSmartRouterImageCalibrationProbe directly tests one account so a daily
@@ -863,9 +991,6 @@ func buildSmartRouterCompactProbeExtraUpdates(result SmartRouterCalibrationResul
 	}
 	errorSummary := truncateString(sanitizeUpstreamErrorMessage(result.ErrorSummary), 2048)
 	updates["openai_compact_last_error"] = errorSummary
-	if result.StatusCode == http.StatusNotFound || result.StatusCode == http.StatusMethodNotAllowed || result.StatusCode == http.StatusNotImplemented || strings.Contains(strings.ToLower(errorSummary), "compact") && strings.Contains(strings.ToLower(errorSummary), "unsupported") {
-		updates["openai_compact_supported"] = false
-	}
 	return updates
 }
 

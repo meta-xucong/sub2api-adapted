@@ -118,13 +118,15 @@ lane to look like a model-wide or upstream-wide failure. Compact failures never
 change ordinary `responses` health for the same account; client cancellation and
 request-specific `400` errors do not penalize a lane.
 
-Compact health is deliberately stricter than ordinary chat health. Any
-non-client compact lane failure, including upstream 5xx, rate limits, capability
-errors, protocol failures, and stream interruptions, is cooled until the next
-04:00 Asia/Shanghai calibration on the first signal. This avoids repeatedly
-trying a flaky compact lane inside Codex's context-compression path, where one
-failure can hide or stall the task. The account's ordinary `responses` lane and
-configured priority remain untouched.
+Compact health is deliberately stricter than ordinary chat health and is keyed
+by the exact requested model. `gpt-5.6-sol`, `gpt-5.6-terra`,
+`gpt-5.6-luna`, `gpt-5.5`, and `gpt-5.4` do not share one broad `gpt-5`
+compact health slot. Any non-client compact lane failure, including upstream
+5xx, rate limits, capability errors, protocol failures, and stream
+interruptions, is cooled until the next 04:00 Asia/Shanghai calibration on the
+first signal. This avoids repeatedly trying a flaky compact lane inside Codex's
+context-compression path, where one failure can hide or stall the task. The
+account's ordinary `responses` lane and configured priority remain untouched.
 
 The compact probe accepts only a real compaction response with non-empty
 `encrypted_content`; an HTTP 2xx response containing only usage or ordinary text is
@@ -157,6 +159,11 @@ sustained-failure quarantine and waits for the next 04:00 Asia/Shanghai
 calibration. The account's configured priority, schedulable flag, group
 membership, and credentials remain unchanged.
 
+Text streaming health is keyed by exact GPT model rather than one broad GPT-5
+bucket. A `gpt-5.6-terra` SSE interruption on 404token therefore demotes only
+that lane/model pair; `gpt-5.6-luna`, `gpt-5.5`, and `gpt-5.4` keep their own
+health state and can continue to be selected if they are healthy.
+
 This applies generically to upstream messages such as `upstream response
 failed`, `stream read error`, `stream data interval timeout`, and `idle timeout
 waiting for SSE`. User/client cancellation remains `cancelled` and does not
@@ -165,15 +172,23 @@ image health policy.
 
 ### Compact candidate enrollment and legacy image-cooldown isolation
 
-Accounts with an existing `smart_router.capabilities` list such as
-`["chat", "responses"]` remain eligible for the independent `responses_compact`
-lane unless compact is explicitly disabled with `openai_compact_mode=force_off`
-or the account is not a ChatGPT/Responses text lane. A historical
-`openai_compact_supported=false` result is treated as health evidence, not as a
-permanent candidate gate. This keeps older capability metadata from turning
-“not yet probed” or “temporarily failed” into “unsupported”. Auto-enrollment
-and the daily calibration therefore probe these accounts as well, unless the
-operator explicitly sets `force_off`.
+Compact production routing and auto-enrollment both treat
+`openai_compact_supported=false` as historical health evidence, not as a
+permanent capability verdict. Accounts with an existing
+`smart_router.capabilities` list such as `["chat", "responses"]` remain
+eligible for the independent `responses_compact` lane unless compact is
+explicitly disabled with `openai_compact_mode=force_off` or the account is not
+a ChatGPT/Responses text lane. A 404/503 probe failure records
+`openai_compact_last_status` and a short error summary; it no longer writes a
+new permanent `openai_compact_supported=false`. A later successful probe writes
+`openai_compact_supported=true` and lets Smart Router restore the lane through
+the warming path.
+
+Auto-enrollment and daily calibration probe legacy text lanes unless the
+operator explicitly sets `force_off`. The calibration probe expands the account
+model mapping into concrete compact models, so `gpt-5.6-sol`, `gpt-5.6-terra`,
+`gpt-5.6-luna`, `gpt-5.5`, and `gpt-5.4` get separate evidence instead of
+sharing a single broad GPT-5 state.
 
 Compact enrollment is limited to accounts that also declare or infer chat/
 Responses capability. Image-only lanes are excluded from compact probes, so an

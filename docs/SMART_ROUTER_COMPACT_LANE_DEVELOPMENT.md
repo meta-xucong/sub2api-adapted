@@ -58,18 +58,48 @@ POST /v1/responses/compact
 
 结论：**compact 已经统一进 Smart Router。** OpenAI service 仍负责协议识别和账号资格过滤，Smart Router 负责 compact lane 的排序、软降权、健康隔离和校准；两层边界清晰，且不影响普通 responses 与图片 lane。
 
-### 3.1 本次回归定位与修复
+### 3.1 2026-07-28 回归定位与修复
 
-在 2026-07-13 的 5.5/5.6 复现中，问题不依赖具体模型：compact 账号资格筛选仍然存在，但 `buildOpenAISelectionOrder` 曾明确跳过 Smart Router，`RequireCompact` 也没有传递为独立能力键。结果是更新后 compact 请求可能沿普通聊天/静态 compact 顺序命中错误线路，失败会被误认为模型或上游普遍不可用。
+在 2026-07-28 的 aiself 复现中，问题不依赖单一模型。`gpt-5.6-terra` 的被动 compact 失败、`gpt-5.6-luna` 的手动 compact 成功，暴露的是同一个结构问题：旧策略把 GPT-5 系列 compact 健康状态合并成 `gpt-5` 大池，并把仅声明 `chat/responses` 的旧线路临时补成 `responses_compact` 候选。这样普通聊天可用的线路会被拿来承接远程压缩，最终产生 `stream closed before response.completed`、`expected exactly one compaction output item` 等 Codex 压缩失败。
 
 已修复：
 
 - compact 请求强制使用 `responses_compact` 能力键；
-- 已验证支持和未知支持仍分层，但每一层内部进入 Smart Router；
+- compact 健康状态按请求模型精确记录，例如 `gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`、`gpt-5.5`、`gpt-5.4`，不再把它们合并成 `gpt-5`；
+- 生产 compact 候选只把人工 `force_off` 当永久硬排除，历史 `openai_compact_supported=false` 不再挡住候选；
+- `openai_compact_supported=false` 退化为旧诊断字段/健康证据，失败通过 Smart Router 账本降权、冷却和恢复；
+- 仅声明 `chat/responses` 的旧 Smart Router capability map 仍可进入 compact 候选，由真实请求和校准探针持续更新健康状态；
 - compact 健康状态与普通 `responses`、图片 generation/edit 隔离；
-- 已有显式 Smart Router capability map 的 OpenAI 账号会自动兼容 compact，除非明确 `force_off`；
-- 生产请求和 04:00 探针都会写 compact 健康账本；
+- 生产请求和 04:00 探针都会按具体模型写 compact 健康账本；
 - 探针只在响应含合法 compaction item 和非空 `encrypted_content` 时记成功。
+
+这意味着 `luna` 成功不会自动治愈 `terra`，`terra` 失败也不会污染 `sol/5.5/5.4`。每个模型在每条线路上都有独立 compact 证据。
+
+### 3.2 404token 旧 false 状态污染修复
+
+404token 曾出现以下状态：
+
+```text
+7646881-pro / 7646881-兜底 直连 /v1/responses/compact 已经 200
+数据库 extra 中仍残留 openai_compact_supported=false
+openai_compact_last_status 仍是旧 404
+```
+
+旧设计把这个 `false` 当作生产候选硬门槛，导致已恢复线路进不了
+`responses_compact` 候选池，请求反而被迫落到 plus、爽蹬或 YeToken 等当时
+compact 不稳定的线路。
+
+新规则明确拆分：
+
+- `openai_compact_mode=force_off`：人工策略，永久硬排除；
+- `openai_compact_supported=true`：最近一次成功证据，可帮助恢复；
+- `openai_compact_supported=false`：旧诊断/健康证据，不再硬排除；
+- `openai_compact_last_status` / `last_error`：只用于复盘和校准输入；
+- `smart_router_lane_state`：按账号、能力、模型记录真正的动态降权和恢复状态。
+
+因此旧 false/404 不需要手动清理；生产调度、auto-enrollment 和每日 04:00
+校准都会允许该线路重新证明自己。若再次失败，它会进入健康账本并被降权或
+冷却；若探测成功，则自动写回成功证据并恢复候选资格。
 
 ## 4. 目标架构
 
@@ -105,6 +135,7 @@ POST /v1/images/edits                -> image_edit
 ```text
 (aiself-account-84, responses, gpt-5.6-terra)
 (aiself-account-84, responses_compact, gpt-5.6-terra)
+(aiself-account-84, responses_compact, gpt-5.6-luna)
 (aiself-account-84, image_generation, gpt-image-2)
 ```
 
@@ -112,6 +143,7 @@ POST /v1/images/edits                -> image_edit
 
 - compact 失败只影响 compact lane；
 - 普通聊天成功不会错误治愈 compact；
+- 同一账号的不同 compact 模型不会相互治愈或相互污染；
 - 图片生图和图生图仍然可以继续独立；
 - 同一个账号可以同时拥有多个能力状态。
 
@@ -146,11 +178,11 @@ CapabilityFilter
 5. 在同一有效 priority 层内按健康、负载、队列、延迟和成本择优；
 6. 当前请求已经尝试过的 lane 和 source group 不再重复尝试。
 
-未知 compact 能力的账号不能直接永久排除。首次部署或新账号接入时，状态为 `unknown`，允许一次受控真实请求或校准探针来建立证据。
+未知 compact 能力的第三方账号可以进入受控候选，但失败不会写成永久禁用。首次部署或新账号接入时，状态为 `unknown`，由生产请求、auto-enrollment 或每日 04:00 校准探针建立证据。
 
-历史探测写入的 `openai_compact_supported=false` 只能作为健康证据和校准输入，不能作为 Smart Router 候选入口的永久硬过滤。只有人工 `force_off`、账号不可调度、模型不匹配、或账号本身不是 ChatGPT/Responses 文本线路时，才允许在候选装配阶段直接排除。否则会出现 404/503 抖动后状态永远卡死，后续即使上游恢复也无法被 04:00 校准自然拉回。
+历史探测写入的 `openai_compact_supported=false` 不是生产入口的硬排除信号，也不是校准入口的硬排除信号。每日校准必须绕过这种历史 false 证据，对 failed、unknown、degraded、stale false 的 compact lane 做受控探针。成功后写回 `openai_compact_supported=true` 并进入 warming；失败只记录对应模型的健康证据、HTTP 状态和错误摘要，不把整个账号永久关闭。
 
-每日校准必须绕过这种历史 false 证据，对 failed、unknown、degraded、stale false 的 compact lane 做受控探针。成功后清除旧的 false 结论并进入 warming；失败则继续保留到下一轮校准。
+人工 `force_off` 是唯一永久硬禁用；模型不匹配、账号不可调度和非文本线路仍按候选过滤处理。第三方 OpenAI-compatible endpoint 的能力事实由账本持续更新，而不是由一次 `false` 定终身。
 
 ### 5.2 失败动作
 
@@ -242,6 +274,18 @@ probe_at
 | 最近发生协议格式错误 | 重新做完整响应结构校验 |
 
 成功后进入 `warming_5`，再逐步进入 `warming_25` 和 `healthy`。刚恢复的线路不能立刻承接全部 compact 流量。
+
+Compact 探针必须按账号实际暴露的 GPT-5 模型展开。默认关注以下稳定别名：
+
+```text
+gpt-5.6-sol
+gpt-5.6-terra
+gpt-5.6-luna
+gpt-5.5
+gpt-5.4
+```
+
+如果账号 `model_mapping` 或 `compact_model_mapping` 只暴露其中一部分，则只探测匹配的模型；如果使用 `gpt-5.6-*` 或 `*` 这类通配映射，则展开为对应的具体模型。探针结果按具体模型写入账本，不能只写一个 `gpt-5` 总状态。
 
 ## 8. 配置设计
 

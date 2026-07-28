@@ -957,6 +957,15 @@ func (s *defaultOpenAIAccountScheduler) buildSmartRouterSelectionOrder(
 		if !ok {
 			continue
 		}
+		if req.RequireCompact || req.SmartRouterCapability == smartrouter.CapabilityResponsesCompact {
+			if openAICompactSupportTier(candidate.account) == 0 {
+				continue
+			}
+			if lane.Capabilities == nil {
+				lane.Capabilities = map[smartrouter.Capability]bool{}
+			}
+			lane.Capabilities[smartrouter.CapabilityResponsesCompact] = true
+		}
 		if health := s.service.smartRouterHealth(); health != nil {
 			lane = health.Snapshot(lane, req.SmartRouterCapability, req.RequestedModel, time.Now().Unix())
 		}

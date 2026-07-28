@@ -37,29 +37,6 @@ func createOpenAICompactProbePayload(model string) map[string]any {
 	}
 }
 
-func shouldMarkOpenAICompactUnsupported(status int, body []byte) bool {
-	switch status {
-	case http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusNotImplemented:
-		return true
-	case http.StatusBadRequest, http.StatusForbidden, http.StatusUnprocessableEntity:
-		lower := strings.ToLower(strings.TrimSpace(extractUpstreamErrorMessage(body) + " " + string(body)))
-		if strings.Contains(lower, "compact") {
-			for _, keyword := range []string{
-				"unsupported",
-				"not support",
-				"does not support",
-				"not available",
-				"disabled",
-			} {
-				if strings.Contains(lower, keyword) {
-					return true
-				}
-			}
-		}
-	}
-	return false
-}
-
 func buildOpenAICompactProbeExtraUpdates(resp *http.Response, body []byte, probeErr error, now time.Time) map[string]any {
 	updates := map[string]any{
 		"openai_compact_checked_at":  now.Format(time.RFC3339),
@@ -88,9 +65,6 @@ func buildOpenAICompactProbeExtraUpdates(resp *http.Response, body []byte, probe
 			updates["openai_compact_supported"] = true
 			updates["openai_compact_last_error"] = ""
 		} else {
-			if shouldMarkOpenAICompactUnsupported(resp.StatusCode, body) {
-				updates["openai_compact_supported"] = false
-			}
 			updates["openai_compact_last_error"] = errMsg
 		}
 	}

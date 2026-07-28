@@ -46,6 +46,7 @@ type CapabilityEvidence struct {
 type CalibrationProbe struct {
 	LaneID     string
 	Capability Capability
+	Model      string
 	Reason     string
 }
 

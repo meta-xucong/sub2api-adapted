@@ -44,13 +44,13 @@ func TestBuildOpenAICompactProbeExtraUpdates_SuccessMarksSupported(t *testing.T)
 	}
 }
 
-func TestBuildOpenAICompactProbeExtraUpdates_404MarksUnsupported(t *testing.T) {
+func TestBuildOpenAICompactProbeExtraUpdates_404DoesNotPermanentlyMarkUnsupported(t *testing.T) {
 	now := time.Date(2026, 4, 10, 10, 0, 0, 0, time.UTC)
 	body := []byte(`404 page not found`)
 	updates := buildOpenAICompactProbeExtraUpdates(&http.Response{StatusCode: http.StatusNotFound}, body, nil, now)
 
-	if got := updates["openai_compact_supported"]; got != false {
-		t.Fatalf("openai_compact_supported = %v, want false", got)
+	if _, exists := updates["openai_compact_supported"]; exists {
+		t.Fatalf("did not expect openai_compact_supported for 404 diagnostics")
 	}
 	if got := updates["openai_compact_last_status"]; got != http.StatusNotFound {
 		t.Fatalf("openai_compact_last_status = %v, want %d", got, http.StatusNotFound)

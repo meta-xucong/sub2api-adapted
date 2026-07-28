@@ -104,10 +104,56 @@ func TestBuildSmartRouterCompactProbeExtraUpdatesDoesNotQuarantineTransientFailu
 		StatusCode:   http.StatusNotFound,
 		ErrorSummary: "compact endpoint not found",
 	}, now)
-	require.Equal(t, false, unsupported["openai_compact_supported"])
+	require.NotContains(t, unsupported, "openai_compact_supported")
 
 	success := buildSmartRouterCompactProbeExtraUpdates(SmartRouterCalibrationResult{Success: true, StatusCode: http.StatusOK}, now)
 	require.Equal(t, true, success["openai_compact_supported"])
+}
+
+func TestSmartRouterCompactProbeModelsExpandGPT5Variants(t *testing.T) {
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{
+				"gpt-5.6-*":     "provider-56",
+				"gpt-5.5":       "provider-55",
+				"gpt-5.4":       "provider-54",
+				"gpt-image-2":   "image",
+				"claude-sonnet": "claude",
+			},
+		},
+	}
+
+	require.Equal(t, []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4"}, smartRouterCompactProbeModelsForAccount(account, "gpt-5.4"))
+}
+
+func TestEnsureCompactModelCalibrationProbesAddsExactModels(t *testing.T) {
+	service := &SmartRouterCalibrationService{}
+	account := &Account{
+		ID:       730054,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{
+				"gpt-5.6-terra": "provider-terra",
+				"gpt-5.5":       "provider-55",
+			},
+		},
+	}
+	lanes := []smartrouter.LaneSnapshot{{
+		LaneID:    "account:730054",
+		AccountID: 730054,
+		Capabilities: map[smartrouter.Capability]bool{
+			smartrouter.CapabilityResponsesCompact: true,
+		},
+	}}
+
+	probes := service.ensureCompactModelCalibrationProbes(nil, lanes, map[string]*Account{"account:730054": account})
+	require.ElementsMatch(t, []smartrouter.CalibrationProbe{
+		{LaneID: "account:730054", Capability: smartrouter.CapabilityResponsesCompact, Model: "gpt-5.6-terra", Reason: "scheduled_model_compact_probe"},
+		{LaneID: "account:730054", Capability: smartrouter.CapabilityResponsesCompact, Model: "gpt-5.5", Reason: "scheduled_model_compact_probe"},
+	}, probes)
 }
 
 func TestCompactCalibrationLanesIncludeTextAndSkipImageOnlyAccounts(t *testing.T) {

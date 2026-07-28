@@ -16,6 +16,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
+	smartrouter "github.com/Wei-Shaw/sub2api/internal/smartrouter/core"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 )
@@ -168,20 +169,36 @@ func noAvailableOpenAISelectionError(requestedModel string, compactBlocked bool)
 	return errors.New("no available OpenAI accounts")
 }
 
-// openAICompactSupportTier classifies an OpenAI account by compact capability.
-// The tier is only used to honor explicit hard opt-outs; it must not change
-// the normal priority order for an otherwise eligible compact request.
+// openAICompactSupportTier classifies compact eligibility. Only operator
+// force_off is a permanent hard gate; historical probe failures are health
+// evidence and must not trap a recovered lane out of the candidate pool.
 func openAICompactSupportTier(account *Account) int {
 	if account == nil || !account.IsOpenAI() {
 		return 0
 	}
-	// Probe results are telemetry, not a permanent eligibility gate. A transient
-	// provider failure or a newly introduced model must still get a normal first
-	// attempt; only an explicit operator force-off is a hard exclusion.
-	if account.GetOpenAICompactMode() == OpenAICompactModeForceOff {
+	switch account.GetOpenAICompactMode() {
+	case OpenAICompactModeForceOff:
 		return 0
+	case OpenAICompactModeForceOn:
+		return 1
 	}
-	return 1
+	if smartRouterAccountDeclaresCompactCapability(account) || smartRouterAccountHasTextCapability(account) || openAIAccountUsesNativeOpenAIEndpoint(account) {
+		return 1
+	}
+	return 0
+}
+
+func smartRouterAccountDeclaresCompactCapability(account *Account) bool {
+	extra := parseSmartRouterAccountExtra(account)
+	return extra.Capabilities[smartrouter.CapabilityResponsesCompact]
+}
+
+func openAIAccountUsesNativeOpenAIEndpoint(account *Account) bool {
+	if account == nil || !account.IsOpenAI() {
+		return false
+	}
+	baseURL := strings.ToLower(strings.TrimRight(strings.TrimSpace(account.GetOpenAIBaseURL()), "/"))
+	return baseURL == "https://api.openai.com" || baseURL == "https://api.openai.com/v1"
 }
 
 // isOpenAICompatibleAccountEligibleForRequest 判断 OpenAI 兼容账号是否满足本次请求的调度条件。

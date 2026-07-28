@@ -832,18 +832,14 @@ func (a *Account) OpenAICompactSupportKnown() (supported bool, known bool) {
 	return supported, true
 }
 
-// AllowsOpenAICompact reports whether the account may be considered for compact
-// requests. Unknown capability remains allowed to avoid breaking older accounts
-// before an explicit probe has been run.
+// AllowsOpenAICompact reports whether the account may be considered by compact
+// routing and calibration. A historical probe failure is not a permanent gate;
+// only an explicit operator force_off excludes the account.
 func (a *Account) AllowsOpenAICompact() bool {
 	if a == nil || !a.IsOpenAI() {
 		return false
 	}
-	supported, known := a.OpenAICompactSupportKnown()
-	if !known {
-		return true
-	}
-	return supported
+	return a.GetOpenAICompactMode() != OpenAICompactModeForceOff
 }
 
 // GetCompactModelMapping returns compact-only model remapping configuration.

@@ -199,6 +199,33 @@ func TestHealthTrackerCompactFailureFreezesUntilCalibrationImmediately(t *testin
 	require.Equal(t, calibrationAt.Unix(), degraded.CooldownUntilUnix)
 }
 
+func TestHealthTrackerCompactUsesExactGPT5ModelKey(t *testing.T) {
+	now := time.Date(2026, time.July, 28, 16, 30, 0, 0, time.FixedZone("Asia/Shanghai", 8*60*60))
+	tracker := NewHealthTracker(HealthPolicy{
+		SustainedFailureUntil: func(time.Time) time.Time {
+			return now.Add(12 * time.Hour)
+		},
+	}, func() time.Time { return now }, nil)
+
+	tracker.Observe(RouteResult{
+		LaneID:     "line",
+		Capability: CapabilityResponsesCompact,
+		Model:      "gpt-5.6-terra",
+		StatusCode: http.StatusBadGateway,
+		ErrorClass: FailureUpstream5xx,
+	})
+
+	terra := tracker.Snapshot(LaneSnapshot{LaneID: "line", Priority: 2}, CapabilityResponsesCompact, "gpt-5.6-terra", now.Unix())
+	luna := tracker.Snapshot(LaneSnapshot{LaneID: "line", Priority: 2}, CapabilityResponsesCompact, "gpt-5.6-luna", now.Unix())
+	ordinary := tracker.Snapshot(LaneSnapshot{LaneID: "line", Priority: 2}, CapabilityResponses, "gpt-5.6-luna", now.Unix())
+
+	require.Greater(t, terra.Priority, 2)
+	require.Equal(t, 2, luna.Priority)
+	require.Equal(t, 2, ordinary.Priority)
+	require.Equal(t, "gpt-5.6-terra", NewHealthKey("line", CapabilityResponsesCompact, "gpt-5.6-terra").Model)
+	require.Equal(t, "gpt-5.6-terra", NewHealthKey("line", CapabilityResponses, "gpt-5.6-terra").Model)
+}
+
 func TestHealthTrackerCompactCancelledDoesNotFreezeLane(t *testing.T) {
 	now := time.Date(2026, time.July, 27, 14, 41, 0, 0, time.FixedZone("Asia/Shanghai", 8*60*60))
 	calibrationAt := time.Date(2026, time.July, 28, 4, 0, 0, 0, now.Location())
@@ -268,6 +295,39 @@ func TestHealthTrackerStreamInterruptedIsHeavyChatFailure(t *testing.T) {
 	recovered := tracker.Snapshot(LaneSnapshot{LaneID: "liuyun-k12", Priority: 6}, CapabilityResponses, "gpt-5.6-luna", now.Unix())
 	require.Equal(t, 6, recovered.Priority)
 	require.Equal(t, RecoveryNormal, recovered.RecoveryStage)
+}
+
+func TestHealthTrackerStreamInterruptedDoesNotDowngradeOtherGPT5Models(t *testing.T) {
+	now := time.Date(2026, time.July, 28, 17, 20, 0, 0, time.FixedZone("Asia/Shanghai", 8*60*60))
+	calibrationAt := time.Date(2026, time.July, 29, 4, 0, 0, 0, now.Location())
+	tracker := NewHealthTracker(HealthPolicy{
+		SecondTransientCooldown:   10 * time.Minute,
+		SustainedFailureThreshold: 3,
+		SustainedFailureUntil: func(time.Time) time.Time {
+			return calibrationAt
+		},
+		RecoveryPriorityStep: 30,
+	}, func() time.Time { return now }, nil)
+
+	tracker.Observe(RouteResult{
+		LaneID:       "token404-liuyun",
+		BasePriority: 4,
+		Capability:   CapabilityResponses,
+		Model:        "gpt-5.6-terra",
+		ErrorClass:   FailureStreamInterrupted,
+		ErrorSummary: "idle timeout waiting for SSE",
+	})
+
+	terra := tracker.Snapshot(LaneSnapshot{LaneID: "token404-liuyun", Priority: 4}, CapabilityResponses, "gpt-5.6-terra", now.Unix())
+	luna := tracker.Snapshot(LaneSnapshot{LaneID: "token404-liuyun", Priority: 4}, CapabilityResponses, "gpt-5.6-luna", now.Unix())
+	gpt55 := tracker.Snapshot(LaneSnapshot{LaneID: "token404-liuyun", Priority: 4}, CapabilityResponses, "gpt-5.5", now.Unix())
+
+	require.Equal(t, 34, terra.Priority)
+	require.Equal(t, RecoveryCooling, terra.RecoveryStage)
+	require.Equal(t, 4, luna.Priority)
+	require.Equal(t, RecoveryNormal, luna.RecoveryStage)
+	require.Equal(t, 4, gpt55.Priority)
+	require.Equal(t, RecoveryNormal, gpt55.RecoveryStage)
 }
 
 func TestHealthTrackerImageThresholdFreezesBeforeChat(t *testing.T) {

@@ -117,9 +117,9 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_CompactRejectsExplicitl
 	require.Nil(t, selection)
 }
 
-// TestOpenAIGatewayService_SelectAccountWithScheduler_CompactFallsBackToUnknown
-// 验证探测失败不再是硬禁用，只有 force_off 才会被过滤。
-func TestOpenAIGatewayService_SelectAccountWithScheduler_CompactFallsBackToUnknown(t *testing.T) {
+// TestOpenAIGatewayService_SelectAccountWithScheduler_CompactAllowsFailedProbeAsSoftEvidence
+// 验证历史探测失败不会成为永久硬门槛，线路恢复后仍可回到候选池。
+func TestOpenAIGatewayService_SelectAccountWithScheduler_CompactAllowsFailedProbeAsSoftEvidence(t *testing.T) {
 	resetOpenAIAdvancedSchedulerSettingCacheForTest()
 
 	ctx := context.Background()
@@ -133,7 +133,8 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_CompactFallsBackToUnkno
 			Schedulable: true,
 			Concurrency: 1,
 			Priority:    0,
-			Extra:       map[string]any{"openai_compact_supported": false}, // failed probe remains eligible
+			Credentials: map[string]any{"base_url": "https://third-party.example/v1"},
+			Extra:       map[string]any{"openai_compact_supported": false},
 		},
 		{
 			ID:          71021,
@@ -143,7 +144,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_CompactFallsBackToUnkno
 			Schedulable: true,
 			Concurrency: 1,
 			Priority:    9,
-			Extra:       map[string]any{}, // unknown -> tier=1
+			Extra:       map[string]any{"openai_compact_supported": true},
 		},
 	}
 	cfg := &config.Config{}
@@ -168,7 +169,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_CompactFallsBackToUnkno
 	require.NoError(t, err)
 	require.NotNil(t, selection)
 	require.NotNil(t, selection.Account)
-	require.Equal(t, int64(71020), selection.Account.ID, "probe failure must not override normal priority")
+	require.Equal(t, int64(71020), selection.Account.ID, "historical compact false must not permanently override manual priority")
 }
 
 // TestOpenAICompactSupportTier 验证 compact 硬禁用分类逻辑。
@@ -180,9 +181,13 @@ func TestOpenAICompactSupportTier(t *testing.T) {
 	}{
 		{name: "nil", account: nil, want: 0},
 		{name: "non openai", account: &Account{Platform: PlatformAnthropic}, want: 0},
-		{name: "openai unknown", account: &Account{Platform: PlatformOpenAI, Extra: map[string]any{}}, want: 1},
+		{name: "native openai unknown", account: &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Extra: map[string]any{}}, want: 1},
+		{name: "third party unknown text lane", account: &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://vendor.example/v1"}, Extra: map[string]any{}}, want: 1},
 		{name: "openai supported probe", account: &Account{Platform: PlatformOpenAI, Extra: map[string]any{"openai_compact_supported": true}}, want: 1},
-		{name: "openai failed probe remains eligible", account: &Account{Platform: PlatformOpenAI, Extra: map[string]any{"openai_compact_supported": false}}, want: 1},
+		{name: "openai failed probe remains soft evidence", account: &Account{Platform: PlatformOpenAI, Extra: map[string]any{"openai_compact_supported": false}}, want: 1},
+		{name: "explicit smart router compact", account: &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://vendor.example/v1"}, Extra: map[string]any{"smart_router": map[string]any{"capabilities": []any{"responses_compact"}}}}, want: 1},
+		{name: "legacy chat responses map remains compact eligible", account: &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://vendor.example/v1"}, Extra: map[string]any{"smart_router": map[string]any{"capabilities": []any{"chat", "responses"}}}}, want: 1},
+		{name: "image only lane is not compact", account: &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://vendor.example/v1", "model_mapping": map[string]any{"gpt-image-2": "gpt-image-2"}}, Extra: map[string]any{"smart_router": map[string]any{"capabilities": []any{"image_generation"}}}}, want: 0},
 		{name: "force on", account: &Account{Platform: PlatformOpenAI, Extra: map[string]any{"openai_compact_mode": OpenAICompactModeForceOn}}, want: 1},
 		{name: "force off overrides probe true", account: &Account{Platform: PlatformOpenAI, Extra: map[string]any{"openai_compact_mode": OpenAICompactModeForceOff, "openai_compact_supported": true}}, want: 0},
 	}

@@ -584,7 +584,7 @@ func TestSmartRouterLaneSnapshotAutoInfersHostWhenNoNameKey(t *testing.T) {
 	require.Equal(t, 0, lane.SourceGroupMaxConcurrency)
 }
 
-func TestSmartRouterLaneSnapshotTreatsMissingCompactCapabilityAsUnknown(t *testing.T) {
+func TestSmartRouterLaneSnapshotTreatsLegacyTextCapabilitiesAsCompactEligible(t *testing.T) {
 	account := &Account{
 		ID:       73004,
 		Name:     "legacy-chat-capability-map",

@@ -20,7 +20,7 @@ HTTP 请求中无感切换到另一条线路。否则会造成重复输出、重
 
 1. 不重放已经开始写流的请求。
 2. 将 SSE 开流后失败识别为比普通瞬时错误更重的线路健康失败。
-3. 失败只影响对应 `capability + model family + lane`，不改账号状态、
+3. 失败只影响对应 `capability + exact model + lane`，不改账号状态、
    人工优先级、分组、余额或模型映射。
 4. 复用现有 Smart Router 软降权、恢复槽位和 04:00 Asia/Shanghai 校准，
    不新增需要逐线路手工配置的规则。
@@ -63,6 +63,21 @@ stream_interrupted
 
 ## 健康策略
 
+文本流式能力使用精确模型健康键，而不是粗略的 GPT-5 大池：
+
+```text
+(lane_id, responses, gpt-5.6-sol)
+(lane_id, responses, gpt-5.6-terra)
+(lane_id, responses, gpt-5.6-luna)
+(lane_id, responses, gpt-5.5)
+(lane_id, responses, gpt-5.4)
+```
+
+因此 404token 某条线路在 `gpt-5.6-terra` 上出现
+`idle timeout waiting for SSE` 时，只会降权该线路的 terra 流式能力；
+`luna`、`5.5`、`5.4` 仍按自己的健康证据调度。这样可以避免某个模型或
+供应商子路由抖动时，把整个账号或整组 GPT-5 模型都拖慢。
+
 `stream_interrupted` 复用现有配置：
 
 - `gateway.smart_router.recovery.second_failure_cooldown_seconds`
@@ -83,7 +98,8 @@ stream_interrupted
 ## 与现有机制的关系
 
 - 普通 `503`、`502`、超时仍走原 `upstream_5xx` / `timeout` 逻辑。
-- `responses_compact` 仍是独立能力，不影响普通 `responses`。
+- `responses_compact` 仍是独立能力，不影响普通 `responses`；二者都按具体
+  GPT-5 模型保留独立健康状态。
 - 图片生图和图生图仍使用 `image_generation` / `image_edit` 的独立账本。
 - 线路没有被硬删除；当所有线路都差时，软降权策略仍允许选择相对健康者。
 
