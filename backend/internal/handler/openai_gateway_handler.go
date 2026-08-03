@@ -664,16 +664,18 @@ func isBareOpenAIResponsesPath(c *gin.Context) bool {
 	return strings.HasSuffix(normalizedPath, "/responses")
 }
 
-// normalizeOpenAIResponsesCompactRequest 统一处理两种入站 compact 形态：
-// path-based（POST /v1/responses/compact）与 Codex remote compact v2 的
-// body-signal（普通 POST /v1/responses 的 input 中携带 type=compaction_trigger，
-// 见 #3777）。body-signal 命中时在 stream 解析、compact body 归一化与
+// normalizeOpenAIResponsesCompactRequest 统一处理 path-based（POST
+// /v1/responses/compact）与 Codex remote compact v2 的 body-signal（普通
+// POST /v1/responses 中携带 compaction_trigger，或新版 Codex 的
+// request_kind=compaction + encrypted compaction item，见 #3777）。
+// body-signal 命中时在 stream 解析、compact body 归一化与
 // requireCompact 调度判定之前改写 URL path，使后续全部链路（含 passthrough
 // 分支与上游 URL 构建）与 path-based 完全一致。
 // 返回归一化后的 body；ok=false 表示错误响应已写出，调用方应直接 return。
 func (h *OpenAIGatewayHandler) normalizeOpenAIResponsesCompactRequest(c *gin.Context, reqLog *zap.Logger, body []byte) ([]byte, bool) {
 	isCompactRequest := service.IsOpenAIResponsesCompactPathForTest(c)
-	if !isCompactRequest && isBareOpenAIResponsesPath(c) && service.HasCompactionTriggerInInput(body) {
+	bodySignal := service.DetectOpenAICompactBodySignal(body)
+	if !isCompactRequest && isBareOpenAIResponsesPath(c) && bodySignal.Detected {
 		c.Request.URL.Path = strings.TrimRight(c.Request.URL.Path, "/") + "/compact"
 		isCompactRequest = true
 		// Codex remote compact v2 的原始请求是流式 /responses：白名单归一化会删除
@@ -683,7 +685,10 @@ func (h *OpenAIGatewayHandler) normalizeOpenAIResponsesCompactRequest(c *gin.Con
 		if clientStream {
 			service.MarkOpenAICompactClientStream(c)
 		}
-		reqLog.Info("codex.remote_compact.detected_body_signal", zap.Bool("client_stream", clientStream))
+		reqLog.Info("codex.remote_compact.detected_body_signal",
+			zap.Bool("client_stream", clientStream),
+			zap.String("signal_kind", bodySignal.Kind),
+		)
 	}
 	if !isCompactRequest {
 		return body, true

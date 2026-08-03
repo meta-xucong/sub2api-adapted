@@ -85,6 +85,21 @@ HTTP 200、Codex 端却因缺少 compact payload 反复重连。
 - 上游若确实不支持 compact，应返回可 failover 的错误，由 Smart Router 切到下一条；
 - 普通聊天仍保留原有 chat fallback，不受影响。
 
+### 3.5 兼容 Codex 新版自动压缩请求形态
+
+新版 Codex 可能把自动压缩请求发送到裸 `/responses`，而不是直接使用
+`/responses/compact`，并且不再携带旧的 `input[].type=compaction_trigger`。这类请求
+使用两个稳定信号：
+
+- `client_metadata.x-codex-turn-metadata.request_kind` 等于 `compaction`；
+- `input[]` 中存在带非空 `encrypted_content` 的 `compaction` 或
+  `compaction_summary` item。
+
+网关在普通 `/responses` 的入口把这种请求提升为 `/responses/compact`，随后复用已有的
+compact body 归一化、专用能力调度、失败账本和 SSE 桥接。普通 gpt-5.6 请求即使携带
+`additional_tools`，只要 `request_kind` 是 `turn` 或没有有效 compaction item，就保持
+普通 Responses 路径，避免把正常对话误送到 compact lane。
+
 ## 4. 重连边界
 
 keepalive 只能防止代理因长时间无字节而主动断开，不能让 Codex 重连自动接回已经

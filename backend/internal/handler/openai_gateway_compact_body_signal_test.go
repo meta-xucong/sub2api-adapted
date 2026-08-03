@@ -148,6 +148,30 @@ func TestNormalizeOpenAIResponsesCompactRequest_BodySignalStreamFalseNotMarked(t
 	}
 }
 
+func TestNormalizeOpenAIResponsesCompactRequest_CodexPreSamplingSignalPromoted(t *testing.T) {
+	h := &OpenAIGatewayHandler{}
+	body := []byte(`{
+		"model":"gpt-5.6-luna",
+		"stream":true,
+		"client_metadata":{"x-codex-turn-metadata":"{\"request_kind\":\"compaction\"}"},
+		"input":[
+			{"type":"additional_tools","role":"developer","tools":[]},
+			{"type":"compaction","id":"cmp_test","encrypted_content":"opaque"}
+		]
+	}`)
+	c := newCompactBodySignalTestContext(t, "/v1/responses", body)
+
+	normalized, ok := h.normalizeOpenAIResponsesCompactRequest(c, zap.NewNop(), body)
+	require.True(t, ok)
+	require.Equal(t, "/v1/responses/compact", c.Request.URL.Path)
+	require.False(t, gjson.GetBytes(normalized, "stream").Exists())
+	require.False(t, gjson.GetBytes(normalized, "client_metadata").Exists())
+	require.True(t, gjson.GetBytes(normalized, "input.1").Exists())
+	marked, exists := c.Get(service.OpenAICompactClientStreamKeyForTest())
+	require.True(t, exists)
+	require.Equal(t, true, marked)
+}
+
 // path-based compact（Codex v1 unary 协议）即使 body 带 stream:true 也不标记，
 // 保持 JSON 写回行为不变。
 func TestNormalizeOpenAIResponsesCompactRequest_PathBasedStreamTrueNotMarked(t *testing.T) {
