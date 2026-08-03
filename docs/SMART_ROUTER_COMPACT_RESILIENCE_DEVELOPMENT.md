@@ -71,6 +71,20 @@ OAuth passthrough 和 OpenAI API key passthrough 都可能遇到一种“伪成�
 - client-stream compact 桥接只在协议有效时合成 SSE，不再把普通 message 包装成
   compact SSE。
 
+### 3.4 compact 禁止走 chat-completions 兼容桥
+
+APIKey 账号若被探测为不支持 Responses，普通 `/responses` 请求可回退到
+chat-completions 兼容桥；但 compact 不能这么做。chat-completions 没有
+`compaction`/`encrypted_content` 协议，只会返回普通 assistant message，导致网关
+HTTP 200、Codex 端却因缺少 compact payload 反复重连。
+
+处理规则：
+
+- `/responses/compact` 和 body-signal compact 一律绕过 raw chat-completions fallback；
+- compact 即使命中 WSv2 账号，也强制使用 HTTP `/responses/compact`；
+- 上游若确实不支持 compact，应返回可 failover 的错误，由 Smart Router 切到下一条；
+- 普通聊天仍保留原有 chat fallback，不受影响。
+
 ## 4. 重连边界
 
 keepalive 只能防止代理因长时间无字节而主动断开，不能让 Codex 重连自动接回已经
@@ -108,8 +122,10 @@ gateway:
 3. 设置 `max_attempts_compact=2` 时仍只尝试两条；
 4. keepalive 已提交 200 后发生选择失败，日志必须是
    `codex.remote_compact.failed`，并带有 `OpsStreamError`；
-5. 普通 Responses/chat、图片路由和 04:00 校准相关测试保持通过；
-6. 二进制热更新后 `/health`、`/login` 和容器状态正常。
+5. APIKey 账号即使 `responses_supported=false`，compact 仍发往
+   `/responses/compact`，不能转成 `/chat/completions`；
+6. 普通 Responses/chat、图片路由和 04:00 校准相关测试保持通过；
+7. 二进制热更新后 `/health`、`/login` 和容器状态正常。
 
 ## 7. 部署方式
 
