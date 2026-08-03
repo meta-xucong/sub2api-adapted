@@ -97,7 +97,7 @@ func TestHandleNonStreamingResponse_NonCompactMessageOutputIsUntouched(t *testin
 
 func TestHandleNonStreamingResponse_NonCompactSSEWithoutTerminalIsUntouched(t *testing.T) {
 	svc := newCompactBridgeTestService()
-	c, rec := newCompactBridgeTestContext(t, true)
+	c, rec := newCompactBridgeTestContext(t, false)
 	c.Request.URL.Path = "/v1/responses"
 	resp := &http.Response{
 		StatusCode: http.StatusOK,

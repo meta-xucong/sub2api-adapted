@@ -64,6 +64,8 @@ OAuth passthrough 和 OpenAI API key passthrough 都可能遇到一种“伪成�
 
 - compact 路径只接受恰好一个 `compaction`/`compaction_summary` output item；
 - JSON 和 SSE-to-JSON 的 passthrough 分支都执行同一校验；
+- path-based `/responses/compact` 和 body-signal `/responses` + `compaction_trigger`
+  都适用同一响应协议校验；
 - 缺少终态 `response.completed` 或终态没有 response payload 时，返回可 failover 的
   upstream protocol error；
 - client-stream compact 桥接只在协议有效时合成 SSE，不再把普通 message 包装成

@@ -173,3 +173,29 @@ func TestOpenAIGatewayService_OAuthPassthroughCompactRejectsOrdinaryMessageRespo
 	require.Contains(t, string(failoverErr.ResponseBody), "compact response missing required compaction output item")
 	require.Empty(t, rec.Body.String())
 }
+
+func TestOpenAIGatewayService_OAuthPassthroughBodySignalCompactRejectsOrdinaryMessageResponse(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(nil))
+	c.Request.Header.Set("Content-Type", "application/json")
+	MarkOpenAICompactClientStream(c)
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid-body-signal-compact-message"}},
+		Body:       io.NopCloser(strings.NewReader(`{"id":"resp_message","object":"response","status":"completed","model":"gpt-5.6-sol","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"not compact"}]}],"usage":{"input_tokens":2,"output_tokens":3}}`)),
+	}
+
+	svc := &OpenAIGatewayService{}
+
+	result, err := svc.handleNonStreamingResponsePassthrough(context.Background(), resp, c, "gpt-5.6-sol", "")
+	require.Nil(t, result)
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
+	require.Contains(t, string(failoverErr.ResponseBody), "compact response missing required compaction output item")
+	require.Empty(t, rec.Body.String())
+}

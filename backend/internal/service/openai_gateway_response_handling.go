@@ -971,7 +971,7 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 // ordinary Responses endpoint is intentionally untouched. A 2xx response is
 // not enough: Codex remote compaction requires one compaction output item.
 func compactResponseProtocolError(c *gin.Context, body []byte) error {
-	if !isOpenAIResponsesCompactPath(c) {
+	if !isOpenAIResponsesCompactResponse(c) {
 		return nil
 	}
 	items := gjson.GetBytes(body, "output").Array()
@@ -988,7 +988,7 @@ func compactResponseProtocolError(c *gin.Context, body []byte) error {
 }
 
 func compactSSEMissingTerminalError(c *gin.Context, terminalType string, terminalOK bool) error {
-	if !isOpenAIResponsesCompactPath(c) {
+	if !isOpenAIResponsesCompactResponse(c) {
 		return nil
 	}
 	if !terminalOK {
@@ -998,6 +998,10 @@ func compactSSEMissingTerminalError(c *gin.Context, terminalType string, termina
 		return errors.New("compact response.completed event missing response payload")
 	}
 	return fmt.Errorf("compact response ended with %s before response.completed", terminalType)
+}
+
+func isOpenAIResponsesCompactResponse(c *gin.Context) bool {
+	return isOpenAIResponsesCompactPath(c) || openAICompactClientWantsStream(c)
 }
 
 func newOpenAICompactFailoverError(resp *http.Response, message string) *UpstreamFailoverError {
@@ -1253,7 +1257,7 @@ func isResponsesCompactionItemType(itemType string) bool {
 // compaction item——纯流式透传（v0.1.146）下客户端直接读事件流天然拿得到，
 // SSE→JSON 提取链路必须给出等价结果。非 compact 请求原样返回。
 func supplementCompactionItemFromSSE(c *gin.Context, finalResponse []byte, bodyText string) []byte {
-	if !isOpenAIResponsesCompactPath(c) {
+	if !isOpenAIResponsesCompactResponse(c) {
 		return finalResponse
 	}
 	if len(gjson.GetBytes(finalResponse, "output").Array()) == 0 {
