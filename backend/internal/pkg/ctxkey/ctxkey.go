@@ -39,6 +39,9 @@ const (
 	OpenAIImageGenerationIntent Key = "ctx_openai_image_generation_intent"
 	// OpenAIResponsesIntent 标识普通 OpenAI Responses 请求，和 Chat Completions 分离健康调度。
 	OpenAIResponsesIntent Key = "ctx_openai_responses_intent"
+	// OpenAIFastIntent 标识客户端请求了 OpenAI fast/priority service tier。
+	// 第三方上游通常不能原样接收该字段；网关把它作为 Smart Router 的低延迟偏好。
+	OpenAIFastIntent Key = "ctx_openai_fast_intent"
 
 	// Group 认证后的分组信息，由 API Key 认证中间件设置
 	Group Key = "ctx_group"

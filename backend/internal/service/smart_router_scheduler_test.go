@@ -504,6 +504,27 @@ func TestOpenAIGatewayService_SmartRouterAutoProtectsUnconfiguredBusyLane(t *tes
 	}
 }
 
+func TestSmartRouterRouteRequestCarriesFastIntentToCoreRouter(t *testing.T) {
+	svc := &OpenAIGatewayService{cfg: newSmartRouterSchedulerTestConfig()}
+	scheduler := &defaultOpenAIAccountScheduler{service: svc}
+
+	chatReq := scheduler.smartRouterRouteRequest(OpenAIAccountScheduleRequest{
+		RequestedModel:              "gpt-5.6-sol",
+		SmartRouterCapability:       smartrouter.CapabilityResponses,
+		SmartRouterPreferLowLatency: true,
+	})
+	require.True(t, chatReq.PreferLowLatency)
+	require.Equal(t, smartrouter.CapabilityResponses, chatReq.Capability)
+
+	compactReq := scheduler.smartRouterRouteRequest(OpenAIAccountScheduleRequest{
+		RequestedModel:              "gpt-5.6-sol",
+		RequireCompact:              true,
+		SmartRouterPreferLowLatency: true,
+	})
+	require.True(t, compactReq.PreferLowLatency)
+	require.Equal(t, smartrouter.CapabilityResponsesCompact, compactReq.Capability)
+}
+
 func TestSmartRouterLaneSnapshotParsesAccountExtra(t *testing.T) {
 	account := &Account{
 		ID:          73001,

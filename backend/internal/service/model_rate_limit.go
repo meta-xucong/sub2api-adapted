@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
+	"github.com/tidwall/gjson"
 )
 
 const (
@@ -133,6 +134,29 @@ func OpenAIResponsesIntentFromContext(ctx context.Context) bool {
 	}
 	enabled, ok := ctx.Value(ctxkey.OpenAIResponsesIntent).(bool)
 	return ok && enabled
+}
+
+func WithOpenAIFastIntent(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, ctxkey.OpenAIFastIntent, true)
+}
+
+func OpenAIFastIntentFromContext(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	enabled, ok := ctx.Value(ctxkey.OpenAIFastIntent).(bool)
+	return ok && enabled
+}
+
+func OpenAIFastIntentFromBody(body []byte) bool {
+	if len(body) == 0 {
+		return false
+	}
+	tier := normalizedOpenAIServiceTierValue(gjson.GetBytes(body, "service_tier").String())
+	return tier == OpenAIFastTierPriority
 }
 
 func resolveFinalAntigravityModelKey(ctx context.Context, account *Account, requestedModel string) string {

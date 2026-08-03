@@ -308,6 +308,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	}
 	routingModel := reqModel
 	requestCtx := c.Request.Context()
+	if service.OpenAIFastIntentFromBody(body) {
+		requestCtx = service.WithOpenAIFastIntent(requestCtx)
+	}
 	routingContext := requestCtx
 	if imageIntent {
 		routingModel = service.ResolveOpenAIResponsesImageRoutingModel(reqModel, body)
@@ -892,6 +895,10 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 	sessionHash := h.gatewayService.GenerateSessionHash(c, body)
 	promptCacheKey := h.gatewayService.ExtractSessionID(c, body)
 	sessionHash, promptCacheKey = resolveOpenAIMessagesMetadataSession(sessionHash, promptCacheKey, reqModel, body)
+	routingContext := c.Request.Context()
+	if service.OpenAIFastIntentFromBody(body) {
+		routingContext = service.WithOpenAIFastIntent(routingContext)
+	}
 	if h.rejectIfCyberSessionBlocked(c, apiKey, body, reqModel, cyberBlockFormatAnthropic) {
 		return
 	}
@@ -910,7 +917,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		}
 		reqLog.Debug("openai_messages.account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
 		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForCapability(
-			c.Request.Context(),
+			routingContext,
 			apiKey.GroupID,
 			"", // no previous_response_id
 			sessionHash,

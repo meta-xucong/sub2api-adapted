@@ -76,6 +76,7 @@ type OpenAIAccountScheduleRequest struct {
 	SmartRouterImageSizeTier    string
 	SmartRouterImageInputMode   string
 	SmartRouterImageModelFamily string
+	SmartRouterPreferLowLatency bool
 	RequireCompact              bool
 	ExcludedIDs                 map[int64]struct{}
 	ExcludedSourceGroups        map[string]struct{}
@@ -1024,6 +1025,7 @@ func (s *defaultOpenAIAccountScheduler) smartRouterRouteRequest(req OpenAIAccoun
 		ImageInputMode:             smartrouter.ImageInputMode(req.SmartRouterImageInputMode),
 		ImageModelFamily:           req.SmartRouterImageModelFamily,
 		ImageResilience:            s.service.smartRouterImageResilienceEnabled(capability),
+		PreferLowLatency:           req.SmartRouterPreferLowLatency,
 	}
 }
 
@@ -1923,6 +1925,7 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
 		SmartRouterImageSizeTier:    imageSizeTier,
 		SmartRouterImageInputMode:   string(imageInputMode),
 		SmartRouterImageModelFamily: imageModelFamily,
+		SmartRouterPreferLowLatency: OpenAIFastIntentFromContext(ctx),
 	})
 }
 

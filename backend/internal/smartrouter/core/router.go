@@ -11,6 +11,7 @@ import (
 
 func Order(req RouteRequest, lanes []LaneSnapshot, policy Policy) RoutePlan {
 	policy = policy.Normalize()
+	policy = applyRequestPolicyHints(req, policy)
 	plan := RoutePlan{
 		AttemptBudget: policy.AttemptBudget(req.Capability),
 		SkipReasons:   make(map[string]string),
@@ -224,6 +225,26 @@ func Order(req RouteRequest, lanes []LaneSnapshot, policy Policy) RoutePlan {
 		}
 	}
 	return plan
+}
+
+func applyRequestPolicyHints(req RouteRequest, policy Policy) Policy {
+	if !req.PreferLowLatency {
+		return policy
+	}
+	switch req.Capability {
+	case CapabilityChat, CapabilityResponses:
+		policy.Weights.Cost *= 0.25
+		policy.Weights.Priority *= 0.75
+		policy.Weights.Health *= 1.25
+		policy.Weights.Load *= 1.4
+		policy.Weights.Queue *= 1.4
+		policy.Weights.Latency *= 3
+		policy.Weights.Recovery *= 1.2
+		if policy.Weights.Latency < 1.5 {
+			policy.Weights.Latency = 1.5
+		}
+	}
+	return policy
 }
 
 func isImageCapability(capability Capability) bool {

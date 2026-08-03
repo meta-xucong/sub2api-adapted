@@ -399,6 +399,18 @@ matches, so providers that reject OpenAI priority tiers still receive a standard
 compatible request. Explicit admin fast-policy rules continue to override this
 default.
 
+Development document: `docs/OPENAI_FAST_MODE_ADAPTER_DEVELOPMENT.md`.
+
+For Codex and other OpenAI-compatible clients, `/v1/models` now advertises Fast
+metadata on OpenAI chat models (`additional_speed_tiers=["fast"]` plus a
+`priority` service tier). This lets the client display Fast mode without
+requiring every upstream provider to support OpenAI's raw `service_tier` field.
+The inbound `fast`/`priority` value is preserved as an internal routing intent
+before the Fast Policy strips it for third-party URLs. Smart Router then applies
+the hint only to chat and ordinary Responses lanes, increasing the weight of
+latency, health, queue, and load while reducing cost bias. Image, embedding,
+and compact routes stay isolated.
+
 ## Operator test key guard
 
 Local maintenance probes must never spend or attribute traffic to a customer

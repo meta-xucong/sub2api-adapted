@@ -8,12 +8,45 @@ import (
 
 // Model represents an OpenAI model
 type Model struct {
+	ID                   string              `json:"id"`
+	Object               string              `json:"object"`
+	Created              int64               `json:"created"`
+	OwnedBy              string              `json:"owned_by"`
+	Type                 string              `json:"type"`
+	DisplayName          string              `json:"display_name"`
+	SupportsServiceTier  bool                `json:"supports_service_tier,omitempty"`
+	AdditionalSpeedTiers []string            `json:"additional_speed_tiers,omitempty"`
+	ServiceTiers         []OpenAIServiceTier `json:"service_tiers,omitempty"`
+}
+
+type OpenAIServiceTier struct {
 	ID          string `json:"id"`
-	Object      string `json:"object"`
-	Created     int64  `json:"created"`
-	OwnedBy     string `json:"owned_by"`
-	Type        string `json:"type"`
-	DisplayName string `json:"display_name"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+}
+
+func WithFastServiceTier(model Model) Model {
+	if isChatModelID(model.ID) {
+		model.SupportsServiceTier = true
+		model.AdditionalSpeedTiers = []string{"fast"}
+		model.ServiceTiers = []OpenAIServiceTier{{
+			ID:          "priority",
+			Name:        "Fast",
+			Description: "Route with a low-latency preference when supported by the gateway.",
+		}}
+	}
+	return model
+}
+
+func isChatModelID(modelID string) bool {
+	m := strings.ToLower(strings.TrimSpace(modelID))
+	if m == "" {
+		return false
+	}
+	if strings.HasPrefix(m, "gpt-image-") || strings.Contains(m, "image") {
+		return false
+	}
+	return strings.HasPrefix(m, "gpt-") || strings.Contains(m, "codex")
 }
 
 // DefaultModels OpenAI models list

@@ -75,6 +75,9 @@ type RouteRequest struct {
 	ImageInputMode ImageInputMode
 	// ImageResilience enables image-only probe fallback and source isolation.
 	ImageResilience bool
+	// PreferLowLatency is an internal hint for client fast/priority tier. It
+	// changes ranking weights for chat/responses only; it is not an upstream API field.
+	PreferLowLatency bool
 }
 
 type LaneSnapshot struct {

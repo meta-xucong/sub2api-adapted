@@ -25,11 +25,19 @@ type gatewayModelsResponseForTest struct {
 }
 
 type gatewayModelItemForTest struct {
-	ID        string `json:"id"`
-	Object    string `json:"object"`
-	Created   int64  `json:"created"`
-	OwnedBy   string `json:"owned_by"`
-	CreatedAt string `json:"created_at"`
+	ID                   string                           `json:"id"`
+	Object               string                           `json:"object"`
+	Created              int64                            `json:"created"`
+	OwnedBy              string                           `json:"owned_by"`
+	CreatedAt            string                           `json:"created_at"`
+	SupportsServiceTier  bool                             `json:"supports_service_tier"`
+	AdditionalSpeedTiers []string                         `json:"additional_speed_tiers"`
+	ServiceTiers         []gatewayModelServiceTierForTest `json:"service_tiers"`
+}
+
+type gatewayModelServiceTierForTest struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 func (s *gatewayModelsAccountRepoStub) ListSchedulableByGroupID(ctx context.Context, groupID int64) ([]service.Account, error) {
@@ -175,6 +183,9 @@ func TestGatewayModels_CustomModelsListDisabledKeepsOriginalModels(t *testing.T)
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 	require.Equal(t, []string{"gpt-5.4", "gpt-5.5"}, modelIDsForTest(got.Data))
+	require.True(t, got.Data[0].SupportsServiceTier)
+	require.Equal(t, []string{"fast"}, got.Data[0].AdditionalSpeedTiers)
+	require.Equal(t, "priority", got.Data[0].ServiceTiers[0].ID)
 }
 
 func TestGatewayModels_OpenAIAdvertisedModelsFilterSnapshots(t *testing.T) {
@@ -218,6 +229,10 @@ func TestGatewayModels_OpenAIAdvertisedModelsFilterSnapshots(t *testing.T) {
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 	require.Equal(t, []string{"custom-provider-model", "gpt-5.6-sol", "gpt-image-2"}, modelIDsForTest(got.Data))
+	byID := gatewayModelsByIDForTest(got.Data)
+	require.True(t, byID["gpt-5.6-sol"].SupportsServiceTier)
+	require.Equal(t, []string{"fast"}, byID["gpt-5.6-sol"].AdditionalSpeedTiers)
+	require.False(t, byID["gpt-image-2"].SupportsServiceTier)
 }
 
 func TestGatewayModels_CustomModelsListFiltersAndOrdersMappedModels(t *testing.T) {
@@ -584,4 +599,12 @@ func modelIDsForTest(models []gatewayModelItemForTest) []string {
 		ids = append(ids, model.ID)
 	}
 	return ids
+}
+
+func gatewayModelsByIDForTest(models []gatewayModelItemForTest) map[string]gatewayModelItemForTest {
+	out := make(map[string]gatewayModelItemForTest, len(models))
+	for _, model := range models {
+		out[model.ID] = model
+	}
+	return out
 }

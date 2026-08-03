@@ -196,6 +196,36 @@ func TestOrder_CostBiasPrefersCheapButKeepsFallbackCandidate(t *testing.T) {
 	require.ElementsMatch(t, []string{"cheap", "fallback"}, plan.OrderedLaneIDs)
 }
 
+func TestOrder_FastHintPrefersLowerLatencyOverCheapChatLane(t *testing.T) {
+	policy := DefaultPolicy()
+	policy.Enabled = true
+	policy.CostBiasMax = 10
+	lanes := []LaneSnapshot{
+		{LaneID: "cheap-slow", AccountID: 1, CostMultiplier: 0.1, LatencyEWMAms: 90000, Priority: 1},
+		{LaneID: "faster-fallback", AccountID: 2, CostMultiplier: 1, LatencyEWMAms: 1000, Priority: 1},
+	}
+
+	standard := Order(RouteRequest{Capability: CapabilityResponses, Seed: 13}, lanes, policy)
+	fast := Order(RouteRequest{Capability: CapabilityResponses, PreferLowLatency: true, Seed: 13}, lanes, policy)
+
+	require.Equal(t, "cheap-slow", standard.Candidates[0].LaneID)
+	require.Equal(t, "faster-fallback", fast.Candidates[0].LaneID)
+}
+
+func TestOrder_FastHintDoesNotAffectCompactRouting(t *testing.T) {
+	policy := DefaultPolicy()
+	policy.Enabled = true
+	policy.CostBiasMax = 10
+	lanes := []LaneSnapshot{
+		{LaneID: "cheap-slow", AccountID: 1, CostMultiplier: 0.1, LatencyEWMAms: 90000, Priority: 1, Capabilities: map[Capability]bool{CapabilityResponsesCompact: true}},
+		{LaneID: "faster-fallback", AccountID: 2, CostMultiplier: 1, LatencyEWMAms: 1000, Priority: 1, Capabilities: map[Capability]bool{CapabilityResponsesCompact: true}},
+	}
+
+	plan := Order(RouteRequest{Capability: CapabilityResponsesCompact, PreferLowLatency: true, Seed: 13}, lanes, policy)
+
+	require.Equal(t, "cheap-slow", plan.Candidates[0].LaneID)
+}
+
 func TestOrder_RestrictsRoutingToCurrentPriorityLayer(t *testing.T) {
 	policy := DefaultPolicy()
 	policy.Enabled = true

@@ -1013,16 +1013,17 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 	}
 
 	if len(availableModels) > 0 {
+		if platform == service.PlatformOpenAI {
+			writeOpenAIModelsList(c, availableModels)
+			return
+		}
 		writeModelsList(c, availableModels)
 		return
 	}
 
 	// Fallback to default models
 	if platform == service.PlatformOpenAI {
-		c.JSON(http.StatusOK, gin.H{
-			"object": "list",
-			"data":   openai.DefaultModels,
-		})
+		writeOpenAIModelsList(c, openai.DefaultModelIDs())
 		return
 	}
 
@@ -1073,17 +1074,17 @@ func writeOpenAIModelsList(c *gin.Context, modelIDs []string) {
 	models := make([]openai.Model, 0, len(modelIDs))
 	for _, modelID := range modelIDs {
 		if model, ok := defaultsByID[modelID]; ok {
-			models = append(models, model)
+			models = append(models, openai.WithFastServiceTier(model))
 			continue
 		}
-		models = append(models, openai.Model{
+		models = append(models, openai.WithFastServiceTier(openai.Model{
 			ID:          modelID,
 			Object:      "model",
 			Created:     1704067200,
 			OwnedBy:     "openai",
 			Type:        "model",
 			DisplayName: modelID,
-		})
+		}))
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"object": "list",
