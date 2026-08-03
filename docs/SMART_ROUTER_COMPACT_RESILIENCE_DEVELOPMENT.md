@@ -48,6 +48,27 @@ body-signal compact 的 keepalive 首次写出后，HTTP 状态码固定为 200�
 - 运维日志不再把“HTTP 200 keepalive + 实际上游失败”记录成成功；
 - Smart Router 仍依据实际 `Forward` 错误更新 compact 健康账本。
 
+### 3.3 passthrough compact 协议校验
+
+OAuth passthrough 和 OpenAI API key passthrough 都可能遇到一种“伪成功”：
+
+- 上游 HTTP 状态是 200；
+- body 是普通 Responses `message/output_text`；
+- 缺少 Codex remote compact 需要的 `compaction` 或 `compaction_summary` output item。
+
+这类响应不能写回客户端，也不能记为 compact 成功；否则 Codex 会看到
+`text/event-stream` 被关闭但没有 `response.completed` 或有效 compaction payload，
+表现为“正在自动压缩上下文/正在重新连接”，最终压缩失败。
+
+处理规则：
+
+- compact 路径只接受恰好一个 `compaction`/`compaction_summary` output item；
+- JSON 和 SSE-to-JSON 的 passthrough 分支都执行同一校验；
+- 缺少终态 `response.completed` 或终态没有 response payload 时，返回可 failover 的
+  upstream protocol error；
+- client-stream compact 桥接只在协议有效时合成 SSE，不再把普通 message 包装成
+  compact SSE。
+
 ## 4. 重连边界
 
 keepalive 只能防止代理因长时间无字节而主动断开，不能让 Codex 重连自动接回已经

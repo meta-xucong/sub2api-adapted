@@ -146,6 +146,12 @@ func TestBuildOpenAICompactSSEPayload_RejectsNonJSONObject(t *testing.T) {
 	}
 }
 
+func TestBuildOpenAICompactSSEPayload_RejectsOrdinaryMessageOutput(t *testing.T) {
+	body := []byte(`{"id":"resp_message","output":[{"type":"message","content":[{"type":"output_text","text":"not compact"}]}]}`)
+	_, ok := buildOpenAICompactSSEPayload(body)
+	require.False(t, ok)
+}
+
 func TestWriteOpenAICompactSSEBridge_RequiresMarkAndSuccessStatus(t *testing.T) {
 	finalResponse := []byte(`{"id":"resp_1","output":[{"type":"compaction","encrypted_content":"x"}]}`)
 

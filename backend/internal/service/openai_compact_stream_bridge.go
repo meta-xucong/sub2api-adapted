@@ -172,6 +172,7 @@ func buildOpenAICompactSSEPayload(finalResponse []byte) ([]byte, bool) {
 
 	var buf bytes.Buffer
 	outputIndex := 0
+	compactionItems := 0
 	appendEvent := func(eventType string, data []byte) {
 		_, _ = buf.WriteString("event: ")
 		_, _ = buf.WriteString(eventType)
@@ -183,6 +184,9 @@ func buildOpenAICompactSSEPayload(finalResponse []byte) ([]byte, bool) {
 		if !item.IsObject() {
 			continue
 		}
+		if isResponsesCompactionItemType(item.Get("type").String()) {
+			compactionItems++
+		}
 		event, err := sjson.SetBytes([]byte(`{"type":"response.output_item.done"}`), "output_index", outputIndex)
 		if err != nil {
 			return nil, false
@@ -193,6 +197,9 @@ func buildOpenAICompactSSEPayload(finalResponse []byte) ([]byte, bool) {
 		}
 		appendEvent("response.output_item.done", event)
 		outputIndex++
+	}
+	if compactionItems != 1 {
+		return nil, false
 	}
 
 	completed, err := sjson.SetRawBytes([]byte(`{"type":"response.completed"}`), "response", response)

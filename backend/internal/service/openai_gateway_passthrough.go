@@ -1094,6 +1094,9 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 	if originalModel != "" && mappedModel != "" && originalModel != mappedModel {
 		body = s.replaceModelInResponseBody(body, mappedModel, originalModel)
 	}
+	if compactErr := compactResponseProtocolError(c, body); compactErr != nil {
+		return nil, newOpenAICompactFailoverError(resp, compactErr.Error())
+	}
 	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, body) {
 		c.Data(resp.StatusCode, contentType, body)
 	}
@@ -1135,6 +1138,9 @@ func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(resp *http.Response, c
 		}
 		// Correct tool calls in final response
 		body = s.correctToolCallsInResponseBody(body)
+		if compactErr := compactResponseProtocolError(c, body); compactErr != nil {
+			return nil, newOpenAICompactFailoverError(resp, compactErr.Error())
+		}
 	} else {
 		terminalType, terminalPayload, terminalOK := extractOpenAISSETerminalEvent(bodyText)
 		if terminalOK && terminalType == "response.failed" {
@@ -1143,6 +1149,9 @@ func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(resp *http.Response, c
 				msg = "Upstream compact response failed"
 			}
 			return nil, s.writeOpenAINonStreamingProtocolError(resp, c, msg)
+		}
+		if compactErr := compactSSEMissingTerminalError(c, terminalType, terminalOK); compactErr != nil {
+			return nil, newOpenAICompactFailoverError(resp, compactErr.Error())
 		}
 		usage = s.parseSSEUsageFromBody(bodyText)
 		if originalModel != "" && mappedModel != "" && originalModel != mappedModel {
