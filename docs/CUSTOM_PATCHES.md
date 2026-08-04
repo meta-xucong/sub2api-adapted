@@ -2,6 +2,25 @@
 
 This repository tracks official Sub2API and keeps only the overlays that remain useful after each upstream upgrade. See `UPSTREAM_0.1.151_AUDIT.md` for the current three-way audit. `UPSTREAM_0.1.150_AUDIT.md` is retained as the previous release record.
 
+## GPT-5.6 model compatibility
+
+Design document: `docs/SMART_ROUTER_GPT56_MODEL_COMPATIBILITY.md`.
+
+The runtime keeps the GPT-5.6 aliases independent: bare `gpt-5.6` is a
+compatibility alias for `gpt-5.6-sol`, while explicit `gpt-5.6-sol`,
+`gpt-5.6-terra`, and `gpt-5.6-luna` remain unchanged. Smart Router health and
+compact evidence are keyed by the exact explicit model, so a Terra failure
+does not quarantine Luna or Sol.
+
+The replayable template
+`deploy/sql/gpt56_chat_model_compatibility.example.sql` is deliberately
+conservative. It backs up credentials and only fills an absent bare alias on
+accounts that already advertise explicit Sol support. It does not identify
+accounts by deployment-specific names, copy credentials or health state, alter
+groups, priority, concurrency, schedulability, or image-only lanes. Operators
+must validate Terra and Luna independently before adding those explicit
+mappings.
+
 ## Responses image-generation protocol bridge
 
 Design document: `docs/RESPONSES_IMAGE_GENERATION_BRIDGE_DEVELOPMENT.md`.
