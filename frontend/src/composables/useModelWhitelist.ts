@@ -225,10 +225,11 @@ const perplexityModels = [
 ]
 
 // 所有模型（去重）
-const allModelsList: string[] = [
+const allModelsList: string[] = normalizeModelNames([
   ...openaiModels,
   ...claudeModels,
   ...geminiModels,
+  ...antigravityModels,
   ...zhipuModels,
   ...qwenModels,
   ...deepseekModels,
@@ -244,10 +245,39 @@ const allModelsList: string[] = [
   ...sparkModels,
   ...hunyuanModels,
   ...perplexityModels
-]
+])
+
+export interface ModelOption {
+  value: string
+  label: string
+}
 
 // 转换为下拉选项格式
-export const allModels = allModelsList.map(m => ({ value: m, label: m }))
+export const allModels = toModelOptions(allModelsList)
+
+export function normalizeModelNames(models: string[]): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const raw of models) {
+    const model = String(raw || '').trim()
+    if (!model || seen.has(model)) continue
+    seen.add(model)
+    out.push(model)
+  }
+  return out
+}
+
+export function toModelOptions(models: string[]): ModelOption[] {
+  return normalizeModelNames(models).map(model => ({ value: model, label: model }))
+}
+
+export function getModelOptionsForPlatforms(platforms: string[] = [], extraModels: string[] = []): ModelOption[] {
+  const normalizedPlatforms = normalizeModelNames(platforms)
+  const platformModels = normalizedPlatforms.length === 0
+    ? allModelsList
+    : normalizedPlatforms.flatMap(platform => getModelsByPlatform(platform))
+  return toModelOptions([...platformModels, ...extraModels])
+}
 
 // =====================
 // 预设映射

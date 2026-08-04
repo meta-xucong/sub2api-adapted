@@ -4,7 +4,13 @@ vi.mock('@/api/admin/accounts', () => ({
   getAntigravityDefaultModelMapping: vi.fn()
 }))
 
-import { buildModelMappingObject, getModelsByPlatform, splitModelMappingObject } from '../useModelWhitelist'
+import {
+  allModels,
+  buildModelMappingObject,
+  getModelOptionsForPlatforms,
+  getModelsByPlatform,
+  splitModelMappingObject
+} from '../useModelWhitelist'
 
 describe('useModelWhitelist', () => {
   it('openai 模型列表包含 GPT-5.4 官方快照', () => {
@@ -107,6 +113,25 @@ describe('useModelWhitelist', () => {
     const models = getModelsByPlatform('antigravity')
 
     expect(models).toContain('gemini-3.1-pro')
+  })
+
+  it('全局候选包含 Antigravity 专属模型，避免平台下拉被交集过滤掉', () => {
+    const values = allModels.map(model => model.value)
+
+    expect(values).toContain('tab_flash_lite_preview')
+    expect(values).toContain('gpt-oss-120b-medium')
+  })
+
+  it('平台候选直接来自对应平台清单，并保留已选/同步的自定义模型', () => {
+    const values = getModelOptionsForPlatforms(
+      ['antigravity'],
+      ['custom-provider-model', 'gemini-3.1-pro']
+    ).map(model => model.value)
+
+    expect(values).toContain('tab_flash_lite_preview')
+    expect(values).toContain('gpt-oss-120b-medium')
+    expect(values).toContain('custom-provider-model')
+    expect(values.filter(model => model === 'gemini-3.1-pro')).toHaveLength(1)
   })
 
   it('whitelist 模式会忽略通配符条目', () => {

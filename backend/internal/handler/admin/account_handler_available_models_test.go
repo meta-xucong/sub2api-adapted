@@ -176,12 +176,7 @@ func TestAccountHandlerGetAvailableModels_OpenAIOAuthUsesExplicitModelMapping(t 
 	for _, model := range resp.Data {
 		ids = append(ids, model.ID)
 	}
-	require.ElementsMatch(t, []string{
-		"gpt-5",
-		"gpt-5.6-sol",
-		"gpt-5.6-terra",
-		"gpt-5.6-luna",
-	}, ids)
+	require.ElementsMatch(t, []string{"gpt-5"}, ids)
 }
 
 func TestAccountHandlerGetAvailableModels_OpenAIImageOnlyDoesNotExposeChatTestModels(t *testing.T) {

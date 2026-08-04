@@ -136,7 +136,7 @@ import { accountsAPI } from '@/api/admin/accounts'
 import type { SyncUpstreamPreviewParams } from '@/api/admin/accounts'
 import ModelIcon from '@/components/common/ModelIcon.vue'
 import Icon from '@/components/icons/Icon.vue'
-import { allModels, getModelsByPlatform } from '@/composables/useModelWhitelist'
+import { getModelOptionsForPlatforms, getModelsByPlatform, normalizeModelNames } from '@/composables/useModelWhitelist'
 
 const { t } = useI18n()
 
@@ -164,6 +164,7 @@ const searchQuery = ref('')
 const customModel = ref('')
 const isComposing = ref(false)
 const isSyncingUpstream = ref(false)
+const syncedModels = ref<string[]>([])
 const normalizedPlatforms = computed(() => {
   const rawPlatforms =
     props.platforms && props.platforms.length > 0
@@ -194,18 +195,10 @@ const canSyncUpstream = computed(() => {
 })
 
 const availableOptions = computed(() => {
-  if (normalizedPlatforms.value.length === 0) {
-    return allModels
-  }
-
-  const allowedModels = new Set<string>()
-  for (const platform of normalizedPlatforms.value) {
-    for (const model of getModelsByPlatform(platform)) {
-      allowedModels.add(model)
-    }
-  }
-
-  return allModels.filter(model => allowedModels.has(model.value))
+  return getModelOptionsForPlatforms(
+    normalizedPlatforms.value,
+    [...props.modelValue, ...syncedModels.value]
+  )
 })
 
 const filteredModels = computed(() => {
@@ -280,6 +273,7 @@ const syncUpstreamModels = async () => {
       appStore.showInfo(t('admin.accounts.syncUpstreamModelsEmpty'))
       return
     }
+    syncedModels.value = normalizeModelNames([...syncedModels.value, ...upstreamModels])
 
     const newModels = [...props.modelValue]
     let addedCount = 0

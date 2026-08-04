@@ -341,15 +341,20 @@ bypass the protected account adapter and can duplicate chargeable probes.
 - The admin Scheduled Tests panel exposes an `edit probe` option for image
   models so operators can enable `auto_recover` without inserting rows by hand.
 
-## GPT-5.6 admin test discovery
+## Admin model selector hygiene
 
-For OpenAI accounts whose explicit mapping contains GPT-5 chat models, the
-admin account-test and scheduled-test model endpoint also exposes the
-registered `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` entries. This is
-test discovery only: it does not write `model_mapping`, change gateway
-scheduling eligibility, or add the models to image-only accounts. It lets an
-operator probe a newly supported upstream before enabling it for production
-routing.
+The account model whitelist selector builds options from the selected platform
+catalog directly, then merges already-selected and upstream-synced custom
+models. It does not intersect a platform catalog with a separate global list,
+so Antigravity-specific aliases and deployment-specific provider models remain
+selectable without leaking unrelated platform models.
+
+The admin account-test and scheduled-test model endpoint now exposes only the
+models the account actually advertises through `model_mapping` (or the platform
+defaults when no mapping is configured). It no longer injects GPT-5.6 variants
+into a GPT-5 text account just because the account looks chat-capable; selecting
+a model in the UI should mean the account is eligible to serve that exact
+request model.
 
 The deployment-specific replay template for aligning a downstream 404token
 instance with the matching aiself lanes is
