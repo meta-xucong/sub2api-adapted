@@ -21,6 +21,18 @@ groups, priority, concurrency, schedulability, or image-only lanes. Operators
 must validate Terra and Luna independently before adding those explicit
 mappings.
 
+## Exact-model Smart Router recovery
+
+Design document: `docs/SMART_ROUTER_EXACT_MODEL_RECOVERY.md`.
+
+Smart Router health is isolated by lane, capability, and exact requested model
+for every route, not only streaming GPT routes. Temporary upstream failures
+therefore cool `gpt-5.6-luna`, `gpt-image-2`, or any other affected model
+without disabling the account or penalizing its other models. Recovery probes
+at 04:00 Asia/Shanghai reuse the exact failed model before restoring normal
+priority. This keeps transient provider channel outages recoverable without
+model-specific hard-coded rules.
+
 ## Responses image-generation protocol bridge
 
 Design document: `docs/RESPONSES_IMAGE_GENERATION_BRIDGE_DEVELOPMENT.md`.

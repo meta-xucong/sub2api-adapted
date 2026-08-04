@@ -237,6 +237,10 @@ func smartRouterAutoEnrollmentEligible(account *Account) bool {
 	if account == nil || !account.IsOpenAI() || !account.IsActive() || !account.Schedulable {
 		return false
 	}
+	if !smartRouterAccountHasChatGPTModel(account) &&
+		!(smartRouterAccountHasEmbeddingMapping(account) && account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityEmbeddings)) {
+		return false
+	}
 	if account.TempUnschedulableUntil != nil && time.Now().Before(*account.TempUnschedulableUntil) {
 		return false
 	}
@@ -272,6 +276,7 @@ func smartRouterAutoEnrollmentProbes(account *Account) []smartrouter.Calibration
 	ordered := []smartrouter.Capability{
 		smartrouter.CapabilityResponses,
 		smartrouter.CapabilityChat,
+		smartrouter.CapabilityEmbedding,
 		smartrouter.CapabilityImageGeneration,
 		smartrouter.CapabilityImageEdit,
 		smartrouter.CapabilityResponsesCompact,
@@ -387,6 +392,13 @@ func (s *SmartRouterCalibrationService) runCalibration() {
 		logger.LegacyPrintf("service.smart_router_calibration", "%s: %v", summary, err)
 		return
 	}
+	states, err := s.ledger.LoadStates(ctx)
+	if err != nil {
+		success = false
+		summary = "load health states failed"
+		logger.LegacyPrintf("service.smart_router_calibration", "%s: %v", summary, err)
+		return
+	}
 	probes := smartrouter.BuildCalibrationPlan(now, lanes, toCoreCapabilityEvidence(evidenceRows), smartrouter.CalibrationPolicy{
 		Location:            smartRouterCalibrationLocation(),
 		Hour:                s.cfg.Gateway.SmartRouter.Calibration.Hour,
@@ -394,6 +406,7 @@ func (s *SmartRouterCalibrationService) runCalibration() {
 		FreshEvidenceWindow: 24 * time.Hour,
 	})
 	probes = s.ensureCompactModelCalibrationProbes(probes, compactLanes, accountsByLane)
+	probes = ensureSmartRouterModelRecoveryProbes(probes, states, accountsByLane)
 	if len(probes) == 0 {
 		return
 	}
@@ -431,7 +444,7 @@ func (s *SmartRouterCalibrationService) runCalibration() {
 func filterSmartRouterAccountsByModel(accounts []Account) []Account {
 	filtered := make([]Account, 0, len(accounts))
 	for index := range accounts {
-		if smartRouterAccountHasChatGPTModel(&accounts[index]) {
+		if smartRouterAccountHasChatGPTModel(&accounts[index]) || smartRouterAccountHasEmbeddingMapping(&accounts[index]) {
 			filtered = append(filtered, accounts[index])
 		}
 	}
@@ -500,7 +513,7 @@ func smartRouterCalibrationTextCapabilities(account *Account) map[smartrouter.Ca
 	extra := parseSmartRouterAccountExtra(account)
 	if extra.CapabilitiesSet {
 		result := make(map[smartrouter.Capability]bool)
-		for _, capability := range []smartrouter.Capability{smartrouter.CapabilityChat, smartrouter.CapabilityResponses} {
+		for _, capability := range []smartrouter.Capability{smartrouter.CapabilityChat, smartrouter.CapabilityResponses, smartrouter.CapabilityEmbedding} {
 			if extra.Capabilities[capability] {
 				result[capability] = true
 			}
@@ -508,12 +521,23 @@ func smartRouterCalibrationTextCapabilities(account *Account) map[smartrouter.Ca
 		return result
 	}
 	if smartRouterAccountHasImageMapping(account) {
+		if smartRouterAccountHasEmbeddingMapping(account) && account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityEmbeddings) {
+			return map[smartrouter.Capability]bool{smartrouter.CapabilityEmbedding: true}
+		}
 		return nil
 	}
 	if account.Type == AccountTypeOAuth || openai_compat.ShouldUseResponsesAPI(account.Extra) {
-		return map[smartrouter.Capability]bool{smartrouter.CapabilityResponses: true}
+		capabilities := map[smartrouter.Capability]bool{smartrouter.CapabilityResponses: true}
+		if account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityEmbeddings) && smartRouterAccountHasEmbeddingMapping(account) {
+			capabilities[smartrouter.CapabilityEmbedding] = true
+		}
+		return capabilities
 	}
-	return map[smartrouter.Capability]bool{smartrouter.CapabilityChat: true}
+	capabilities := map[smartrouter.Capability]bool{smartrouter.CapabilityChat: true}
+	if account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityEmbeddings) && smartRouterAccountHasEmbeddingMapping(account) {
+		capabilities[smartrouter.CapabilityEmbedding] = true
+	}
+	return capabilities
 }
 
 func smartRouterAccountHasImageMapping(account *Account) bool {
@@ -630,6 +654,8 @@ func (s *SmartRouterCalibrationService) runProbe(ctx context.Context, account *A
 		statusCode, latencyMs, err = s.gateway.RunSmartRouterResponsesCalibrationProbe(probeCtx, account, model)
 	case smartrouter.CapabilityChat:
 		statusCode, latencyMs, err = s.gateway.RunSmartRouterChatCalibrationProbe(probeCtx, account, model)
+	case smartrouter.CapabilityEmbedding:
+		statusCode, latencyMs, err = s.gateway.RunSmartRouterEmbeddingCalibrationProbe(probeCtx, account, model)
 	default:
 		statusCode, latencyMs, err = s.gateway.RunSmartRouterImageCalibrationProbe(probeCtx, account, probe.Capability)
 	}
@@ -648,6 +674,12 @@ func (s *SmartRouterCalibrationService) calibrationModelForCapability(account *A
 	}
 	if capability == smartrouter.CapabilityResponsesCompact {
 		return s.compactCalibrationModel()
+	}
+	if capability == smartrouter.CapabilityEmbedding {
+		if model := smartRouterMappedModelForCapability(account, smartrouter.CapabilityEmbedding); model != "" {
+			return model
+		}
+		return "text-embedding-3-small"
 	}
 	preferred := []string{"gpt-5.5", "gpt-5.4", "gpt-5.4-mini"}
 	if account != nil {
@@ -674,9 +706,36 @@ func (s *SmartRouterCalibrationService) calibrationModelForCapability(account *A
 	return smartRouterCalibrationTextModel
 }
 
+func smartRouterMappedModelForCapability(account *Account, capability smartrouter.Capability) string {
+	if account == nil {
+		return ""
+	}
+	patterns := make([]string, 0)
+	for pattern := range account.GetModelMapping() {
+		patterns = append(patterns, strings.TrimSpace(pattern))
+	}
+	if capability == smartrouter.CapabilityResponsesCompact {
+		for pattern := range account.GetCompactModelMapping() {
+			patterns = append(patterns, strings.TrimSpace(pattern))
+		}
+	}
+	sort.Strings(patterns)
+	for _, pattern := range patterns {
+		lower := strings.ToLower(pattern)
+		if pattern == "" || strings.Contains(pattern, "*") {
+			continue
+		}
+		if capability == smartrouter.CapabilityEmbedding && !strings.Contains(lower, "embedding") {
+			continue
+		}
+		return pattern
+	}
+	return ""
+}
+
 func smartRouterModelPatternMatches(pattern, model string) bool {
-	pattern = strings.TrimSpace(pattern)
-	model = strings.TrimSpace(model)
+	pattern = strings.ToLower(strings.TrimSpace(pattern))
+	model = strings.ToLower(strings.TrimSpace(model))
 	if pattern == "*" || pattern == model {
 		return true
 	}
@@ -732,6 +791,86 @@ func (s *SmartRouterCalibrationService) ensureCompactModelCalibrationProbes(
 
 func smartRouterCalibrationProbeKey(probe smartrouter.CalibrationProbe) string {
 	return strings.TrimSpace(probe.LaneID) + "|" + string(probe.Capability) + "|" + strings.ToLower(strings.TrimSpace(probe.Model))
+}
+
+// ensureSmartRouterModelRecoveryProbes keeps recovery model-specific. The
+// normal daily plan intentionally uses a light representative probe for a
+// healthy lane, but a lane/model that was temporarily cooled must be tested
+// with that exact model before it can return to its configured priority.
+func ensureSmartRouterModelRecoveryProbes(
+	probes []smartrouter.CalibrationProbe,
+	states []SmartRouterHealthState,
+	accountsByLane map[string]*Account,
+) []smartrouter.CalibrationProbe {
+	seen := make(map[string]struct{}, len(probes))
+	for _, probe := range probes {
+		seen[smartRouterCalibrationProbeKey(probe)] = struct{}{}
+	}
+	for _, state := range states {
+		if strings.TrimSpace(state.LaneID) == "" || strings.TrimSpace(state.ModelFamily) == "" {
+			continue
+		}
+		// Older builds persisted broad family keys such as "gpt-5" and
+		// "gpt-image". Keep them readable for audit history, but never replay
+		// them as a real recovery request because they are not user models.
+		if !isSmartRouterExactRecoveryModel(state.ModelFamily) {
+			continue
+		}
+		account := accountsByLane[state.LaneID]
+		if account == nil || !smartRouterAccountSupportsRecoveryModel(account, state.Capability, state.ModelFamily) {
+			continue
+		}
+		if state.Snapshot.RecoveryPriority <= 0 &&
+			state.Snapshot.RecoveryStage != smartrouter.RecoveryCooling &&
+			state.Snapshot.RecoveryStage != smartrouter.RecoveryProbeDue {
+			continue
+		}
+		probe := smartrouter.CalibrationProbe{
+			LaneID:     state.LaneID,
+			Capability: state.Capability,
+			Model:      state.ModelFamily,
+			Reason:     "model_recovery_due",
+		}
+		key := smartRouterCalibrationProbeKey(probe)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		probes = append(probes, probe)
+	}
+	return probes
+}
+
+func isSmartRouterExactRecoveryModel(model string) bool {
+	model = strings.ToLower(strings.TrimSpace(model))
+	if model == "" || model == "gpt-5" || model == "gpt-image" {
+		return false
+	}
+	return !strings.HasSuffix(model, "*")
+}
+
+func smartRouterAccountSupportsRecoveryModel(account *Account, capability smartrouter.Capability, model string) bool {
+	if account == nil || !isSmartRouterExactRecoveryModel(model) {
+		return false
+	}
+	patterns := make([]string, 0)
+	for pattern := range account.GetModelMapping() {
+		patterns = append(patterns, pattern)
+	}
+	if capability == smartrouter.CapabilityResponsesCompact {
+		for pattern := range account.GetCompactModelMapping() {
+			patterns = append(patterns, pattern)
+		}
+	}
+	if len(patterns) == 0 {
+		return true
+	}
+	for _, pattern := range patterns {
+		if smartRouterModelPatternMatches(pattern, model) {
+			return true
+		}
+	}
+	return false
 }
 
 func smartRouterCompactProbeModelsForAccount(account *Account, fallback string) []string {
@@ -911,6 +1050,41 @@ func (s *OpenAIGatewayService) RunSmartRouterChatCalibrationProbe(ctx context.Co
 		statusCode = http.StatusOK
 	}
 	s.ReportSmartRouterTextCalibrationResult(account, smartrouter.CapabilityChat, model, forwardResult, forwardErr, latencyMs)
+	return statusCode, latencyMs, forwardErr
+}
+
+// RunSmartRouterEmbeddingCalibrationProbe performs a minimal embeddings
+// request directly against one account. It is separate from text probes so
+// embedding health cannot be confused with chat or Responses health.
+func (s *OpenAIGatewayService) RunSmartRouterEmbeddingCalibrationProbe(ctx context.Context, account *Account, model string) (int, int64, error) {
+	if s == nil || account == nil {
+		return 0, 0, errors.New("smart router embedding calibration account is required")
+	}
+	body, err := json.Marshal(map[string]any{
+		"model": strings.TrimSpace(model),
+		"input": "smart-router-health-probe",
+	})
+	if err != nil {
+		return 0, 0, err
+	}
+	recorder := httptest.NewRecorder()
+	ginCtx, _ := gin.CreateTestContext(recorder)
+	ginCtx.Request = httptest.NewRequest(http.MethodPost, "/v1/embeddings", bytes.NewReader(body)).WithContext(ctx)
+	ginCtx.Request.Header.Set("Content-Type", "application/json")
+	startedAt := time.Now()
+	forwardResult, forwardErr := s.ForwardEmbeddings(ctx, ginCtx, account, body, "")
+	latencyMs := time.Since(startedAt).Milliseconds()
+	statusCode := smartRouterProbeStatusCode(forwardErr)
+	if forwardErr == nil && (forwardResult == nil || recorder.Code >= http.StatusBadRequest) {
+		forwardErr = errors.New("embedding calibration returned no valid response")
+		if statusCode == 0 {
+			statusCode = http.StatusBadGateway
+		}
+	}
+	if forwardErr == nil {
+		statusCode = http.StatusOK
+	}
+	s.ReportSmartRouterEmbeddingCalibrationResult(account, model, forwardResult, forwardErr, latencyMs)
 	return statusCode, latencyMs, forwardErr
 }
 
@@ -1106,6 +1280,10 @@ func toCoreCapabilityEvidence(rows []SmartRouterCapabilityEvidence) []smartroute
 			CompactLastSuccess:         row.CompactLastSuccess,
 			CompactLastFailure:         row.CompactLastFailure,
 			CompactRecoveryPriority:    row.CompactRecoveryPriority,
+			EmbeddingKnown:             row.EmbeddingKnown,
+			EmbeddingLastSuccess:       row.EmbeddingLastSuccess,
+			EmbeddingLastFailure:       row.EmbeddingLastFailure,
+			EmbeddingRecoveryPriority:  row.EmbeddingRecoveryPriority,
 			ModesDiverged:              modesDiverged,
 		})
 	}

@@ -40,6 +40,10 @@ type CapabilityEvidence struct {
 	CompactLastSuccess         time.Time
 	CompactLastFailure         time.Time
 	CompactRecoveryPriority    int
+	EmbeddingKnown             bool
+	EmbeddingLastSuccess       time.Time
+	EmbeddingLastFailure       time.Time
+	EmbeddingRecoveryPriority  int
 	ModesDiverged              bool
 }
 
@@ -102,6 +106,10 @@ func BuildCalibrationPlan(now time.Time, lanes []LaneSnapshot, evidence []Capabi
 		compactKnown := lane.Capabilities[CapabilityResponsesCompact]
 		if compactKnown && needsCapabilityProbe(now, item.CompactKnown, item.CompactLastSuccess, item.CompactLastFailure, item.CompactRecoveryPriority, policy.FreshEvidenceWindow) {
 			probes = append(probes, CalibrationProbe{LaneID: lane.LaneID, Capability: CapabilityResponsesCompact, Reason: capabilityProbeReason(item.CompactKnown, item.CompactLastFailure, item.CompactRecoveryPriority)})
+		}
+		embeddingKnown := lane.Capabilities[CapabilityEmbedding]
+		if embeddingKnown && needsCapabilityProbe(now, item.EmbeddingKnown, item.EmbeddingLastSuccess, item.EmbeddingLastFailure, item.EmbeddingRecoveryPriority, policy.FreshEvidenceWindow) {
+			probes = append(probes, CalibrationProbe{LaneID: lane.LaneID, Capability: CapabilityEmbedding, Reason: capabilityProbeReason(item.EmbeddingKnown, item.EmbeddingLastFailure, item.EmbeddingRecoveryPriority)})
 		}
 	}
 	return probes

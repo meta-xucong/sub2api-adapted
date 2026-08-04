@@ -3,6 +3,8 @@ package core
 import (
 	"net/http"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestClassifyFailureDetails_CompactCapabilityErrorsAreDeterministic(t *testing.T) {
@@ -84,5 +86,18 @@ func TestClassifyFailureDetails_StreamInterruptedIsDistinctFromClientCancel(t *t
 				t.Fatalf("ClassifyFailureDetails() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestClassifyFailureDetailsDetectsTemporaryModelChannelFailure(t *testing.T) {
+	tests := []struct {
+		status  int
+		message string
+	}{
+		{status: http.StatusServiceUnavailable, message: "No available channel for model gpt-5.6-luna under group GPT-pro"},
+		{status: http.StatusNotFound, message: "model_not_found"},
+	}
+	for _, tt := range tests {
+		require.Equal(t, FailureCapabilityError, ClassifyFailureDetails(tt.status, CapabilityResponses, tt.message, "", false))
 	}
 }

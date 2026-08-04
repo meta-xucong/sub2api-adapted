@@ -950,8 +950,12 @@ func (s *defaultOpenAIAccountScheduler) buildSmartRouterSelectionOrder(
 
 	laneToCandidate := make(map[string]openAIAccountCandidateScore, len(plan.candidates))
 	lanes := make([]smartrouter.LaneSnapshot, 0, len(plan.candidates))
+	effectiveCapability := req.SmartRouterCapability
+	if req.RequireCompact {
+		effectiveCapability = smartrouter.CapabilityResponsesCompact
+	}
 	for _, candidate := range plan.candidates {
-		if !smartRouterAccountHasChatGPTModel(candidate.account) {
+		if !smartRouterAccountEligibleForSmartRouter(candidate.account, effectiveCapability, req.RequestedModel, req.RequiredCapability) {
 			continue
 		}
 		lane, ok := smartRouterLaneSnapshot(candidate.account, candidate.loadInfo, candidate.errorRate, candidate.ttft, candidate.hasTTFT)
@@ -968,7 +972,7 @@ func (s *defaultOpenAIAccountScheduler) buildSmartRouterSelectionOrder(
 			lane.Capabilities[smartrouter.CapabilityResponsesCompact] = true
 		}
 		if health := s.service.smartRouterHealth(); health != nil {
-			lane = health.Snapshot(lane, req.SmartRouterCapability, req.RequestedModel, time.Now().Unix())
+			lane = health.Snapshot(lane, effectiveCapability, req.RequestedModel, time.Now().Unix())
 		}
 		laneToCandidate[lane.LaneID] = candidate
 		lanes = append(lanes, lane)

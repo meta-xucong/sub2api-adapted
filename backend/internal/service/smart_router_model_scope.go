@@ -1,6 +1,23 @@
 package service
 
-import "strings"
+import (
+	"strings"
+
+	smartrouter "github.com/Wei-Shaw/sub2api/internal/smartrouter/core"
+)
+
+func smartRouterAccountHasEmbeddingMapping(account *Account) bool {
+	if account == nil {
+		return false
+	}
+	for pattern, mapped := range account.GetModelMapping() {
+		if strings.Contains(strings.ToLower(strings.TrimSpace(pattern)), "embedding") ||
+			strings.Contains(strings.ToLower(strings.TrimSpace(mapped)), "embedding") {
+			return true
+		}
+	}
+	return false
+}
 
 // smartRouterAccountHasChatGPTModel is the provider-independent admission
 // check for Smart Router. Account groups and account labels are deployment
@@ -48,6 +65,51 @@ func isChatGPTModelIdentifier(model string) bool {
 	}
 	for _, prefix := range []string{"gpt-", "chatgpt-", "codex-", "o1", "o3", "o4"} {
 		if strings.HasPrefix(model, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// smartRouterAccountEligibleForSmartRouter admits the same ChatGPT-family
+// lanes as before and additionally admits a genuine embeddings lane when the
+// request itself is an embeddings request. This keeps Claude/Kimi/Volcengine
+// lanes out while allowing the exact-model health rule to cover every
+// OpenAI-compatible capability that the endpoint exposes.
+func smartRouterAccountEligibleForSmartRouter(account *Account, capability smartrouter.Capability, requestedModel string, requiredCapability OpenAIEndpointCapability) bool {
+	if capability == smartrouter.CapabilityResponsesCompact {
+		if account == nil || openAICompactSupportTier(account) == 0 {
+			return false
+		}
+		// Compact support is an endpoint capability, but a declared exact
+		// compact mapping still has to match the requested model. A historical
+		// false probe is intentionally not consulted here.
+		mapping := account.GetCompactModelMapping()
+		if len(mapping) == 0 {
+			return true
+		}
+		for pattern := range mapping {
+			if smartRouterModelPatternMatches(pattern, requestedModel) {
+				return true
+			}
+		}
+		return false
+	}
+	if smartRouterAccountHasChatGPTModel(account) {
+		return true
+	}
+	if account == nil || (capability != smartrouter.CapabilityEmbedding && requiredCapability != OpenAIEndpointCapabilityEmbeddings) {
+		return false
+	}
+	if !account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityEmbeddings) || !smartRouterAccountHasEmbeddingMapping(account) {
+		return false
+	}
+	requestedModel = strings.ToLower(strings.TrimSpace(requestedModel))
+	if requestedModel == "" {
+		return true
+	}
+	for pattern := range account.GetModelMapping() {
+		if smartRouterModelPatternMatches(pattern, requestedModel) {
 			return true
 		}
 	}

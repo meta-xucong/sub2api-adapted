@@ -174,6 +174,7 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 		}()
 
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
+		h.gatewayService.ReportSmartRouterEmbeddingResult(account, reqModel, result, err, forwardDurationMs)
 		upstreamLatencyMs, _ := getContextInt64(c, service.OpsUpstreamLatencyMsKey)
 		responseLatencyMs := forwardDurationMs
 		if upstreamLatencyMs > 0 && forwardDurationMs > upstreamLatencyMs {

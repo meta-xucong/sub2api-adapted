@@ -103,14 +103,13 @@ type HealthKey struct {
 }
 
 func NewHealthKey(laneID string, capability Capability, model string) HealthKey {
-	normalizedModel := modelFamily(model)
-	if isStreamingCapability(capability) {
-		normalizedModel = exactModelFamily(model)
-	}
 	return HealthKey{
 		LaneID:     strings.TrimSpace(laneID),
 		Capability: capability,
-		Model:      normalizedModel,
+		// Health is isolated by the exact requested model for every capability.
+		// A failure on Luna, an image variant, or an embedding model must not
+		// suppress a different model that shares the same account and endpoint.
+		Model: exactModelFamily(model),
 	}
 }
 
@@ -673,21 +672,10 @@ func defaultSource(source string) string {
 	return strings.TrimSpace(source)
 }
 
-func modelFamily(model string) string {
-	model = strings.ToLower(strings.TrimSpace(model))
-	if strings.HasPrefix(model, "gpt-image-") {
-		return "gpt-image"
-	}
-	if strings.HasPrefix(model, "gpt-5") {
-		return "gpt-5"
-	}
-	return model
-}
-
 func exactModelFamily(model string) string {
 	model = strings.ToLower(strings.TrimSpace(model))
 	if model == "" {
-		return modelFamily(model)
+		return ""
 	}
 	return model
 }

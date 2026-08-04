@@ -46,6 +46,10 @@ type SmartRouterCapabilityEvidence struct {
 	CompactLastSuccess         time.Time
 	CompactLastFailure         time.Time
 	CompactRecoveryPriority    int
+	EmbeddingKnown             bool
+	EmbeddingLastSuccess       time.Time
+	EmbeddingLastFailure       time.Time
+	EmbeddingRecoveryPriority  int
 }
 
 type SmartRouterCalibrationRun struct {

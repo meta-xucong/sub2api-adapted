@@ -3,6 +3,7 @@ package service
 import (
 	"testing"
 
+	smartrouter "github.com/Wei-Shaw/sub2api/internal/smartrouter/core"
 	"github.com/stretchr/testify/require"
 )
 
@@ -55,4 +56,17 @@ func TestIsChatGPTModelIdentifier(t *testing.T) {
 	for _, model := range []string{"kimi-k2", "claude-sonnet-4-6", "gemini-3-pro", "doubao-seed-1-6"} {
 		require.False(t, isChatGPTModelIdentifier(model), model)
 	}
+}
+
+func TestSmartRouterAccountEligibleForSmartRouterAllowsEmbeddingOnlyLane(t *testing.T) {
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{"text-embedding-3-large": "text-embedding-3-large"},
+		},
+	}
+
+	require.True(t, smartRouterAccountEligibleForSmartRouter(account, smartrouter.CapabilityEmbedding, "text-embedding-3-large", OpenAIEndpointCapabilityEmbeddings))
+	require.False(t, smartRouterAccountEligibleForSmartRouter(account, smartrouter.CapabilityResponses, "gpt-5.6", ""))
 }

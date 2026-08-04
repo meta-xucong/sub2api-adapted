@@ -353,8 +353,19 @@ func (s *OpenAIGatewayService) ReportSmartRouterTextCalibrationResult(account *A
 	s.reportSmartRouterTextResult("calibration", account, capability, requestedModel, result, err, durationMs)
 }
 
+// ReportSmartRouterEmbeddingResult keeps embedding health independent from
+// chat, Responses, compact, and image lanes while using the exact requested
+// model as the health key.
+func (s *OpenAIGatewayService) ReportSmartRouterEmbeddingResult(account *Account, requestedModel string, result *OpenAIForwardResult, err error, durationMs int64) {
+	s.reportSmartRouterTextResult("production", account, smartrouter.CapabilityEmbedding, requestedModel, result, err, durationMs)
+}
+
+func (s *OpenAIGatewayService) ReportSmartRouterEmbeddingCalibrationResult(account *Account, requestedModel string, result *OpenAIForwardResult, err error, durationMs int64) {
+	s.reportSmartRouterTextResult("calibration", account, smartrouter.CapabilityEmbedding, requestedModel, result, err, durationMs)
+}
+
 func (s *OpenAIGatewayService) reportSmartRouterTextResult(source string, account *Account, capability smartrouter.Capability, requestedModel string, result *OpenAIForwardResult, err error, durationMs int64) {
-	if s == nil || !s.isSmartRouterEnabled() || account == nil || (capability != smartrouter.CapabilityChat && capability != smartrouter.CapabilityResponses) {
+	if s == nil || !s.isSmartRouterEnabled() || account == nil || (capability != smartrouter.CapabilityChat && capability != smartrouter.CapabilityResponses && capability != smartrouter.CapabilityEmbedding) {
 		return
 	}
 	lane, ok := smartRouterLaneSnapshot(account, nil, 0, 0, false)

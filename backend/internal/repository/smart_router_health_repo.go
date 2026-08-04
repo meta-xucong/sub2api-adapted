@@ -158,9 +158,14 @@ SELECT lane_id,
        MAX(last_success_at) FILTER (WHERE capability = 'image_edit') AS edit_last_success,
        MAX(last_failure_at) FILTER (WHERE capability = 'image_edit') AS edit_last_failure,
        MAX(last_success_at) FILTER (WHERE capability = 'responses_compact') AS compact_last_success,
-       MAX(last_failure_at) FILTER (WHERE capability = 'responses_compact') AS compact_last_failure
+       MAX(last_failure_at) FILTER (WHERE capability = 'responses_compact') AS compact_last_failure,
+       BOOL_OR(capability = 'embedding') AS embedding_known,
+       COALESCE(MAX(recovery_priority) FILTER (WHERE capability = 'embedding'), 0) AS embedding_recovery_priority,
+       MAX(last_success_at) FILTER (WHERE capability = 'embedding') AS embedding_last_success,
+       MAX(last_failure_at) FILTER (WHERE capability = 'embedding') AS embedding_last_failure
 FROM smart_router_lane_state
-WHERE capability IN ('chat', 'responses', 'image_generation', 'image_edit', 'responses_compact')
+WHERE capability IN ('chat', 'responses', 'image_generation', 'image_edit', 'responses_compact', 'embedding')
+  AND model_family NOT IN ('gpt-5', 'gpt-image')
 GROUP BY lane_id`)
 	if err != nil {
 		return nil, err
@@ -172,13 +177,15 @@ GROUP BY lane_id`)
 		var item service.SmartRouterCapabilityEvidence
 		var chatSuccess, chatFailure, responsesSuccess, responsesFailure sql.NullTime
 		var generationSuccess, generationFailure, editSuccess, editFailure, compactSuccess, compactFailure sql.NullTime
+		var embeddingSuccess, embeddingFailure sql.NullTime
 		if err := rows.Scan(
 			&item.LaneID, &item.ChatKnown, &item.ResponsesKnown, &item.GenerationKnown, &item.EditKnown,
 			&item.CompactKnown, &item.ChatRecoveryPriority, &item.ResponsesRecoveryPriority,
 			&item.GenerationRecoveryPriority, &item.EditRecoveryPriority, &item.CompactRecoveryPriority,
 			&chatSuccess, &chatFailure, &responsesSuccess, &responsesFailure,
 			&generationSuccess, &generationFailure, &editSuccess, &editFailure,
-			&compactSuccess, &compactFailure,
+			&compactSuccess, &compactFailure, &item.EmbeddingKnown, &item.EmbeddingRecoveryPriority,
+			&embeddingSuccess, &embeddingFailure,
 		); err != nil {
 			return nil, err
 		}
@@ -211,6 +218,12 @@ GROUP BY lane_id`)
 		}
 		if compactFailure.Valid {
 			item.CompactLastFailure = compactFailure.Time
+		}
+		if embeddingSuccess.Valid {
+			item.EmbeddingLastSuccess = embeddingSuccess.Time
+		}
+		if embeddingFailure.Valid {
+			item.EmbeddingLastFailure = embeddingFailure.Time
 		}
 		evidence = append(evidence, item)
 	}

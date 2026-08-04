@@ -103,6 +103,19 @@ func TestBuildCalibrationPlanProbesDeclaredChatAndResponsesIndependently(t *test
 	}, probes)
 }
 
+func TestBuildCalibrationPlanProbesEmbeddingIndependently(t *testing.T) {
+	now := time.Date(2026, 7, 12, 4, 0, 0, 0, time.FixedZone("Asia/Shanghai", 8*60*60))
+	lanes := []LaneSnapshot{{
+		LaneID:       "dual-protocol",
+		Capabilities: map[Capability]bool{CapabilityEmbedding: true},
+	}}
+
+	probes := BuildCalibrationPlan(now, lanes, nil, CalibrationPolicy{})
+	require.Equal(t, []CalibrationProbe{{
+		LaneID: "dual-protocol", Capability: CapabilityEmbedding, Reason: "unknown_capability",
+	}}, probes)
+}
+
 func TestBuildCalibrationPlanRechecksRecoverySlotEvenWithFreshSuccess(t *testing.T) {
 	now := time.Date(2026, 7, 12, 4, 0, 0, 0, time.FixedZone("Asia/Shanghai", 8*60*60))
 	lanes := []LaneSnapshot{{

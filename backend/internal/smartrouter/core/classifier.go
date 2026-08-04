@@ -18,6 +18,9 @@ func ClassifyFailureDetails(statusCode int, capability Capability, message strin
 		return FailureCancelled
 	}
 	lower := strings.ToLower(strings.TrimSpace(message + " " + code))
+	if containsModelCapabilityFailure(lower) {
+		return FailureCapabilityError
+	}
 	if strings.Contains(lower, "upstream_text_reply") ||
 		(strings.Contains(lower, "requires a usable image target") && capability == CapabilityImageGeneration) ||
 		(strings.Contains(lower, "upload the reference image") && capability == CapabilityImageGeneration) {
@@ -67,6 +70,24 @@ func ClassifyFailureDetails(statusCode int, capability Capability, message strin
 		}
 		return FailureUnknown
 	}
+}
+
+func containsModelCapabilityFailure(lower string) bool {
+	for _, marker := range []string{
+		"model_not_found",
+		"model not found",
+		"no available channel for model",
+		"no channel for model",
+		"model is not available",
+		"model unavailable",
+		"unsupported model",
+		"model unsupported",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func isStreamingCapability(capability Capability) bool {

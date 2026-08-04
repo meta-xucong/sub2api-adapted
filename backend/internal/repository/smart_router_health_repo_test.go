@@ -81,11 +81,12 @@ func TestSmartRouterHealthRepositoryListsCompactCapabilityEvidence(t *testing.T)
 		"chat_recovery_priority", "responses_recovery_priority", "generation_recovery_priority", "edit_recovery_priority", "compact_recovery_priority",
 		"chat_last_success", "chat_last_failure", "responses_last_success", "responses_last_failure",
 		"generation_last_success", "generation_last_failure", "edit_last_success", "edit_last_failure",
-		"compact_last_success", "compact_last_failure",
+		"compact_last_success", "compact_last_failure", "embedding_known", "embedding_recovery_priority",
+		"embedding_last_success", "embedding_last_failure",
 	}).AddRow(
 		"oauth-compact", false, false, false, false, true, 0, 0, 0, 0, 30,
 		nil, nil, nil, nil, nil, nil, nil, nil,
-		now.Add(-time.Hour), now.Add(-2*time.Hour),
+		now.Add(-time.Hour), now.Add(-2*time.Hour), false, 0, nil, nil,
 	))
 
 	evidence, err := NewSmartRouterHealthRepository(db).ListCapabilityEvidence(context.Background())

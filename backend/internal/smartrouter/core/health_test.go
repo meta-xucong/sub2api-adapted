@@ -226,6 +226,47 @@ func TestHealthTrackerCompactUsesExactGPT5ModelKey(t *testing.T) {
 	require.Equal(t, "gpt-5.6-terra", NewHealthKey("line", CapabilityResponses, "gpt-5.6-terra").Model)
 }
 
+func TestHealthTrackerUsesExactModelKeyForEveryCapability(t *testing.T) {
+	now := time.Unix(28_000, 0)
+	tracker := NewHealthTracker(HealthPolicy{}, func() time.Time { return now }, nil)
+
+	for _, capability := range []Capability{
+		CapabilityChat,
+		CapabilityResponses,
+		CapabilityResponsesCompact,
+		CapabilityImageGeneration,
+		CapabilityImageEdit,
+		CapabilityEmbedding,
+	} {
+		tracker.Observe(RouteResult{
+			LaneID:     "shared-lane",
+			Capability: capability,
+			Model:      "provider/model-a",
+			StatusCode: http.StatusBadGateway,
+			ErrorClass: FailureUpstream5xx,
+		})
+
+		failed := tracker.Snapshot(
+			LaneSnapshot{LaneID: "shared-lane", Priority: 2},
+			capability,
+			"provider/model-a",
+			now.Unix(),
+		)
+		otherModel := tracker.Snapshot(
+			LaneSnapshot{LaneID: "shared-lane", Priority: 2},
+			capability,
+			"provider/model-b",
+			now.Unix(),
+		)
+
+		require.Greater(t, failed.Priority, 2, "capability=%s", capability)
+		require.Equal(t, 2, otherModel.Priority, "capability=%s", capability)
+	}
+
+	require.Equal(t, "provider/model-a", NewHealthKey("shared-lane", CapabilityImageGeneration, "provider/model-a").Model)
+	require.Equal(t, "provider/model-b", NewHealthKey("shared-lane", CapabilityImageGeneration, "provider/model-b").Model)
+}
+
 func TestHealthTrackerCompactCancelledDoesNotFreezeLane(t *testing.T) {
 	now := time.Date(2026, time.July, 27, 14, 41, 0, 0, time.FixedZone("Asia/Shanghai", 8*60*60))
 	calibrationAt := time.Date(2026, time.July, 28, 4, 0, 0, 0, now.Location())
