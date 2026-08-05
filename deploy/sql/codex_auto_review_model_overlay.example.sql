@@ -1,4 +1,4 @@
--- Replayable Codex auto-review model overlay.
+-- Replayable Codex auto-review compatibility overlay.
 --
 -- Purpose:
 --   Codex may send approval/review traffic as model "codex-auto-review" even
@@ -9,10 +9,13 @@
 --
 -- Policy:
 --   - Add codex-auto-review to OpenAI chat groups that already expose gpt-5.5.
---   - For each OpenAI account that already supports gpt-5.5, map
---     codex-auto-review to the best explicit model that account already
---     advertises:
---       gpt-5.6-sol -> gpt-5.6-terra -> gpt-5.6-luna -> gpt-5.5.
+--   - When a client sends the synthetic codex-auto-review model, use the
+--     account's explicit gpt-5.5 mapping as a conservative compatibility
+--     fallback. The synthetic model does not carry the user's selected model,
+--     so choosing a newer GPT-5.6 lane here is unsafe and changes behavior.
+--   - Never use this overlay to rewrite an explicit gpt-5.6-sol,
+--     gpt-5.6-terra, or gpt-5.6-luna request. Those model ids remain governed
+--     by their own account mappings and Smart Router health.
 --   - Do not use the bare gpt-5.6 alias; several upstream distributors expose
 --     only the explicit Sol/Terra/Luna ids and reject "gpt-5.6".
 --   - Do not touch image-only lanes, account priorities, group membership,
@@ -41,17 +44,7 @@ WHERE deleted_at IS NULL
 
 WITH targets AS (
   SELECT id,
-         CASE
-           WHEN credentials -> 'model_mapping' ? 'gpt-5.6-sol'
-             THEN credentials -> 'model_mapping' ->> 'gpt-5.6-sol'
-           WHEN credentials -> 'model_mapping' ? 'gpt-5.6-terra'
-             THEN credentials -> 'model_mapping' ->> 'gpt-5.6-terra'
-           WHEN credentials -> 'model_mapping' ? 'gpt-5.6-luna'
-             THEN credentials -> 'model_mapping' ->> 'gpt-5.6-luna'
-           WHEN credentials -> 'model_mapping' ? 'gpt-5.5'
-             THEN credentials -> 'model_mapping' ->> 'gpt-5.5'
-           ELSE NULL
-         END AS target_model
+         credentials -> 'model_mapping' ->> 'gpt-5.5' AS target_model
   FROM accounts
   WHERE deleted_at IS NULL
     AND platform = 'openai'

@@ -4,15 +4,11 @@
 
 // OpenAI
 const openaiModels = [
-  // GPT-5.6 series
-  'gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna',
-  // GPT-5.5 series
-  'gpt-5.5', 'gpt-5.5-pro',
-  // GPT-5.4 series
-  'gpt-5.4', 'gpt-5.4-mini',
-  // GPT-5.3 / Codex series
-  'gpt-5.3-codex-spark', 'codex-auto-review',
-  // GPT Image
+  // Keep this list limited to normal user-facing choices. Internal aliases
+  // such as codex-auto-review and Spark shadow mappings remain valid when
+  // already saved, but are intentionally not offered as new choices.
+  'gpt-5.4-mini', 'gpt-5.4', 'gpt-5.5',
+  'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna',
   'gpt-image-2'
 ]
 
@@ -304,8 +300,6 @@ const openaiPresetMappings = [
   { label: 'GPT-4.1', from: 'gpt-4.1', to: 'gpt-4.1', color: 'bg-indigo-100 text-indigo-700 hover:bg-indigo-200 dark:bg-indigo-900/30 dark:text-indigo-400' },
   { label: 'o1', from: 'o1', to: 'o1', color: 'bg-purple-100 text-purple-700 hover:bg-purple-200 dark:bg-purple-900/30 dark:text-purple-400' },
   { label: 'o3', from: 'o3', to: 'o3', color: 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-400' },
-  { label: 'GPT-5.3 Codex Spark', from: 'gpt-5.3-codex-spark', to: 'gpt-5.3-codex-spark', color: 'bg-teal-100 text-teal-700 hover:bg-teal-200 dark:bg-teal-900/30 dark:text-teal-400' },
-  { label: 'GPT-5.6', from: 'gpt-5.6', to: 'gpt-5.6', color: 'bg-amber-100 text-amber-700 hover:bg-amber-200 dark:bg-amber-900/30 dark:text-amber-400' },
   { label: 'GPT-5.6 Sol', from: 'gpt-5.6-sol', to: 'gpt-5.6-sol', color: 'bg-orange-100 text-orange-700 hover:bg-orange-200 dark:bg-orange-900/30 dark:text-orange-400' },
   { label: 'GPT-5.6 Terra', from: 'gpt-5.6-terra', to: 'gpt-5.6-terra', color: 'bg-lime-100 text-lime-700 hover:bg-lime-200 dark:bg-lime-900/30 dark:text-lime-400' },
   { label: 'GPT-5.6 Luna', from: 'gpt-5.6-luna', to: 'gpt-5.6-luna', color: 'bg-sky-100 text-sky-700 hover:bg-sky-200 dark:bg-sky-900/30 dark:text-sky-400' },

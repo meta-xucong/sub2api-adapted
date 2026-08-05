@@ -108,19 +108,18 @@ Operator smoke tests:
   `allowed_api_key_names`; do not reuse a customer key for deployment
   validation.
 
-Codex auto-review model overlay:
+Codex auto-review compatibility overlay:
 
 - Applied on 2026-07-22 with
   [`deploy/sql/codex_auto_review_model_overlay.example.sql`](../deploy/sql/codex_auto_review_model_overlay.example.sql).
-- Runtime policy: OpenAI accounts that already support `gpt-5.6-sol` map
-  `codex-auto-review` to `gpt-5.6-sol`; remaining chat accounts map it to
-  `gpt-5.5`. The bare `gpt-5.6` alias is not used because upstream distributors
-  rejected it during verification.
-- Result after deployment: 11 accounts map `codex-auto-review` to
-  `gpt-5.6-sol`; 7 accounts map it to `gpt-5.5`.
+- The old “prefer GPT-5.6” policy is retired. A synthetic
+  `codex-auto-review` request now falls back only to each account's explicit
+  `gpt-5.5` mapping; explicit GPT-5.6 requests remain unchanged.
+- The repair is configuration-only and does not change account priorities,
+  concurrency, image lanes, or ordinary GPT-5.6 mappings.
 - Verification: `/health` returned HTTP 200; a minimal `/v1/responses`
-  `codex-auto-review` request returned HTTP 200 and recorded upstream model
-  `gpt-5.6-sol` on account `23`.
+  `codex-auto-review` request is expected to record upstream model `gpt-5.5`
+  when the selected account advertises that mapping.
 
 Active Smart Router scoring weights:
 
@@ -367,19 +366,16 @@ Smart Router health, or model mappings.
 - Rollback backup:
   `/opt/sub2api-deploy/backups/responses-image-bridge-deploy-20260722-092434`.
 
-### Codex auto-review model overlay
+### Codex auto-review compatibility overlay
 
 - Applied on 2026-07-22 with
   [`deploy/sql/codex_auto_review_model_overlay.example.sql`](../deploy/sql/codex_auto_review_model_overlay.example.sql).
-- Runtime policy: OpenAI accounts that already support `gpt-5.6-sol` map
-  `codex-auto-review` to `gpt-5.6-sol`; remaining chat accounts map it to
-  `gpt-5.5`. The bare `gpt-5.6` alias is not used because upstream distributors
-  rejected it during verification.
-- Result after deployment: 11 accounts map `codex-auto-review` to
-  `gpt-5.6-sol`; 2 accounts map it to `gpt-5.5`.
+- The old “prefer GPT-5.6” policy is retired. A synthetic
+  `codex-auto-review` request now falls back only to the account's explicit
+  `gpt-5.5` mapping; explicit GPT-5.6 requests remain unchanged.
 - Verification: `/health` returned HTTP 200; a minimal `/v1/responses`
   `codex-auto-review` request in the `chatgpt-plus` group returned HTTP 200
-  and recorded upstream model `gpt-5.6-sol` on account `15`.
+  and recorded upstream model `gpt-5.5`.
 
 ### Capability And Priority Policy
 

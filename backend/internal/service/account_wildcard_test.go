@@ -306,6 +306,42 @@ func TestAccountGetMappedModel(t *testing.T) {
 			requestedModel: "claude-sonnet-4-5",
 			expected:       "claude-sonnet-4-5",
 		},
+		{
+			name: "synthetic codex review does not prefer gpt-5.6 over gpt-5.5",
+			platform: PlatformOpenAI,
+			credentials: map[string]any{
+				"model_mapping": map[string]any{
+					"codex-auto-review": "gpt-5.6-sol",
+					"gpt-5.5":           "gpt-5.5",
+				},
+			},
+			requestedModel: "codex-auto-review",
+			expected:       "gpt-5.5",
+		},
+		{
+			name: "explicit gpt-5.6 model remains unchanged",
+			platform: PlatformOpenAI,
+			credentials: map[string]any{
+				"model_mapping": map[string]any{
+					"gpt-5.6-luna": "gpt-5.6-luna",
+					"gpt-5.5":      "gpt-5.5",
+				},
+			},
+			requestedModel: "gpt-5.6-luna",
+			expected:       "gpt-5.6-luna",
+		},
+		{
+			name: "synthetic codex review keeps explicit fallback target",
+			platform: PlatformOpenAI,
+			credentials: map[string]any{
+				"model_mapping": map[string]any{
+					"codex-auto-review": "gpt-5.6-terra",
+					"gpt-5.5":           "provider-gpt-5.5",
+				},
+			},
+			requestedModel: "codex-auto-review",
+			expected:       "provider-gpt-5.5",
+		},
 	}
 
 	for _, tt := range tests {

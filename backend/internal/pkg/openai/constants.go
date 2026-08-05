@@ -73,6 +73,31 @@ func DefaultModelIDs() []string {
 	return ids
 }
 
+// AdminSelectableModels returns metadata for the curated model IDs shown in
+// ordinary admin model pickers. Internal aliases remain in DefaultModels for
+// routing compatibility but are intentionally omitted here.
+func AdminSelectableModels() []Model {
+	defaultsByID := make(map[string]Model, len(DefaultModels))
+	for _, model := range DefaultModels {
+		defaultsByID[model.ID] = model
+	}
+
+	models := make([]Model, 0, len(AdminSelectableModelIDs()))
+	for _, modelID := range AdminSelectableModelIDs() {
+		if model, ok := defaultsByID[modelID]; ok {
+			models = append(models, model)
+			continue
+		}
+		models = append(models, Model{
+			ID:          modelID,
+			Object:      "model",
+			Type:        "model",
+			DisplayName: modelID,
+		})
+	}
+	return models
+}
+
 // DefaultTestModel default model for testing OpenAI accounts
 const DefaultTestModel = "gpt-5.5"
 

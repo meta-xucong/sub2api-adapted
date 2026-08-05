@@ -123,7 +123,7 @@ describe('UseKeyModal', () => {
     expect(codeBlock.text()).not.toContain('"name": "GPT-5.4 Nano"')
   })
 
-  it('renders GPT-5.6 alias and max variants in OpenCode config', async () => {
+  it('renders explicit GPT-5.6 variants and hides retired aliases in OpenCode config', async () => {
     const wrapper = mount(UseKeyModal, {
       props: {
         show: true,
@@ -152,12 +152,15 @@ describe('UseKeyModal', () => {
 
     const parsed = JSON.parse(wrapper.find('pre code').text())
     const models = parsed.provider.openai.models
-    for (const model of ['gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']) {
+    for (const model of ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']) {
       expect(models[model]).toBeDefined()
       expect(models[model].variants).toHaveProperty('max')
       expect(models[model].variants).toHaveProperty('xhigh')
     }
-    expect(models['gpt-5.6'].name).toBe('GPT-5.6 (Sol)')
+    expect(models['gpt-5.6']).toBeUndefined()
+    expect(models['gpt-5.2']).toBeUndefined()
+    expect(models['gpt-5.3-codex-spark']).toBeUndefined()
+    expect(models['codex-mini-latest']).toBeUndefined()
   })
 
   it('renders Claude Fable 5 OpenCode config with adaptive thinking', async () => {

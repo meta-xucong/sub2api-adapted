@@ -787,15 +787,38 @@ func (a *Account) ResolveMappedModel(requestedModel string) (mappedModel string,
 		return requestedModel, false
 	}
 	if mappedModel, matched := resolveRequestedModelInMapping(mapping, requestedModel); matched {
-		return mappedModel, true
+		return conservativeCodexAutoReviewModel(a, mapping, requestedModel, mappedModel), true
 	}
 	normalized := normalizeRequestedModelForLookup(a.Platform, requestedModel)
 	if normalized != requestedModel {
 		if mappedModel, matched := resolveRequestedModelInMapping(mapping, normalized); matched {
-			return mappedModel, true
+			return conservativeCodexAutoReviewModel(a, mapping, requestedModel, mappedModel), true
 		}
 	}
 	return requestedModel, false
+}
+
+// conservativeCodexAutoReviewModel prevents the synthetic Codex review model
+// from silently selecting a newer GPT-5.6 lane. codex-auto-review does not
+// carry the user's selected model, so a legacy overlay that maps it to Sol,
+// Terra, or Luna can change a gpt-5.5 session's hidden review/compact traffic.
+// Explicit GPT-5.6 requests are not affected.
+func conservativeCodexAutoReviewModel(account *Account, mapping map[string]string, requestedModel, mappedModel string) string {
+	if account == nil || !account.IsOpenAI() {
+		return mappedModel
+	}
+	if !strings.EqualFold(lastOpenAIModelSegment(requestedModel), "codex-auto-review") {
+		return mappedModel
+	}
+	if !isOpenAIGPT56Model(mappedModel) {
+		return mappedModel
+	}
+	if fallback, matched := resolveRequestedModelInMapping(mapping, "gpt-5.5"); matched {
+		if fallback = strings.TrimSpace(fallback); fallback != "" {
+			return fallback
+		}
+	}
+	return mappedModel
 }
 
 // GetOpenAICompactMode returns the compact routing mode for an OpenAI account.

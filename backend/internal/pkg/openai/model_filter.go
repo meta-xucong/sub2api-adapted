@@ -38,6 +38,71 @@ var deprecatedAutoDiscoveryModels = map[string]struct{}{
 	"gpt-image-1.5":        {},
 }
 
+// adminSelectableOpenAIModels is the intentionally small list shown in
+// ordinary admin model pickers. Internal aliases and upstream snapshots may
+// remain routable, but they should not become accidental user-facing choices.
+var adminSelectableOpenAIModels = []string{
+	"gpt-5.4-mini",
+	"gpt-5.4",
+	"gpt-5.5",
+	"gpt-5.6-sol",
+	"gpt-5.6-terra",
+	"gpt-5.6-luna",
+	"gpt-image-2",
+}
+
+var adminSelectableOpenAIModelSet = makeModelSet(adminSelectableOpenAIModels)
+
+var adminHiddenOpenAIModels = map[string]struct{}{
+	"codex-auto-review":   {},
+	"gpt-5.3-codex-spark": {},
+	"gpt-5.4-nano":        {},
+	"gpt-5.5-pro":         {},
+	"gpt-5.6":             {},
+	"codex-mini-latest":   {},
+}
+
+// AdminSelectableModelIDs returns the curated OpenAI model IDs intended for
+// ordinary admin model-list configuration. This is deliberately separate from
+// DefaultModelIDs: the latter is also used for routing compatibility.
+func AdminSelectableModelIDs() []string {
+	return append([]string(nil), adminSelectableOpenAIModels...)
+}
+
+// IsAdminSelectableModelID reports whether a model may be offered as a normal
+// OpenAI admin picker choice. Non-OpenAI-looking aliases are preserved because
+// providers commonly expose custom names such as "aiai-gpt-image-2".
+func IsAdminSelectableModelID(model string) bool {
+	model = normalizeListedModelID(model)
+	if model == "" {
+		return false
+	}
+	lower := strings.ToLower(model)
+	if _, ok := adminHiddenOpenAIModels[lower]; ok {
+		return false
+	}
+	if _, ok := adminSelectableOpenAIModelSet[lower]; ok {
+		return true
+	}
+	if looksLikeOpenAIManagedModel(lower) {
+		return false
+	}
+	return true
+}
+
+// FilterAdminSelectableModelIDs filters OpenAI IDs for admin-facing pickers
+// while preserving custom provider aliases. The input order is retained so
+// callers can keep their configured priority order.
+func FilterAdminSelectableModelIDs(models []string) []string {
+	filtered := make([]string, 0, len(models))
+	for _, model := range models {
+		if IsAdminSelectableModelID(model) {
+			filtered = append(filtered, normalizeListedModelID(model))
+		}
+	}
+	return dedupeModelIDs(filtered)
+}
+
 // FilterAutoDiscoveredModelIDs returns model IDs safe to add through automatic
 // upstream sync. It intentionally removes OpenAI snapshot IDs and deprecated
 // image/chat aliases while leaving non-OpenAI custom provider IDs alone.
@@ -223,4 +288,29 @@ func dedupeAndSortModelIDs(models []string) []string {
 	}
 	sort.Strings(result)
 	return result
+}
+
+func dedupeModelIDs(models []string) []string {
+	seen := make(map[string]struct{}, len(models))
+	result := make([]string, 0, len(models))
+	for _, model := range models {
+		model = normalizeListedModelID(model)
+		if model == "" {
+			continue
+		}
+		if _, exists := seen[model]; exists {
+			continue
+		}
+		seen[model] = struct{}{}
+		result = append(result, model)
+	}
+	return result
+}
+
+func makeModelSet(models []string) map[string]struct{} {
+	set := make(map[string]struct{}, len(models))
+	for _, model := range models {
+		set[strings.ToLower(normalizeListedModelID(model))] = struct{}{}
+	}
+	return set
 }

@@ -620,39 +620,6 @@ function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: strin
     }
   }
   const openaiModels = {
-    'gpt-5.2': {
-      name: 'GPT-5.2',
-      limit: {
-        context: 400000,
-        output: 128000
-      },
-      options: {
-        store: false
-      },
-      variants: {
-        low: {},
-        medium: {},
-        high: {},
-        xhigh: {}
-      }
-    },
-    'gpt-5.6': {
-      name: 'GPT-5.6 (Sol)',
-      limit: {
-        context: 1050000,
-        output: 128000
-      },
-      options: {
-        store: false
-      },
-      variants: {
-        low: {},
-        medium: {},
-        high: {},
-        xhigh: {},
-        max: {}
-      }
-    },
     'gpt-5.6-sol': {
       name: 'GPT-5.6 Sol',
       limit: {
@@ -752,37 +719,6 @@ function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: strin
         xhigh: {}
       }
     },
-    'gpt-5.3-codex-spark': {
-      name: 'GPT-5.3 Codex Spark',
-      limit: {
-        context: 128000,
-        output: 32000
-      },
-      options: {
-        store: false
-      },
-      variants: {
-        low: {},
-        medium: {},
-        high: {},
-        xhigh: {}
-      }
-    },
-    'codex-mini-latest': {
-      name: 'Codex Mini',
-      limit: {
-        context: 200000,
-        output: 100000
-      },
-      options: {
-        store: false
-      },
-      variants: {
-        low: {},
-        medium: {},
-        high: {}
-      }
-    }
   }
   const geminiModels = {
     'gemini-2.0-flash': {

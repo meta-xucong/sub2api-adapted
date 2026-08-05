@@ -81,11 +81,11 @@ func (s *adminServiceImpl) GetGroupModelsListCandidates(ctx context.Context, id 
 			continue
 		}
 		for model := range acc.GetModelMapping() {
-			model = strings.TrimSpace(model)
+			model = strings.TrimPrefix(strings.TrimSpace(model), "models/")
 			if model == "" {
 				continue
 			}
-			if platform == PlatformOpenAI && !openai.IsAutoDiscoveredModelID(model) {
+			if platform == PlatformOpenAI && !openai.IsAdminSelectableModelID(model) {
 				continue
 			}
 			if _, ok := seen[model]; ok {
@@ -101,7 +101,7 @@ func (s *adminServiceImpl) GetGroupModelsListCandidates(ctx context.Context, id 
 func defaultModelsListCandidateIDs(platform string) []string {
 	switch platform {
 	case PlatformOpenAI:
-		return openai.DefaultModelIDs()
+		return openai.AdminSelectableModelIDs()
 	case PlatformGemini:
 		ids := make([]string, 0, len(geminicli.DefaultModels))
 		for _, model := range geminicli.DefaultModels {

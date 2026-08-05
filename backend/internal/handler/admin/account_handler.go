@@ -2257,26 +2257,25 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 	if account.IsOpenAI() {
 		// OpenAI 自动透传会绕过常规模型改写，测试/模型列表也应回落到默认模型集。
 		if account.IsOpenAIPassthroughEnabled() {
-			response.Success(c, openai.DefaultModels)
+			response.Success(c, openai.AdminSelectableModels())
 			return
 		}
 
 		mapping := account.GetModelMapping()
 		if len(mapping) == 0 {
-			response.Success(c, openai.DefaultModels)
+			response.Success(c, openai.AdminSelectableModels())
 			return
 		}
 
-		// Return mapped models
+		// Return mapped models that are valid normal admin choices. Internal
+		// aliases remain routable but are not exposed as accidental test
+		// targets in the ordinary account UI.
 		var models []openai.Model
-		requestedModels := make([]string, 0, len(mapping))
-		for requestedModel := range mapping {
-			requestedModels = append(requestedModels, requestedModel)
-		}
+		requestedModels := openai.FilterAdminSelectableModelIDs(mapKeys(mapping))
 		sort.Strings(requestedModels)
 		for _, requestedModel := range requestedModels {
 			var found bool
-			for _, dm := range openai.DefaultModels {
+			for _, dm := range openai.AdminSelectableModels() {
 				if dm.ID == requestedModel {
 					models = append(models, dm)
 					found = true
@@ -2430,6 +2429,14 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 	}
 
 	response.Success(c, models)
+}
+
+func mapKeys(mapping map[string]string) []string {
+	keys := make([]string, 0, len(mapping))
+	for model := range mapping {
+		keys = append(keys, model)
+	}
+	return keys
 }
 
 // SyncUpstreamModels handles syncing live supported models from an account's upstream.

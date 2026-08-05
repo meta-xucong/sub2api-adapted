@@ -77,11 +77,19 @@ template is
 `deploy/sql/codex_auto_review_model_overlay.example.sql`.
 
 The overlay is configuration-only. It adds `codex-auto-review` to OpenAI chat
-groups that already advertise `gpt-5.5`, and maps each OpenAI account's
-`codex-auto-review` to the best explicit model it already supports:
-`gpt-5.6-sol`, then `gpt-5.6-terra`, then `gpt-5.6-luna`, then `gpt-5.5`.
-It deliberately avoids the bare `gpt-5.6` alias because upstream distributors
-can reject it while accepting the explicit Sol/Terra/Luna ids.
+groups that already advertise `gpt-5.5`, and maps the synthetic
+`codex-auto-review` request to the account's explicit `gpt-5.5` mapping. This is
+only a conservative compatibility fallback: the synthetic model does not carry
+the user's selected model, so choosing the account's newest GPT-5.6 lane here
+would silently change the user's model and can break compact/review traffic.
+Explicit `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` requests are not
+rewritten by this overlay and keep their own mapping and Smart Router health.
+The overlay also deliberately avoids the bare `gpt-5.6` alias because upstream
+distributors can reject it while accepting the explicit Sol/Terra/Luna ids.
+
+The former policy selected `gpt-5.6-sol` before `gpt-5.5`; that policy is
+retired because it caused a user who selected `gpt-5.5` to observe hidden
+review/compact traffic on a GPT-5.6 lane.
 
 The overlay does not change image-only lanes, account priority, group
 membership, schedulability, credentials, balances, or concurrency. After direct

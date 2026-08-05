@@ -273,6 +273,11 @@ func TestFetchUpstreamSupportedModelsFiltersOpenAISnapshotNoise(t *testing.T) {
 		Header:     http.Header{"Content-Type": []string{"application/json"}},
 		Body: io.NopCloser(strings.NewReader(`{"data":[
 			{"id":"gpt-5.6-sol"},
+			{"id":"gpt-5.6-luna"},
+			{"id":"gpt-5.6"},
+			{"id":"gpt-5.5-pro"},
+			{"id":"gpt-5.3-codex-spark"},
+			{"id":"gpt-5.4-nano"},
 			{"id":"gpt-5.6-sol-2026-07-09"},
 			{"id":"gpt-5.4-2026-03-05"},
 			{"id":"gpt-5.2-chat-latest"},
@@ -297,7 +302,12 @@ func TestFetchUpstreamSupportedModelsFiltersOpenAISnapshotNoise(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	require.Equal(t, []string{"custom-provider-model", "gpt-5.6-sol", "gpt-image-2"}, models)
+	require.Equal(t, []string{
+		"custom-provider-model",
+		"gpt-5.6-luna",
+		"gpt-5.6-sol",
+		"gpt-image-2",
+	}, models)
 }
 
 func TestFetchUpstreamSupportedModelsDoesNotExposeUpstreamBody(t *testing.T) {
