@@ -20,6 +20,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/securityaudit"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	smartrouter "github.com/Wei-Shaw/sub2api/internal/smartrouter/core"
 
 	coderws "github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
@@ -103,6 +104,19 @@ func resolveOpenAIMessagesDispatchMappedModel(apiKey *service.APIKey, requestedM
 		return ""
 	}
 	return strings.TrimSpace(apiKey.Group.ResolveMessagesDispatchModel(requestedModel))
+}
+
+func (h *OpenAIGatewayHandler) responsesImageBridgeEnabled(body []byte) bool {
+	if h == nil || h.cfg == nil || !h.cfg.Gateway.ResponsesImageBridge.Enabled {
+		return false
+	}
+	if !service.IsResponsesImageBridgeRequest(body) {
+		return false
+	}
+	return strings.EqualFold(
+		strings.TrimSpace(h.cfg.Gateway.ResponsesImageBridge.ApplyToProtocol),
+		"images_api_only",
+	)
 }
 
 type openAIModelBodyReplaceFunc func([]byte, string) []byte
@@ -361,6 +375,20 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		h.errorResponse(c, http.StatusForbidden, "permission_error", service.ImageGenerationPermissionMessage())
 		return
 	}
+	responsesImageBridge := false
+	var responsesImageParsed *service.OpenAIImagesRequest
+	if h.responsesImageBridgeEnabled(body) {
+		if maxBytes := h.cfg.Gateway.ResponsesImageBridge.MaxRequestBytes; maxBytes > 0 && len(body) > maxBytes {
+			h.errorResponse(c, http.StatusRequestEntityTooLarge, "invalid_request_error", "Responses image bridge request is too large")
+			return
+		}
+		_, responsesImageParsed, err = service.BuildOpenAIResponsesImageBridgeRequest(body)
+		if err != nil {
+			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+			return
+		}
+		responsesImageBridge = true
+	}
 	var imageReleaseFunc func()
 	if imageIntent {
 		var imageAcquired bool
@@ -371,6 +399,27 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		if imageReleaseFunc != nil {
 			defer imageReleaseFunc()
 		}
+	}
+	routingModel := reqModel
+	requestCtx := c.Request.Context()
+	if service.OpenAIFastIntentFromBody(body) {
+		requestCtx = service.WithOpenAIFastIntent(requestCtx)
+	}
+	routingContext := requestCtx
+	if imageIntent {
+		routingModel = service.ResolveOpenAIResponsesImageRoutingModel(reqModel, body)
+		requestCtx, cancelImageRequest := h.gatewayService.WithOpenAIImageRequestTimeout(requestCtx)
+		defer cancelImageRequest()
+		requestCtx = service.WithOpenAIImageGenerationIntent(requestCtx)
+		mode := "text_only"
+		if service.IsOpenAIResponsesReferenceImageRequest(body) {
+			mode = "reference_image"
+		}
+		requestCtx = service.WithOpenAIImageSmartRouterInputMode(requestCtx, mode)
+		requestCtx = service.WithOpenAIImageSmartRouterModelFamily(requestCtx, routingModel)
+		routingContext = requestCtx
+	} else {
+		routingContext = service.WithOpenAIResponsesIntent(routingContext)
 	}
 
 	// 解析渠道级模型映射
@@ -561,6 +610,13 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		}
 		h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, err != nil, cyberBlockKeyHTTP, clientRequestedUsageFields(c, channelMapping, reqModel, ""), service.HashUsageRequestPayload(body))
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
+		if responsesImageBridge {
+			h.gatewayService.ReportSmartRouterImageResult(account, responsesImageParsed, result, err, forwardDurationMs)
+		} else if requireCompact {
+			h.gatewayService.ReportSmartRouterCompactResult(account, reqModel, result, err, forwardDurationMs)
+		} else {
+			h.gatewayService.ReportSmartRouterTextResult(account, smartrouter.CapabilityResponses, reqModel, result, err, forwardDurationMs)
+		}
 		upstreamLatencyMs, _ := getContextInt64(c, service.OpsUpstreamLatencyMsKey)
 		responseLatencyMs := forwardDurationMs
 		if upstreamLatencyMs > 0 && forwardDurationMs > upstreamLatencyMs {
@@ -774,7 +830,8 @@ func isOpenAIRemoteCompactionV2Request(c *gin.Context, body []byte) bool {
 // 返回归一化后的 body；ok=false 表示错误响应已写出，调用方应直接 return。
 func (h *OpenAIGatewayHandler) normalizeOpenAIResponsesCompactRequest(c *gin.Context, reqLog *zap.Logger, body []byte) ([]byte, bool) {
 	isCompactRequest := service.IsOpenAIResponsesCompactPathForTest(c)
-	if !isCompactRequest && isBareOpenAIResponsesPath(c) && service.HasCompactionTriggerInInput(body) {
+	bodySignal := service.DetectOpenAICompactBodySignal(body)
+	if !isCompactRequest && isBareOpenAIResponsesPath(c) && bodySignal.Detected {
 		if isOpenAIRemoteCompactionV2Request(c, body) {
 			return body, true
 		}
@@ -784,7 +841,10 @@ func (h *OpenAIGatewayHandler) normalizeOpenAIResponsesCompactRequest(c *gin.Con
 		if clientStream {
 			service.MarkOpenAICompactClientStream(c)
 		}
-		reqLog.Info("codex.remote_compact.detected_body_signal", zap.Bool("client_stream", clientStream))
+		reqLog.Info("codex.remote_compact.detected_body_signal",
+			zap.Bool("client_stream", clientStream),
+			zap.String("signal_kind", bodySignal.Kind),
+		)
 	}
 	if !isCompactRequest {
 		return body, true
@@ -1002,6 +1062,10 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 	sessionHash := h.gatewayService.GenerateSessionHash(c, body)
 	promptCacheKey := h.gatewayService.ExtractSessionID(c, body)
 	sessionHash, promptCacheKey = resolveOpenAIMessagesMetadataSession(sessionHash, promptCacheKey, reqModel, body)
+	routingContext := c.Request.Context()
+	if service.OpenAIFastIntentFromBody(body) {
+		routingContext = service.WithOpenAIFastIntent(routingContext)
+	}
 	if h.rejectIfCyberSessionBlocked(c, apiKey, body, reqModel, cyberBlockFormatAnthropic) {
 		return
 	}
@@ -1029,7 +1093,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		}
 		reqLog.Debug("openai_messages.account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
 		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForCapability(
-			c.Request.Context(),
+			routingContext,
 			apiKey.GroupID,
 			"", // no previous_response_id
 			sessionHash,
@@ -1735,6 +1799,12 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, service.ImageGenerationPermissionMessage())
 		return
 	}
+	routingModel := reqModel
+	routingContext := ctx
+	if imageIntent {
+		routingModel = service.ResolveOpenAIResponsesImageRoutingModel(reqModel, firstMessage)
+		routingContext = service.WithOpenAIImageGenerationIntent(routingContext)
+	}
 
 	// F5a: 握手层会话屏蔽检查。WS 握手无 body，显式标识仅来自握手 header
 	// （session_id / conversation_id）；无标识则放行，连接内仍有本地 flag 兜底。
@@ -1881,11 +1951,11 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		}
 		reqLog.Debug("openai.websocket_account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
 		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForCapability(
-			ctx,
+			routingContext,
 			apiKey.GroupID,
 			previousResponseID,
 			sessionHash,
-			reqModel,
+			routingModel,
 			failedAccountIDs,
 			requiredTransport,
 			requiredCapability,
@@ -2623,6 +2693,9 @@ func (h *OpenAIGatewayHandler) handleStreamingAwareErrorWithCode(
 	// body-signal compact 心跳可能已把响应头提交为 200：先停心跳（建立
 	// happens-before，接管 ResponseWriter），并升级为流内错误处理。
 	if service.StopOpenAICompactSSEKeepaliveCommitted(c) {
+		// The keepalive fixes the wire status at 200, so the terminal outcome
+		// must be recorded explicitly for ops and compact outcome logging.
+		service.MarkOpsStreamError(c, errType, message, status)
 		streamStarted = true
 	}
 	if streamStarted {

@@ -11,6 +11,7 @@ import (
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/server/routes"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/veyra"
 	"github.com/Wei-Shaw/sub2api/internal/web"
 
 	"github.com/gin-gonic/gin"
@@ -33,6 +34,7 @@ func SetupRouter(
 	subscriptionService *service.SubscriptionService,
 	opsService *service.OpsService,
 	settingService *service.SettingService,
+	userService *service.UserService,
 	compositeResolver *service.CompositeRouteResolver,
 	cfg *config.Config,
 	redisClient *redis.Client,
@@ -68,6 +70,10 @@ func SetupRouter(
 		}
 		return nil
 	}))
+	r.Use(veyra.PortalMiddleware(veyra.PortalConfig{
+		Enabled:       cfg.Veyra.Enabled,
+		PortalEnabled: cfg.Veyra.PortalEnabled,
+	}))
 	r.Use(middleware2.ServerTiming(cfg.Server.EnableServerTiming))
 
 	// Serve embedded frontend with settings injection if available
@@ -90,7 +96,7 @@ func SetupRouter(
 	}
 
 	// 注册路由
-	registerRoutes(r, handlers, jwtAuth, optionalJWTAuth, adminAuth, apiKeyAuth, auditLog, stepUpAuth, apiKeyService, subscriptionService, opsService, settingService, compositeResolver, cfg, redisClient)
+	registerRoutes(r, handlers, jwtAuth, optionalJWTAuth, adminAuth, apiKeyAuth, auditLog, stepUpAuth, apiKeyService, subscriptionService, opsService, settingService, userService, compositeResolver, cfg, redisClient)
 
 	return r
 }
@@ -109,6 +115,7 @@ func registerRoutes(
 	subscriptionService *service.SubscriptionService,
 	opsService *service.OpsService,
 	settingService *service.SettingService,
+	userService *service.UserService,
 	compositeResolver *service.CompositeRouteResolver,
 	cfg *config.Config,
 	redisClient *redis.Client,
@@ -130,6 +137,12 @@ func registerRoutes(
 	routes.RegisterAdminRoutes(v1, h, adminAuth, auditLog, stepUpAuth, settingService, panelRateLimiter)
 	routes.RegisterGatewayRoutes(r, h, apiKeyAuth, apiKeyService, subscriptionService, opsService, settingService, compositeResolver, cfg)
 	routes.RegisterPaymentRoutes(v1, h.Payment, h.PaymentWebhook, h.Admin.Payment, jwtAuth, adminAuth, auditLog, settingService, panelRateLimiter)
+
+	veyraTicketStore := veyra.NewMemoryTicketStore()
+	veyraDebitLedger := veyra.NewMemoryDebitLedger()
+	veyraConfig := veyra.RoutesConfigFromConfig(cfg)
+	veyra.RegisterRoutes(v1, jwtAuth, veyraConfig, veyraTicketStore, veyraDebitLedger, userService)
+	veyra.RegisterRoutes(r.Group("/api"), jwtAuth, veyraConfig, veyraTicketStore, veyraDebitLedger, userService)
 
 	handler.RegisterPageRoutes(v1, cfg.Pricing.DataDir, gin.HandlerFunc(jwtAuth), gin.HandlerFunc(adminAuth), settingService)
 }

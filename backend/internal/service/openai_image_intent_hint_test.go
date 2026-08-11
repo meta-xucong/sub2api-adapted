@@ -218,7 +218,7 @@ func TestOpenAIGatewayServicePassthroughCompactImageIntentIsAttemptLocal(t *test
 			upstream := &httpUpstreamRecorder{resp: &http.Response{
 				StatusCode: http.StatusOK,
 				Header:     http.Header{"Content-Type": []string{"application/json"}},
-				Body:       io.NopCloser(strings.NewReader(`{"id":"resp_compact","model":"` + tt.compactModel + `","usage":{"input_tokens":1,"output_tokens":1}}`)),
+				Body:       io.NopCloser(strings.NewReader(`{"id":"resp_compact","model":"` + tt.compactModel + `","output":[{"type":"compaction","encrypted_content":"compact-payload"}],"usage":{"input_tokens":1,"output_tokens":1}}`)),
 			}}
 			svc := newOpenAIImageGenerationControlTestService(upstream)
 			c, recorder := newOpenAIImageGenerationControlTestContext(false, "unit-test-agent/1.0")

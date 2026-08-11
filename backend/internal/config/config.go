@@ -73,6 +73,7 @@ type Config struct {
 	Ops                     OpsConfig                     `mapstructure:"ops"`
 	JWT                     JWTConfig                     `mapstructure:"jwt"`
 	Totp                    TotpConfig                    `mapstructure:"totp"`
+	Veyra                   VeyraConfig                   `mapstructure:"veyra"`
 	WebAuthn                WebAuthnConfig                `mapstructure:"webauthn"`
 	LinuxDo                 LinuxDoConnectConfig          `mapstructure:"linuxdo_connect"`
 	WeChat                  WeChatConnectConfig           `mapstructure:"wechat_connect"`
@@ -99,6 +100,15 @@ type Config struct {
 	Idempotency             IdempotencyConfig             `mapstructure:"idempotency"`
 	BatchImage              BatchImageConfig              `mapstructure:"batch_image"`
 	ImageStorage            ImageStorageConfig            `mapstructure:"image_storage"`
+}
+
+// VeyraConfig controls the optional aiself portal integration.
+type VeyraConfig struct {
+	Enabled               bool   `mapstructure:"enabled"`
+	PortalEnabled         bool   `mapstructure:"portal_enabled"`
+	AlchemyBaseURL        string `mapstructure:"alchemy_base_url"`
+	InternalToken         string `mapstructure:"internal_token"`
+	LoginTicketTTLSeconds int    `mapstructure:"login_ticket_ttl_seconds"`
 }
 
 type LogConfig struct {
@@ -922,6 +932,11 @@ type GatewayConfig struct {
 	// CodexImageGenerationBridgeEnabled: 是否为 Codex `/v1/responses` 自动注入 image_generation 工具和桥接指令。
 	// 默认关闭，避免纯文本 Codex 请求被意外改写；显式携带 image_generation 工具的请求仍按分组能力转发。
 	CodexImageGenerationBridgeEnabled bool `mapstructure:"codex_image_generation_bridge_enabled"`
+	// ResponsesImageBridge adapts explicit Responses image_generation requests to
+	// accounts that only expose the OpenAI Images API.
+	ResponsesImageBridge ResponsesImageBridgeConfig `mapstructure:"responses_image_bridge"`
+	// OperatorTestGuard blocks local maintenance probes from consuming customer API keys.
+	OperatorTestGuard GatewayOperatorTestGuardConfig `mapstructure:"operator_test_guard"`
 	// ForcedCodexInstructionsTemplateFile: 服务端强制附加到 Codex 顶层 instructions 的模板文件路径。
 	// 模板渲染后会直接覆盖最终 instructions；若需要保留客户端 system 转换结果，请在模板中显式引用 {{ .ExistingInstructions }}。
 	ForcedCodexInstructionsTemplateFile string `mapstructure:"forced_codex_instructions_template_file"`
@@ -940,6 +955,8 @@ type GatewayConfig struct {
 	Live GatewayLiveConfig `mapstructure:"live"`
 	// OpenAIScheduler: OpenAI 高级调度器粘性逃逸配置
 	OpenAIScheduler GatewayOpenAISchedulerConfig `mapstructure:"openai_scheduler"`
+	// SmartRouter: optional multi-line routing enhancement layer.
+	SmartRouter GatewaySmartRouterConfig `mapstructure:"smart_router"`
 	// OpenAIHTTP2: OpenAI HTTP 上游协议策略（默认启用 HTTP/2，可按代理能力回退 HTTP/1.1）
 	OpenAIHTTP2 GatewayOpenAIHTTP2Config `mapstructure:"openai_http2"`
 	// OpenAIProxyStreamCircuit: Responses SSE 代理断流熔断策略。
@@ -983,6 +1000,14 @@ type GatewayConfig struct {
 	ImageStreamKeepaliveInterval int `mapstructure:"image_stream_keepalive_interval"`
 	// ImageNonstreamKeepaliveInterval: 图片非流式 JSON keepalive 间隔（秒），0表示禁用
 	ImageNonstreamKeepaliveInterval int `mapstructure:"image_nonstream_keepalive_interval"`
+	// ImageUpstreamTimeoutSeconds bounds one image upstream attempt; 0 disables it.
+	ImageUpstreamTimeoutSeconds int `mapstructure:"image_upstream_timeout_seconds"`
+	// ImageRequestTimeoutSeconds bounds the complete image failover request; 0 disables it.
+	ImageRequestTimeoutSeconds int `mapstructure:"image_request_timeout_seconds"`
+	// ImageEditTransientCooldownSeconds temporarily avoids a failed image-edit lane; 0 disables it.
+	ImageEditTransientCooldownSeconds int `mapstructure:"image_edit_transient_cooldown_seconds"`
+	// ImageGenerationTransientCooldownSeconds temporarily avoids a failed generation lane; 0 disables it.
+	ImageGenerationTransientCooldownSeconds int `mapstructure:"image_generation_transient_cooldown_seconds"`
 	// MaxLineSize: 上游 SSE 单行最大字节数（0使用默认值）
 	MaxLineSize int `mapstructure:"max_line_size"`
 
@@ -1060,6 +1085,138 @@ type GatewayGrokConfig struct {
 type GatewayLiveConfig struct {
 	// MaxSessionDurationSeconds 是 Live 会话的硬上限。
 	MaxSessionDurationSeconds int `mapstructure:"max_session_duration_seconds"`
+}
+
+// ResponsesImageBridgeConfig controls the opt-in Responses -> Images API
+// protocol adapter. Account-level capability marking remains mandatory.
+type ResponsesImageBridgeConfig struct {
+	Enabled           bool   `mapstructure:"enabled"`
+	ApplyToProtocol   string `mapstructure:"apply_to_protocol"`
+	MaxRequestBytes   int    `mapstructure:"max_request_bytes"`
+	PreserveStreaming bool   `mapstructure:"preserve_streaming"`
+}
+
+// GatewayOperatorTestGuardConfig scopes local operator smoke tests to dedicated
+// ops keys so maintenance scripts cannot accidentally spend customer keys.
+type GatewayOperatorTestGuardConfig struct {
+	Enabled            bool     `mapstructure:"enabled"`
+	RequireAdminUser   bool     `mapstructure:"require_admin_user"`
+	TrustedClientIPs   []string `mapstructure:"trusted_client_ips"`
+	BlockedUserAgents  []string `mapstructure:"blocked_user_agents"`
+	AllowedUserEmails  []string `mapstructure:"allowed_user_emails"`
+	AllowedAPIKeyNames []string `mapstructure:"allowed_api_key_names"`
+	Paths              []string `mapstructure:"paths"`
+}
+
+// GatewaySmartRouterConfig configures the optional Smart Router module.
+type GatewaySmartRouterConfig struct {
+	Enabled                 bool                                     `mapstructure:"enabled"`
+	TopK                    int                                      `mapstructure:"top_k"`
+	MaxAttemptsImage        int                                      `mapstructure:"max_attempts_image"`
+	MaxAttemptsChat         int                                      `mapstructure:"max_attempts_chat"`
+	MaxAttemptsCompact      int                                      `mapstructure:"max_attempts_compact"`
+	MaxAttemptsDefault      int                                      `mapstructure:"max_attempts_default"`
+	SameSourceGroupAttempts int                                      `mapstructure:"same_source_group_attempts"`
+	CostBiasMax             float64                                  `mapstructure:"cost_bias_max"`
+	ImageTotalBudgetSeconds int                                      `mapstructure:"image_total_budget_seconds"`
+	ImageAttemptSeconds     int                                      `mapstructure:"image_attempt_seconds"`
+	ImageReserveSeconds     int                                      `mapstructure:"image_finalization_reserve_seconds"`
+	Recovery                GatewaySmartRouterRecoveryConfig         `mapstructure:"recovery"`
+	Calibration             GatewaySmartRouterCalibrationConfig      `mapstructure:"calibration"`
+	Scoring                 GatewaySmartRouterScoringConfig          `mapstructure:"scoring"`
+	AdaptiveTimeout         GatewaySmartRouterAdaptiveTimeoutConfig  `mapstructure:"adaptive_timeout"`
+	ImageResilience         GatewaySmartRouterImageResilienceConfig  `mapstructure:"image_resilience"`
+	RateLimitBackoff        GatewaySmartRouterRateLimitBackoffConfig `mapstructure:"rate_limit_backoff"`
+}
+
+// GatewaySmartRouterRecoveryConfig governs capability-scoped penalties. It
+// never changes the account's manually configured base priority.
+type GatewaySmartRouterRecoveryConfig struct {
+	SecondFailureCooldownSeconds int `mapstructure:"second_failure_cooldown_seconds"`
+	SustainedFailureThreshold    int `mapstructure:"sustained_failure_threshold"`
+	// ImageSustainedFailureThreshold overrides the generic threshold only for
+	// image generation and image edit lanes. Zero keeps the generic threshold.
+	ImageSustainedFailureThreshold int `mapstructure:"image_sustained_failure_threshold"`
+	// RecoveryEscalationFailureThreshold controls how many additional
+	// consecutive failures move a degraded lane another FIFO step backward.
+	RecoveryEscalationFailureThreshold int `mapstructure:"recovery_escalation_failure_threshold"`
+	// RecoveryPriorityStep is added to the lane's current recovery priority at
+	// each escalation. Zero uses the Smart Router default of 30.
+	RecoveryPriorityStep int `mapstructure:"recovery_priority_step"`
+}
+
+// GatewaySmartRouterCalibrationConfig controls the durable daily health probes.
+type GatewaySmartRouterCalibrationConfig struct {
+	Enabled                   bool `mapstructure:"enabled"`
+	AutoEnrollEnabled         bool `mapstructure:"auto_enroll_enabled"`
+	AutoEnrollIntervalSeconds int  `mapstructure:"auto_enroll_interval_seconds"`
+	Hour                      int  `mapstructure:"hour"`
+	Minute                    int  `mapstructure:"minute"`
+	TotalBudgetSeconds        int  `mapstructure:"total_budget_seconds"`
+	ProbeTimeoutSeconds       int  `mapstructure:"probe_timeout_seconds"`
+}
+
+// GatewaySmartRouterAdaptiveTimeoutConfig controls the optional per-lane,
+// per-capability timeout profile. It never changes the total image request
+// budget and is disabled by default for compatibility with existing installs.
+type GatewaySmartRouterAdaptiveTimeoutConfig struct {
+	Enabled                   bool    `mapstructure:"enabled"`
+	DefaultSeconds            int     `mapstructure:"default_seconds"`
+	MinSeconds                int     `mapstructure:"min_seconds"`
+	MaxSeconds                int     `mapstructure:"max_seconds"`
+	SafetyMarginSeconds       int     `mapstructure:"safety_margin_seconds"`
+	Multiplier                float64 `mapstructure:"multiplier"`
+	SuccessStepSeconds        int     `mapstructure:"success_step_seconds"`
+	SuccessFloorMarginSeconds int     `mapstructure:"success_floor_margin_seconds"`
+	// FailureBackoffMultiplier is retained for config compatibility; image
+	// timeout failures now reset to the full base window instead of shrinking.
+	FailureBackoffMultiplier float64 `mapstructure:"failure_backoff_multiplier"`
+	WindowSize               int     `mapstructure:"window_size"`
+	ReserveSeconds           int     `mapstructure:"reserve_seconds"`
+}
+
+// GatewaySmartRouterImageResilienceConfig controls the optional image-only
+// resilience overlay. It never changes non-image routing or the stored
+// account priority.
+type GatewaySmartRouterImageResilienceConfig struct {
+	Enabled                  bool    `mapstructure:"enabled"`
+	GenerationEnabled        bool    `mapstructure:"generation_enabled"`
+	EditEnabled              bool    `mapstructure:"edit_enabled"`
+	StandardDefaultSeconds   int     `mapstructure:"standard_default_seconds"`
+	StandardMinSeconds       int     `mapstructure:"standard_min_seconds"`
+	StandardMaxSeconds       int     `mapstructure:"standard_max_seconds"`
+	SpecialistDefaultSeconds int     `mapstructure:"specialist_default_seconds"`
+	SpecialistMinSeconds     int     `mapstructure:"specialist_min_seconds"`
+	SpecialistMaxSeconds     int     `mapstructure:"specialist_max_seconds"`
+	P90Multiplier            float64 `mapstructure:"p90_multiplier"`
+	SafetyMarginSeconds      int     `mapstructure:"safety_margin_seconds"`
+	FallbackReserveSeconds   int     `mapstructure:"fallback_reserve_seconds"`
+	SampleWindowSize         int     `mapstructure:"sample_window_size"`
+	MaxSameSourceAttempts    int     `mapstructure:"max_same_source_attempts"`
+	HalfOpenEnabled          bool    `mapstructure:"half_open_enabled"`
+}
+
+// GatewaySmartRouterRateLimitBackoffConfig controls upstream 429 recovery.
+// It is separate from health demotion because a concurrency 429 is usually a
+// temporary busy signal, not proof that the account or lane is unhealthy.
+type GatewaySmartRouterRateLimitBackoffConfig struct {
+	Enabled              bool    `mapstructure:"enabled"`
+	InitialSeconds       int     `mapstructure:"initial_seconds"`
+	MaxSeconds           int     `mapstructure:"max_seconds"`
+	MaxAttempts          int     `mapstructure:"max_attempts"`
+	JitterRatio          float64 `mapstructure:"jitter_ratio"`
+	RetryAfterMaxSeconds int     `mapstructure:"retry_after_max_seconds"`
+}
+
+// GatewaySmartRouterScoringConfig controls lane scoring weights.
+type GatewaySmartRouterScoringConfig struct {
+	Priority float64 `mapstructure:"priority"`
+	Cost     float64 `mapstructure:"cost"`
+	Health   float64 `mapstructure:"health"`
+	Load     float64 `mapstructure:"load"`
+	Queue    float64 `mapstructure:"queue"`
+	Latency  float64 `mapstructure:"latency"`
+	Recovery float64 `mapstructure:"recovery"`
 }
 
 // GatewayOpenAIHTTP2Config OpenAI HTTP 上游协议配置。
@@ -1789,6 +1946,11 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 	cfg.CORS.AllowedOrigins = normalizeStringSlice(cfg.CORS.AllowedOrigins)
 	cfg.Security.ResponseHeaders.AdditionalAllowed = normalizeStringSlice(cfg.Security.ResponseHeaders.AdditionalAllowed)
 	cfg.Security.ResponseHeaders.ForceRemove = normalizeStringSlice(cfg.Security.ResponseHeaders.ForceRemove)
+	cfg.Gateway.OperatorTestGuard.TrustedClientIPs = normalizeStringSlice(cfg.Gateway.OperatorTestGuard.TrustedClientIPs)
+	cfg.Gateway.OperatorTestGuard.BlockedUserAgents = normalizeStringSlice(cfg.Gateway.OperatorTestGuard.BlockedUserAgents)
+	cfg.Gateway.OperatorTestGuard.AllowedUserEmails = normalizeStringSlice(cfg.Gateway.OperatorTestGuard.AllowedUserEmails)
+	cfg.Gateway.OperatorTestGuard.AllowedAPIKeyNames = normalizeStringSlice(cfg.Gateway.OperatorTestGuard.AllowedAPIKeyNames)
+	cfg.Gateway.OperatorTestGuard.Paths = normalizeStringSlice(cfg.Gateway.OperatorTestGuard.Paths)
 	cfg.Security.CSP.Policy = strings.TrimSpace(cfg.Security.CSP.Policy)
 	forwardedClientIPHeaders, err := NormalizeForwardedClientIPHeaders(cfg.Security.ForwardedClientIPHeaders)
 	if err != nil {
@@ -2256,6 +2418,18 @@ func setDefaults() {
 	viper.SetDefault("idempotency.max_stored_response_len", 64*1024)
 	viper.SetDefault("idempotency.cleanup_interval_seconds", 60)
 	viper.SetDefault("idempotency.cleanup_batch_size", 500)
+	viper.SetDefault("veyra.enabled", false)
+	viper.SetDefault("veyra.portal_enabled", false)
+	viper.SetDefault("veyra.alchemy_base_url", "https://alchemy.aiself.vip")
+	viper.SetDefault("veyra.internal_token", "")
+	viper.SetDefault("veyra.login_ticket_ttl_seconds", 120)
+
+	// Optional aiself/Veyra portal integration.
+	viper.SetDefault("veyra.enabled", false)
+	viper.SetDefault("veyra.portal_enabled", false)
+	viper.SetDefault("veyra.alchemy_base_url", "https://alchemy.aiself.vip")
+	viper.SetDefault("veyra.internal_token", "")
+	viper.SetDefault("veyra.login_ticket_ttl_seconds", 120)
 
 	// Gateway
 	viper.SetDefault("gateway.response_header_timeout", 600) // 600秒(10分钟)等待上游响应头，LLM高负载时可能排队较久
@@ -2268,12 +2442,98 @@ func setDefaults() {
 	viper.SetDefault("gateway.failover_on_400", false)
 	viper.SetDefault("gateway.max_account_switches", 10)
 	viper.SetDefault("gateway.max_account_switches_gemini", 3)
+	viper.SetDefault("gateway.smart_router.enabled", false)
+	viper.SetDefault("gateway.smart_router.top_k", 5)
+	viper.SetDefault("gateway.smart_router.max_attempts_image", 2)
+	viper.SetDefault("gateway.smart_router.max_attempts_chat", 3)
+	// 0 means dynamic: compact failover may try every eligible lane once;
+	// operators can set a positive value to impose an explicit upper bound.
+	viper.SetDefault("gateway.smart_router.max_attempts_compact", 0)
+	viper.SetDefault("gateway.smart_router.max_attempts_default", 3)
+	viper.SetDefault("gateway.smart_router.same_source_group_attempts", 1)
+	viper.SetDefault("gateway.smart_router.cost_bias_max", 3.0)
+	viper.SetDefault("gateway.smart_router.image_total_budget_seconds", 600)
+	viper.SetDefault("gateway.smart_router.image_attempt_seconds", 180)
+	viper.SetDefault("gateway.smart_router.image_finalization_reserve_seconds", 15)
+	viper.SetDefault("gateway.smart_router.recovery.second_failure_cooldown_seconds", 600)
+	viper.SetDefault("gateway.smart_router.recovery.sustained_failure_threshold", 3)
+	viper.SetDefault("gateway.smart_router.recovery.image_sustained_failure_threshold", 0)
+	viper.SetDefault("gateway.smart_router.calibration.enabled", true)
+	viper.SetDefault("gateway.smart_router.calibration.auto_enroll_enabled", true)
+	viper.SetDefault("gateway.smart_router.calibration.auto_enroll_interval_seconds", 300)
+	viper.SetDefault("gateway.smart_router.calibration.hour", 4)
+	viper.SetDefault("gateway.smart_router.calibration.minute", 0)
+	viper.SetDefault("gateway.smart_router.calibration.total_budget_seconds", 1800)
+	viper.SetDefault("gateway.smart_router.calibration.probe_timeout_seconds", 180)
+	viper.SetDefault("gateway.smart_router.scoring.priority", 0.8)
+	viper.SetDefault("gateway.smart_router.scoring.cost", 1.0)
+	viper.SetDefault("gateway.smart_router.scoring.health", 1.2)
+	viper.SetDefault("gateway.smart_router.scoring.load", 1.0)
+	viper.SetDefault("gateway.smart_router.scoring.queue", 0.6)
+	viper.SetDefault("gateway.smart_router.scoring.latency", 0.4)
+	viper.SetDefault("gateway.smart_router.scoring.recovery", 0.8)
+	viper.SetDefault("gateway.smart_router.image_resilience.enabled", false)
+	viper.SetDefault("gateway.smart_router.image_resilience.generation_enabled", true)
+	viper.SetDefault("gateway.smart_router.image_resilience.edit_enabled", true)
+	viper.SetDefault("gateway.smart_router.image_resilience.standard_default_seconds", 180)
+	viper.SetDefault("gateway.smart_router.image_resilience.standard_min_seconds", 60)
+	viper.SetDefault("gateway.smart_router.image_resilience.standard_max_seconds", 240)
+	viper.SetDefault("gateway.smart_router.image_resilience.specialist_default_seconds", 210)
+	viper.SetDefault("gateway.smart_router.image_resilience.specialist_min_seconds", 75)
+	viper.SetDefault("gateway.smart_router.image_resilience.specialist_max_seconds", 360)
+	viper.SetDefault("gateway.smart_router.image_resilience.p90_multiplier", 1.25)
+	viper.SetDefault("gateway.smart_router.image_resilience.safety_margin_seconds", 20)
+	viper.SetDefault("gateway.smart_router.image_resilience.fallback_reserve_seconds", 30)
+	viper.SetDefault("gateway.smart_router.image_resilience.sample_window_size", 32)
+	viper.SetDefault("gateway.smart_router.image_resilience.max_same_source_attempts", 1)
+	viper.SetDefault("gateway.smart_router.image_resilience.half_open_enabled", false)
+	viper.SetDefault("gateway.smart_router.recovery.recovery_escalation_failure_threshold", 3)
+	viper.SetDefault("gateway.smart_router.recovery.recovery_priority_step", 30)
+	viper.SetDefault("gateway.smart_router.adaptive_timeout.enabled", false)
+	viper.SetDefault("gateway.smart_router.adaptive_timeout.default_seconds", 180)
+	viper.SetDefault("gateway.smart_router.adaptive_timeout.min_seconds", 30)
+	viper.SetDefault("gateway.smart_router.adaptive_timeout.max_seconds", 300)
+	viper.SetDefault("gateway.smart_router.adaptive_timeout.safety_margin_seconds", 20)
+	viper.SetDefault("gateway.smart_router.adaptive_timeout.multiplier", 1.25)
+	viper.SetDefault("gateway.smart_router.adaptive_timeout.success_step_seconds", 10)
+	viper.SetDefault("gateway.smart_router.adaptive_timeout.success_floor_margin_seconds", 30)
+	viper.SetDefault("gateway.smart_router.adaptive_timeout.failure_backoff_multiplier", 0.5)
+	viper.SetDefault("gateway.smart_router.adaptive_timeout.window_size", 32)
+	viper.SetDefault("gateway.smart_router.adaptive_timeout.reserve_seconds", 30)
+	viper.SetDefault("gateway.smart_router.rate_limit_backoff.enabled", true)
+	viper.SetDefault("gateway.smart_router.rate_limit_backoff.initial_seconds", 5)
+	viper.SetDefault("gateway.smart_router.rate_limit_backoff.max_seconds", 60)
+	viper.SetDefault("gateway.smart_router.rate_limit_backoff.max_attempts", 4)
+	viper.SetDefault("gateway.smart_router.rate_limit_backoff.jitter_ratio", 0.25)
+	viper.SetDefault("gateway.smart_router.rate_limit_backoff.retry_after_max_seconds", 90)
 	viper.SetDefault("gateway.force_codex_cli", false)
 	viper.SetDefault("gateway.disable_codex_identity_enforcement", false)
 	viper.SetDefault("gateway.disable_codex_originator_normalization", false)
 	viper.SetDefault("gateway.codex_image_generation_bridge_enabled", false)
+	viper.SetDefault("gateway.responses_image_bridge.enabled", false)
+	viper.SetDefault("gateway.responses_image_bridge.apply_to_protocol", "images_api_only")
+	viper.SetDefault("gateway.responses_image_bridge.max_request_bytes", 16<<20)
+	viper.SetDefault("gateway.responses_image_bridge.preserve_streaming", true)
+	viper.SetDefault("gateway.operator_test_guard.enabled", false)
+	viper.SetDefault("gateway.operator_test_guard.require_admin_user", true)
+	viper.SetDefault("gateway.operator_test_guard.trusted_client_ips", []string{"127.0.0.1", "::1"})
+	viper.SetDefault("gateway.operator_test_guard.blocked_user_agents", []string{"curl/", "wget/", "python-requests/", "httpie/"})
+	viper.SetDefault("gateway.operator_test_guard.allowed_user_emails", []string{})
+	viper.SetDefault("gateway.operator_test_guard.allowed_api_key_names", []string{"ops-test*", "operator-test*", "运维测试*"})
+	viper.SetDefault("gateway.operator_test_guard.paths", []string{
+		"/v1/responses",
+		"/v1/responses/*",
+		"/responses",
+		"/responses/*",
+		"/backend-api/codex/responses",
+		"/backend-api/codex/responses/*",
+		"/v1/images/*",
+		"/images/*",
+		"/v1/chat/completions",
+		"/chat/completions",
+	})
 	viper.SetDefault("gateway.openai_passthrough_allow_timeout_headers", false)
-	viper.SetDefault("gateway.openai_compact_model", "gpt-5.4")
+	viper.SetDefault("gateway.openai_compact_model", "")
 	viper.SetDefault("gateway.live.max_session_duration_seconds", 3600)
 	// OpenAI Responses WebSocket（默认开启；可通过 force_http 紧急回滚）
 	viper.SetDefault("gateway.openai_ws.enabled", true)
@@ -2377,6 +2637,10 @@ func setDefaults() {
 	viper.SetDefault("gateway.image_stream_data_interval_timeout", 900)
 	viper.SetDefault("gateway.image_stream_keepalive_interval", 10)
 	viper.SetDefault("gateway.image_nonstream_keepalive_interval", 0)
+	viper.SetDefault("gateway.image_upstream_timeout_seconds", 180)
+	viper.SetDefault("gateway.image_request_timeout_seconds", 600)
+	viper.SetDefault("gateway.image_edit_transient_cooldown_seconds", 12)
+	viper.SetDefault("gateway.image_generation_transient_cooldown_seconds", 30)
 	viper.SetDefault("gateway.max_line_size", 500*1024*1024)
 	viper.SetDefault("gateway.scheduling.sticky_session_max_waiting", 3)
 	viper.SetDefault("gateway.scheduling.sticky_session_wait_timeout", 120*time.Second)
@@ -3257,6 +3521,171 @@ func (c *Config) Validate() error {
 	if c.Gateway.ImageNonstreamKeepaliveInterval != 0 &&
 		(c.Gateway.ImageNonstreamKeepaliveInterval < 5 || c.Gateway.ImageNonstreamKeepaliveInterval > 60) {
 		return fmt.Errorf("gateway.image_nonstream_keepalive_interval must be 0 or between 5-60 seconds")
+	}
+	if c.Gateway.ImageUpstreamTimeoutSeconds < 0 {
+		return fmt.Errorf("gateway.image_upstream_timeout_seconds must be non-negative")
+	}
+	if c.Gateway.ImageRequestTimeoutSeconds < 0 {
+		return fmt.Errorf("gateway.image_request_timeout_seconds must be non-negative")
+	}
+	if c.Gateway.ImageEditTransientCooldownSeconds < 0 {
+		return fmt.Errorf("gateway.image_edit_transient_cooldown_seconds must be non-negative")
+	}
+	if c.Gateway.ImageGenerationTransientCooldownSeconds < 0 {
+		return fmt.Errorf("gateway.image_generation_transient_cooldown_seconds must be non-negative")
+	}
+	if c.Gateway.ResponsesImageBridge.MaxRequestBytes <= 0 {
+		return fmt.Errorf("gateway.responses_image_bridge.max_request_bytes must be positive")
+	}
+	switch strings.ToLower(strings.TrimSpace(c.Gateway.ResponsesImageBridge.ApplyToProtocol)) {
+	case "images_api_only":
+	default:
+		return fmt.Errorf("gateway.responses_image_bridge.apply_to_protocol must be images_api_only")
+	}
+	if c.Gateway.OperatorTestGuard.Enabled {
+		if len(c.Gateway.OperatorTestGuard.TrustedClientIPs) == 0 {
+			return fmt.Errorf("gateway.operator_test_guard.trusted_client_ips is required when enabled")
+		}
+		if len(c.Gateway.OperatorTestGuard.BlockedUserAgents) == 0 {
+			return fmt.Errorf("gateway.operator_test_guard.blocked_user_agents is required when enabled")
+		}
+		if len(c.Gateway.OperatorTestGuard.Paths) == 0 {
+			return fmt.Errorf("gateway.operator_test_guard.paths is required when enabled")
+		}
+		if len(c.Gateway.OperatorTestGuard.AllowedUserEmails) == 0 && len(c.Gateway.OperatorTestGuard.AllowedAPIKeyNames) == 0 {
+			return fmt.Errorf("gateway.operator_test_guard.allowed_user_emails or allowed_api_key_names is required when enabled")
+		}
+	}
+	if c.Gateway.SmartRouter.TopK < 0 {
+		return fmt.Errorf("gateway.smart_router.top_k must be non-negative")
+	}
+	if c.Gateway.SmartRouter.MaxAttemptsImage < 0 {
+		return fmt.Errorf("gateway.smart_router.max_attempts_image must be non-negative")
+	}
+	if c.Gateway.SmartRouter.MaxAttemptsChat < 0 {
+		return fmt.Errorf("gateway.smart_router.max_attempts_chat must be non-negative")
+	}
+	if c.Gateway.SmartRouter.MaxAttemptsCompact < 0 {
+		return fmt.Errorf("gateway.smart_router.max_attempts_compact must be non-negative")
+	}
+	if c.Gateway.SmartRouter.MaxAttemptsDefault < 0 {
+		return fmt.Errorf("gateway.smart_router.max_attempts_default must be non-negative")
+	}
+	if c.Gateway.SmartRouter.SameSourceGroupAttempts < 0 {
+		return fmt.Errorf("gateway.smart_router.same_source_group_attempts must be non-negative")
+	}
+	if c.Gateway.SmartRouter.CostBiasMax < 0 {
+		return fmt.Errorf("gateway.smart_router.cost_bias_max must be non-negative")
+	}
+	if c.Gateway.SmartRouter.ImageTotalBudgetSeconds < 0 {
+		return fmt.Errorf("gateway.smart_router.image_total_budget_seconds must be non-negative")
+	}
+	if c.Gateway.SmartRouter.ImageAttemptSeconds < 0 {
+		return fmt.Errorf("gateway.smart_router.image_attempt_seconds must be non-negative")
+	}
+	if c.Gateway.SmartRouter.ImageReserveSeconds < 0 {
+		return fmt.Errorf("gateway.smart_router.image_finalization_reserve_seconds must be non-negative")
+	}
+	if c.Gateway.SmartRouter.Recovery.SecondFailureCooldownSeconds < 0 {
+		return fmt.Errorf("gateway.smart_router.recovery.second_failure_cooldown_seconds must be non-negative")
+	}
+	if c.Gateway.SmartRouter.Recovery.SustainedFailureThreshold < 0 {
+		return fmt.Errorf("gateway.smart_router.recovery.sustained_failure_threshold must be non-negative")
+	}
+	if c.Gateway.SmartRouter.Recovery.ImageSustainedFailureThreshold < 0 {
+		return fmt.Errorf("gateway.smart_router.recovery.image_sustained_failure_threshold must be non-negative")
+	}
+	if c.Gateway.SmartRouter.Recovery.RecoveryEscalationFailureThreshold < 0 {
+		return fmt.Errorf("gateway.smart_router.recovery.recovery_escalation_failure_threshold must be non-negative")
+	}
+	if c.Gateway.SmartRouter.Recovery.RecoveryPriorityStep < 0 {
+		return fmt.Errorf("gateway.smart_router.recovery.recovery_priority_step must be non-negative")
+	}
+	if c.Gateway.SmartRouter.Calibration.Hour < 0 || c.Gateway.SmartRouter.Calibration.Hour > 23 {
+		return fmt.Errorf("gateway.smart_router.calibration.hour must be between 0 and 23")
+	}
+	if c.Gateway.SmartRouter.Calibration.Minute < 0 || c.Gateway.SmartRouter.Calibration.Minute > 59 {
+		return fmt.Errorf("gateway.smart_router.calibration.minute must be between 0 and 59")
+	}
+	if c.Gateway.SmartRouter.Calibration.TotalBudgetSeconds < 0 {
+		return fmt.Errorf("gateway.smart_router.calibration.total_budget_seconds must be non-negative")
+	}
+	if c.Gateway.SmartRouter.Calibration.ProbeTimeoutSeconds < 0 {
+		return fmt.Errorf("gateway.smart_router.calibration.probe_timeout_seconds must be non-negative")
+	}
+	if c.Gateway.SmartRouter.Calibration.AutoEnrollIntervalSeconds < 0 {
+		return fmt.Errorf("gateway.smart_router.calibration.auto_enroll_interval_seconds must be non-negative")
+	}
+	if c.Gateway.SmartRouter.Enabled &&
+		c.Gateway.SmartRouter.ImageTotalBudgetSeconds > 0 &&
+		c.Gateway.SmartRouter.ImageAttemptSeconds > 0 &&
+		c.Gateway.SmartRouter.ImageTotalBudgetSeconds <= c.Gateway.SmartRouter.ImageAttemptSeconds+c.Gateway.SmartRouter.ImageReserveSeconds {
+		return fmt.Errorf("gateway.smart_router.image_total_budget_seconds must exceed image_attempt_seconds plus image_finalization_reserve_seconds")
+	}
+	adaptiveTimeout := c.Gateway.SmartRouter.AdaptiveTimeout
+	if adaptiveTimeout.DefaultSeconds < 0 || adaptiveTimeout.MinSeconds < 0 || adaptiveTimeout.MaxSeconds < 0 ||
+		adaptiveTimeout.SafetyMarginSeconds < 0 || adaptiveTimeout.SuccessStepSeconds < 0 ||
+		adaptiveTimeout.SuccessFloorMarginSeconds < 0 || adaptiveTimeout.WindowSize < 0 || adaptiveTimeout.ReserveSeconds < 0 {
+		return fmt.Errorf("gateway.smart_router.adaptive_timeout durations and window_size must be non-negative")
+	}
+	if adaptiveTimeout.Multiplier < 0 || math.IsNaN(adaptiveTimeout.Multiplier) || math.IsInf(adaptiveTimeout.Multiplier, 0) {
+		return fmt.Errorf("gateway.smart_router.adaptive_timeout.multiplier must be finite and non-negative")
+	}
+	if adaptiveTimeout.Enabled && (adaptiveTimeout.FailureBackoffMultiplier <= 0 || adaptiveTimeout.FailureBackoffMultiplier > 1) {
+		return fmt.Errorf("gateway.smart_router.adaptive_timeout.failure_backoff_multiplier must be greater than 0 and at most 1")
+	}
+	if adaptiveTimeout.Enabled && adaptiveTimeout.DefaultSeconds == 0 {
+		return fmt.Errorf("gateway.smart_router.adaptive_timeout.default_seconds must be positive when enabled")
+	}
+	if adaptiveTimeout.Enabled && adaptiveTimeout.MinSeconds > adaptiveTimeout.MaxSeconds {
+		return fmt.Errorf("gateway.smart_router.adaptive_timeout.min_seconds must be <= max_seconds")
+	}
+	imageResilience := c.Gateway.SmartRouter.ImageResilience
+	if imageResilience.StandardDefaultSeconds < 0 || imageResilience.StandardMinSeconds < 0 || imageResilience.StandardMaxSeconds < 0 ||
+		imageResilience.SpecialistDefaultSeconds < 0 || imageResilience.SpecialistMinSeconds < 0 || imageResilience.SpecialistMaxSeconds < 0 ||
+		imageResilience.SafetyMarginSeconds < 0 || imageResilience.FallbackReserveSeconds < 0 || imageResilience.SampleWindowSize < 0 ||
+		imageResilience.MaxSameSourceAttempts < 0 {
+		return fmt.Errorf("gateway.smart_router.image_resilience durations and limits must be non-negative")
+	}
+	if imageResilience.P90Multiplier < 0 || math.IsNaN(imageResilience.P90Multiplier) || math.IsInf(imageResilience.P90Multiplier, 0) {
+		return fmt.Errorf("gateway.smart_router.image_resilience.p90_multiplier must be finite and non-negative")
+	}
+	if imageResilience.Enabled {
+		if !imageResilience.GenerationEnabled && !imageResilience.EditEnabled {
+			return fmt.Errorf("gateway.smart_router.image_resilience must enable generation or edit")
+		}
+		if imageResilience.StandardMinSeconds > imageResilience.StandardMaxSeconds {
+			return fmt.Errorf("gateway.smart_router.image_resilience.standard_min_seconds must be <= standard_max_seconds")
+		}
+		if imageResilience.SpecialistMinSeconds > imageResilience.SpecialistMaxSeconds {
+			return fmt.Errorf("gateway.smart_router.image_resilience.specialist_min_seconds must be <= specialist_max_seconds")
+		}
+	}
+	rateLimitBackoff := c.Gateway.SmartRouter.RateLimitBackoff
+	if rateLimitBackoff.InitialSeconds < 0 || rateLimitBackoff.MaxSeconds < 0 ||
+		rateLimitBackoff.MaxAttempts < 0 || rateLimitBackoff.RetryAfterMaxSeconds < 0 {
+		return fmt.Errorf("gateway.smart_router.rate_limit_backoff durations and max_attempts must be non-negative")
+	}
+	if rateLimitBackoff.JitterRatio < 0 || rateLimitBackoff.JitterRatio > 1 ||
+		math.IsNaN(rateLimitBackoff.JitterRatio) || math.IsInf(rateLimitBackoff.JitterRatio, 0) {
+		return fmt.Errorf("gateway.smart_router.rate_limit_backoff.jitter_ratio must be between 0 and 1")
+	}
+	if rateLimitBackoff.Enabled {
+		if rateLimitBackoff.InitialSeconds == 0 || rateLimitBackoff.MaxSeconds == 0 || rateLimitBackoff.MaxAttempts == 0 {
+			return fmt.Errorf("gateway.smart_router.rate_limit_backoff initial/max/max_attempts must be positive when enabled")
+		}
+		if rateLimitBackoff.InitialSeconds > rateLimitBackoff.MaxSeconds {
+			return fmt.Errorf("gateway.smart_router.rate_limit_backoff.initial_seconds must be <= max_seconds")
+		}
+	}
+	smartRouterWeights := c.Gateway.SmartRouter.Scoring
+	if smartRouterWeights.Priority < 0 || smartRouterWeights.Cost < 0 || smartRouterWeights.Health < 0 ||
+		smartRouterWeights.Load < 0 || smartRouterWeights.Queue < 0 || smartRouterWeights.Latency < 0 || smartRouterWeights.Recovery < 0 {
+		return fmt.Errorf("gateway.smart_router.scoring.* must be non-negative")
+	}
+	smartRouterWeightSum := smartRouterWeights.Priority + smartRouterWeights.Cost + smartRouterWeights.Health + smartRouterWeights.Load + smartRouterWeights.Queue + smartRouterWeights.Latency + smartRouterWeights.Recovery
+	if c.Gateway.SmartRouter.Enabled && smartRouterWeightSum <= 0 {
+		return fmt.Errorf("gateway.smart_router.scoring must not all be zero when smart_router is enabled")
 	}
 	// 兼容旧键 sticky_previous_response_ttl_seconds
 	if c.Gateway.OpenAIWS.StickyResponseIDTTLSeconds <= 0 && c.Gateway.OpenAIWS.StickyPreviousResponseTTLSeconds > 0 {

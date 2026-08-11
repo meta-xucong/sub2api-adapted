@@ -12,6 +12,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 )
 
 const upstreamModelsBodyLimit int64 = 8 << 20
@@ -126,6 +127,12 @@ func (s *AccountTestService) FetchUpstreamSupportedModels(ctx context.Context, a
 	}
 	if len(models) == 0 {
 		return nil, newUpstreamModelSyncUpstreamError("Upstream returned no supported models", nil)
+	}
+	if account.IsOpenAI() {
+		// The sync endpoint feeds the admin model picker directly. Keep
+		// internal routing aliases and upstream snapshots out of that UI while
+		// preserving custom provider aliases such as aiai-gpt-image-2.
+		models = openai.FilterAdminSelectableModelIDs(models)
 	}
 
 	return models, nil

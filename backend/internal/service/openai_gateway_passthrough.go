@@ -1449,6 +1449,9 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 		// 兜底：尝试从 SSE 文本中解析 usage
 		usage = s.parseSSEUsageFromBody(string(body))
 	}
+	if compactErr := compactResponseProtocolError(c, body); compactErr != nil {
+		return nil, newOpenAICompactFailoverError(resp, compactErr.Error())
+	}
 
 	writeOpenAIPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 
@@ -1518,11 +1521,17 @@ func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(resp *http.Response, c
 			}
 			return nil, s.writeOpenAINonStreamingProtocolError(resp, c, msg)
 		}
+		if compactErr := compactSSEMissingTerminalError(c, terminalType, terminalOK); compactErr != nil {
+			return nil, newOpenAICompactFailoverError(resp, compactErr.Error())
+		}
 		usage = s.parseSSEUsageFromBody(bodyText)
 		if originalModel != "" && mappedModel != "" && originalModel != mappedModel {
 			bodyText = s.replaceModelInSSEBody(bodyText, mappedModel, originalModel)
 		}
 		body = []byte(bodyText)
+	}
+	if compactErr := compactResponseProtocolError(c, body); compactErr != nil {
+		return nil, newOpenAICompactFailoverError(resp, compactErr.Error())
 	}
 
 	writeOpenAIPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)

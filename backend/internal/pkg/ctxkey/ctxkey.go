@@ -49,6 +49,11 @@ const (
 
 	// OpenAIImageGenerationIntent 标识 OpenAI 请求会触发生图能力（用于图片能力维度限流）
 	OpenAIImageGenerationIntent Key = "ctx_openai_image_generation_intent"
+	// OpenAIResponsesIntent 标识普通 OpenAI Responses 请求，和 Chat Completions 分离健康调度。
+	OpenAIResponsesIntent Key = "ctx_openai_responses_intent"
+	// OpenAIFastIntent 标识客户端请求了 OpenAI fast/priority service tier。
+	// 第三方上游通常不能原样接收该字段；网关把它作为 Smart Router 的低延迟偏好。
+	OpenAIFastIntent Key = "ctx_openai_fast_intent"
 
 	// OpenAIImagesEndpoint 标识请求是从 /v1/images/* 入站的。
 	// 与 OpenAIImageGenerationIntent 的区别：后者只表示"这次请求会生图"，

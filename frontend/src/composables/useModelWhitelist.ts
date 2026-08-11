@@ -4,20 +4,12 @@
 
 // OpenAI
 const openaiModels = [
-  // GPT-5.2 系列
-  'gpt-5.2', 'gpt-5.2-2025-12-11', 'gpt-5.2-chat-latest',
-  'gpt-5.2-pro', 'gpt-5.2-pro-2025-12-11',
-  // GPT-5.6 系列
-  'gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna',
-  // GPT-5.5 系列
-  'gpt-5.5',
-  // GPT-5.4 系列
-  'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.4-2026-03-05',
-  // GPT-5.3 / Codex 系列
-  'gpt-5.3-codex-spark', 'codex-auto-review',
-  'gpt-4o-audio-preview', 'gpt-4o-realtime-preview',
-  // GPT Image 系列
-  'gpt-image-1', 'gpt-image-1.5', 'gpt-image-2'
+  // Keep this list limited to normal user-facing choices. Internal aliases
+  // such as codex-auto-review and Spark shadow mappings remain valid when
+  // already saved, but are intentionally not offered as new choices.
+  'gpt-5.4-mini', 'gpt-5.4', 'gpt-5.5',
+  'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna',
+  'gpt-image-2'
 ]
 
 // Anthropic Claude
@@ -230,10 +222,11 @@ const perplexityModels = [
 ]
 
 // 所有模型（去重）
-const allModelsList: string[] = [
+const allModelsList: string[] = normalizeModelNames([
   ...openaiModels,
   ...claudeModels,
   ...geminiModels,
+  ...antigravityModels,
   ...zhipuModels,
   ...qwenModels,
   ...deepseekModels,
@@ -249,10 +242,39 @@ const allModelsList: string[] = [
   ...sparkModels,
   ...hunyuanModels,
   ...perplexityModels
-]
+])
+
+export interface ModelOption {
+  value: string
+  label: string
+}
 
 // 转换为下拉选项格式
-export const allModels = allModelsList.map(m => ({ value: m, label: m }))
+export const allModels = toModelOptions(allModelsList)
+
+export function normalizeModelNames(models: string[]): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const raw of models) {
+    const model = String(raw || '').trim()
+    if (!model || seen.has(model)) continue
+    seen.add(model)
+    out.push(model)
+  }
+  return out
+}
+
+export function toModelOptions(models: string[]): ModelOption[] {
+  return normalizeModelNames(models).map(model => ({ value: model, label: model }))
+}
+
+export function getModelOptionsForPlatforms(platforms: string[] = [], extraModels: string[] = []): ModelOption[] {
+  const normalizedPlatforms = normalizeModelNames(platforms)
+  const platformModels = normalizedPlatforms.length === 0
+    ? allModelsList
+    : normalizedPlatforms.flatMap(platform => getModelsByPlatform(platform))
+  return toModelOptions([...platformModels, ...extraModels])
+}
 
 // =====================
 // 预设映射
@@ -280,9 +302,6 @@ const openaiPresetMappings = [
   { label: 'GPT-4.1', from: 'gpt-4.1', to: 'gpt-4.1', color: 'bg-indigo-100 text-indigo-700 hover:bg-indigo-200 dark:bg-indigo-900/30 dark:text-indigo-400' },
   { label: 'o1', from: 'o1', to: 'o1', color: 'bg-purple-100 text-purple-700 hover:bg-purple-200 dark:bg-purple-900/30 dark:text-purple-400' },
   { label: 'o3', from: 'o3', to: 'o3', color: 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-400' },
-  { label: 'GPT-5.3 Codex Spark', from: 'gpt-5.3-codex-spark', to: 'gpt-5.3-codex-spark', color: 'bg-teal-100 text-teal-700 hover:bg-teal-200 dark:bg-teal-900/30 dark:text-teal-400' },
-  { label: 'GPT-5.2', from: 'gpt-5.2', to: 'gpt-5.2', color: 'bg-red-100 text-red-700 hover:bg-red-200 dark:bg-red-900/30 dark:text-red-400' },
-  { label: 'GPT-5.6', from: 'gpt-5.6', to: 'gpt-5.6', color: 'bg-amber-100 text-amber-700 hover:bg-amber-200 dark:bg-amber-900/30 dark:text-amber-400' },
   { label: 'GPT-5.6 Sol', from: 'gpt-5.6-sol', to: 'gpt-5.6-sol', color: 'bg-orange-100 text-orange-700 hover:bg-orange-200 dark:bg-orange-900/30 dark:text-orange-400' },
   { label: 'GPT-5.6 Terra', from: 'gpt-5.6-terra', to: 'gpt-5.6-terra', color: 'bg-lime-100 text-lime-700 hover:bg-lime-200 dark:bg-lime-900/30 dark:text-lime-400' },
   { label: 'GPT-5.6 Luna', from: 'gpt-5.6-luna', to: 'gpt-5.6-luna', color: 'bg-sky-100 text-sky-700 hover:bg-sky-200 dark:bg-sky-900/30 dark:text-sky-400' },

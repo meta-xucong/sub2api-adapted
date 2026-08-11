@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	smartrouter "github.com/Wei-Shaw/sub2api/internal/smartrouter/core"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -67,23 +68,30 @@ var openAIAdvancedSchedulerSettingCache atomic.Value // *cachedOpenAIAdvancedSch
 var openAIAdvancedSchedulerSettingSF singleflight.Group
 
 type OpenAIAccountScheduleRequest struct {
-	GroupID                 *int64
-	Platform                string
-	SessionHash             string
-	StickyAccountID         int64
-	StickyPreviousAccountID int64
-	StickyWeighted          bool
-	SubscriptionPriority    bool
-	PreserveStickyBinding   bool
-	PreviousResponseID      string
-	PreviousResponseCanMove bool
-	UseUpstreamTokenCost    bool
-	RequestedModel          string
-	RequiredTransport       OpenAIUpstreamTransport
-	RequiredCapability      OpenAIEndpointCapability
-	RequiredImageCapability OpenAIImagesCapability
-	RequireCompact          bool
-	ExcludedIDs             map[int64]struct{}
+	GroupID                     *int64
+	Platform                    string
+	SessionHash                 string
+	StickyAccountID             int64
+	StickyPreviousAccountID     int64
+	StickyWeighted              bool
+	SubscriptionPriority        bool
+	PreserveStickyBinding       bool
+	PreviousResponseID          string
+	PreviousResponseCanMove     bool
+	UseUpstreamTokenCost        bool
+	RequestedModel              string
+	RequiredTransport           OpenAIUpstreamTransport
+	RequiredCapability          OpenAIEndpointCapability
+	RequiredImageCapability     OpenAIImagesCapability
+	SmartRouterCapability       smartrouter.Capability
+	SmartRouterImageSizeTier    string
+	SmartRouterImageInputMode   string
+	SmartRouterImageModelFamily string
+	SmartRouterPreferLowLatency bool
+	RequireCompact              bool
+	ExcludedIDs                 map[int64]struct{}
+	ExcludedSourceGroups        map[string]struct{}
+	SmartRouterImageBudget      OpenAIImageSmartRouterBudgetState
 }
 
 type OpenAIAccountScheduleDecision struct {
@@ -484,7 +492,7 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 		return nil, false, nil
 	}
-	if shouldClearStickySession(account, req.RequestedModel) || account.Platform != normalizeOpenAICompatiblePlatform(req.Platform) || !account.IsOpenAICompatible() || !account.IsSchedulable() {
+	if shouldClearStickySession(account, req.RequestedModel) || account.Platform != normalizeOpenAICompatiblePlatform(req.Platform) || !account.IsOpenAICompatible() || !isOpenAIAccountSchedulableForRequest(ctx, account, req.RequestedModel, req.RequireCompact) {
 		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 		return nil, false, nil
 	}
@@ -697,6 +705,75 @@ func selectTopKOpenAICandidates(candidates []openAIAccountCandidateScore, topK i
 	return ranked
 }
 
+// selectTopKOpenAICompactCandidates is deliberately separate from the normal
+// scheduler path. It first preserves the normal global score order, then gives
+// verified compact support a narrow preference inside each operator-configured
+// priority layer. A capability probe must never rewrite the priority policy
+// between layers.
+func selectTopKOpenAICompactCandidates(candidates []openAIAccountCandidateScore, topK int) []openAIAccountCandidateScore {
+	if len(candidates) == 0 {
+		return nil
+	}
+	if topK <= 0 {
+		topK = 1
+	}
+
+	ranked := append([]openAIAccountCandidateScore(nil), candidates...)
+	sort.SliceStable(ranked, func(i, j int) bool {
+		return isOpenAIAccountCandidateBetter(ranked[i], ranked[j])
+	})
+	ranked = prioritizeOpenAICompactCandidateEvidence(ranked)
+	if topK < len(ranked) {
+		ranked = ranked[:topK]
+	}
+	return ranked
+}
+
+// prioritizeOpenAICompactCandidateEvidence performs a stable tier partition
+// only at the positions belonging to the same manual priority. That keeps the
+// global scheduler score ordering intact while ensuring a recovered, verified
+// compact line is tried before an unknown legacy state in the same tier.
+func prioritizeOpenAICompactCandidateEvidence(ranked []openAIAccountCandidateScore) []openAIAccountCandidateScore {
+	if len(ranked) < 2 {
+		return ranked
+	}
+	positionsByPriority := make(map[int][]int)
+	priorityOrder := make([]int, 0, len(ranked))
+	for position, candidate := range ranked {
+		priority := openAIAccountSchedulingPriority(candidate.account)
+		if _, known := positionsByPriority[priority]; !known {
+			priorityOrder = append(priorityOrder, priority)
+		}
+		positionsByPriority[priority] = append(positionsByPriority[priority], position)
+	}
+
+	ordered := append([]openAIAccountCandidateScore(nil), ranked...)
+	for _, priority := range priorityOrder {
+		positions := positionsByPriority[priority]
+		if len(positions) < 2 {
+			continue
+		}
+		supported := make([]openAIAccountCandidateScore, 0, len(positions))
+		unknown := make([]openAIAccountCandidateScore, 0, len(positions))
+		for _, position := range positions {
+			candidate := ranked[position]
+			if openAICompactSupportTier(candidate.account) == 2 {
+				supported = append(supported, candidate)
+			} else {
+				unknown = append(unknown, candidate)
+			}
+		}
+		for index, position := range positions {
+			if index < len(supported) {
+				ordered[position] = supported[index]
+				continue
+			}
+			ordered[position] = unknown[index-len(supported)]
+		}
+	}
+	return ordered
+}
+
 type openAISelectionRNG struct {
 	state uint64
 }
@@ -835,12 +912,10 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 	}
 
 	candidates := allCandidates
-	staleSnapshotCompactRetry := make([]openAIAccountCandidateScore, 0, len(allCandidates))
 	if req.RequireCompact {
 		candidates = make([]openAIAccountCandidateScore, 0, len(allCandidates))
 		for _, candidate := range allCandidates {
 			if openAICompactSupportTier(candidate.account) == 0 {
-				staleSnapshotCompactRetry = append(staleSnapshotCompactRetry, candidate)
 				continue
 			}
 			candidates = append(candidates, candidate)
@@ -848,10 +923,9 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 	}
 
 	plan := openAIAccountLoadPlan{
-		allCandidates:             allCandidates,
-		candidates:                candidates,
-		staleSnapshotCompactRetry: staleSnapshotCompactRetry,
-		candidateCount:            len(candidates),
+		allCandidates:  allCandidates,
+		candidates:     candidates,
+		candidateCount: len(candidates),
 	}
 	if len(candidates) == 0 {
 		plan.selectionOrder = s.buildOpenAISelectionOrder(req, plan)
@@ -1006,6 +1080,12 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAISelectionOrder(
 	req OpenAIAccountScheduleRequest,
 	plan openAIAccountLoadPlan,
 ) []openAIAccountCandidateScore {
+	// Compact is an endpoint capability, not a separate priority system. Keep
+	// the normal account priority as the first decision and let Smart Router
+	// apply health penalties only within that priority layer.
+	if order, applied := s.buildSmartRouterSelectionOrder(req, plan); applied {
+		return order
+	}
 	buildSelectionOrder := func(pool []openAIAccountCandidateScore) []openAIAccountCandidateScore {
 		if len(pool) == 0 || plan.topK <= 0 {
 			return nil
@@ -1015,6 +1095,9 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAISelectionOrder(
 			groupTopK = len(pool)
 		}
 		ranked := selectTopKOpenAICandidates(pool, groupTopK)
+		if req.RequireCompact {
+			ranked = selectTopKOpenAICompactCandidates(pool, groupTopK)
+		}
 		var primary []openAIAccountCandidateScore
 		if req.StickyWeighted {
 			for _, stickyID := range []int64{req.StickyPreviousAccountID, req.StickyAccountID} {
@@ -1053,60 +1136,113 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAISelectionOrder(
 		sort.Slice(overflow, func(i, j int) bool {
 			return isOpenAIAccountCandidateBetter(overflow[i], overflow[j])
 		})
+		if req.RequireCompact {
+			overflow = prioritizeOpenAICompactCandidateEvidence(overflow)
+		}
 		return append(primary, overflow...)
-	}
-
-	if req.RequireCompact {
-		supported := make([]openAIAccountCandidateScore, 0, len(plan.candidates))
-		unknown := make([]openAIAccountCandidateScore, 0, len(plan.candidates))
-		for _, candidate := range plan.candidates {
-			switch openAICompactSupportTier(candidate.account) {
-			case 2:
-				supported = append(supported, candidate)
-			case 1:
-				unknown = append(unknown, candidate)
-			}
-		}
-		selectionOrder := make([]openAIAccountCandidateScore, 0, len(plan.allCandidates))
-		selectionOrder = append(selectionOrder, buildSelectionOrder(supported)...)
-		selectionOrder = append(selectionOrder, buildSelectionOrder(unknown)...)
-		if len(plan.staleSnapshotCompactRetry) > 0 && s.service.schedulerSnapshot != nil {
-			selectionOrder = append(selectionOrder, sortOpenAICompactRetryCandidates(plan.staleSnapshotCompactRetry)...)
-		}
-		return selectionOrder
 	}
 
 	return buildSelectionOrder(plan.candidates)
 }
 
-func sortOpenAICompactRetryCandidates(pool []openAIAccountCandidateScore) []openAIAccountCandidateScore {
-	if len(pool) == 0 {
-		return nil
+func (s *defaultOpenAIAccountScheduler) buildSmartRouterSelectionOrder(
+	req OpenAIAccountScheduleRequest,
+	plan openAIAccountLoadPlan,
+) ([]openAIAccountCandidateScore, bool) {
+	if s == nil || s.service == nil {
+		return nil, false
 	}
-	ordered := append([]openAIAccountCandidateScore(nil), pool...)
-	sort.SliceStable(ordered, func(i, j int) bool {
-		a, b := ordered[i], ordered[j]
-		if a.account.Priority != b.account.Priority {
-			return a.account.Priority < b.account.Priority
+	policy := s.service.smartRouterPolicy()
+	if !policy.Enabled {
+		return nil, false
+	}
+	if len(plan.candidates) == 0 {
+		return nil, true
+	}
+
+	laneToCandidate := make(map[string]openAIAccountCandidateScore, len(plan.candidates))
+	lanes := make([]smartrouter.LaneSnapshot, 0, len(plan.candidates))
+	effectiveCapability := req.SmartRouterCapability
+	if req.RequireCompact {
+		effectiveCapability = smartrouter.CapabilityResponsesCompact
+	}
+	for _, candidate := range plan.candidates {
+		if !smartRouterAccountEligibleForSmartRouter(candidate.account, effectiveCapability, req.RequestedModel, req.RequiredCapability) {
+			continue
 		}
-		if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
-			return a.loadInfo.LoadRate < b.loadInfo.LoadRate
+		lane, ok := smartRouterLaneSnapshot(candidate.account, candidate.loadInfo, candidate.errorRate, candidate.ttft, candidate.hasTTFT)
+		if !ok {
+			continue
 		}
-		if a.loadInfo.WaitingCount != b.loadInfo.WaitingCount {
-			return a.loadInfo.WaitingCount < b.loadInfo.WaitingCount
+		if req.RequireCompact || req.SmartRouterCapability == smartrouter.CapabilityResponsesCompact {
+			if openAICompactSupportTier(candidate.account) == 0 {
+				continue
+			}
+			if lane.Capabilities == nil {
+				lane.Capabilities = map[smartrouter.Capability]bool{}
+			}
+			lane.Capabilities[smartrouter.CapabilityResponsesCompact] = true
 		}
+		if health := s.service.smartRouterHealth(); health != nil {
+			lane = health.Snapshot(lane, effectiveCapability, req.RequestedModel, time.Now().Unix())
+		}
+		laneToCandidate[lane.LaneID] = candidate
+		lanes = append(lanes, lane)
+	}
+	if len(lanes) == 0 {
+		// If no candidate has verifiable ChatGPT-family model evidence, leave
+		// the request to the ordinary scheduler instead of guessing.
+		return nil, false
+	}
+
+	result := smartrouter.Order(s.smartRouterRouteRequest(req), lanes, policy)
+	ordered := make([]openAIAccountCandidateScore, 0, len(result.OrderedLaneIDs))
+	for _, laneID := range result.OrderedLaneIDs {
+		if candidate, ok := laneToCandidate[laneID]; ok {
+			ordered = append(ordered, candidate)
+		}
+	}
+	return ordered, true
+}
+
+func (s *defaultOpenAIAccountScheduler) smartRouterRouteRequest(req OpenAIAccountScheduleRequest) smartrouter.RouteRequest {
+	capability := req.SmartRouterCapability
+	if req.RequireCompact {
+		capability = smartrouter.CapabilityResponsesCompact
+	} else if capability == "" {
 		switch {
-		case a.account.LastUsedAt == nil && b.account.LastUsedAt != nil:
-			return true
-		case a.account.LastUsedAt != nil && b.account.LastUsedAt == nil:
-			return false
-		case a.account.LastUsedAt == nil && b.account.LastUsedAt == nil:
-			return false
+		case req.RequiredImageCapability != "":
+			capability = smartrouter.CapabilityImageGeneration
+		case req.RequiredCapability == OpenAIEndpointCapabilityEmbeddings:
+			capability = smartrouter.CapabilityEmbedding
 		default:
-			return a.account.LastUsedAt.Before(*b.account.LastUsedAt)
+			capability = smartrouter.CapabilityChat
 		}
-	})
-	return ordered
+	}
+	excludedLaneIDs := make(map[string]struct{}, len(req.ExcludedIDs))
+	for accountID := range req.ExcludedIDs {
+		excludedLaneIDs["account:"+strconv.FormatInt(accountID, 10)] = struct{}{}
+	}
+	if len(excludedLaneIDs) == 0 {
+		excludedLaneIDs = nil
+	}
+	return smartrouter.RouteRequest{
+		GroupID:                    smartRouterGroupID(req.GroupID),
+		Model:                      req.RequestedModel,
+		Capability:                 capability,
+		PreviousResponseID:         req.PreviousResponseID,
+		ExcludedLaneIDs:            excludedLaneIDs,
+		ExcludedSourceGroups:       req.ExcludedSourceGroups,
+		AttemptNumber:              len(req.ExcludedIDs),
+		RemainingBudgetSeconds:     req.SmartRouterImageBudget.RemainingSeconds,
+		MinimumAttemptSeconds:      req.SmartRouterImageBudget.MinimumAttemptSeconds,
+		FinalizationReserveSeconds: req.SmartRouterImageBudget.FinalizationReserveSeconds,
+		ImageSizeTier:              req.SmartRouterImageSizeTier,
+		ImageInputMode:             smartrouter.ImageInputMode(req.SmartRouterImageInputMode),
+		ImageModelFamily:           req.SmartRouterImageModelFamily,
+		ImageResilience:            s.service.smartRouterImageResilienceEnabled(capability),
+		PreferLowLatency:           req.SmartRouterPreferLowLatency,
+	}
 }
 
 func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrder(
@@ -1382,6 +1518,9 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		}
 		accounts = modelFiltered
 	}
+	if s.service.isSmartRouterEnabled() && len(req.ExcludedIDs) > 0 {
+		req.ExcludedSourceGroups = s.service.smartRouterExcludedSourceGroups(accounts, req.ExcludedIDs)
+	}
 
 	// require_privacy_set: 获取分组信息
 	var schedGroup *Group
@@ -1525,7 +1664,7 @@ func (s *defaultOpenAIAccountScheduler) trySelectByLoadBalancePool(
 		topK:           plan.topK,
 		loadSkew:       plan.loadSkew,
 	}
-	if req.RequireCompact && len(plan.candidates) == 0 && len(plan.staleSnapshotCompactRetry) == 0 {
+	if req.RequireCompact && len(plan.candidates) == 0 {
 		attempt.noCompactCandidates = true
 		attempt.err = ErrNoAvailableCompactAccounts
 		return attempt
@@ -2018,7 +2157,7 @@ func (s *OpenAIGatewayService) getOpenAIAccountScheduler(ctx context.Context) Op
 	if s == nil {
 		return nil
 	}
-	if !s.isOpenAIAdvancedSchedulerEnabled(ctx) {
+	if !s.isOpenAIAdvancedSchedulerEnabled(ctx) && !s.isSmartRouterEnabled() {
 		return nil
 	}
 	s.openaiSchedulerOnce.Do(func() {
@@ -2071,7 +2210,15 @@ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForCapability(
 	if len(platformOverride) > 0 {
 		platform = platformOverride[0]
 	}
-	return s.selectAccountWithScheduler(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, requiredCapability, "", requireCompact, platform, previousResponseCanMove, useUpstreamTokenCost)
+	var smartCapability smartrouter.Capability
+	if requireCompact {
+		smartCapability = smartrouter.CapabilityResponsesCompact
+	} else if OpenAIImageGenerationIntentFromContext(ctx) {
+		smartCapability = smartrouter.CapabilityImageGeneration
+	} else if OpenAIResponsesIntentFromContext(ctx) {
+		smartCapability = smartrouter.CapabilityResponses
+	}
+	return s.selectAccountWithScheduler(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, requiredCapability, "", requireCompact, platform, previousResponseCanMove, useUpstreamTokenCost, smartCapability)
 }
 
 func (s *OpenAIGatewayService) SelectAccountWithSchedulerForImages(
@@ -2082,15 +2229,46 @@ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForImages(
 	excludedIDs map[int64]struct{},
 	requiredCapability OpenAIImagesCapability,
 ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
-	selection, decision, err := s.selectAccountWithScheduler(ctx, groupID, "", sessionHash, requestedModel, excludedIDs, OpenAIUpstreamTransportHTTPSSE, "", requiredCapability, false, PlatformOpenAI, false, false)
+	return s.SelectAccountWithSchedulerForImageOperation(ctx, groupID, sessionHash, requestedModel, excludedIDs, requiredCapability, false)
+}
+
+// SelectAccountWithSchedulerForImageOperation keeps image generation and image
+// edit health isolated while retaining the normal native-to-basic fallback.
+func (s *OpenAIGatewayService) SelectAccountWithSchedulerForImageOperation(
+	ctx context.Context,
+	groupID *int64,
+	sessionHash string,
+	requestedModel string,
+	excludedIDs map[int64]struct{},
+	requiredCapability OpenAIImagesCapability,
+	isEdit bool,
+) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
+	smartCapability := smartrouter.CapabilityImageGeneration
+	if isEdit {
+		smartCapability = smartrouter.CapabilityImageEdit
+	}
+	selection, decision, err := s.selectAccountWithScheduler(ctx, groupID, "", sessionHash, requestedModel, excludedIDs, OpenAIUpstreamTransportHTTPSSE, "", requiredCapability, false, PlatformOpenAI, false, false, smartCapability)
 	if err == nil && selection != nil && selection.Account != nil {
 		return selection, decision, nil
 	}
-	// 如果要求 native 能力（如指定了模型）但没有可用的 APIKey 账号，回退到 basic（OAuth 账号）
 	if requiredCapability == OpenAIImagesCapabilityNative {
-		return s.selectAccountWithScheduler(ctx, groupID, "", sessionHash, requestedModel, excludedIDs, OpenAIUpstreamTransportHTTPSSE, "", OpenAIImagesCapabilityBasic, false, PlatformOpenAI, false, false)
+		selection, decision, err = s.selectAccountWithScheduler(ctx, groupID, "", sessionHash, requestedModel, excludedIDs, OpenAIUpstreamTransportHTTPSSE, "", OpenAIImagesCapabilityBasic, false, PlatformOpenAI, false, false, smartCapability)
+		if err == nil && selection != nil && selection.Account != nil {
+			return selection, decision, nil
+		}
+	}
+	if s.shouldRetryOpenAIImageSelectionWithFreshAccounts(ctx, err) {
+		return s.selectAccountWithScheduler(withOpenAIBypassSchedulerSnapshot(ctx), groupID, "", sessionHash, requestedModel, excludedIDs, OpenAIUpstreamTransportHTTPSSE, "", requiredCapability, false, PlatformOpenAI, false, false, smartCapability)
 	}
 	return selection, decision, err
+}
+
+func (s *OpenAIGatewayService) shouldRetryOpenAIImageSelectionWithFreshAccounts(ctx context.Context, err error) bool {
+	noAvailable := errors.Is(err, ErrNoAvailableAccounts)
+	if !noAvailable && err != nil {
+		noAvailable = strings.Contains(err.Error(), "no available OpenAI accounts")
+	}
+	return s != nil && s.schedulerSnapshot != nil && !openAIBypassSchedulerSnapshot(ctx) && noAvailable
 }
 
 // selectAccountWithScheduler wraps selectAccountWithSchedulerOnce with a
@@ -2114,8 +2292,9 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
 	platform string,
 	previousResponseCanMove bool,
 	useUpstreamTokenCost bool,
+	smartRouterCapability ...smartrouter.Capability,
 ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
-	selection, decision, err := s.selectAccountWithSchedulerOnce(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, requiredCapability, requiredImageCapability, requireCompact, platform, previousResponseCanMove, useUpstreamTokenCost)
+	selection, decision, err := s.selectAccountWithSchedulerOnce(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, requiredCapability, requiredImageCapability, requireCompact, platform, previousResponseCanMove, useUpstreamTokenCost, smartRouterCapability...)
 	if err == nil || openAIProxyStreamQuarantineBypassed(ctx) {
 		return selection, decision, err
 	}
@@ -2131,7 +2310,7 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
 		return selection, decision, err
 	}
 	s.logOpenAIProxyStreamQuarantineFailOpen(requestedModel, blocked)
-	return s.selectAccountWithSchedulerOnce(withOpenAIProxyStreamQuarantineBypass(ctx), groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, requiredCapability, requiredImageCapability, requireCompact, platform, previousResponseCanMove, useUpstreamTokenCost)
+	return s.selectAccountWithSchedulerOnce(withOpenAIProxyStreamQuarantineBypass(ctx), groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, requiredCapability, requiredImageCapability, requireCompact, platform, previousResponseCanMove, useUpstreamTokenCost, smartRouterCapability...)
 }
 
 func (s *OpenAIGatewayService) selectAccountWithSchedulerOnce(
@@ -2148,8 +2327,15 @@ func (s *OpenAIGatewayService) selectAccountWithSchedulerOnce(
 	platform string,
 	previousResponseCanMove bool,
 	useUpstreamTokenCost bool,
+	smartRouterCapability ...smartrouter.Capability,
 ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
 	ctx = s.withOpenAIQuotaAutoPauseContext(ctx)
+	// Compact support changes independently of normal chat routing. Query the
+	// live account set so a stale snapshot cannot keep a recovered lane out of
+	// the candidate pool until its next rebuild.
+	if requireCompact && s.schedulerSnapshot != nil && !openAIBypassSchedulerSnapshot(ctx) {
+		ctx = withOpenAIBypassSchedulerSnapshot(ctx)
+	}
 	// 分组利润控制：唯一文本调度入口的防御性装门。handler 文本
 	// 入口已在请求开始经 WithOpenAIRequestPricingContext 装门并固定 pricingAt，
 	// 此处对同分组门直接复用（failover 重入阈值稳定），仅为不经 handler 装配的
@@ -2238,23 +2424,39 @@ func (s *OpenAIGatewayService) selectAccountWithSchedulerOnce(
 		stickyPreviousAccountID = s.ResolveAccountIDByPreviousResponseIDForScheduler(ctx, groupID, previousResponseID, requestedModel, excludedIDs, requiredCapability, requireCompact)
 	}
 
+	var smartCapability smartrouter.Capability
+	if requireCompact {
+		smartCapability = smartrouter.CapabilityResponsesCompact
+	} else if len(smartRouterCapability) > 0 {
+		smartCapability = smartRouterCapability[0]
+	}
+	imageBudget, _ := OpenAIImageSmartRouterBudgetFromContext(ctx)
+	imageSizeTier, _ := OpenAIImageSmartRouterSizeTierFromContext(ctx)
+	imageInputMode, _ := OpenAIImageSmartRouterInputModeFromContext(ctx)
+	imageModelFamily, _ := OpenAIImageSmartRouterModelFamilyFromContext(ctx)
 	return scheduler.Select(ctx, OpenAIAccountScheduleRequest{
-		GroupID:                 groupID,
-		Platform:                platform,
-		SessionHash:             sessionHash,
-		StickyAccountID:         stickyAccountID,
-		StickyPreviousAccountID: stickyPreviousAccountID,
-		StickyWeighted:          stickyWeighted,
-		SubscriptionPriority:    subscriptionPriority,
-		PreviousResponseID:      previousResponseID,
-		PreviousResponseCanMove: previousResponseCanMove,
-		UseUpstreamTokenCost:    useUpstreamTokenCost,
-		RequestedModel:          requestedModel,
-		RequiredTransport:       requiredTransport,
-		RequiredCapability:      requiredCapability,
-		RequiredImageCapability: requiredImageCapability,
-		RequireCompact:          requireCompact,
-		ExcludedIDs:             excludedIDs,
+		GroupID:                     groupID,
+		Platform:                    platform,
+		SessionHash:                 sessionHash,
+		StickyAccountID:             stickyAccountID,
+		StickyPreviousAccountID:     stickyPreviousAccountID,
+		StickyWeighted:              stickyWeighted,
+		SubscriptionPriority:        subscriptionPriority,
+		PreviousResponseID:          previousResponseID,
+		PreviousResponseCanMove:     previousResponseCanMove,
+		UseUpstreamTokenCost:        useUpstreamTokenCost,
+		RequestedModel:              requestedModel,
+		RequiredTransport:           requiredTransport,
+		RequiredCapability:          requiredCapability,
+		RequiredImageCapability:     requiredImageCapability,
+		SmartRouterCapability:       smartCapability,
+		SmartRouterImageBudget:      imageBudget,
+		SmartRouterImageSizeTier:    imageSizeTier,
+		SmartRouterImageInputMode:   string(imageInputMode),
+		SmartRouterImageModelFamily: imageModelFamily,
+		SmartRouterPreferLowLatency: OpenAIFastIntentFromContext(ctx),
+		RequireCompact:              requireCompact,
+		ExcludedIDs:                 excludedIDs,
 	})
 }
 

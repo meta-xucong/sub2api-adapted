@@ -28,6 +28,7 @@ const (
 	DefaultTokenURL       = OAuthIssuer + "/oauth2/token"
 	DefaultBaseURL        = "https://api.x.ai/v1"
 	DefaultCLIBaseURL     = "https://cli-chat-proxy.grok.com/v1"
+	WokeyAPIBaseURL       = "https://api.wokey.ai/v1"
 	DefaultUSEast1BaseURL = "https://us-east-1.api.x.ai/v1"
 	DefaultUSWest2BaseURL = "https://us-west-2.api.x.ai/v1"
 	DefaultEUWest1BaseURL = "https://eu-west-1.api.x.ai/v1"
@@ -682,6 +683,24 @@ func BuildVideosGenerationsURL(baseURL string) (string, error) {
 	return BuildVideosGenerationsURLWithValidator(baseURL, nil)
 }
 
+// IsWokeyAPIBaseURL identifies Wokey's documented Grok-compatible root.
+// Wokey creates videos at /v1/videos, rather than xAI's /v1/videos/generations.
+func IsWokeyAPIBaseURL(baseURL string) bool {
+	validatedBaseURL, err := ValidatedBaseURL(baseURL)
+	return err == nil && strings.EqualFold(validatedBaseURL, WokeyAPIBaseURL)
+}
+
+func BuildWokeyVideosURL(baseURL string) (string, error) {
+	validatedBaseURL, err := ValidatedBaseURL(baseURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid base url: %w", err)
+	}
+	if !strings.EqualFold(validatedBaseURL, WokeyAPIBaseURL) {
+		return "", fmt.Errorf("base url is not a Wokey API endpoint")
+	}
+	return validatedBaseURL + "/videos", nil
+}
+
 func BuildVideosGenerationsURLWithValidator(baseURL string, validator BaseURLValidator) (string, error) {
 	validatedBaseURL, err := validatedBaseURLWithValidator(baseURL, validator)
 	if err != nil {
@@ -733,6 +752,14 @@ func BuildVideoURLWithValidator(baseURL, requestID string, validator BaseURLVali
 		return "", fmt.Errorf("invalid request id")
 	}
 	return validatedBaseURL + "/videos/" + url.PathEscape(requestID), nil
+}
+
+func BuildVideoContentURL(baseURL, requestID string) (string, error) {
+	videoURL, err := BuildVideoURL(baseURL, requestID)
+	if err != nil {
+		return "", err
+	}
+	return videoURL + "/content", nil
 }
 
 // TokenResponse represents xAI OAuth token responses.

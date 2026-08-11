@@ -70,7 +70,7 @@ func TestAccountTestService_TestAccountConnection_OpenAICompactOAuthSuccessPersi
 	require.Contains(t, rec.Body.String(), `"type":"test_complete"`)
 }
 
-func TestAccountTestService_TestAccountConnection_OpenAICompactOAuth404MarksUnsupported(t *testing.T) {
+func TestAccountTestService_TestAccountConnection_OpenAICompactOAuth404RecordsDiagnosticsOnly(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	updateCalls := make(chan map[string]any, 1)
@@ -109,7 +109,7 @@ func TestAccountTestService_TestAccountConnection_OpenAICompactOAuth404MarksUnsu
 	require.Error(t, err)
 
 	updates := <-updateCalls
-	require.Equal(t, false, updates["openai_compact_supported"])
+	require.NotContains(t, updates, "openai_compact_supported")
 	require.Equal(t, http.StatusNotFound, updates["openai_compact_last_status"])
 	require.Contains(t, rec.Body.String(), `"type":"error"`)
 }

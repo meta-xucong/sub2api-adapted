@@ -140,6 +140,7 @@ docs/*
 !docs/legal/*.md
 .serena/
 .codex/
+.codex-longrun/
 frontend/coverage/
 aicodex
 output/

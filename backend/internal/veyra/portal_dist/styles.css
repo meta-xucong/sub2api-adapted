@@ -1,0 +1,512 @@
+:root {
+  color-scheme: light;
+  --ink: #181915;
+  --muted: #84857d;
+  --paper: #fbfaf7;
+  --surface: rgba(255, 255, 252, 0.62);
+  --line: rgba(24, 25, 21, 0.14);
+  --sage: #828f79;
+  --sage-deep: #748269;
+  --radius: 8px;
+}
+
+* {
+  box-sizing: border-box;
+  min-width: 0;
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  color: var(--ink);
+  background: var(--paper);
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "PingFang SC", sans-serif;
+  letter-spacing: 0;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+img {
+  display: block;
+  max-width: 100%;
+}
+
+.page-shell {
+  width: min(1040px, 100%);
+  min-height: 100vh;
+  margin: 0 auto;
+  padding: 32px 26px 60px;
+}
+
+.mobile-shell {
+  width: min(100%, 480px);
+  min-height: 100vh;
+  margin: 0 auto;
+  padding: calc(28px + env(safe-area-inset-top)) 18px calc(56px + env(safe-area-inset-bottom));
+}
+
+.site-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.brand-lockup strong {
+  display: block;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 20px;
+  line-height: 1;
+  font-weight: 400;
+}
+
+.brand-lockup span,
+.eyebrow,
+.entry-card span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.eyebrow {
+  margin: 0 0 8px;
+  text-transform: uppercase;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.surface-switch-link,
+.session-pill,
+.button {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 13px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.session-pill {
+  max-width: 160px;
+  overflow: hidden;
+  border-color: transparent;
+  background: rgba(130, 143, 121, 0.12);
+  color: var(--sage-deep);
+  text-overflow: ellipsis;
+}
+
+.session-pill[data-authenticated="false"] {
+  background: rgba(255, 255, 252, 0.42);
+  color: var(--muted);
+}
+
+.button.ghost,
+.button.primary {
+  background: rgba(255, 255, 252, 0.48);
+}
+
+.button.primary {
+  border-color: transparent;
+  background: var(--sage);
+  color: #fff;
+}
+
+.logout-button[hidden] {
+  display: none;
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+}
+
+.home-layout {
+  display: grid;
+  gap: 34px;
+  padding-top: clamp(58px, 9vw, 118px);
+}
+
+.intro {
+  max-width: 780px;
+  padding-bottom: 30px;
+  border-bottom: 1px solid var(--line);
+}
+
+.intro h1 {
+  margin: 0;
+  font-size: clamp(38px, 5.5vw, 70px);
+  line-height: 1.08;
+  font-weight: 300;
+}
+
+.intro p:not(.eyebrow) {
+  max-width: 620px;
+  margin: 18px 0 0;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1.8;
+}
+
+.login-inline {
+  margin-top: 18px;
+}
+
+.mobile-login-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-top: 18px;
+}
+
+.mobile-login-row .login-inline {
+  margin-top: 0;
+}
+
+.entry-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.entry-card {
+  min-height: 250px;
+  position: relative;
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  overflow: hidden;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface);
+  transition: background 160ms ease, transform 160ms ease;
+}
+
+.entry-card:hover {
+  background: rgba(255, 255, 252, 0.88);
+  transform: translateY(-1px);
+}
+
+.entry-card strong {
+  display: block;
+  font-size: clamp(25px, 3vw, 36px);
+  line-height: 1.08;
+  font-weight: 300;
+}
+
+.entry-card p {
+  max-width: 360px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.75;
+}
+
+.image-entry {
+  min-height: 310px;
+}
+
+.image-entry img {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  width: min(34%, 170px);
+  aspect-ratio: 1;
+  object-fit: cover;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+}
+
+.alchemy-shell {
+  width: min(1120px, 100%);
+  min-height: 100vh;
+  margin: 0 auto;
+  padding: 32px 26px 64px;
+}
+
+.auth-shell {
+  width: min(860px, 100%);
+  min-height: 100vh;
+  margin: 0 auto;
+  padding: 32px 26px 64px;
+}
+
+.alchemy-layout {
+  display: grid;
+  gap: 24px;
+  padding-top: clamp(38px, 6vw, 76px);
+}
+
+.auth-layout {
+  display: grid;
+  gap: 24px;
+  padding-top: clamp(54px, 8vw, 96px);
+}
+
+.alchemy-intro,
+.auth-intro {
+  max-width: 720px;
+  padding-bottom: 22px;
+}
+
+.alchemy-intro h1,
+.auth-intro h1 {
+  font-size: clamp(36px, 5vw, 58px);
+}
+
+.account-strip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.account-strip div,
+.compose-panel,
+.records-panel {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+}
+
+.account-strip div {
+  display: grid;
+  gap: 8px;
+  padding: 16px;
+}
+
+.account-strip span,
+.panel-title,
+.compose-panel label,
+.history-item span,
+.usage-item span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.account-strip strong {
+  font-size: 20px;
+  font-weight: 400;
+}
+
+.alchemy-workbench {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.9fr) minmax(320px, 1.1fr) minmax(260px, 0.8fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.compose-panel,
+.login-panel,
+.records-panel {
+  padding: 16px;
+}
+
+.compose-panel,
+.login-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.login-panel {
+  width: min(460px, 100%);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+}
+
+.login-panel label {
+  display: grid;
+  gap: 8px;
+}
+
+.login-panel label span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.compose-panel textarea,
+.login-panel input {
+  width: 100%;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 252, 0.72);
+  color: var(--ink);
+  font: inherit;
+}
+
+.compose-panel textarea {
+  resize: vertical;
+  min-height: 126px;
+  line-height: 1.65;
+}
+
+.workbench-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.sandbox-message {
+  min-height: 22px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.sandbox-message[data-kind="error"] {
+  color: #a2483a;
+}
+
+.panel-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.text-button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--sage-deep);
+  font-size: 12px;
+}
+
+.history-list,
+.usage-list {
+  display: grid;
+  gap: 10px;
+}
+
+.history-list.empty,
+.usage-list.empty {
+  min-height: 78px;
+  place-items: center;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.history-item,
+.usage-item {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid rgba(24, 25, 21, 0.08);
+  border-radius: 10px;
+  background: rgba(255, 255, 252, 0.56);
+}
+
+.history-item {
+  grid-template-columns: 64px minmax(0, 1fr);
+  align-items: center;
+}
+
+.history-item img {
+  width: 64px;
+  height: 64px;
+  object-fit: cover;
+  border-radius: 8px;
+}
+
+.history-item strong,
+.usage-item strong {
+  display: block;
+  overflow-wrap: anywhere;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.usage-item {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.usage-item b {
+  font-weight: 500;
+}
+
+@media (max-width: 760px) {
+  .page-shell {
+    padding: 28px 18px 56px;
+  }
+
+  .mobile-header .surface-switch-link {
+    min-width: 68px;
+  }
+
+  .home-layout {
+    gap: 24px;
+    padding-top: 54px;
+  }
+
+  .intro {
+    padding-bottom: 22px;
+  }
+
+  .intro h1 {
+    font-size: 38px;
+  }
+
+  .intro p:not(.eyebrow) {
+    font-size: 14px;
+  }
+
+  .entry-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .entry-card {
+    min-height: 154px;
+  }
+
+  .image-entry {
+    min-height: 210px;
+  }
+
+  .image-entry img {
+    width: 116px;
+    height: 116px;
+  }
+
+  .alchemy-shell {
+    padding: 28px 18px 56px;
+  }
+
+  .auth-shell {
+    padding: 28px 18px 56px;
+  }
+
+  .account-strip,
+  .alchemy-workbench {
+    grid-template-columns: 1fr;
+  }
+
+  .account-strip strong {
+    font-size: 18px;
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "description": "Example account extra.smart_router policies for Sub2API Smart Router.",
+  "cheap_image_primary": {
+    "smart_router": {
+      "enabled": true,
+      "lane_id": "cheap-image-primary",
+      "source_group": "cheap-image-provider",
+      "capabilities": ["image_generation", "image_edit"],
+      "base_weight": 1.4,
+      "cost_multiplier": 0.45,
+      "max_concurrency": 1,
+      "source_group_max_concurrency": 1
+    }
+  },
+  "stable_image_fallback": {
+    "smart_router": {
+      "enabled": true,
+      "lane_id": "stable-image-fallback",
+      "source_group": "stable-image-provider",
+      "capabilities": ["image_generation", "image_edit"],
+      "base_weight": 1.0,
+      "cost_multiplier": 1.0,
+      "max_concurrency": 3,
+      "source_group_max_concurrency": 3
+    }
+  },
+  "same_source_chat_lane": {
+    "smart_router": {
+      "enabled": true,
+      "source_group": "same-source-chat-pool",
+      "capabilities": ["chat", "responses"],
+      "max_concurrency": 1,
+      "source_group_max_concurrency": 1
+    }
+  }
+}

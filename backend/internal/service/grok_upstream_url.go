@@ -123,6 +123,13 @@ func buildGrokMediaURL(account *Account, cfg *config.Config, endpoint GrokMediaE
 	case GrokMediaEndpointImagesEdits:
 		return xai.BuildImagesEditsURLWithValidator(baseURL, validator)
 	case GrokMediaEndpointVideosGenerations:
+		if xai.IsWokeyAPIBaseURL(baseURL) {
+			validated, err := validator(baseURL)
+			if err != nil {
+				return "", err
+			}
+			return xai.BuildWokeyVideosURL(validated)
+		}
 		return xai.BuildVideosGenerationsURLWithValidator(baseURL, validator)
 	case GrokMediaEndpointVideosEdits:
 		return xai.BuildVideosEditsURLWithValidator(baseURL, validator)

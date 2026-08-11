@@ -20,6 +20,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/platform/liveattestation"
+	smartrouter "github.com/Wei-Shaw/sub2api/internal/smartrouter/core"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/cespare/xxhash/v2"
 	"github.com/gin-gonic/gin"
@@ -435,6 +436,8 @@ type OpenAIGatewayService struct {
 	openaiWSPoolOnce               sync.Once
 	openaiWSStateStoreOnce         sync.Once
 	openaiSchedulerOnce            sync.Once
+	smartRouterHealthOnce          sync.Once
+	smartRouterAdaptiveTimeoutOnce sync.Once
 	openaiProxyStreamCircuitOnce   sync.Once
 	openaiWSPassthroughDialerOnce  sync.Once
 	openaiModelTransientOnce       sync.Once
@@ -446,6 +449,9 @@ type OpenAIGatewayService struct {
 	openaiAccountStats             *openAIAccountRuntimeStats
 	openaiModelTransient           *openAIAccountModelTransientState
 	openaiProxyStreamCircuit       *openAIProxyStreamCircuit
+	smartRouterHealthTracker       *smartrouter.HealthTracker
+	smartRouterAdaptiveTimeout     *smartrouter.AdaptiveTimeoutEngine
+	smartRouterHealthLedger        SmartRouterHealthLedger
 	openaiProxyStreamFailOpenLogAt atomic.Int64
 
 	openaiWSFallbackUntil               sync.Map // key: int64(accountID), value: time.Time
@@ -540,6 +546,15 @@ func NewOpenAIGatewayService(
 	}
 	svc.logOpenAIWSModeBootstrap()
 	return svc
+}
+
+// SetSmartRouterHealthLedger attaches optional durable Smart Router state.
+// It must be called during application construction, before request handling.
+func (s *OpenAIGatewayService) SetSmartRouterHealthLedger(ledger SmartRouterHealthLedger) {
+	if s == nil {
+		return
+	}
+	s.smartRouterHealthLedger = ledger
 }
 
 // ResolveChannelMapping 解析渠道级模型映射（代理到 ChannelService）

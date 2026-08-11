@@ -142,7 +142,7 @@ func TestAccountHandlerGetAvailableModels_GrokDefaultsToXAIModelsWithoutMapping(
 	require.Contains(t, ids, "grok-build-0.1")
 }
 
-func TestAccountHandlerGetAvailableModels_OpenAIOAuthUsesExplicitModelMapping(t *testing.T) {
+func TestAccountHandlerGetAvailableModels_OpenAIOAuthFiltersInternalModelMapping(t *testing.T) {
 	svc := &availableModelsAdminService{
 		stubAdminService: newStubAdminService(),
 		account: service.Account{
@@ -153,7 +153,8 @@ func TestAccountHandlerGetAvailableModels_OpenAIOAuthUsesExplicitModelMapping(t 
 			Status:   service.StatusActive,
 			Credentials: map[string]any{
 				"model_mapping": map[string]any{
-					"gpt-5": "gpt-5.1",
+					"gpt-5":        "gpt-5.1",
+					"gpt-5.6-luna": "gpt-5.6-luna",
 				},
 			},
 		},
@@ -172,8 +173,44 @@ func TestAccountHandlerGetAvailableModels_OpenAIOAuthUsesExplicitModelMapping(t 
 		} `json:"data"`
 	}
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	ids := make([]string, 0, len(resp.Data))
+	for _, model := range resp.Data {
+		ids = append(ids, model.ID)
+	}
+	require.ElementsMatch(t, []string{"gpt-5.6-luna"}, ids)
+}
+
+func TestAccountHandlerGetAvailableModels_OpenAIImageOnlyDoesNotExposeChatTestModels(t *testing.T) {
+	svc := &availableModelsAdminService{
+		stubAdminService: newStubAdminService(),
+		account: service.Account{
+			ID:       46,
+			Name:     "openai-image-only",
+			Platform: service.PlatformOpenAI,
+			Type:     service.AccountTypeAPIKey,
+			Status:   service.StatusActive,
+			Credentials: map[string]any{
+				"model_mapping": map[string]any{
+					"gpt-image-2": "gpt-image-2",
+				},
+			},
+		},
+	}
+	router := setupAvailableModelsRouter(svc)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/accounts/46/models", nil)
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var resp struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	require.Len(t, resp.Data, 1)
-	require.Equal(t, "gpt-5", resp.Data[0].ID)
+	require.Equal(t, "gpt-image-2", resp.Data[0].ID)
 }
 
 func TestAccountHandlerGetAvailableModels_OpenAIOAuthPassthroughFallsBackToDefaults(t *testing.T) {
@@ -278,13 +315,7 @@ func TestAccountHandlerGetAvailableModels_OpenAISparkShadowReturnsMappingModels(
 		} `json:"data"`
 	}
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
-	ids := make([]string, 0, len(resp.Data))
-	for _, m := range resp.Data {
-		ids = append(ids, m.ID)
-	}
-	require.ElementsMatch(t, []string{
-		"gpt-5.3-codex-spark",
-	}, ids, "影子可用模型由 model_mapping 派生（非写死）")
+	require.Empty(t, resp.Data, "影子 Spark 映射不应出现在普通账号测试模型选择器")
 }
 
 func TestAccountHandlerSyncUpstreamModels_ConfigErrorReturnsBadRequest(t *testing.T) {

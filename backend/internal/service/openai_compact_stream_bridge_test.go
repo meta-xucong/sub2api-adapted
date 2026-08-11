@@ -146,6 +146,12 @@ func TestBuildOpenAICompactSSEPayload_RejectsNonJSONObject(t *testing.T) {
 	}
 }
 
+func TestBuildOpenAICompactSSEPayload_RejectsOrdinaryMessageOutput(t *testing.T) {
+	body := []byte(`{"id":"resp_message","output":[{"type":"message","content":[{"type":"output_text","text":"not compact"}]}]}`)
+	_, ok := buildOpenAICompactSSEPayload(body)
+	require.False(t, ok)
+}
+
 func TestWriteOpenAICompactSSEBridge_RequiresMarkAndSuccessStatus(t *testing.T) {
 	finalResponse := []byte(`{"id":"resp_1","output":[{"type":"compaction","encrypted_content":"x"}]}`)
 
@@ -523,4 +529,36 @@ func TestHandleNonStreamingResponsePassthrough_CompactClientStreamBridgesToSSE(t
 	require.Equal(t, "resp_compact_pt", gjson.Get(events[1][1], "response.id").String())
 	require.NotNil(t, result.usage)
 	require.Equal(t, 7, result.usage.InputTokens)
+}
+
+func TestHandleNonStreamingResponsePassthrough_BodySignalCompactClientStreamBridgesToSSE(t *testing.T) {
+	svc := newCompactBridgeTestService()
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	MarkOpenAICompactClientStream(c)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body: io.NopCloser(strings.NewReader(`{
+			"id":"resp_body_signal_compact_pt",
+			"output":[{"id":"cmp_pt_2","type":"compaction","encrypted_content":"compact-body-signal-payload"}],
+			"usage":{"input_tokens":5,"output_tokens":2,"total_tokens":7}
+		}`)),
+	}
+
+	result, err := svc.handleNonStreamingResponsePassthrough(context.Background(), resp, c, "gpt-5.6-sol", "")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	require.Equal(t, "text/event-stream", rec.Header().Get("Content-Type"))
+	events := parseCompactBridgeSSE(t, rec.Body.String())
+	require.Len(t, events, 2)
+	require.Equal(t, "response.output_item.done", events[0][0])
+	require.Equal(t, "compaction", gjson.Get(events[0][1], "item.type").String())
+	require.Equal(t, "compact-body-signal-payload", gjson.Get(events[0][1], "item.encrypted_content").String())
+	require.Equal(t, "response.completed", events[1][0])
+	require.NotNil(t, result.usage)
+	require.Equal(t, 5, result.usage.InputTokens)
 }

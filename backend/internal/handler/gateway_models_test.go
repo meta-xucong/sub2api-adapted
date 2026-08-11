@@ -33,6 +33,14 @@ type gatewayModelItemForTest struct {
 	SupportsReasoningEffort bool                                  `json:"supportsReasoningEffort"`
 	ReasoningEffort         string                                `json:"reasoningEffort"`
 	ReasoningEfforts        []gatewayReasoningEffortOptionForTest `json:"reasoningEfforts"`
+	SupportsServiceTier     bool                                  `json:"supports_service_tier"`
+	AdditionalSpeedTiers    []string                              `json:"additional_speed_tiers"`
+	ServiceTiers            []gatewayModelServiceTierForTest      `json:"service_tiers"`
+}
+
+type gatewayModelServiceTierForTest struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 type gatewayReasoningEffortOptionForTest struct {
@@ -236,6 +244,56 @@ func TestGatewayModels_CustomModelsListDisabledKeepsOriginalModels(t *testing.T)
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 	require.Equal(t, []string{"gpt-5.4", "gpt-5.5"}, modelIDsForTest(got.Data))
+	require.True(t, got.Data[0].SupportsServiceTier)
+	require.Equal(t, []string{"fast"}, got.Data[0].AdditionalSpeedTiers)
+	require.Equal(t, "priority", got.Data[0].ServiceTiers[0].ID)
+}
+
+func TestGatewayModels_OpenAIAdvertisedModelsFilterSnapshots(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	groupID := int64(31)
+	h := newGatewayModelsHandlerForTest(
+		&gatewayModelsAccountRepoStub{
+			byGroup: map[int64][]service.Account{
+				groupID: {
+					{
+						ID:       1,
+						Platform: service.PlatformOpenAI,
+						Credentials: map[string]any{
+							"model_mapping": map[string]any{
+								"gpt-5.6-sol":            "gpt-5.6-sol",
+								"gpt-5.6-sol-2026-07-09": "gpt-5.6-sol-2026-07-09",
+								"gpt-5.4-2026-03-05":     "gpt-5.4-2026-03-05",
+								"gpt-image-1.5":          "gpt-image-1.5",
+								"gpt-image-2":            "gpt-image-2",
+								"custom-provider-model":  "custom-provider-model",
+							},
+						},
+					},
+				},
+			},
+		},
+	)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{
+		Group: &service.Group{ID: groupID, Platform: service.PlatformOpenAI},
+	})
+
+	h.Models(c)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var got gatewayModelsResponseForTest
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	require.Equal(t, []string{"custom-provider-model", "gpt-5.6-sol", "gpt-image-2"}, modelIDsForTest(got.Data))
+	byID := gatewayModelsByIDForTest(got.Data)
+	require.True(t, byID["gpt-5.6-sol"].SupportsServiceTier)
+	require.Equal(t, []string{"fast"}, byID["gpt-5.6-sol"].AdditionalSpeedTiers)
+	require.False(t, byID["gpt-image-2"].SupportsServiceTier)
 }
 
 func TestGatewayModels_CustomModelsListFiltersAndOrdersMappedModels(t *testing.T) {
@@ -702,4 +760,12 @@ func modelIDsForTest(models []gatewayModelItemForTest) []string {
 		ids = append(ids, model.ID)
 	}
 	return ids
+}
+
+func gatewayModelsByIDForTest(models []gatewayModelItemForTest) map[string]gatewayModelItemForTest {
+	out := make(map[string]gatewayModelItemForTest, len(models))
+	for _, model := range models {
+		out[model.ID] = model
+	}
+	return out
 }

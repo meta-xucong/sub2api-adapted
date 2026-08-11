@@ -526,7 +526,7 @@ func TestLoadDefaultOpenAICompactModel(t *testing.T) {
 
 	cfg, err := Load()
 	require.NoError(t, err)
-	require.Equal(t, "gpt-5.4", cfg.Gateway.OpenAICompactModel)
+	require.Empty(t, cfg.Gateway.OpenAICompactModel)
 }
 
 func TestLoadOpenAICompactModelFromEnv(t *testing.T) {
@@ -1906,6 +1906,148 @@ func TestValidateConfigErrors(t *testing.T) {
 			name:    "gateway image stream data interval negative",
 			mutate:  func(c *Config) { c.Gateway.ImageStreamDataIntervalTimeout = -1 },
 			wantErr: "gateway.image_stream_data_interval_timeout must be non-negative",
+		},
+		{
+			name:    "gateway image edit transient cooldown negative",
+			mutate:  func(c *Config) { c.Gateway.ImageEditTransientCooldownSeconds = -1 },
+			wantErr: "gateway.image_edit_transient_cooldown_seconds must be non-negative",
+		},
+		{
+			name:    "gateway smart router image total budget negative",
+			mutate:  func(c *Config) { c.Gateway.SmartRouter.ImageTotalBudgetSeconds = -1 },
+			wantErr: "gateway.smart_router.image_total_budget_seconds must be non-negative",
+		},
+		{
+			name:    "gateway smart router image attempt negative",
+			mutate:  func(c *Config) { c.Gateway.SmartRouter.ImageAttemptSeconds = -1 },
+			wantErr: "gateway.smart_router.image_attempt_seconds must be non-negative",
+		},
+		{
+			name:    "gateway smart router image reserve negative",
+			mutate:  func(c *Config) { c.Gateway.SmartRouter.ImageReserveSeconds = -1 },
+			wantErr: "gateway.smart_router.image_finalization_reserve_seconds must be non-negative",
+		},
+		{
+			name:    "gateway smart router second failure cooldown negative",
+			mutate:  func(c *Config) { c.Gateway.SmartRouter.Recovery.SecondFailureCooldownSeconds = -1 },
+			wantErr: "gateway.smart_router.recovery.second_failure_cooldown_seconds must be non-negative",
+		},
+		{
+			name:    "gateway smart router sustained failure threshold negative",
+			mutate:  func(c *Config) { c.Gateway.SmartRouter.Recovery.SustainedFailureThreshold = -1 },
+			wantErr: "gateway.smart_router.recovery.sustained_failure_threshold must be non-negative",
+		},
+		{
+			name:    "gateway smart router image sustained failure threshold negative",
+			mutate:  func(c *Config) { c.Gateway.SmartRouter.Recovery.ImageSustainedFailureThreshold = -1 },
+			wantErr: "gateway.smart_router.recovery.image_sustained_failure_threshold must be non-negative",
+		},
+		{
+			name:    "gateway smart router recovery escalation threshold negative",
+			mutate:  func(c *Config) { c.Gateway.SmartRouter.Recovery.RecoveryEscalationFailureThreshold = -1 },
+			wantErr: "gateway.smart_router.recovery.recovery_escalation_failure_threshold must be non-negative",
+		},
+		{
+			name:    "gateway smart router recovery priority step negative",
+			mutate:  func(c *Config) { c.Gateway.SmartRouter.Recovery.RecoveryPriorityStep = -1 },
+			wantErr: "gateway.smart_router.recovery.recovery_priority_step must be non-negative",
+		},
+		{
+			name:    "gateway smart router calibration hour invalid",
+			mutate:  func(c *Config) { c.Gateway.SmartRouter.Calibration.Hour = 24 },
+			wantErr: "gateway.smart_router.calibration.hour must be between 0 and 23",
+		},
+		{
+			name:    "gateway smart router calibration probe timeout negative",
+			mutate:  func(c *Config) { c.Gateway.SmartRouter.Calibration.ProbeTimeoutSeconds = -1 },
+			wantErr: "gateway.smart_router.calibration.probe_timeout_seconds must be non-negative",
+		},
+		{
+			name: "gateway smart router image budget too small",
+			mutate: func(c *Config) {
+				c.Gateway.SmartRouter.Enabled = true
+				c.Gateway.SmartRouter.ImageTotalBudgetSeconds = 195
+				c.Gateway.SmartRouter.ImageAttemptSeconds = 180
+				c.Gateway.SmartRouter.ImageReserveSeconds = 15
+			},
+			wantErr: "gateway.smart_router.image_total_budget_seconds must exceed",
+		},
+		{
+			name:    "gateway image generation transient cooldown negative",
+			mutate:  func(c *Config) { c.Gateway.ImageGenerationTransientCooldownSeconds = -1 },
+			wantErr: "gateway.image_generation_transient_cooldown_seconds must be non-negative",
+		},
+		{
+			name:    "gateway responses image bridge request limit invalid",
+			mutate:  func(c *Config) { c.Gateway.ResponsesImageBridge.MaxRequestBytes = 0 },
+			wantErr: "gateway.responses_image_bridge.max_request_bytes must be positive",
+		},
+		{
+			name:    "gateway responses image bridge protocol invalid",
+			mutate:  func(c *Config) { c.Gateway.ResponsesImageBridge.ApplyToProtocol = "all" },
+			wantErr: "gateway.responses_image_bridge.apply_to_protocol must be images_api_only",
+		},
+		{
+			name:    "gateway smart router top k negative",
+			mutate:  func(c *Config) { c.Gateway.SmartRouter.TopK = -1 },
+			wantErr: "gateway.smart_router.top_k must be non-negative",
+		},
+		{
+			name:    "gateway smart router adaptive timeout window negative",
+			mutate:  func(c *Config) { c.Gateway.SmartRouter.AdaptiveTimeout.WindowSize = -1 },
+			wantErr: "gateway.smart_router.adaptive_timeout durations and window_size must be non-negative",
+		},
+		{
+			name:    "gateway smart router adaptive timeout success step negative",
+			mutate:  func(c *Config) { c.Gateway.SmartRouter.AdaptiveTimeout.SuccessStepSeconds = -1 },
+			wantErr: "gateway.smart_router.adaptive_timeout durations and window_size must be non-negative",
+		},
+		{
+			name: "gateway smart router adaptive timeout enabled without default",
+			mutate: func(c *Config) {
+				c.Gateway.SmartRouter.AdaptiveTimeout.Enabled = true
+				c.Gateway.SmartRouter.AdaptiveTimeout.DefaultSeconds = 0
+			},
+			wantErr: "gateway.smart_router.adaptive_timeout.default_seconds must be positive",
+		},
+		{
+			name: "gateway smart router adaptive timeout failure multiplier out of range",
+			mutate: func(c *Config) {
+				c.Gateway.SmartRouter.AdaptiveTimeout.Enabled = true
+				c.Gateway.SmartRouter.AdaptiveTimeout.FailureBackoffMultiplier = 1.1
+			},
+			wantErr: "gateway.smart_router.adaptive_timeout.failure_backoff_multiplier must be greater than 0 and at most 1",
+		},
+		{
+			name:    "gateway smart router image resilience negative",
+			mutate:  func(c *Config) { c.Gateway.SmartRouter.ImageResilience.StandardMinSeconds = -1 },
+			wantErr: "gateway.smart_router.image_resilience durations and limits must be non-negative",
+		},
+		{
+			name: "gateway smart router image resilience has no capability",
+			mutate: func(c *Config) {
+				c.Gateway.SmartRouter.ImageResilience.Enabled = true
+				c.Gateway.SmartRouter.ImageResilience.GenerationEnabled = false
+				c.Gateway.SmartRouter.ImageResilience.EditEnabled = false
+			},
+			wantErr: "gateway.smart_router.image_resilience must enable generation or edit",
+		},
+		{
+			name: "gateway smart router image resilience invalid range",
+			mutate: func(c *Config) {
+				c.Gateway.SmartRouter.ImageResilience.Enabled = true
+				c.Gateway.SmartRouter.ImageResilience.StandardMinSeconds = 250
+				c.Gateway.SmartRouter.ImageResilience.StandardMaxSeconds = 240
+			},
+			wantErr: "gateway.smart_router.image_resilience.standard_min_seconds must be <= standard_max_seconds",
+		},
+		{
+			name: "gateway smart router zero weights",
+			mutate: func(c *Config) {
+				c.Gateway.SmartRouter.Enabled = true
+				c.Gateway.SmartRouter.Scoring = GatewaySmartRouterScoringConfig{}
+			},
+			wantErr: "gateway.smart_router.scoring must not all be zero",
 		},
 		{
 			name:    "gateway image concurrency max negative",

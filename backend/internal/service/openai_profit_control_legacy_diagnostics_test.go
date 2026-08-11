@@ -1,8 +1,6 @@
 package service
 
 import (
-	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -70,16 +68,16 @@ func TestSelectAccountWithScheduler_LegacyProfitDiagnostics(t *testing.T) {
 		require.NotContains(t, err.Error(), openAIProfitFilterReasonInvalidAccountRate)
 	})
 
-	t.Run("compact preserves compact sentinel", func(t *testing.T) {
+	t.Run("compact probe failure stays in recovery pool", func(t *testing.T) {
 		account := legacyProfitDiagnosticAccount(53134)
 		account.Extra = map[string]any{"openai_compact_supported": false}
 		profitControlTestAccountWithRate(account, 0.4)
 		svc := legacyProfitDiagnosticService([]Account{*account})
 
 		selection, _, err := svc.SelectAccountWithScheduler(ctx, &groupID, "", "", "gpt-test", nil, OpenAIUpstreamTransportAny, true)
-		require.Nil(t, selection)
-		require.ErrorIs(t, err, ErrNoAvailableCompactAccounts)
-		require.False(t, strings.Contains(err.Error(), "pool="), err)
-		require.False(t, errors.Is(err, ErrNoAvailableAccounts))
+		require.NoError(t, err)
+		require.NotNil(t, selection)
+		require.Equal(t, account.ID, selection.Account.ID)
+		selection.ReleaseFunc()
 	})
 }

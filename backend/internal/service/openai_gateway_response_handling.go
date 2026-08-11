@@ -1232,6 +1232,9 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 		return nil, fmt.Errorf("parse response: invalid json response")
 	}
 	usage := &usageValue
+	if compactErr := compactResponseProtocolError(c, body); compactErr != nil {
+		return nil, newOpenAICompactFailoverError(resp, compactErr.Error())
+	}
 
 	// Replace model in response if needed
 	if originalModel != mappedModel {
@@ -1333,6 +1336,9 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 			}
 			return nil, s.writeOpenAINonStreamingProtocolError(resp, c, msg)
 		}
+		if compactErr := compactSSEMissingTerminalError(c, terminalType, terminalOK); compactErr != nil {
+			return nil, newOpenAICompactFailoverError(resp, compactErr.Error())
+		}
 		usage = s.parseSSEUsageFromBody(bodyText)
 		if originalModel != mappedModel {
 			bodyText = s.replaceModelInSSEBody(bodyText, mappedModel, originalModel)
@@ -1361,6 +1367,55 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 		imageOutputSizes: collectOpenAIImageOutputSizesFromSSEBody(bodyText),
 		searchCount:      countGrokNativeSearchCallsFromSSEBody(bodyText),
 	}, nil
+}
+
+// compactResponseProtocolError validates only the compact endpoint. The
+// ordinary Responses endpoint is intentionally untouched. A 2xx response is
+// not enough: Codex remote compaction requires one compaction output item.
+func compactResponseProtocolError(c *gin.Context, body []byte) error {
+	if !isOpenAIResponsesCompactResponse(c) {
+		return nil
+	}
+	items := gjson.GetBytes(body, "output").Array()
+	compactionItems := 0
+	for _, item := range items {
+		if isResponsesCompactionItemType(item.Get("type").String()) {
+			compactionItems++
+		}
+	}
+	if compactionItems == 1 {
+		return nil
+	}
+	return fmt.Errorf("compact response missing required compaction output item (got %d from %d output items)", compactionItems, len(items))
+}
+
+func compactSSEMissingTerminalError(c *gin.Context, terminalType string, terminalOK bool) error {
+	if !isOpenAIResponsesCompactResponse(c) {
+		return nil
+	}
+	if !terminalOK {
+		return errors.New("compact response stream closed before response.completed")
+	}
+	if terminalType == "response.completed" || terminalType == "response.done" {
+		return errors.New("compact response.completed event missing response payload")
+	}
+	return fmt.Errorf("compact response ended with %s before response.completed", terminalType)
+}
+
+func isOpenAIResponsesCompactResponse(c *gin.Context) bool {
+	return isOpenAIResponsesCompactPath(c) || openAICompactClientWantsStream(c)
+}
+
+func newOpenAICompactFailoverError(resp *http.Response, message string) *UpstreamFailoverError {
+	var headers http.Header
+	if resp != nil {
+		headers = resp.Header
+	}
+	return &UpstreamFailoverError{
+		StatusCode:      http.StatusBadGateway,
+		ResponseBody:    []byte(`{"error":{"type":"upstream_protocol_error","message":"` + message + `"}}`),
+		ResponseHeaders: headers,
+	}
 }
 
 func extractOpenAISSETerminalEvent(body string) (string, []byte, bool) {
@@ -1675,7 +1730,7 @@ func isResponsesCompactionItemType(itemType string) bool {
 // compaction item——纯流式透传（v0.1.146）下客户端直接读事件流天然拿得到，
 // SSE→JSON 提取链路必须给出等价结果。非 compact 请求原样返回。
 func supplementCompactionItemFromSSE(c *gin.Context, finalResponse []byte, bodyText string) []byte {
-	if !isOpenAIResponsesCompactPath(c) {
+	if !isOpenAIResponsesCompactResponse(c) {
 		return finalResponse
 	}
 	if len(gjson.GetBytes(finalResponse, "output").Array()) == 0 {

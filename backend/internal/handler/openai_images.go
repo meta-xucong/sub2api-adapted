@@ -144,7 +144,19 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 	}
 
 	sessionHash := h.gatewayService.GenerateExplicitSessionHash(c, body)
-	requestCtx := service.WithOpenAIImagesEndpoint(service.WithOpenAIImageGenerationIntent(c.Request.Context()))
+	imageRequestContext := service.WithOpenAIImagesEndpoint(service.WithOpenAIImageGenerationIntent(c.Request.Context()))
+	if parsed.IsEdits() {
+		imageRequestContext = service.WithOpenAIImageSmartRouterInputMode(imageRequestContext, "reference_image")
+	} else {
+		imageRequestContext = service.WithOpenAIImageSmartRouterInputMode(imageRequestContext, "text_only")
+	}
+	imageRequestContext = service.WithOpenAIImageSmartRouterModelFamily(imageRequestContext, parsed.Model)
+	if parsed.ExplicitSize {
+		imageRequestContext = service.WithOpenAIImageSmartRouterSizeTier(imageRequestContext, parsed.SizeTier)
+	}
+	requestCtx, cancelImageRequest := h.gatewayService.WithOpenAIImageRequestTimeout(imageRequestContext)
+	defer cancelImageRequest()
+	imageBudget := h.gatewayService.OpenAIImageSmartRouterBudget()
 
 	maxAccountSwitches := h.maxAccountSwitches
 	switchCount := 0
@@ -152,20 +164,42 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 	failedAccountIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
 	var lastFailoverErr *service.UpstreamFailoverError
+	imageEditCapacityWaited := false
 	stopJSONKeepalive := func() {}
 	jsonKeepaliveStarted := false
 	defer func() { stopJSONKeepalive() }()
 	var oauth429FailoverState service.OpenAIOAuth429FailoverState
 
 	for {
+		// A request-wide image deadline must stop the failover loop before another
+		// account is selected. ForwardImages can consume the final budget itself.
+		if err := requestCtx.Err(); err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				reqLog.Warn("openai.images.total_timeout_exhausted",
+					zap.Int("switch_count", switchCount),
+					zap.Int("excluded_account_count", len(failedAccountIDs)),
+				)
+				if lastFailoverErr != nil {
+					h.handleFailoverExhausted(c, lastFailoverErr, streamStarted)
+				} else {
+					h.handleFailoverExhaustedSimple(c, http.StatusGatewayTimeout, streamStarted)
+				}
+			}
+			return
+		}
+		if imageBudget.TotalSeconds > 0 {
+			imageBudget.RemainingSeconds = imageBudget.TotalSeconds - time.Since(requestStart).Seconds()
+			requestCtx = service.WithOpenAIImageSmartRouterBudget(requestCtx, imageBudget)
+		}
 		reqLog.Debug("openai.images.account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
-		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForImages(
+		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForImageOperation(
 			requestCtx,
 			apiKey.GroupID,
 			sessionHash,
 			routingModel,
 			failedAccountIDs,
 			parsed.RequiredCapability,
+			parsed.IsEdits(),
 		)
 		if err != nil {
 			if failoverClientGone(c) {
@@ -176,6 +210,32 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 				zap.Error(err),
 				zap.Int("excluded_account_count", len(failedAccountIDs)),
 			)
+			if requestCtx.Err() != nil {
+				if errors.Is(requestCtx.Err(), context.DeadlineExceeded) {
+					reqLog.Warn("openai.images.total_timeout_exhausted",
+						zap.Int("switch_count", switchCount),
+						zap.Int("excluded_account_count", len(failedAccountIDs)),
+					)
+					if lastFailoverErr != nil {
+						h.handleFailoverExhausted(c, lastFailoverErr, streamStarted)
+					} else {
+						h.handleFailoverExhaustedSimple(c, http.StatusGatewayTimeout, streamStarted)
+					}
+				}
+				return
+			}
+			if parsed.IsEdits() && len(failedAccountIDs) == 0 && !imageEditCapacityWaited {
+				if wait := h.gatewayService.OpenAIImageEditCapacityRetryDelay(requestCtx, apiKey.GroupID, requestModel); wait > 0 {
+					imageEditCapacityWaited = true
+					reqLog.Warn("openai.images.image_edit_capacity_wait", zap.Duration("wait", wait), zap.Error(err))
+					select {
+					case <-requestCtx.Done():
+						return
+					case <-time.After(wait):
+					}
+					continue
+				}
+			}
 			if len(failedAccountIDs) == 0 {
 				cls := classifyNoAccountErrorFromGin(c, h.gatewayService, apiKey, clientRequestModel, routingModel, service.PlatformOpenAI)
 				if !cls.ModelNotFound {
@@ -185,9 +245,11 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 				if !cls.ModelNotFound {
 					message = "No available compatible accounts"
 				}
+				h.setImageEditTransientRetryAfter(c, parsed)
 				h.handleStreamingAwareError(c, cls.Status, cls.ErrType, message, streamStarted)
 				return
 			}
+			h.setImageEditTransientRetryAfter(c, parsed)
 			if lastFailoverErr != nil {
 				h.handleFailoverExhausted(c, lastFailoverErr, streamStarted)
 			} else {
@@ -204,6 +266,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 			if !cls.ModelNotFound {
 				message = "No available compatible accounts"
 			}
+			h.setImageEditTransientRetryAfter(c, parsed)
 			h.handleStreamingAwareError(c, cls.Status, cls.ErrType, message, streamStarted)
 			return
 		}
@@ -260,6 +323,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 		if result != nil && result.FirstTokenMs != nil {
 			service.SetOpsLatencyMs(c, service.OpsTimeToFirstTokenMsKey, int64(*result.FirstTokenMs))
 		}
+		h.gatewayService.ReportSmartRouterImageResult(account, parsed, result, err, forwardDurationMs)
 		if err != nil {
 			if result != nil && result.ImageCount > 0 {
 				reqLog.Warn("openai.images.forward_partial_error_with_image_result",
@@ -287,7 +351,10 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 				}
 				var failoverErr *service.UpstreamFailoverError
 				if errors.As(err, &failoverErr) {
-					h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, account.GetMappedModel(requestModel), false, nil)
+					concurrencyRateLimited := h.gatewayService.IsSmartRouterConcurrencyRateLimit(failoverErr)
+					if !concurrencyRateLimited {
+						h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, account.GetMappedModel(requestModel), false, nil)
+					}
 					if service.OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c) != writerSizeBeforeForward {
 						reqLog.Warn("openai.images.upstream_failover_skipped_after_flush",
 							zap.Int64("account_id", account.ID),
@@ -321,10 +388,18 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 							continue
 						}
 					}
+					if !concurrencyRateLimited {
+						if parsed.IsEdits() {
+							h.gatewayService.TempUnscheduleImageEditTransientError(requestCtx, account, failoverErr)
+						} else {
+							h.gatewayService.TempUnscheduleImageGenerationTransientError(requestCtx, account, failoverErr)
+						}
+					}
 					h.gatewayService.RecordOpenAIAccountSwitch()
 					failedAccountIDs[account.ID] = struct{}{}
 					lastFailoverErr = failoverErr
 					if switchCount >= maxAccountSwitches {
+						h.setImageEditTransientRetryAfter(c, parsed)
 						h.handleFailoverExhausted(c, failoverErr, streamStarted)
 						return
 					}
@@ -431,4 +506,13 @@ func (h *OpenAIGatewayHandler) openAIImagesJSONKeepaliveInterval() time.Duration
 
 func isMultipartImagesContentType(contentType string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(contentType)), "multipart/form-data")
+}
+
+func (h *OpenAIGatewayHandler) setImageEditTransientRetryAfter(c *gin.Context, parsed *service.OpenAIImagesRequest) {
+	if h == nil || h.gatewayService == nil || c == nil || parsed == nil || !parsed.IsEdits() {
+		return
+	}
+	if seconds := h.gatewayService.OpenAIImageEditTransientRetryAfterSeconds(); seconds > 0 {
+		c.Header("Retry-After", strconv.Itoa(seconds))
+	}
 }

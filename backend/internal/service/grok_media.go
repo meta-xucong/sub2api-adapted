@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
@@ -143,8 +144,16 @@ func parseGrokMediaJSONRequest(body []byte, info *GrokMediaRequestInfo) {
 	info.Prompt = strings.TrimSpace(gjson.GetBytes(body, "prompt").String())
 	info.Size = strings.TrimSpace(gjson.GetBytes(body, "size").String())
 	info.Resolution = strings.TrimSpace(gjson.GetBytes(body, "resolution").String())
+	if info.Resolution == "" {
+		info.Resolution = strings.TrimSpace(gjson.GetBytes(body, "video_resolution").String())
+	}
 	if duration := gjson.GetBytes(body, "duration"); duration.Exists() && duration.Type == gjson.Number {
 		info.DurationSeconds = int(duration.Int())
+	}
+	if info.DurationSeconds == 0 {
+		if duration := gjson.GetBytes(body, "duration_seconds"); duration.Exists() && duration.Type == gjson.Number {
+			info.DurationSeconds = int(duration.Int())
+		}
 	}
 	if n := gjson.GetBytes(body, "n"); n.Exists() && n.Type == gjson.Number {
 		info.N = int(n.Int())
@@ -257,7 +266,13 @@ func parseGrokMediaMultipartRequest(contentType string, body []byte, info *GrokM
 			info.Size = value
 		case "resolution":
 			info.Resolution = value
+		case "video_resolution":
+			info.Resolution = value
 		case "duration":
+			if duration, err := strconv.Atoi(value); err == nil {
+				info.DurationSeconds = duration
+			}
+		case "duration_seconds":
 			if duration, err := strconv.Atoi(value); err == nil {
 				info.DurationSeconds = duration
 			}
@@ -630,7 +645,7 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 	if err != nil {
 		return nil, err
 	}
-	body, contentType, err = normalizeGrokMediaForwardBody(endpoint, body, contentType)
+	body, contentType, err = normalizeGrokMediaForwardBodyForAccount(account, endpoint, body, contentType)
 	if err != nil {
 		return nil, err
 	}
@@ -1048,6 +1063,60 @@ func normalizeGrokMediaForwardBody(endpoint GrokMediaEndpoint, body []byte, cont
 	out, err := sjson.SetBytes(body, "model", upstreamModel)
 	if err != nil {
 		return nil, "", fmt.Errorf("rewrite grok media model: %w", err)
+	}
+	return out, contentType, nil
+}
+
+func normalizeGrokMediaForwardBodyForAccount(account *Account, endpoint GrokMediaEndpoint, body []byte, contentType string) ([]byte, string, error) {
+	if isWokeyVideoGeneration(account, endpoint) {
+		return normalizeWokeyVideoForwardBody(body, contentType, ParseGrokMediaRequest(contentType, body))
+	}
+	return normalizeGrokMediaForwardBody(endpoint, body, contentType)
+}
+
+func isWokeyVideoGeneration(account *Account, endpoint GrokMediaEndpoint) bool {
+	return account != nil && endpoint == GrokMediaEndpointVideosGenerations && xai.IsWokeyAPIBaseURL(account.GetGrokMediaBaseURL())
+}
+
+// Wokey accepts the standard Grok request shape after this narrow field translation.
+func normalizeWokeyVideoForwardBody(body []byte, contentType string, info GrokMediaRequestInfo) ([]byte, string, error) {
+	if !gjson.ValidBytes(body) {
+		return body, contentType, nil
+	}
+	out := body
+	if !gjson.GetBytes(out, "video_resolution").Exists() {
+		if resolution := strings.TrimSpace(gjson.GetBytes(out, "resolution").String()); resolution != "" {
+			var err error
+			out, err = sjson.SetBytes(out, "video_resolution", resolution)
+			if err != nil {
+				return nil, "", fmt.Errorf("rewrite Wokey video resolution: %w", err)
+			}
+		}
+	}
+	if gjson.GetBytes(out, "resolution").Exists() {
+		var err error
+		out, err = sjson.DeleteBytes(out, "resolution")
+		if err != nil {
+			return nil, "", fmt.Errorf("remove Grok video resolution: %w", err)
+		}
+	}
+	if !gjson.GetBytes(out, "mode").Exists() {
+		mode := "text_to_video"
+		if info.HasInputImage() {
+			mode = "image_to_video"
+		}
+		var err error
+		out, err = sjson.SetBytes(out, "mode", mode)
+		if err != nil {
+			return nil, "", fmt.Errorf("set Wokey video mode: %w", err)
+		}
+	}
+	if !gjson.GetBytes(out, "ratio").Exists() {
+		var err error
+		out, err = sjson.SetBytes(out, "ratio", "16:9")
+		if err != nil {
+			return nil, "", fmt.Errorf("set Wokey video ratio: %w", err)
+		}
 	}
 	return out, contentType, nil
 }

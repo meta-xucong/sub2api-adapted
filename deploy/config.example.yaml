@@ -193,6 +193,14 @@ security:
     # 不影响 AI 账号网关连接。默认 false：fail-fast 防止 IP 泄露。
     allow_direct_on_error: false
 
+# Optional aiself/Veyra portal bridge. Leave disabled on generic deployments.
+veyra:
+  enabled: false
+  portal_enabled: false
+  alchemy_base_url: "https://alchemy.aiself.vip"
+  internal_token: ""
+  login_ticket_ttl_seconds: 120
+
 # =============================================================================
 # Gateway Configuration
 # 网关配置
@@ -424,6 +432,85 @@ gateway:
     sticky_escape_ttft_ms: 15000
     # 错误率 EWMA 超过该阈值时跳过 sticky，默认 0.5，仅在明显降级时触发
     sticky_escape_error_rate: 0.5
+  # Optional Sub2API Smart Router overlay. Disabled keeps official scheduling unchanged.
+  # 可插拔 Smart Router；关闭时完全保持官方调度行为。
+  smart_router:
+    enabled: false
+    top_k: 5
+    max_attempts_image: 2
+    max_attempts_chat: 3
+    max_attempts_compact: 2
+    max_attempts_default: 3
+    same_source_group_attempts: 1
+    cost_bias_max: 3.0
+    # 图片请求的端到端预算；每条线路至少保留 180 秒，并预留 15 秒收尾。
+    image_total_budget_seconds: 600
+    image_attempt_seconds: 180
+    image_finalization_reserve_seconds: 15
+    # Capability-scoped recovery. Repeated transient failures never disable the
+    # account itself; they only move that image capability behind healthy lanes.
+    recovery:
+      second_failure_cooldown_seconds: 600
+      sustained_failure_threshold: 3
+      # Optional image-only override. 0 keeps the generic threshold.
+      image_sustained_failure_threshold: 0
+      # After this many consecutive failures, move the lane another +30
+      # dynamic-priority step. Zero uses the default of 3.
+      recovery_escalation_failure_threshold: 3
+      # Dynamic recovery priority step. The first degraded slot is
+      # base_priority + 30; later rounds are +60, +90, and so on.
+      recovery_priority_step: 30
+    # Runs inside the Sub2API process at the Shanghai calendar time below.
+    # It writes only routing health metadata, never prompts or credentials.
+    calibration:
+      enabled: true
+      hour: 4
+      minute: 0
+      total_budget_seconds: 1800
+      probe_timeout_seconds: 180
+    scoring:
+      priority: 0.8
+      cost: 1.0
+      health: 1.2
+      load: 1.0
+      queue: 0.6
+      latency: 0.4
+      recovery: 0.8
+    # Optional per-lane/per-capability latency policy; disabled for compatibility.
+    adaptive_timeout:
+      enabled: false
+      default_seconds: 180
+      min_seconds: 30
+      max_seconds: 300
+      safety_margin_seconds: 20
+      multiplier: 1.25
+      # Image timeout policy: success steps down; transient failure resets to the full base window.
+      success_step_seconds: 10
+      success_floor_margin_seconds: 30
+      # Legacy compatibility only; image timeout failures reset to the default
+      # window and do not shrink it with this multiplier.
+      failure_backoff_multiplier: 0.5
+      window_size: 32
+      reserve_seconds: 30
+    # Optional image-only resilience overlay. Keep it disabled in the
+    # generic example; production Smart Router deployments can enable it for
+    # /v1/images/generations and /v1/images/edits only.
+    image_resilience:
+      enabled: false
+      generation_enabled: true
+      edit_enabled: true
+      standard_default_seconds: 180
+      standard_min_seconds: 60
+      standard_max_seconds: 240
+      specialist_default_seconds: 210
+      specialist_min_seconds: 75
+      specialist_max_seconds: 360
+      p90_multiplier: 1.25
+      safety_margin_seconds: 20
+      fallback_reserve_seconds: 30
+      sample_window_size: 32
+      max_same_source_attempts: 1
+      half_open_enabled: true
   # OpenAI HTTP upstream protocol strategy.
   # OpenAI HTTP 上游协议策略（默认 HTTP/2；代理明确不兼容时可临时回退 HTTP/1.1）。
   openai_http2:

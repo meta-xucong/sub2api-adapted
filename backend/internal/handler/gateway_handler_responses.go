@@ -97,6 +97,12 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 	requestCtx, pricingAt := service.WithGatewayTokenRequestPricing(requestCtx)
 	if service.IsImageGenerationIntentForPlatform("/v1/responses", reqModel, body, openAICompatibleRequestPlatform(c.Request.Context(), apiKey)) {
 		requestCtx = service.WithOpenAIImageGenerationIntent(requestCtx)
+		mode := "text_only"
+		if service.IsOpenAIResponsesReferenceImageRequest(body) {
+			mode = "reference_image"
+		}
+		requestCtx = service.WithOpenAIImageSmartRouterInputMode(requestCtx, mode)
+		requestCtx = service.WithOpenAIImageSmartRouterModelFamily(requestCtx, service.ResolveOpenAIResponsesImageRoutingModel(reqModel, body))
 	}
 	c.Request = c.Request.WithContext(requestCtx)
 

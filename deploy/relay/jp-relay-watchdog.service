@@ -1,0 +1,8 @@
+[Unit]
+Description=Functional health check for JP relay SOCKS tunnels
+After=network-online.target jp-relay-1-tunnel.service jp-relay-2-tunnel.service jp-relay-3-tunnel.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/check-jp-relay-tunnels.sh

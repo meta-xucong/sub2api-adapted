@@ -146,8 +146,12 @@ func TestOpenAIGatewayService_OpenAIHTTPStripsInputNamespacesBeforeFirstForward(
 		for _, path := range []string{"/v1/responses", "/v1/responses/compact"} {
 			t.Run(tt.name+path, func(t *testing.T) {
 				body := []byte(`{"model":"gpt-5.5","stream":false,"instructions":"test","input":[{"type":"message","role":"user","namespace":"remove","content":[{"type":"input_text","text":"hello","namespace":"nested-keep"}]}]}`)
+				responseBody := `{"id":"resp_namespace_ok","output":[],"usage":{"input_tokens":1,"output_tokens":1,"input_tokens_details":{"cached_tokens":0}}}`
+				if strings.HasSuffix(path, "/compact") {
+					responseBody = `{"id":"resp_namespace_compact","output":[{"id":"cmp_namespace","type":"compaction","encrypted_content":"compact-payload"}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`
+				}
 				upstream := &httpUpstreamRecorder{responses: []*http.Response{
-					newOpenAIRejectedFieldTestResponse(http.StatusOK, `{"id":"resp_namespace_ok","output":[],"usage":{"input_tokens":1,"output_tokens":1,"input_tokens_details":{"cached_tokens":0}}}`),
+					newOpenAIRejectedFieldTestResponse(http.StatusOK, responseBody),
 				}}
 				c := newOpenAIRejectedFieldTestContext(body)
 				c.Request.URL.Path = path

@@ -725,7 +725,7 @@ func TestOpenAIGatewayService_OAuthPassthrough_CompactUsesJSONAndKeepsNonStreami
 	resp := &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid-compact"}},
-		Body:       io.NopCloser(strings.NewReader(`{"id":"cmp_123","usage":{"input_tokens":11,"output_tokens":22}}`)),
+		Body:       io.NopCloser(strings.NewReader(`{"id":"cmp_123","output":[{"type":"compaction","encrypted_content":"compact-payload"}],"usage":{"input_tokens":11,"output_tokens":22}}`)),
 	}
 	upstream := &httpUpstreamRecorder{resp: resp}
 
@@ -826,7 +826,7 @@ func TestOpenAIGatewayService_OAuthPassthrough_CodexMissingInstructionsGetsDefau
 			responseContentType := "text/event-stream"
 			if !stream {
 				path = "/v1/responses/compact"
-				responseBody = `{"id":"resp_1","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1}}`
+				responseBody = `{"id":"resp_1","status":"completed","output":[{"type":"compaction","encrypted_content":"compact-payload"}],"usage":{"input_tokens":1,"output_tokens":1}}`
 				responseContentType = "application/json"
 			}
 			c.Request = httptest.NewRequest(http.MethodPost, path, bytes.NewReader(nil))
