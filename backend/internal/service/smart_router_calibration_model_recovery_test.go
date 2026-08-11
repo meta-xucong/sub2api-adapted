@@ -33,6 +33,28 @@ func TestEnsureSmartRouterModelRecoveryProbesKeepsExactModels(t *testing.T) {
 	}, probes)
 }
 
+func TestEnsureSmartRouterModelRecoveryProbesIncludesModelUnavailable(t *testing.T) {
+	accountsByLane := map[string]*Account{
+		"account:1": {ID: 1},
+	}
+	states := []SmartRouterHealthState{{
+		LaneID:      "account:1",
+		Capability:  smartrouter.CapabilityResponses,
+		ModelFamily: "gpt-5.6-luna",
+		Snapshot: smartrouter.HealthSnapshot{
+			RecoveryStage: smartrouter.RecoveryModelUnavailable,
+		},
+	}}
+
+	probes := ensureSmartRouterModelRecoveryProbes(nil, states, accountsByLane)
+	require.Equal(t, []smartrouter.CalibrationProbe{{
+		LaneID:     "account:1",
+		Capability: smartrouter.CapabilityResponses,
+		Model:      "gpt-5.6-luna",
+		Reason:     "model_recovery_due",
+	}}, probes)
+}
+
 func TestEnsureSmartRouterModelRecoveryProbesDoesNotDuplicateExistingProbe(t *testing.T) {
 	accountsByLane := map[string]*Account{"account:1": {ID: 1}}
 	states := []SmartRouterHealthState{{

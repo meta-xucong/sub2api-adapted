@@ -66,6 +66,11 @@ func Order(req RouteRequest, lanes []LaneSnapshot, policy Policy) RoutePlan {
 			plan.SkipReasons[lane.LaneID] = "image_size_mismatch"
 			continue
 		}
+		if lane.RecoveryStage == RecoveryModelUnavailable &&
+			lane.CooldownUntilUnix > nowUnix {
+			plan.SkipReasons[lane.LaneID] = "model_unavailable_until_calibration"
+			continue
+		}
 		// Health cooldown is a soft penalty, not a hard exclusion. The health
 		// snapshot raises effective priority and lowers recovery weight, while
 		// retaining the lane as a last-resort candidate when every lane is bad.

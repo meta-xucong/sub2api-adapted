@@ -39,11 +39,12 @@ const (
 type RecoveryStage string
 
 const (
-	RecoveryNormal    RecoveryStage = "normal"
-	RecoveryCooling   RecoveryStage = "cooling"
-	RecoveryProbeDue  RecoveryStage = "probe_due"
-	RecoveryWarming5  RecoveryStage = "warming_5"
-	RecoveryWarming25 RecoveryStage = "warming_25"
+	RecoveryNormal           RecoveryStage = "normal"
+	RecoveryCooling          RecoveryStage = "cooling"
+	RecoveryProbeDue         RecoveryStage = "probe_due"
+	RecoveryWarming5         RecoveryStage = "warming_5"
+	RecoveryWarming25        RecoveryStage = "warming_25"
+	RecoveryModelUnavailable RecoveryStage = "model_unavailable"
 )
 
 type RouteRequest struct {

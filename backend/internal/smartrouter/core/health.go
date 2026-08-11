@@ -22,12 +22,17 @@ type HealthPolicy struct {
 	SustainedFailureThreshold      int
 	ImageSustainedFailureThreshold int
 	SustainedFailureUntil          func(time.Time) time.Time
-	RateLimitCooldown              time.Duration
-	CapabilityQuarantine           time.Duration
-	AuthQuarantine                 time.Duration
-	MaxCooldown                    time.Duration
-	MaxPenalty                     int
-	RecoverySuccessesToNormal      int
+	// ModelAvailabilityUntil bounds deterministic model-not-supported errors
+	// for volatile model families such as GPT-5.6. The lane is skipped for
+	// user traffic until this time, then becomes eligible for calibration or a
+	// half-open probe. It is intentionally separate from transient cooldowns.
+	ModelAvailabilityUntil    func(time.Time) time.Time
+	RateLimitCooldown         time.Duration
+	CapabilityQuarantine      time.Duration
+	AuthQuarantine            time.Duration
+	MaxCooldown               time.Duration
+	MaxPenalty                int
+	RecoverySuccessesToNormal int
 	// RecoveryEscalationFailureThreshold is the number of consecutive
 	// failures required to move an already degraded lane another recovery
 	// step backward in the FIFO. Each step adds RecoveryPriorityStep.
@@ -260,7 +265,7 @@ func (t *HealthTracker) Snapshot(lane LaneSnapshot, capability Capability, model
 	}
 	if state.CooldownUntilUnix > 0 && state.CooldownUntilUnix <= nowUnix {
 		state.CooldownUntilUnix = 0
-		if state.RecoveryStage == RecoveryCooling {
+		if state.RecoveryStage == RecoveryCooling || state.RecoveryStage == RecoveryModelUnavailable {
 			state.RecoveryStage = RecoveryProbeDue
 		}
 	}
@@ -361,7 +366,9 @@ func (t *HealthTracker) Observe(result RouteResult) HealthSnapshot {
 				action = "policy_reject_recovered"
 			}
 		}
-	} else if result.Capability == CapabilityResponsesCompact && shouldStrictCompactQuarantine(class) {
+	} else if result.Capability == CapabilityResponsesCompact &&
+		shouldStrictCompactQuarantine(class) &&
+		!(class == FailureCapabilityError && isVolatileGPT56Model(result.Model)) {
 		state.ConsecutiveFailures++
 		state.ConsecutiveSuccesses = 0
 		state.ErrorRateEWMA = state.ErrorRateEWMA*(1-t.policy.ErrorRateAlpha) + t.policy.ErrorRateAlpha
@@ -393,9 +400,17 @@ func (t *HealthTracker) Observe(result RouteResult) HealthSnapshot {
 			state.ErrorRateEWMA = state.ErrorRateEWMA*(1-t.policy.ErrorRateAlpha) + t.policy.ErrorRateAlpha
 			state.HealthScore = maxFloat(0.05, state.HealthScore*0.65)
 			state.HealthPenalty = minInt(state.HealthPenalty+2, t.policy.MaxPenalty)
-			state.CooldownUntilUnix = now.Add(t.policy.CapabilityQuarantine).Unix()
-			state.RecoveryStage = RecoveryCooling
-			action = "capability_quarantine"
+			if isVolatileGPT56Model(result.Model) {
+				state.CooldownUntilUnix = t.modelAvailabilityUntil(now).Unix()
+				state.RecoveryStage = RecoveryModelUnavailable
+				t.resetRecoverySlotForModelUnavailableLocked(state, key, result)
+				state.recoveryFailuresSinceStep = 0
+				action = "gpt56_model_unavailable_until_calibration"
+			} else {
+				state.CooldownUntilUnix = now.Add(t.policy.CapabilityQuarantine).Unix()
+				state.RecoveryStage = RecoveryCooling
+				action = "capability_quarantine"
+			}
 		case FailureAuthForbidden:
 			state.ConsecutiveFailures++
 			state.ConsecutiveSuccesses = 0
@@ -544,6 +559,26 @@ func (t *HealthTracker) ensureRecoverySlotLocked(state *healthState, key HealthK
 	}
 }
 
+func (t *HealthTracker) resetRecoverySlotForModelUnavailableLocked(state *healthState, key HealthKey, result RouteResult) {
+	if state == nil {
+		return
+	}
+	t.releaseRecoverySlotLocked(state, key)
+	basePriority := result.BasePriority
+	if basePriority <= 0 {
+		basePriority = state.basePriority
+	}
+	start := firstRecoveryPriority
+	if basePriority > 0 {
+		start = basePriority + t.policy.RecoveryPriorityStep
+	}
+	state.RecoveryPriority = t.allocateRecoverySlotLocked(
+		recoverySlotKey{capability: key.Capability, modelFamily: key.Model},
+		key,
+		start,
+	)
+}
+
 func (t *HealthTracker) allocateRecoverySlotLocked(pool recoverySlotKey, key HealthKey, start int) int {
 	if start < firstRecoveryPriority {
 		start = firstRecoveryPriority
@@ -651,6 +686,23 @@ func shouldStrictCompactQuarantine(class FailureClass) bool {
 	default:
 		return true
 	}
+}
+
+func isVolatileGPT56Model(model string) bool {
+	model = strings.ToLower(strings.TrimSpace(model))
+	return strings.HasPrefix(model, "gpt-5.6")
+}
+
+func (t *HealthTracker) modelAvailabilityUntil(now time.Time) time.Time {
+	if t != nil && t.policy.ModelAvailabilityUntil != nil {
+		if until := t.policy.ModelAvailabilityUntil(now); until.After(now) {
+			return until
+		}
+	}
+	if t != nil && t.policy.CapabilityQuarantine > 0 {
+		return now.Add(t.policy.CapabilityQuarantine)
+	}
+	return now.Add(24 * time.Hour)
 }
 
 func (t *HealthTracker) compactFailureUntil(now time.Time) time.Time {
