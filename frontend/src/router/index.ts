@@ -772,6 +772,12 @@ router.beforeEach(async (to, _from, next) => {
   if (!requiresAuth) {
     // If already authenticated and trying to access login/register, redirect to appropriate dashboard
     if (authStore.isAuthenticated && (to.path === '/login' || to.path === '/register')) {
+      const redirect = typeof to.query.redirect === 'string' ? to.query.redirect : ''
+      if (to.path === '/login' && redirect.startsWith('/_veyra/return')) {
+        window.location.assign(redirect)
+        next(false)
+        return
+      }
       // In backend mode, non-admin users should NOT be redirected away from login
       // (they are blocked from all protected routes, so redirecting would cause a loop)
       if (appStore.backendModeEnabled && !authStore.isAdmin) {
