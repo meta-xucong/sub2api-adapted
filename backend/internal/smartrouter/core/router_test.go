@@ -32,6 +32,32 @@ func TestOrder_FiltersCapabilityModelAndConcurrencyButRetainsCooldown(t *testing
 	require.Equal(t, "lane_concurrency_full", plan.SkipReasons["full"])
 }
 
+func TestOrder_SkipsGPT56ModelUnavailableUntilCalibration(t *testing.T) {
+	policy := DefaultPolicy()
+	policy.Enabled = true
+	plan := Order(RouteRequest{
+		Model:      "gpt-5.6-luna",
+		Capability: CapabilityResponses,
+		NowUnix:    100,
+	}, []LaneSnapshot{
+		{
+			LaneID:            "unsupported-luna",
+			Priority:          1,
+			RecoveryStage:     RecoveryModelUnavailable,
+			CooldownUntilUnix: 200,
+			ModelPatterns:     []string{"gpt-5.6-luna"},
+		},
+		{
+			LaneID:        "healthy-luna",
+			Priority:      2,
+			ModelPatterns: []string{"gpt-5.6-luna"},
+		},
+	}, policy)
+
+	require.Equal(t, []string{"healthy-luna"}, plan.OrderedLaneIDs)
+	require.Equal(t, "model_unavailable_until_calibration", plan.SkipReasons["unsupported-luna"])
+}
+
 func TestOrder_AllLanesCoolingStillLeavesLastResortCandidates(t *testing.T) {
 	policy := DefaultPolicy()
 	policy.Enabled = true

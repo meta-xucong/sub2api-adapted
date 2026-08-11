@@ -33,6 +33,100 @@ func TestHealthTrackerCapabilityFailureQuarantinesOnlyGeneration(t *testing.T) {
 	require.Equal(t, "capability_quarantine", events[0].Action)
 }
 
+func TestHealthTrackerGPT56ModelUnavailableFreezesOnlyExactModelUntilCalibration(t *testing.T) {
+	now := time.Date(2026, time.August, 10, 12, 0, 0, 0, time.FixedZone("Asia/Shanghai", 8*60*60))
+	calibrationAt := time.Date(2026, time.August, 11, 4, 0, 0, 0, now.Location())
+	var events []HealthEvent
+	tracker := NewHealthTracker(HealthPolicy{
+		ModelAvailabilityUntil: func(time.Time) time.Time { return calibrationAt },
+		RecoveryPriorityStep:   30,
+	}, func() time.Time { return now }, func(event HealthEvent) { events = append(events, event) })
+
+	result := RouteResult{
+		LaneID:       "flowyun-plus",
+		BasePriority: 5,
+		Capability:   CapabilityResponses,
+		Model:        "gpt-5.6-luna",
+		StatusCode:   http.StatusNotFound,
+		ErrorClass:   FailureCapabilityError,
+		ErrorSummary: "model is not supported",
+	}
+	for i := 0; i < 5; i++ {
+		snapshot := tracker.Observe(result)
+		require.Equal(t, calibrationAt.Unix(), snapshot.CooldownUntilUnix)
+		require.Equal(t, RecoveryModelUnavailable, snapshot.RecoveryStage)
+		require.Equal(t, 35, snapshot.RecoveryPriority)
+	}
+
+	luna := tracker.Snapshot(
+		LaneSnapshot{LaneID: "flowyun-plus", Priority: 5, RecoveryStage: RecoveryModelUnavailable},
+		CapabilityResponses,
+		"gpt-5.6-luna",
+		now.Unix(),
+	)
+	require.Equal(t, calibrationAt.Unix(), luna.CooldownUntilUnix)
+	require.Equal(t, RecoveryModelUnavailable, luna.RecoveryStage)
+	require.Equal(t, 35, luna.Priority)
+
+	sol := tracker.Snapshot(
+		LaneSnapshot{LaneID: "flowyun-plus", Priority: 5},
+		CapabilityResponses,
+		"gpt-5.6-sol",
+		now.Unix(),
+	)
+	require.Equal(t, 5, sol.Priority)
+	require.Equal(t, RecoveryNormal, sol.RecoveryStage)
+	require.Len(t, events, 5)
+	require.Equal(t, "gpt56_model_unavailable_until_calibration", events[0].Action)
+}
+
+func TestHealthTrackerGPT56CompactCapabilityFailureUsesModelAvailabilityWindow(t *testing.T) {
+	now := time.Date(2026, time.August, 10, 12, 0, 0, 0, time.FixedZone("Asia/Shanghai", 8*60*60))
+	calibrationAt := time.Date(2026, time.August, 11, 4, 0, 0, 0, now.Location())
+	tracker := NewHealthTracker(HealthPolicy{
+		ModelAvailabilityUntil: func(time.Time) time.Time { return calibrationAt },
+		RecoveryPriorityStep:   30,
+	}, func() time.Time { return now }, nil)
+
+	snapshot := tracker.Observe(RouteResult{
+		LaneID:       "yetoken-pro",
+		BasePriority: 6,
+		Capability:   CapabilityResponsesCompact,
+		Model:        "gpt-5.6-luna",
+		StatusCode:   http.StatusServiceUnavailable,
+		ErrorClass:   FailureCapabilityError,
+		ErrorSummary: "no Luna compact channel",
+	})
+
+	require.Equal(t, RecoveryModelUnavailable, snapshot.RecoveryStage)
+	require.Equal(t, calibrationAt.Unix(), snapshot.CooldownUntilUnix)
+	require.Equal(t, 36, snapshot.RecoveryPriority)
+}
+
+func TestHealthTrackerGPT56TransientFailureRemainsSoft(t *testing.T) {
+	now := time.Unix(9_000, 0)
+	tracker := NewHealthTracker(HealthPolicy{
+		TransientCooldown: time.Minute,
+	}, func() time.Time { return now }, nil)
+
+	tracker.Observe(RouteResult{
+		LaneID:     "slow-lane",
+		Capability: CapabilityResponses,
+		Model:      "gpt-5.6-luna",
+		StatusCode: http.StatusBadGateway,
+		ErrorClass: FailureUpstream5xx,
+	})
+	lane := tracker.Snapshot(
+		LaneSnapshot{LaneID: "slow-lane", Priority: 5},
+		CapabilityResponses,
+		"gpt-5.6-luna",
+		now.Unix(),
+	)
+	require.Equal(t, RecoveryCooling, lane.RecoveryStage)
+	require.Equal(t, 30, lane.Priority)
+	require.NotEqual(t, RecoveryModelUnavailable, lane.RecoveryStage)
+}
+
 func TestHealthTrackerCancelledDoesNotPenalizeLane(t *testing.T) {
 	now := time.Unix(2_000, 0)
 	tracker := NewHealthTracker(HealthPolicy{}, func() time.Time { return now }, nil)
