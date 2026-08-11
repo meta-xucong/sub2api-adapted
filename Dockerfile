@@ -57,6 +57,8 @@ FROM --platform=${BUILDPLATFORM} ${GOLANG_IMAGE} AS backend-builder
 
 ARG GOPROXY
 ARG GOSUMDB
+ARG VERSION
+ARG COMMIT
 # Populated by buildx from the --platform target (e.g. linux/amd64).
 ARG TARGETOS
 ARG TARGETARCH
