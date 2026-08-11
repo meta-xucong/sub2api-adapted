@@ -23,6 +23,7 @@ const (
 	DefaultTokenURL     = OAuthIssuer + "/oauth2/token"
 	DefaultBaseURL      = "https://api.x.ai/v1"
 	DefaultCLIBaseURL   = "https://cli-chat-proxy.grok.com/v1"
+	WokeyAPIBaseURL     = "https://api.wokey.ai/v1"
 	DefaultClientID     = "b1a00492-073a-47ea-816f-4c329264a828"
 	DefaultScope        = "openid profile email offline_access grok-cli:access api:access"
 	DefaultRedirectURI  = "http://127.0.0.1:56121/callback"
@@ -40,7 +41,7 @@ const (
 
 var (
 	oauthEndpointAllowedHosts = []string{"x.ai", "*.x.ai"}
-	baseURLAllowedHosts       = []string{"api.x.ai", "cli-chat-proxy.grok.com"}
+	baseURLAllowedHosts       = []string{"api.x.ai", "cli-chat-proxy.grok.com", "api.wokey.ai"}
 )
 
 // OAuthSession stores one PKCE OAuth flow.
@@ -459,6 +460,25 @@ func BuildVideosGenerationsURL(baseURL string) (string, error) {
 		return "", fmt.Errorf("invalid base url: %w", err)
 	}
 	return validatedBaseURL + "/videos/generations", nil
+}
+
+// IsWokeyAPIBaseURL reports whether a Grok API-key account uses Wokey's
+// documented OpenAI-compatible API root. Wokey exposes video creation at
+// /v1/videos rather than xAI's /v1/videos/generations.
+func IsWokeyAPIBaseURL(baseURL string) bool {
+	validatedBaseURL, err := ValidatedBaseURL(baseURL)
+	return err == nil && strings.EqualFold(validatedBaseURL, WokeyAPIBaseURL)
+}
+
+func BuildWokeyVideosURL(baseURL string) (string, error) {
+	validatedBaseURL, err := ValidatedBaseURL(baseURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid base url: %w", err)
+	}
+	if !strings.EqualFold(validatedBaseURL, WokeyAPIBaseURL) {
+		return "", fmt.Errorf("base url is not a Wokey API endpoint")
+	}
+	return validatedBaseURL + "/videos", nil
 }
 
 func BuildVideoURL(baseURL, requestID string) (string, error) {

@@ -67,6 +67,24 @@ lists only. Existing manual `model_mapping` entries are not deleted, so unusual
 provider-specific aliases can still be called explicitly if an operator chooses
 to keep them.
 
+## Wokey Grok video API adapter
+
+Wokey's documented video API differs from xAI in one narrow but important way:
+video creation is `POST /v1/videos`, not `POST /v1/videos/generations`. A Grok
+API-key account whose Base URL is exactly `https://api.wokey.ai/v1` is therefore
+recognized as a Wokey video account. For that account only, Sub2API sends video
+creation to `/v1/videos`, preserves `grok-imagine-video-1.5`, and converts the
+standard `resolution` field to Wokey's `video_resolution` field. Missing mode
+and ratio receive the documented text-video defaults of `text_to_video` and
+`16:9`. Native Wokey fields continue to pass through unchanged.
+
+The adapter does not alter any other Grok, OpenAI, image, Responses, compact, or
+Smart Router path. Create the account in a separate `grok` group, set its model
+mapping to `grok-imagine-video-1.5`, and keep concurrency at `1`. Video status
+uses Wokey's compatible `GET /v1/videos/{id}` endpoint. The adapter is purpose-
+built for Wokey's documented API, not a generic bypass for arbitrary Grok
+proxies.
+
 ## Codex auto-review model overlay
 
 Codex approval/review traffic can arrive as the synthetic model

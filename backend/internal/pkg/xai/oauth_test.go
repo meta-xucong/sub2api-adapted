@@ -129,6 +129,12 @@ func TestBuildGrokMediaURLs(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, DefaultBaseURL+"/videos/generations", videosURL)
 
+	wokeyVideosURL, err := BuildWokeyVideosURL(WokeyAPIBaseURL)
+	require.NoError(t, err)
+	require.Equal(t, WokeyAPIBaseURL+"/videos", wokeyVideosURL)
+	require.True(t, IsWokeyAPIBaseURL(WokeyAPIBaseURL+"/"))
+	require.False(t, IsWokeyAPIBaseURL(DefaultBaseURL))
+
 	videoURL, err := BuildVideoURL(DefaultBaseURL, "req 123")
 	require.NoError(t, err)
 	require.Equal(t, DefaultBaseURL+"/videos/req%20123", videoURL)
@@ -143,6 +149,10 @@ func TestValidateXAIURLsRejectArbitraryHostsByDefault(t *testing.T) {
 
 	_, err = ValidateBaseURL("https://xai.test/v1")
 	require.Error(t, err)
+
+	wokeyBaseURL, err := ValidateBaseURL(WokeyAPIBaseURL)
+	require.NoError(t, err)
+	require.Equal(t, WokeyAPIBaseURL, wokeyBaseURL)
 
 	_, err = ValidateBaseURL("http://127.0.0.1:8080/v1")
 	require.Error(t, err)
