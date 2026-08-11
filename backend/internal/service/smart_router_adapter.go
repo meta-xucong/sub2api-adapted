@@ -273,6 +273,11 @@ func (s *OpenAIGatewayService) smartRouterHealthPolicy() smartrouter.HealthPolic
 		return policy
 	}
 	recovery := s.cfg.Gateway.SmartRouter.Recovery
+	// GPT-5.6 variants are being added and removed by upstreams frequently.
+	// A deterministic "model unavailable" result should defer only that exact
+	// model until the next Shanghai 04:00 calibration, without treating the
+	// account or its other models as permanently broken.
+	policy.ModelAvailabilityUntil = nextSmartRouterCalibrationTime
 	if recovery.SecondFailureCooldownSeconds > 0 {
 		policy.SecondTransientCooldown = time.Duration(recovery.SecondFailureCooldownSeconds) * time.Second
 	}

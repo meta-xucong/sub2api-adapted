@@ -822,7 +822,8 @@ func ensureSmartRouterModelRecoveryProbes(
 		}
 		if state.Snapshot.RecoveryPriority <= 0 &&
 			state.Snapshot.RecoveryStage != smartrouter.RecoveryCooling &&
-			state.Snapshot.RecoveryStage != smartrouter.RecoveryProbeDue {
+			state.Snapshot.RecoveryStage != smartrouter.RecoveryProbeDue &&
+			state.Snapshot.RecoveryStage != smartrouter.RecoveryModelUnavailable {
 			continue
 		}
 		probe := smartrouter.CalibrationProbe{
