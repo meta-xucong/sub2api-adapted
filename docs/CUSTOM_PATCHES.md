@@ -2,6 +2,15 @@
 
 This repository tracks official Sub2API and keeps only the overlays that remain useful after each upstream upgrade. See `UPSTREAM_0.1.173_AUDIT.md` for the current three-way audit. Earlier audit records are retained for historical comparison.
 
+Reusable operations guidance:
+
+- `deploy/BLUE_GREEN_NGINX_DEPLOYMENT.md` documents no-interruption container
+  upgrades, cached frontend asset fallback, vhost hygiene, verification, and
+  rollback.
+- `docs/OPERATOR_TEST_KEY_RUNBOOK.md` documents administrator-only smoke keys
+  and protocol-level test assertions so operational traffic is never attributed
+  to a customer.
+
 ## GPT-5.6 model compatibility
 
 Design document: `docs/SMART_ROUTER_GPT56_MODEL_COMPATIBILITY.md`.
