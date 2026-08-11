@@ -742,21 +742,28 @@ func TestGrokQuotaServiceQueryQuotaFreeFallsBackToGrok45(t *testing.T) {
 	require.True(t, result.HeadersObserved)
 
 	requests, bodies := upstream.snapshot()
-	require.Len(t, requests, 3)
+	billingCalls := 0
 	responseCalls := 0
 	for i, req := range requests {
-		if req.URL.Path != "/v1/responses" {
-			continue
+		switch req.URL.Path {
+		case "/v1/billing":
+			billingCalls++
+		case "/v1/responses":
+			responseCalls++
+			require.Equal(t, http.MethodPost, req.Method)
+			require.Equal(t, "application/json, text/event-stream", req.Header.Get("Accept"))
+			require.Equal(t, "grok-4.5", gjson.GetBytes(bodies[i], "model").String())
+			require.Equal(t, grokQuotaProbeInput, gjson.GetBytes(bodies[i], "input").String())
+			require.True(t, gjson.GetBytes(bodies[i], "stream").Bool())
+			require.False(t, gjson.GetBytes(bodies[i], "max_output_tokens").Exists())
+			require.False(t, gjson.GetBytes(bodies[i], "store").Exists())
+		case "/v1/models":
+			// QueryQuota asynchronously refreshes observed model IDs after a probe.
+		default:
+			require.Failf(t, "unexpected quota request path", "%s", req.URL.Path)
 		}
-		responseCalls++
-		require.Equal(t, http.MethodPost, req.Method)
-		require.Equal(t, "application/json, text/event-stream", req.Header.Get("Accept"))
-		require.Equal(t, "grok-4.5", gjson.GetBytes(bodies[i], "model").String())
-		require.Equal(t, grokQuotaProbeInput, gjson.GetBytes(bodies[i], "input").String())
-		require.True(t, gjson.GetBytes(bodies[i], "stream").Bool())
-		require.False(t, gjson.GetBytes(bodies[i], "max_output_tokens").Exists())
-		require.False(t, gjson.GetBytes(bodies[i], "store").Exists())
 	}
+	require.Equal(t, 2, billingCalls)
 	require.Equal(t, 1, responseCalls)
 }
 
