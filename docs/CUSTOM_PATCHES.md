@@ -81,7 +81,9 @@ and ratio receive the documented text-video defaults of `text_to_video` and
 The adapter does not alter any other Grok, OpenAI, image, Responses, compact, or
 Smart Router path. Create the account in a separate `grok` group, set its model
 mapping to `grok-imagine-video-1.5`, and keep concurrency at `1`. Video status
-uses Wokey's compatible `GET /v1/videos/{id}` endpoint. The adapter is purpose-
+uses Wokey's compatible `GET /v1/videos/{id}` endpoint; completed assets are
+downloaded through Sub2API's authenticated `GET /v1/videos/{id}/content` proxy,
+bound to the same upstream account that created the task. The adapter is purpose-
 built for Wokey's documented API, not a generic bypass for arbitrary Grok
 proxies.
 

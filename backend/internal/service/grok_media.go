@@ -27,10 +27,11 @@ const (
 	GrokMediaEndpointImagesEdits       GrokMediaEndpoint = "images_edits"
 	GrokMediaEndpointVideosGenerations GrokMediaEndpoint = "videos_generations"
 	GrokMediaEndpointVideoStatus       GrokMediaEndpoint = "video_status"
+	GrokMediaEndpointVideoContent      GrokMediaEndpoint = "video_content"
 )
 
 func (e GrokMediaEndpoint) RequiresRequestBody() bool {
-	return e != GrokMediaEndpointVideoStatus
+	return e != GrokMediaEndpointVideoStatus && e != GrokMediaEndpointVideoContent
 }
 
 func (e GrokMediaEndpoint) IsGenerationRequest() bool {
@@ -95,10 +96,12 @@ func (r GrokMediaRequestInfo) ModerationBody() []byte {
 }
 
 func (e GrokMediaEndpoint) httpMethod() string {
-	if e == GrokMediaEndpointVideoStatus {
+	switch e {
+	case GrokMediaEndpointVideoStatus, GrokMediaEndpointVideoContent:
 		return http.MethodGet
+	default:
+		return http.MethodPost
 	}
-	return http.MethodPost
 }
 
 func ExtractGrokMediaModel(contentType string, body []byte) string {
@@ -290,6 +293,8 @@ func (e GrokMediaEndpoint) upstreamURL(baseURL, requestID string) (string, error
 		return xai.BuildVideosGenerationsURL(baseURL)
 	case GrokMediaEndpointVideoStatus:
 		return xai.BuildVideoURL(baseURL, requestID)
+	case GrokMediaEndpointVideoContent:
+		return xai.BuildVideoContentURL(baseURL, requestID)
 	default:
 		return "", fmt.Errorf("unsupported grok media endpoint: %s", e)
 	}

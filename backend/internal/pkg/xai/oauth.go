@@ -493,6 +493,14 @@ func BuildVideoURL(baseURL, requestID string) (string, error) {
 	return validatedBaseURL + "/videos/" + url.PathEscape(requestID), nil
 }
 
+func BuildVideoContentURL(baseURL, requestID string) (string, error) {
+	videoURL, err := BuildVideoURL(baseURL, requestID)
+	if err != nil {
+		return "", err
+	}
+	return videoURL + "/content", nil
+}
+
 // TokenResponse represents xAI OAuth token responses.
 type TokenResponse struct {
 	AccessToken  string `json:"access_token"`

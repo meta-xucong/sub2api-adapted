@@ -39,6 +39,12 @@ func TestShouldRecordGrokMediaUsage(t *testing.T) {
 			want:     false,
 		},
 		{
+			name:     "video content skips empty model usage",
+			endpoint: service.GrokMediaEndpointVideoContent,
+			model:    "",
+			want:     false,
+		},
+		{
 			name:     "generation skips usage without model",
 			endpoint: service.GrokMediaEndpointImagesGenerations,
 			model:    " ",

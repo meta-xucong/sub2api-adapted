@@ -510,6 +510,10 @@ func TestForwardGrokMediaWokeyVideoGenerationUsesNativeEndpointAndKeepsModel(t *
 	statusURL, err := GrokMediaEndpointVideoStatus.upstreamURLForAccount(account, "video-request-wokey")
 	require.NoError(t, err)
 	require.Equal(t, xai.WokeyAPIBaseURL+"/videos/video-request-wokey", statusURL)
+
+	contentURL, err := GrokMediaEndpointVideoContent.upstreamURLForAccount(account, "video-request-wokey")
+	require.NoError(t, err)
+	require.Equal(t, xai.WokeyAPIBaseURL+"/videos/video-request-wokey/content", contentURL)
 }
 
 func TestForwardGrokMediaVideoGenerationPreservesImageToVideoModel(t *testing.T) {
@@ -591,6 +595,46 @@ func TestForwardGrokMediaVideoStatusUsesGETWithoutBody(t *testing.T) {
 	require.Equal(t, http.StatusOK, recorder.Code)
 	require.JSONEq(t, `{"id":"request-123","status":"completed"}`, recorder.Body.String())
 	require.Equal(t, "xai-video-req", result.RequestID)
+}
+
+func TestForwardGrokMediaVideoContentUsesGETWithoutBody(t *testing.T) {
+	t.Setenv(xai.EnvAllowUnsafeURLOverrides, "true")
+	gin.SetMode(gin.TestMode)
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/videos/request-123/content", nil)
+
+	account := &Account{
+		ID:          62,
+		Name:        "grok",
+		Platform:    PlatformGrok,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":  "api-key",
+			"base_url": "https://xai.test/v1",
+		},
+	}
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header: http.Header{
+			"Content-Type": []string{"video/mp4"},
+		},
+		Body: io.NopCloser(strings.NewReader("video-bytes")),
+	}}
+	svc := &OpenAIGatewayService{httpUpstream: upstream}
+
+	_, err := svc.ForwardGrokMedia(context.Background(), c, account, GrokMediaEndpointVideoContent, "request-123", nil, "")
+	require.NoError(t, err)
+	require.Equal(t, "https://xai.test/v1/videos/request-123/content", upstream.lastReq.URL.String())
+	require.Equal(t, http.MethodGet, upstream.lastReq.Method)
+	require.Equal(t, "Bearer api-key", upstream.lastReq.Header.Get("Authorization"))
+	require.Empty(t, upstream.lastReq.Header.Get("Content-Type"))
+	require.Empty(t, upstream.lastBody)
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, "video/mp4", recorder.Header().Get("Content-Type"))
+	require.Equal(t, "video-bytes", recorder.Body.String())
 }
 
 func TestBindGrokMediaVideoRequestAccountUsesRequestIDStickyHash(t *testing.T) {
