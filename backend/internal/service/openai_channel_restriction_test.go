@@ -138,3 +138,30 @@ func TestOpenAISelectAccountForModelWithExclusions_StickyRestrictedUpstreamFalls
 	require.Equal(t, 1, cache.deletedSessions["openai:sticky-session"])
 	require.Equal(t, int64(2), cache.sessionBindings["openai:sticky-session"])
 }
+
+func TestOpenAIInBandCompaction_ChannelRestrictionUsesOriginalModel(t *testing.T) {
+	t.Parallel()
+
+	channelSvc := newTestChannelService(makeStandardRepo(Channel{
+		ID:                 1,
+		Status:             StatusActive,
+		GroupIDs:           []int64{10},
+		RestrictModels:     true,
+		BillingModelSource: BillingModelSourceUpstream,
+		ModelPricing: []ChannelModelPricing{
+			{Platform: PlatformOpenAI, Models: []string{"gpt-5.4"}},
+		},
+	}, map[int64]string{10: PlatformOpenAI}))
+	svc := &OpenAIGatewayService{channelService: channelSvc}
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Credentials: map[string]any{
+			"compact_model_mapping": map[string]any{"gpt-5.4": "gpt-5.4-openai-compact"},
+		},
+	}
+
+	require.True(t, svc.isUpstreamModelRestrictedByChannel(context.Background(), 10, account, "gpt-5.4", true),
+		"legacy /responses/compact must still use its compact-only upstream mapping")
+	require.False(t, svc.isUpstreamModelRestrictedByChannel(WithOpenAIInBandCompaction(context.Background()), 10, account, "gpt-5.4", true),
+		"native in-band compaction must be checked against the unchanged model it will actually send")
+}

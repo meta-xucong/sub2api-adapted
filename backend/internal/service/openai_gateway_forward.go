@@ -75,6 +75,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	wsDecision = resolveOpenAIWSDecisionByClientTransport(wsDecision, GetOpenAIClientTransport(c))
 	passthroughEnabled := account.IsOpenAIPassthroughEnabled()
 	compactPath := isOpenAIResponsesCompactPath(c)
+	requiresCompactLane := IsOpenAIResponsesCompactRequest(c)
 	if compactPath {
 		// /responses/compact has a unary HTTP contract. Sending it through the
 		// Responses WebSocket path loses the compact terminal semantics.
@@ -114,7 +115,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		return s.forwardGrokResponses(ctx, c, account, body, originalModel, reqStream, startTime)
 	}
 
-	if account.Type == AccountTypeAPIKey && !isCompactRequest && !openai_compat.ShouldUseResponsesAPI(account.Extra) {
+	if account.Type == AccountTypeAPIKey && !requiresCompactLane && !openai_compat.ShouldUseResponsesAPI(account.Extra) {
 		return s.forwardResponsesViaRawChatCompletions(ctx, c, account, body)
 	}
 	if account.Platform == PlatformOpenAI && account.Type == AccountTypeAPIKey {

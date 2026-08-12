@@ -103,3 +103,8 @@ func TestDetectOpenAICompactBodySignal_EmptyEncryptedContentIsUntouched(t *testi
 	}`)
 	require.Equal(t, OpenAICompactBodySignal{}, DetectOpenAICompactBodySignal(body))
 }
+
+func TestDetectOpenAICompactBodySignal_ContextManagementAloneIsNotCompact(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.6-terra","stream":true,"context_management":[{"type":"compaction","compact_threshold":272000}],"input":[{"type":"message","role":"user","content":"hello"}]}`)
+	require.Equal(t, OpenAICompactBodySignal{}, DetectOpenAICompactBodySignal(body))
+}

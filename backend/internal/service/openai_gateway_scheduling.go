@@ -766,14 +766,14 @@ func (s *OpenAIGatewayService) withOpenAIQuotaAutoPauseContext(ctx context.Conte
 }
 
 // resolveOpenAIAccountUpstreamModelForRequest resolves the upstream model that
-// would be sent for a given request, honouring compact-only mappings when the
-// caller is on the /responses/compact path.
-func resolveOpenAIAccountUpstreamModelForRequest(account *Account, requestedModel string, requireCompact bool) string {
+// would be sent for a given request. compact-only mappings apply only to the
+// legacy /responses/compact wire, never native in-band /responses compaction.
+func resolveOpenAIAccountUpstreamModelForRequest(account *Account, requestedModel string, useCompactModelMapping bool) string {
 	upstreamModel := resolveOpenAIForwardModel(account, requestedModel, "")
 	if upstreamModel == "" {
 		return ""
 	}
-	if requireCompact {
+	if useCompactModelMapping {
 		return resolveOpenAICompactForwardModel(account, upstreamModel)
 	}
 	return upstreamModel

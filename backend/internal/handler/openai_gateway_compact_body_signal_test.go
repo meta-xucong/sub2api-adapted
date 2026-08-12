@@ -59,6 +59,7 @@ func TestNormalizeOpenAIResponsesCompactRequest_RemoteV2StaysOnResponses(t *test
 	require.False(t, seedExists)
 	_, streamMarkerExists := c.Get(service.OpenAICompactClientStreamKeyForTest())
 	require.False(t, streamMarkerExists)
+	require.True(t, service.IsOpenAIInBandCompaction(c))
 }
 
 func TestNormalizeOpenAIResponsesCompactRequest_RemoteV2PathAliasesStayOnResponses(t *testing.T) {
@@ -172,8 +173,6 @@ func TestNormalizeOpenAIResponsesCompactRequest_PathBasedNoDoubleSuffix(t *testi
 	h := &OpenAIGatewayHandler{}
 	body := []byte(`{"model":"gpt-5.5","stream":true,"store":true,"input":[{"type":"message","role":"user","content":"hello"}]}`)
 	c := newCompactBodySignalTestContext(t, "/v1/responses/compact", body)
-	c.Request.Header.Set("x-codex-beta-features", "remote_compaction_v2")
-
 	normalized, ok := h.normalizeOpenAIResponsesCompactRequest(c, zap.NewNop(), body)
 	require.True(t, ok)
 	require.Equal(t, "/v1/responses/compact", c.Request.URL.Path)
@@ -203,4 +202,30 @@ func TestNormalizeOpenAIResponsesCompactRequest_PathBasedStreamTrueNotMarked(t *
 	require.True(t, ok)
 	_, exists := c.Get(service.OpenAICompactClientStreamKeyForTest())
 	require.False(t, exists)
+}
+
+func TestNormalizeOpenAIResponsesCompactRequest_ContextManagementAloneStaysNormal(t *testing.T) {
+	h := &OpenAIGatewayHandler{}
+	body := []byte(`{"model":"gpt-5.5","stream":true,"context_management":[{"type":"compaction","compact_threshold":272000}],"input":[]}`)
+	c := newCompactBodySignalTestContext(t, "/v1/responses", body)
+
+	normalized, ok := h.normalizeOpenAIResponsesCompactRequest(c, zap.NewNop(), body)
+	require.True(t, ok)
+	require.Equal(t, "/v1/responses", c.Request.URL.Path)
+	require.Equal(t, body, normalized)
+	require.False(t, service.IsOpenAIInBandCompaction(c))
+	require.False(t, service.IsOpenAIResponsesCompactPathForTest(c))
+}
+
+func TestNormalizeOpenAIResponsesCompactRequest_InBandCodexSignalMarksCompact(t *testing.T) {
+	h := &OpenAIGatewayHandler{}
+	body := []byte(`{"model":"gpt-5.4","stream":true,"client_metadata":{"x-codex-turn-metadata":"{\"request_kind\":\"compaction\"}"},"input":[{"type":"compaction","encrypted_content":"opaque"}]}`)
+	c := newCompactBodySignalTestContext(t, "/v1/responses", body)
+	c.Request.Header.Set("x-codex-beta-features", "remote_compaction_v2")
+
+	normalized, ok := h.normalizeOpenAIResponsesCompactRequest(c, zap.NewNop(), body)
+	require.True(t, ok)
+	require.Equal(t, "/v1/responses", c.Request.URL.Path)
+	require.Equal(t, body, normalized)
+	require.True(t, service.IsOpenAIInBandCompaction(c))
 }

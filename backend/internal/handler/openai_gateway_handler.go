@@ -469,7 +469,10 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	if h.rejectIfCyberSessionBlocked(c, apiKey, sessionHashBody, reqModel, cyberBlockFormatResponses) {
 		return
 	}
-	requireCompact := isOpenAIRemoteCompactPath(c)
+	// Native Responses compaction stays on /responses, but must still use the
+	// dedicated compact capability lane and health ledger. Path-based compact
+	// requests remain covered by isOpenAIRemoteCompactPath.
+	requireCompact := isOpenAIRemoteCompactPath(c) || service.IsOpenAIInBandCompaction(c)
 
 	maxAccountSwitches := h.maxAccountSwitches
 	switchCount := 0
@@ -493,6 +496,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	// 生图意图只影响能力路由与图片计费，不关门：混合 /v1/responses 请求的
 	// token 计费部分仍受利润门保护，独立图片/视频端点才在门外。
 	pricingCtx, pricingAt := h.gatewayService.WithOpenAIRequestPricingContext(c.Request.Context(), apiKey.GroupID)
+	if service.IsOpenAIInBandCompaction(c) {
+		pricingCtx = service.WithOpenAIInBandCompaction(pricingCtx)
+	}
 	c.Request = c.Request.WithContext(pricingCtx)
 
 	for {
@@ -832,7 +838,15 @@ func (h *OpenAIGatewayHandler) normalizeOpenAIResponsesCompactRequest(c *gin.Con
 	isCompactRequest := service.IsOpenAIResponsesCompactPathForTest(c)
 	bodySignal := service.DetectOpenAICompactBodySignal(body)
 	if !isCompactRequest && isBareOpenAIResponsesPath(c) && bodySignal.Detected {
-		if isOpenAIRemoteCompactionV2Request(c, body) {
+		// An encrypted compaction item plus Codex request_kind is always the
+		// native streaming protocol, even if a newer Codex client omits the
+		// remote_compaction_v2 beta header. Only the legacy trigger-only form
+		// still relies on that header to choose the native path.
+		if bodySignal.Kind == "codex.request_kind_compaction" || isOpenAIRemoteCompactionV2Request(c, body) {
+			service.MarkOpenAIInBandCompaction(c)
+			reqLog.Info("codex.inband_compact.detected_body_signal",
+				zap.String("signal_kind", bodySignal.Kind),
+			)
 			return body, true
 		}
 		c.Request.URL.Path = strings.TrimRight(c.Request.URL.Path, "/") + "/compact"
@@ -864,7 +878,7 @@ func (h *OpenAIGatewayHandler) normalizeOpenAIResponsesCompactRequest(c *gin.Con
 }
 
 func (h *OpenAIGatewayHandler) logOpenAIRemoteCompactOutcome(c *gin.Context, startedAt time.Time) {
-	if !isOpenAIRemoteCompactPath(c) {
+	if !isOpenAIRemoteCompactPath(c) && !service.IsOpenAIInBandCompaction(c) {
 		return
 	}
 
@@ -904,6 +918,7 @@ func (h *OpenAIGatewayHandler) logOpenAIRemoteCompactOutcome(c *gin.Context, sta
 	fields := []zap.Field{
 		zap.String("component", "handler.openai_gateway.responses"),
 		zap.Bool("remote_compact", true),
+		zap.Bool("in_band_compact", service.IsOpenAIInBandCompaction(c)),
 		zap.String("compact_outcome", outcome),
 		zap.Int("status_code", status),
 		zap.Int64("latency_ms", latencyMs),

@@ -217,6 +217,23 @@ An empty/comment-only SSE stream, a stream that closes before
 protocol failure and is fed back into Smart Router failover and compact-lane
 health. Ordinary non-compact Responses streams remain unchanged.
 
+Native Codex remote-compaction v2 stays on its streaming `/responses` wire; it
+is not rewritten to the legacy unary `/responses/compact` endpoint. When the
+request carries either `input.type=compaction_trigger` with the v2 protocol
+marker, or Codex `request_kind=compaction` plus a non-empty encrypted
+compaction input item, the gateway marks it as `responses_compact` for account
+selection and health reporting while preserving the URL, model, request body,
+and SSE response verbatim. This also prevents API-key accounts from silently
+downgrading a native compaction request to Chat Completions. A top-level
+`context_management` field alone is deliberately not a compact signal because
+ordinary Responses traffic can use it too.
+
+The native lane's upstream-model eligibility is evaluated against the ordinary
+account mapping only. `compact_model_mapping` remains exclusive to the legacy
+unary `/responses/compact` wire and must not cause a native `gpt-5.4`,
+`gpt-5.5`, or `gpt-5.6` compression request to be rejected before forwarding a
+different model than the one the native protocol preserves.
+
 ### Streaming response interruption penalty
 
 Development document: `docs/SMART_ROUTER_STREAM_FAILURE_DEVELOPMENT.md`.
