@@ -75,8 +75,12 @@ API-key account whose Base URL is exactly `https://api.wokey.ai/v1` is therefore
 recognized as a Wokey video account. For that account only, Sub2API sends video
 creation to `/v1/videos`, preserves `grok-imagine-video-1.5`, and converts the
 standard `resolution` field to Wokey's `video_resolution` field. Missing mode
-and ratio receive the documented text-video defaults of `text_to_video` and
-`16:9`. Native Wokey fields continue to pass through unchanged.
+and ratio receive the documented defaults of `text_to_video` and `16:9` for
+text-to-video. For image-to-video, the adapter recognizes multipart `image[]`,
+the OpenAI-compatible `image.image_url`, and Wokey's native
+`image: {"url": "..."}` shape. It then sets `mode=image_to_video` while
+preserving the original image field unchanged. Native Wokey fields continue to
+pass through unchanged.
 
 The adapter does not alter any other Grok, OpenAI, image, Responses, compact, or
 Smart Router path. Create the account in a separate `grok` group, set its model

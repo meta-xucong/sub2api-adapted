@@ -263,6 +263,14 @@ func TestParseGrokMediaVideoRequestResolution(t *testing.T) {
 	require.Equal(t, "720p", info.Resolution)
 }
 
+func TestParseGrokMediaVideoRequestRecognizesNativeImageURL(t *testing.T) {
+	imageURL := "https://cdn.example.com/reference.png"
+	info := ParseGrokMediaRequest("application/json", []byte(`{"model":"grok-imagine-video-1.5","prompt":"animate","image":{"url":"`+imageURL+`"}}`))
+
+	require.Equal(t, []string{imageURL}, info.InputImageURLs)
+	require.True(t, info.HasInputImage())
+}
+
 func TestNormalizeGrokMediaModelForEndpoint(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -514,6 +522,43 @@ func TestForwardGrokMediaWokeyVideoGenerationUsesNativeEndpointAndKeepsModel(t *
 	contentURL, err := GrokMediaEndpointVideoContent.upstreamURLForAccount(account, "video-request-wokey")
 	require.NoError(t, err)
 	require.Equal(t, xai.WokeyAPIBaseURL+"/videos/video-request-wokey/content", contentURL)
+}
+
+func TestForwardGrokMediaWokeyVideoGenerationRecognizesNativeImageURL(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	body := []byte(`{"model":"grok-imagine-video-1.5","prompt":"animate","image":{"url":"https://cdn.example.com/reference.png"},"resolution":"720p","duration":15}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/videos/generations", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	account := &Account{
+		ID:          64,
+		Name:        "wokey-video",
+		Platform:    PlatformGrok,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":  "api-key",
+			"base_url": xai.WokeyAPIBaseURL,
+		},
+	}
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header: http.Header{
+			"Content-Type": []string{"application/json"},
+		},
+		Body: io.NopCloser(strings.NewReader(`{"request_id":"video-request-wokey-i2v"}`)),
+	}}
+	svc := &OpenAIGatewayService{httpUpstream: upstream}
+
+	result, err := svc.ForwardGrokMedia(context.Background(), c, account, GrokMediaEndpointVideosGenerations, "", body, "application/json")
+	require.NoError(t, err)
+	require.Equal(t, xai.WokeyAPIBaseURL+"/videos", upstream.lastReq.URL.String())
+	require.JSONEq(t, `{"model":"grok-imagine-video-1.5","prompt":"animate","image":{"url":"https://cdn.example.com/reference.png"},"video_resolution":"720p","duration":15,"mode":"image_to_video","ratio":"16:9"}`, string(upstream.lastBody))
+	require.Equal(t, "video-request-wokey-i2v", result.ResponseID)
+	require.Equal(t, 15, result.VideoDurationSeconds)
 }
 
 func TestForwardGrokMediaVideoGenerationPreservesImageToVideoModel(t *testing.T) {

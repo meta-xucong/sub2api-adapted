@@ -153,11 +153,21 @@ func parseGrokMediaJSONRequest(body []byte, info *GrokMediaRequestInfo) {
 		if !value.Exists() {
 			return
 		}
+		appendImageURL := func(item gjson.Result) bool {
+			// Accept both the existing OpenAI-compatible image_url shape and
+			// the native Wokey image.url shape used by JSON image-to-video clients.
+			for _, path := range []string{"image_url", "url"} {
+				if imageURL := strings.TrimSpace(item.Get(path).String()); imageURL != "" {
+					info.InputImageURLs = append(info.InputImageURLs, imageURL)
+					return true
+				}
+			}
+			return false
+		}
 		switch {
 		case value.IsArray():
 			for _, item := range value.Array() {
-				if imageURL := strings.TrimSpace(item.Get("image_url").String()); imageURL != "" {
-					info.InputImageURLs = append(info.InputImageURLs, imageURL)
+				if appendImageURL(item) {
 					continue
 				}
 				if item.Type == gjson.String {
@@ -169,8 +179,7 @@ func parseGrokMediaJSONRequest(body []byte, info *GrokMediaRequestInfo) {
 				}
 			}
 		default:
-			if imageURL := strings.TrimSpace(value.Get("image_url").String()); imageURL != "" {
-				info.InputImageURLs = append(info.InputImageURLs, imageURL)
+			if appendImageURL(value) {
 				return
 			}
 			if value.Type == gjson.String {
