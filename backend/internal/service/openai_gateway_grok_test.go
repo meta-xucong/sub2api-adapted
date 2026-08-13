@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -1334,6 +1335,15 @@ func TestForwardGrokMediaVideoGenerationReturnsTaskIDAsResponseID(t *testing.T) 
 
 func TestForwardGrokMediaWokeyImageToVideoUsesNativeImageURL(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	previousDownloader := wokeyVideoReferenceImageDownloader
+	wokeyVideoReferenceImageDownloader = func(context.Context, string) (wokeyVideoReferenceImage, error) {
+		return wokeyVideoReferenceImage{
+			Data:        []byte("\x89PNG\r\n\x1a\nreference"),
+			ContentType: "image/png",
+			FileName:    "reference.png",
+		}, nil
+	}
+	t.Cleanup(func() { wokeyVideoReferenceImageDownloader = previousDownloader })
 
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
@@ -1362,7 +1372,37 @@ func TestForwardGrokMediaWokeyImageToVideoUsesNativeImageURL(t *testing.T) {
 	result, err := svc.ForwardGrokMedia(context.Background(), c, account, GrokMediaEndpointVideosGenerations, "", body, "application/json")
 	require.NoError(t, err)
 	require.Equal(t, xai.WokeyAPIBaseURL+"/videos", upstream.lastReq.URL.String())
-	require.JSONEq(t, `{"model":"grok-imagine-video-1.5","prompt":"animate the supplied image","image":{"url":"https://cdn.example.com/reference.png"},"video_resolution":"720p","duration":15,"mode":"image_to_video","ratio":"16:9"}`, string(upstream.lastBody))
+	require.Contains(t, upstream.lastReq.Header.Get("Content-Type"), "multipart/form-data")
+	mediaType, params, err := mime.ParseMediaType(upstream.lastReq.Header.Get("Content-Type"))
+	require.NoError(t, err)
+	require.Equal(t, "multipart/form-data", mediaType)
+	reader := multipart.NewReader(bytes.NewReader(upstream.lastBody), params["boundary"])
+	fields := map[string]string{}
+	var imageBytes []byte
+	var imageContentType string
+	for {
+		part, nextErr := reader.NextPart()
+		if nextErr == io.EOF {
+			break
+		}
+		require.NoError(t, nextErr)
+		partBody, readErr := io.ReadAll(part)
+		require.NoError(t, readErr)
+		if part.FormName() == "image[]" {
+			imageBytes = partBody
+			imageContentType = part.Header.Get("Content-Type")
+		} else {
+			fields[part.FormName()] = string(partBody)
+		}
+	}
+	require.Equal(t, "grok-imagine-video-1.5", fields["model"])
+	require.Equal(t, "animate the supplied image", fields["prompt"])
+	require.Equal(t, "720p", fields["video_resolution"])
+	require.Equal(t, "15", fields["duration"])
+	require.Equal(t, "image_to_video", fields["mode"])
+	require.Equal(t, "16:9", fields["ratio"])
+	require.Equal(t, []byte("\x89PNG\r\n\x1a\nreference"), imageBytes)
+	require.Equal(t, "image/png", imageContentType)
 	require.Equal(t, "video-request-wokey-i2v", result.ResponseID)
 	require.Equal(t, 15, result.VideoDurationSeconds)
 }
