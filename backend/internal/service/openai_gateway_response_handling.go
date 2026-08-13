@@ -484,6 +484,12 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 				data = string(normalizedData)
 				line = "data: " + data
 			}
+			if normalizedData, normalized := normalizeOpenAIInBandCompactionEvent(c, dataBytes); normalized {
+				dataBytes = normalizedData
+				data = string(normalizedData)
+				line = "data: " + data
+				eventType = strings.TrimSpace(gjson.GetBytes(dataBytes, "type").String())
+			}
 			imageCounter.AddSSEData(dataBytes)
 			searchCounter += countGrokNativeSearchCallsInSSEDataDedup(dataBytes, streamSearchSeen)
 
@@ -1232,6 +1238,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 		return nil, fmt.Errorf("parse response: invalid json response")
 	}
 	usage := &usageValue
+	body, _ = normalizeOpenAIInBandCompactionResponse(c, body)
 	if compactErr := compactResponseProtocolError(c, body); compactErr != nil {
 		return nil, newOpenAICompactFailoverError(resp, compactErr.Error())
 	}
@@ -1312,6 +1319,7 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 			}
 		}
 		finalResponse = supplementCompactionItemFromSSE(c, finalResponse, bodyText)
+		finalResponse, _ = normalizeOpenAIInBandCompactionResponse(c, finalResponse)
 		body = finalResponse
 		if originalModel != mappedModel {
 			body = s.replaceModelInResponseBody(body, mappedModel, originalModel)
@@ -1721,6 +1729,69 @@ func isResponsesCompactionItemType(itemType string) bool {
 	default:
 		return false
 	}
+}
+
+// normalizeOpenAIInBandCompactionEvent converts the upstream
+// compaction_summary compatibility alias into Codex remote-compaction v2's
+// canonical compaction item. This normalization is intentionally limited to
+// native in-band compaction: legacy /responses/compact clients may still rely
+// on the upstream alias being forwarded verbatim.
+func normalizeOpenAIInBandCompactionEvent(c *gin.Context, data []byte) ([]byte, bool) {
+	if !IsOpenAIInBandCompaction(c) || len(data) == 0 || !gjson.ValidBytes(data) {
+		return data, false
+	}
+
+	switch strings.TrimSpace(gjson.GetBytes(data, "type").String()) {
+	case "response.output_item.added", "response.output_item.done":
+		return normalizeOpenAIInBandCompactionItemType(data, "item")
+	case "response.completed", "response.done":
+		return normalizeOpenAIInBandCompactionOutputTypes(data, "response.output")
+	default:
+		return data, false
+	}
+}
+
+// normalizeOpenAIInBandCompactionResponse applies the same canonical item
+// shape to a non-streaming Responses document or an SSE terminal payload's
+// embedded response object.
+func normalizeOpenAIInBandCompactionResponse(c *gin.Context, response []byte) ([]byte, bool) {
+	if !IsOpenAIInBandCompaction(c) || len(response) == 0 || !gjson.ValidBytes(response) {
+		return response, false
+	}
+	return normalizeOpenAIInBandCompactionOutputTypes(response, "output")
+}
+
+func normalizeOpenAIInBandCompactionItemType(data []byte, itemPath string) ([]byte, bool) {
+	if strings.TrimSpace(gjson.GetBytes(data, itemPath+".type").String()) != "compaction_summary" {
+		return data, false
+	}
+	updated, err := sjson.SetBytes(data, itemPath+".type", "compaction")
+	if err != nil {
+		return data, false
+	}
+	return updated, true
+}
+
+func normalizeOpenAIInBandCompactionOutputTypes(data []byte, outputPath string) ([]byte, bool) {
+	output := gjson.GetBytes(data, outputPath)
+	if !output.Exists() || !output.IsArray() {
+		return data, false
+	}
+
+	updated := data
+	changed := false
+	for index, item := range output.Array() {
+		if strings.TrimSpace(item.Get("type").String()) != "compaction_summary" {
+			continue
+		}
+		next, err := sjson.SetBytes(updated, outputPath+"."+strconv.Itoa(index)+".type", "compaction")
+		if err != nil {
+			return data, false
+		}
+		updated = next
+		changed = true
+	}
+	return updated, changed
 }
 
 // supplementCompactionItemFromSSE 保证 compact 请求的终态 output 携带

@@ -520,6 +520,9 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		if normalized, changed := normalizeCompletedImageGenerationStatus(message); changed {
 			message = normalized
 		}
+		if normalized, changed := normalizeOpenAIInBandCompactionEvent(c, message); changed {
+			message = normalized
+		}
 
 		eventType, eventResponseID, responseField := parseOpenAIWSEventEnvelope(message)
 		if eventType == "" {
@@ -719,6 +722,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		if needModelReplace {
 			finalResponse = s.replaceModelInResponseBody(finalResponse, mappedModel, originalModel)
 		}
+		finalResponse, _ = normalizeOpenAIInBandCompactionResponse(c, finalResponse)
 		finalResponse = s.correctToolCallsInResponseBody(finalResponse)
 		populateOpenAIUsageFromResponseJSON(finalResponse, usage)
 		if responseID == "" {

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/gin-gonic/gin"
@@ -561,4 +562,96 @@ func TestHandleNonStreamingResponsePassthrough_BodySignalCompactClientStreamBrid
 	require.Equal(t, "response.completed", events[1][0])
 	require.NotNil(t, result.usage)
 	require.Equal(t, 5, result.usage.InputTokens)
+}
+
+func TestHandleStreamingResponse_InBandCompactionCanonicalizesSummaryAlias(t *testing.T) {
+	svc := newCompactBridgeTestService()
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	MarkOpenAIInBandCompaction(c)
+
+	upstreamSSE := strings.Join([]string{
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"msg_1","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"summary ready"}]}}`,
+		``,
+		`data: {"type":"response.output_item.done","output_index":1,"item":{"id":"cmp_1","type":"compaction_summary","status":"completed","encrypted_content":"compact-payload"}}`,
+		``,
+		`data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[{"id":"msg_1","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"summary ready"}]},{"id":"rs_1","type":"reasoning","summary":[{"type":"summary_text","text":"reasoned"}]},{"id":"cmp_1","type":"compaction_summary","status":"completed","encrypted_content":"compact-payload"}],"usage":{"input_tokens":7,"output_tokens":3,"total_tokens":10}}}`,
+		``,
+	}, "\n")
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(upstreamSSE)),
+	}
+
+	result, err := svc.handleStreamingResponse(context.Background(), resp, c, &Account{ID: 1, Platform: PlatformOpenAI}, time.Now(), "gpt-5.6-terra", "gpt-5.6-terra")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	compactionItems := 0
+	var terminalOutput gjson.Result
+	forEachOpenAISSEDataPayload(rec.Body.String(), func(data []byte) {
+		switch gjson.GetBytes(data, "type").String() {
+		case "response.output_item.done":
+			if gjson.GetBytes(data, "item.type").String() == "compaction" {
+				compactionItems++
+			}
+		case "response.completed":
+			terminalOutput = gjson.GetBytes(data, "response.output")
+		}
+	})
+	require.Equal(t, 1, compactionItems, "Codex v2 must observe exactly one canonical compaction item")
+	require.Len(t, terminalOutput.Array(), 3)
+	require.Equal(t, "compaction", terminalOutput.Get("2.type").String())
+	require.Equal(t, "compact-payload", terminalOutput.Get("2.encrypted_content").String())
+}
+
+func TestNormalizeOpenAIInBandCompactionResponse_LeavesLegacyAliasUntouched(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses/compact", nil)
+
+	body := []byte(`{"output":[{"type":"compaction_summary","encrypted_content":"payload"}]}`)
+	normalized, changed := normalizeOpenAIInBandCompactionResponse(c, body)
+	require.False(t, changed)
+	require.Equal(t, string(body), string(normalized))
+
+	MarkOpenAIInBandCompaction(c)
+	normalized, changed = normalizeOpenAIInBandCompactionResponse(c, body)
+	require.True(t, changed)
+	require.Equal(t, "compaction", gjson.GetBytes(normalized, "output.0.type").String())
+}
+
+func TestHandleStreamingResponsePassthrough_InBandCompactionCanonicalizesSummaryAlias(t *testing.T) {
+	svc := newCompactBridgeTestService()
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	MarkOpenAIInBandCompaction(c)
+
+	upstreamSSE := strings.Join([]string{
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"cmp_pt_1","type":"compaction_summary","status":"completed","encrypted_content":"passthrough-payload"}}`,
+		``,
+		`data: {"type":"response.completed","response":{"id":"resp_pt_1","status":"completed","output":[{"id":"cmp_pt_1","type":"compaction_summary","status":"completed","encrypted_content":"passthrough-payload"}],"usage":{"input_tokens":4,"output_tokens":2,"total_tokens":6}}}`,
+		``,
+	}, "\n")
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(upstreamSSE)),
+	}
+
+	result, err := svc.handleStreamingResponsePassthrough(context.Background(), resp, c, &Account{ID: 1, Platform: PlatformOpenAI}, time.Now(), "gpt-5.6-terra", "gpt-5.6-terra")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	events := collectSSEDataPayloads(t, rec.Body.String())
+	require.Equal(t, "compaction", gjson.Get(findSSEEvent(t, events, "response.output_item.done", ""), "item.type").String())
+	completed := findSSEEvent(t, events, "response.completed", "")
+	require.Equal(t, "compaction", gjson.Get(completed, "response.output.0.type").String())
+	require.Equal(t, "passthrough-payload", gjson.Get(completed, "response.output.0.encrypted_content").String())
 }

@@ -1238,6 +1238,11 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 				trimmedData = strings.TrimSpace(string(normalizedData))
 				line = "data: " + string(normalizedData)
 			}
+			if normalizedData, normalized := normalizeOpenAIInBandCompactionEvent(c, dataBytes); normalized {
+				dataBytes = normalizedData
+				trimmedData = strings.TrimSpace(string(normalizedData))
+				line = "data: " + string(normalizedData)
+			}
 			if trimmedData != "[DONE]" {
 				restoredData, restoreErr := restoreOpenAIResponsesNamespacePayload(c, dataBytes)
 				if restoreErr != nil {
@@ -1449,6 +1454,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 		// 兜底：尝试从 SSE 文本中解析 usage
 		usage = s.parseSSEUsageFromBody(string(body))
 	}
+	body, _ = normalizeOpenAIInBandCompactionResponse(c, body)
 	if compactErr := compactResponseProtocolError(c, body); compactErr != nil {
 		return nil, newOpenAICompactFailoverError(resp, compactErr.Error())
 	}
@@ -1501,6 +1507,7 @@ func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(resp *http.Response, c
 			}
 		}
 		finalResponse = supplementCompactionItemFromSSE(c, finalResponse, bodyText)
+		finalResponse, _ = normalizeOpenAIInBandCompactionResponse(c, finalResponse)
 		body = finalResponse
 		if originalModel != "" && mappedModel != "" && originalModel != mappedModel {
 			body = s.replaceModelInResponseBody(body, mappedModel, originalModel)
