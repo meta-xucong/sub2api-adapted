@@ -87,8 +87,13 @@ standard `resolution` field to Wokey's `video_resolution` field. Missing mode
 and ratio receive the documented defaults of `text_to_video` and `16:9` for
 text-to-video. For image-to-video, the adapter accepts multipart `image[]`,
 OpenAI-compatible `image.image_url`, and Wokey-native `image: {"url": "..."}`
-requests. It retains the caller's URL field and assigns `mode=image_to_video`.
-Native Wokey fields continue to pass through unchanged.
+requests. When a JSON request contains a remote `image.url`, Sub2API fetches
+the public HTTPS image and sends Wokey's proven `multipart/form-data` contract
+with `image[]` file parts. This keeps JSON and multipart clients compatible
+without requiring a client-side MCP change. Downloads are bounded to 8 MiB per
+image, limited to four images, restricted to public HTTPS hosts, and checked as
+PNG/JPEG/WebP/GIF before forwarding. Native Wokey fields continue to pass
+through unchanged.
 
 The adapter does not alter any other Grok, OpenAI, image, Responses, compact, or
 Smart Router path. Create the account in a separate `grok` group, set its model
