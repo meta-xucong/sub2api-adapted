@@ -47,6 +47,11 @@ const (
 	// gateway-side fetch bounded because the source URL is supplied by a client.
 	wokeyVideoReferenceImageMaxBytes = 8 << 20
 	wokeyVideoReferenceImageMaxCount = 4
+
+	// xAI documents a maximum of seven independent images for reference-to-video.
+	// This validates the public request shape only; it does not certify an
+	// account-specific upstream adapter.
+	grokMediaMaxVideoReferenceImages = 7
 )
 
 type wokeyVideoReferenceImage struct {
@@ -77,17 +82,18 @@ func (e GrokMediaEndpoint) IsGenerationRequest() bool {
 }
 
 type GrokMediaRequestInfo struct {
-	Model           string
-	Prompt          string
-	N               int
-	Size            string
-	SizeTier        string
-	Resolution      string
-	DurationSeconds int
-	InputImageURLs  []string
-	MaskImageURL    string
-	Uploads         []OpenAIImagesUpload
-	MaskUpload      *OpenAIImagesUpload
+	Model              string
+	Prompt             string
+	N                  int
+	Size               string
+	SizeTier           string
+	Resolution         string
+	DurationSeconds    int
+	InputImageURLs     []string
+	ReferenceImageURLs []string
+	MaskImageURL       string
+	Uploads            []OpenAIImagesUpload
+	MaskUpload         *OpenAIImagesUpload
 }
 
 func (r GrokMediaRequestInfo) ModerationBody() []byte {
@@ -96,8 +102,13 @@ func (r GrokMediaRequestInfo) ModerationBody() []byte {
 		payload["prompt"] = prompt
 	}
 
-	images := make([]map[string]string, 0, len(r.InputImageURLs)+len(r.Uploads)+1)
+	images := make([]map[string]string, 0, len(r.InputImageURLs)+len(r.ReferenceImageURLs)+len(r.Uploads)+1)
 	for _, imageURL := range r.InputImageURLs {
+		if imageURL = strings.TrimSpace(imageURL); imageURL != "" {
+			images = append(images, map[string]string{"image_url": imageURL})
+		}
+	}
+	for _, imageURL := range r.ReferenceImageURLs {
 		if imageURL = strings.TrimSpace(imageURL); imageURL != "" {
 			images = append(images, map[string]string{"image_url": imageURL})
 		}
@@ -199,8 +210,107 @@ func parseGrokMediaJSONRequest(body []byte, info *GrokMediaRequestInfo) {
 	}
 	appendJSONImageURLs(gjson.GetBytes(body, "image"))
 	appendJSONImageURLs(gjson.GetBytes(body, "images"))
-	appendJSONImageURLs(gjson.GetBytes(body, "reference_images"))
+	for _, item := range gjson.GetBytes(body, "reference_images").Array() {
+		if imageURL := extractGrokMediaImageURL(item); imageURL != "" {
+			info.ReferenceImageURLs = append(info.ReferenceImageURLs, imageURL)
+		}
+	}
 	info.MaskImageURL = extractGrokMediaImageURL(gjson.GetBytes(body, "mask"))
+}
+
+// GrokVideoInputValidationError is a client-visible request error. It is kept
+// distinct from upstream failures so a rejected R2V request never triggers a
+// route failover or marks an account unhealthy.
+type GrokVideoInputValidationError struct {
+	Message string
+}
+
+func (e *GrokVideoInputValidationError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return e.Message
+}
+
+// GrokReferenceToVideoUnsupportedError means the selected media adapter has no
+// verified independent-reference transport. It is intentionally a hard stop:
+// callers must not retry it as I2V or T2V.
+type GrokReferenceToVideoUnsupportedError struct {
+	Adapter string
+}
+
+func (e *GrokReferenceToVideoUnsupportedError) Error() string {
+	adapter := "selected"
+	if e != nil && strings.TrimSpace(e.Adapter) != "" {
+		adapter = strings.TrimSpace(e.Adapter)
+	}
+	return fmt.Sprintf(
+		"reference_to_video adapter: %s upstream has no verified independent multi-image contract; request was rejected before image download or video task creation",
+		adapter,
+	)
+}
+
+// ValidateGrokVideoGenerationRequest validates the public R2V JSON structure
+// before account selection. Account-specific URL scheme and SSRF rules belong
+// to the selected adapter; existing multipart I2V requests do not carry the
+// reference_images field and remain on their current path.
+func ValidateGrokVideoGenerationRequest(contentType string, body []byte) error {
+	if !gjson.ValidBytes(body) {
+		return nil
+	}
+	references := gjson.GetBytes(body, "reference_images")
+	if !references.Exists() {
+		return nil
+	}
+	mediaType, _, err := mime.ParseMediaType(strings.TrimSpace(contentType))
+	if err != nil || !strings.EqualFold(mediaType, "application/json") {
+		return &GrokVideoInputValidationError{Message: "reference_to_video validation: reference_images requires application/json"}
+	}
+	if gjson.GetBytes(body, "image").Exists() || gjson.GetBytes(body, "images").Exists() {
+		return &GrokVideoInputValidationError{Message: "reference_to_video validation: image/images and reference_images are mutually exclusive"}
+	}
+	if !references.IsArray() || len(references.Array()) == 0 {
+		return &GrokVideoInputValidationError{Message: "reference_to_video validation: reference_images must be a non-empty JSON array"}
+	}
+	items := references.Array()
+	if len(items) > grokMediaMaxVideoReferenceImages {
+		return &GrokVideoInputValidationError{Message: fmt.Sprintf("reference_to_video validation: reference_images accepts at most %d images", grokMediaMaxVideoReferenceImages)}
+	}
+	for index, item := range items {
+		if !item.IsObject() {
+			return &GrokVideoInputValidationError{Message: fmt.Sprintf("reference_to_video validation: reference_images[%d] must be an object with a url", index)}
+		}
+		rawURL := strings.TrimSpace(item.Get("url").String())
+		if rawURL == "" {
+			return &GrokVideoInputValidationError{Message: fmt.Sprintf("reference_to_video validation: reference_images[%d].url is required", index)}
+		}
+	}
+	return nil
+}
+
+func validateWokeyVideoReferenceURLs(referenceURLs []string) error {
+	for index, rawURL := range referenceURLs {
+		rawURL = strings.TrimSpace(rawURL)
+		if strings.HasPrefix(strings.ToLower(rawURL), "data:") {
+			return &GrokVideoInputValidationError{Message: fmt.Sprintf("reference_to_video validation: reference_images[%d].url must be HTTPS; the Aiself Wokey route does not accept Data URLs", index)}
+		}
+		rawParsed, parseErr := url.Parse(rawURL)
+		if parseErr != nil || !strings.EqualFold(rawParsed.Scheme, "https") || strings.TrimSpace(rawParsed.Hostname()) == "" {
+			return &GrokVideoInputValidationError{Message: fmt.Sprintf("reference_to_video validation: reference_images[%d].url must be a public HTTPS URL", index)}
+		}
+		if urlvalidator.ValidateResolvedIP(rawParsed.Hostname()) != nil {
+			return &GrokVideoInputValidationError{Message: fmt.Sprintf("reference_to_video validation: reference_images[%d].url host is not allowed", index)}
+		}
+		normalized, validateErr := urlvalidator.ValidateHTTPSURL(rawURL, urlvalidator.ValidationOptions{AllowPrivate: false})
+		if validateErr != nil {
+			return &GrokVideoInputValidationError{Message: fmt.Sprintf("reference_to_video validation: reference_images[%d].url must be a public HTTPS URL", index)}
+		}
+		parsed, parseErr := url.Parse(normalized)
+		if parseErr != nil || urlvalidator.ValidateResolvedIP(parsed.Hostname()) != nil {
+			return &GrokVideoInputValidationError{Message: fmt.Sprintf("reference_to_video validation: reference_images[%d].url host is not allowed", index)}
+		}
+	}
+	return nil
 }
 
 func extractGrokMediaImageURL(value gjson.Result) string {
@@ -667,6 +777,11 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 	if err != nil {
 		return nil, err
 	}
+	if endpoint == GrokMediaEndpointVideosGenerations {
+		if err := ValidateGrokVideoGenerationRequest(contentType, body); err != nil {
+			return nil, err
+		}
+	}
 	body, contentType, err = normalizeGrokMediaForwardBodyForAccount(account, endpoint, body, contentType)
 	if err != nil {
 		return nil, err
@@ -1118,6 +1233,12 @@ func normalizeWokeyVideoForwardBody(body []byte, contentType string, info GrokMe
 	if !gjson.ValidBytes(body) {
 		return body, contentType, nil
 	}
+	if info.HasReferenceImages() {
+		if err := validateWokeyVideoReferenceURLs(info.ReferenceImageURLs); err != nil {
+			return nil, "", err
+		}
+		return nil, "", &GrokReferenceToVideoUnsupportedError{Adapter: "Aiself Wokey"}
+	}
 	out := body
 	if !gjson.GetBytes(out, "video_resolution").Exists() {
 		if resolution := strings.TrimSpace(gjson.GetBytes(out, "resolution").String()); resolution != "" {
@@ -1469,6 +1590,10 @@ func sanitizeGrokMediaForwardBody(endpoint GrokMediaEndpoint, body []byte, conte
 
 func (r GrokMediaRequestInfo) HasInputImage() bool {
 	return len(r.InputImageURLs) > 0 || len(r.Uploads) > 0
+}
+
+func (r GrokMediaRequestInfo) HasReferenceImages() bool {
+	return len(r.ReferenceImageURLs) > 0
 }
 
 // NormalizeGrokMediaModelForEndpoint resolves the built-in upstream model alias

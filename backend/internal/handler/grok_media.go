@@ -109,6 +109,17 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "request_id is required")
 		return
 	}
+	if endpoint == service.GrokMediaEndpointVideosGenerations {
+		if err := service.ValidateGrokVideoGenerationRequest(contentType, body); err != nil {
+			var inputErr *service.GrokVideoInputValidationError
+			if errors.As(err, &inputErr) {
+				h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", inputErr.Message)
+				return
+			}
+			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "reference_to_video validation failed")
+			return
+		}
+	}
 
 	reqLog = reqLog.With(zap.String("model", requestModel))
 	setOpsRequestContext(c, requestModel, false)
@@ -336,6 +347,20 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 		service.SetOpsLatencyMs(c, service.OpsResponseLatencyMsKey, responseLatencyMs)
 
 		if err != nil {
+			var inputErr *service.GrokVideoInputValidationError
+			if errors.As(err, &inputErr) {
+				if !service.IsResponseCommitted(c) && c.Writer.Size() == writerSizeBeforeForward {
+					h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", inputErr.Message)
+				}
+				return
+			}
+			var r2vErr *service.GrokReferenceToVideoUnsupportedError
+			if errors.As(err, &r2vErr) {
+				if !service.IsResponseCommitted(c) && c.Writer.Size() == writerSizeBeforeForward {
+					h.errorResponse(c, http.StatusUnprocessableEntity, "invalid_request_error", r2vErr.Error())
+				}
+				return
+			}
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
 				if failoverClientGone(c) {

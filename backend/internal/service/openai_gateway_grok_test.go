@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -840,11 +841,95 @@ func TestParseGrokMediaRequestAcceptsOfficialImageURLFields(t *testing.T) {
 
 	info := ParseGrokMediaRequest("application/json", body)
 
-	require.Equal(t, []string{
-		"https://example.com/source.png",
-		"https://example.com/reference.png",
-	}, info.InputImageURLs)
+	require.Equal(t, []string{"https://example.com/source.png"}, info.InputImageURLs)
+	require.Equal(t, []string{"https://example.com/reference.png"}, info.ReferenceImageURLs)
 	require.True(t, info.HasInputImage())
+	require.True(t, info.HasReferenceImages())
+}
+
+func TestNormalizeGrokMediaForwardBodyPreservesReferenceToVideoJSONOrder(t *testing.T) {
+	body := []byte(`{
+		"model":"grok-imagine-video-1.5",
+		"prompt":"Place <IMAGE_1> beside <IMAGE_2>; both details must remain visible.",
+		"reference_images":[
+			{"url":"https://example.com/identity.png"},
+			{"url":"https://example.com/outfit.png"}
+		]
+	}`)
+
+	out, contentType, err := normalizeGrokMediaForwardBody(GrokMediaEndpointVideosGenerations, body, "application/json")
+
+	require.NoError(t, err)
+	require.Equal(t, "application/json", contentType)
+	require.Equal(t, "Place <IMAGE_1> beside <IMAGE_2>; both details must remain visible.", gjson.GetBytes(out, "prompt").String())
+	require.Equal(t, "https://example.com/identity.png", gjson.GetBytes(out, "reference_images.0.url").String())
+	require.Equal(t, "https://example.com/outfit.png", gjson.GetBytes(out, "reference_images.1.url").String())
+	require.False(t, gjson.GetBytes(out, "image").Exists())
+}
+
+func TestValidateGrokVideoGenerationRequestRejectsUnsafeReferenceToVideoInputs(t *testing.T) {
+	validReference := `{"url":"https://example.com/reference.png"}`
+	tooMany := strings.TrimSuffix(strings.Repeat(validReference+",", grokMediaMaxVideoReferenceImages+1), ",")
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "mixed image and references",
+			body: `{"image":{"url":"https://example.com/first.png"},"reference_images":[` + validReference + `]}`,
+			want: "mutually exclusive",
+		},
+		{
+			name: "too many references",
+			body: `{"reference_images":[` + tooMany + `]}`,
+			want: "at most",
+		},
+		{
+			name: "reference images must be json array",
+			body: `{"reference_images":{"url":"https://example.com/reference.png"}}`,
+			want: "JSON array",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateGrokVideoGenerationRequest("application/json", []byte(tt.body))
+			require.Error(t, err)
+			require.ErrorAs(t, err, new(*GrokVideoInputValidationError))
+			require.Contains(t, err.Error(), tt.want)
+		})
+	}
+}
+
+func TestValidateGrokVideoGenerationRequestKeepsDataURLAvailableForOtherAdapters(t *testing.T) {
+	err := ValidateGrokVideoGenerationRequest(
+		"application/json",
+		[]byte(`{"reference_images":[{"url":"data:image/png;base64,AA=="}]}`),
+	)
+
+	require.NoError(t, err)
+}
+
+func TestValidateWokeyVideoReferenceURLsRejectsUnsafeInputs(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{name: "non https", url: "http://example.com/reference.png", want: "public HTTPS"},
+		{name: "data url disabled", url: "data:image/png;base64,AA==", want: "does not accept Data URLs"},
+		{name: "private host", url: "https://127.0.0.1/reference.png", want: "host is not allowed"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateWokeyVideoReferenceURLs([]string{tt.url})
+			require.Error(t, err)
+			require.ErrorAs(t, err, new(*GrokVideoInputValidationError))
+			require.Contains(t, err.Error(), tt.want)
+		})
+	}
 }
 
 func TestNormalizeGrokMediaForwardBodyCanonicalizesImageURLAlias(t *testing.T) {
@@ -1405,6 +1490,89 @@ func TestForwardGrokMediaWokeyImageToVideoUsesNativeImageURL(t *testing.T) {
 	require.Equal(t, "image/png", imageContentType)
 	require.Equal(t, "video-request-wokey-i2v", result.ResponseID)
 	require.Equal(t, 15, result.VideoDurationSeconds)
+}
+
+func TestForwardGrokMediaWokeyReferenceToVideoStopsBeforeDownloadOrTask(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	previousDownloader := wokeyVideoReferenceImageDownloader
+	downloaderCalls := 0
+	wokeyVideoReferenceImageDownloader = func(context.Context, string) (wokeyVideoReferenceImage, error) {
+		downloaderCalls++
+		return wokeyVideoReferenceImage{}, errors.New("must not download unverified R2V inputs")
+	}
+	t.Cleanup(func() { wokeyVideoReferenceImageDownloader = previousDownloader })
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	body := []byte(`{
+		"model":"grok-imagine-video-1.5",
+		"prompt":"Use <IMAGE_1> and <IMAGE_2> as independent references.",
+		"reference_images":[
+			{"url":"https://example.com/identity.png"},
+			{"url":"https://example.com/product.png"}
+		]
+	}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/videos/generations", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	account := &Account{
+		ID:          65,
+		Name:        "wokey-video",
+		Platform:    PlatformGrok,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":  "api-key",
+			"base_url": xai.WokeyAPIBaseURL,
+		},
+	}
+	upstream := &httpUpstreamRecorder{}
+	svc := &OpenAIGatewayService{httpUpstream: upstream}
+
+	result, err := svc.ForwardGrokMedia(context.Background(), c, account, GrokMediaEndpointVideosGenerations, "", body, "application/json")
+
+	var r2vErr *GrokReferenceToVideoUnsupportedError
+	require.Nil(t, result)
+	require.ErrorAs(t, err, &r2vErr)
+	require.Contains(t, err.Error(), "reference_to_video adapter")
+	require.Equal(t, 0, downloaderCalls)
+	require.Nil(t, upstream.lastReq)
+}
+
+func TestForwardGrokMediaWokeyImageDownloadFailureDoesNotCreateVideoTask(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	previousDownloader := wokeyVideoReferenceImageDownloader
+	wokeyVideoReferenceImageDownloader = func(context.Context, string) (wokeyVideoReferenceImage, error) {
+		return wokeyVideoReferenceImage{}, errors.New("source image unavailable")
+	}
+	t.Cleanup(func() { wokeyVideoReferenceImageDownloader = previousDownloader })
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	body := []byte(`{"model":"grok-imagine-video-1.5","prompt":"animate","image":{"url":"https://example.com/first.png"}}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/videos/generations", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	account := &Account{
+		ID:          66,
+		Name:        "wokey-video",
+		Platform:    PlatformGrok,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":  "api-key",
+			"base_url": xai.WokeyAPIBaseURL,
+		},
+	}
+	upstream := &httpUpstreamRecorder{}
+	svc := &OpenAIGatewayService{httpUpstream: upstream}
+
+	result, err := svc.ForwardGrokMedia(context.Background(), c, account, GrokMediaEndpointVideosGenerations, "", body, "application/json")
+
+	require.Nil(t, result)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "prepare Wokey image-to-video input")
+	require.Nil(t, upstream.lastReq)
 }
 
 func TestExtractGrokMediaVideoRequestIDPreservesExistingPrecedence(t *testing.T) {
