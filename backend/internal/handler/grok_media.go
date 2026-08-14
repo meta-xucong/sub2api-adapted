@@ -354,13 +354,6 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 				}
 				return
 			}
-			var r2vErr *service.GrokReferenceToVideoUnsupportedError
-			if errors.As(err, &r2vErr) {
-				if !service.IsResponseCommitted(c) && c.Writer.Size() == writerSizeBeforeForward {
-					h.errorResponse(c, http.StatusUnprocessableEntity, "invalid_request_error", r2vErr.Error())
-				}
-				return
-			}
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
 				if failoverClientGone(c) {

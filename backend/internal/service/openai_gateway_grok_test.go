@@ -1492,13 +1492,16 @@ func TestForwardGrokMediaWokeyImageToVideoUsesNativeImageURL(t *testing.T) {
 	require.Equal(t, 15, result.VideoDurationSeconds)
 }
 
-func TestForwardGrokMediaWokeyReferenceToVideoStopsBeforeDownloadOrTask(t *testing.T) {
+func TestForwardGrokMediaWokeyReferenceToVideoUsesMultimodalMultipart(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	previousDownloader := wokeyVideoReferenceImageDownloader
 	downloaderCalls := 0
-	wokeyVideoReferenceImageDownloader = func(context.Context, string) (wokeyVideoReferenceImage, error) {
+	wokeyVideoReferenceImageDownloader = func(_ context.Context, rawURL string) (wokeyVideoReferenceImage, error) {
 		downloaderCalls++
-		return wokeyVideoReferenceImage{}, errors.New("must not download unverified R2V inputs")
+		if strings.Contains(rawURL, "identity") {
+			return wokeyVideoReferenceImage{Data: []byte("identity-image"), ContentType: "image/png", FileName: "identity.png"}, nil
+		}
+		return wokeyVideoReferenceImage{Data: []byte("product-image"), ContentType: "image/jpeg", FileName: "product.jpg"}, nil
 	}
 	t.Cleanup(func() { wokeyVideoReferenceImageDownloader = previousDownloader })
 
@@ -1507,6 +1510,8 @@ func TestForwardGrokMediaWokeyReferenceToVideoStopsBeforeDownloadOrTask(t *testi
 	body := []byte(`{
 		"model":"grok-imagine-video-1.5",
 		"prompt":"Use <IMAGE_1> and <IMAGE_2> as independent references.",
+		"resolution":"720p",
+		"duration":5,
 		"reference_images":[
 			{"url":"https://example.com/identity.png"},
 			{"url":"https://example.com/product.png"}
@@ -1526,15 +1531,78 @@ func TestForwardGrokMediaWokeyReferenceToVideoStopsBeforeDownloadOrTask(t *testi
 			"base_url": xai.WokeyAPIBaseURL,
 		},
 	}
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusAccepted,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"id":"video-request-wokey-r2v"}`)),
+	}}
+	svc := &OpenAIGatewayService{httpUpstream: upstream}
+
+	result, err := svc.ForwardGrokMedia(context.Background(), c, account, GrokMediaEndpointVideosGenerations, "", body, "application/json")
+
+	require.NoError(t, err)
+	require.Equal(t, 2, downloaderCalls)
+	require.Equal(t, xai.WokeyAPIBaseURL+"/videos", upstream.lastReq.URL.String())
+	mediaType, params, parseErr := mime.ParseMediaType(upstream.lastReq.Header.Get("Content-Type"))
+	require.NoError(t, parseErr)
+	require.Equal(t, "multipart/form-data", mediaType)
+	reader := multipart.NewReader(bytes.NewReader(upstream.lastBody), params["boundary"])
+	fields := map[string]string{}
+	var imageNames []string
+	var imageBodies [][]byte
+	for {
+		part, nextErr := reader.NextPart()
+		if nextErr == io.EOF {
+			break
+		}
+		require.NoError(t, nextErr)
+		partBody, readErr := io.ReadAll(part)
+		require.NoError(t, readErr)
+		if part.FormName() == "image[]" {
+			imageNames = append(imageNames, part.FileName())
+			imageBodies = append(imageBodies, partBody)
+			continue
+		}
+		fields[part.FormName()] = string(partBody)
+	}
+	require.Equal(t, "grok-imagine-video-1.5", fields["model"])
+	require.Equal(t, "Use <IMAGE_1> and <IMAGE_2> as independent references.", fields["prompt"])
+	require.Equal(t, "multimodal_reference", fields["mode"])
+	require.Equal(t, "720p", fields["video_resolution"])
+	require.Equal(t, "5", fields["duration"])
+	require.Equal(t, "16:9", fields["ratio"])
+	require.NotContains(t, fields, "reference_images")
+	require.Equal(t, []string{"identity.png", "product.jpg"}, imageNames)
+	require.Equal(t, [][]byte{[]byte("identity-image"), []byte("product-image")}, imageBodies)
+	require.Equal(t, "video-request-wokey-r2v", result.ResponseID)
+}
+
+func TestForwardGrokMediaWokeyReferenceToVideoRejectsConflictingModeBeforeDownload(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	previousDownloader := wokeyVideoReferenceImageDownloader
+	downloaderCalls := 0
+	wokeyVideoReferenceImageDownloader = func(context.Context, string) (wokeyVideoReferenceImage, error) {
+		downloaderCalls++
+		return wokeyVideoReferenceImage{}, errors.New("must not download after mode validation failure")
+	}
+	t.Cleanup(func() { wokeyVideoReferenceImageDownloader = previousDownloader })
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	body := []byte(`{"model":"grok-imagine-video-1.5","mode":"image_to_video","reference_images":[{"url":"https://example.com/reference.png"}]}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/videos/generations", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	account := &Account{ID: 67, Platform: PlatformGrok, Type: AccountTypeAPIKey, Credentials: map[string]any{"api_key": "api-key", "base_url": xai.WokeyAPIBaseURL}}
 	upstream := &httpUpstreamRecorder{}
 	svc := &OpenAIGatewayService{httpUpstream: upstream}
 
 	result, err := svc.ForwardGrokMedia(context.Background(), c, account, GrokMediaEndpointVideosGenerations, "", body, "application/json")
 
-	var r2vErr *GrokReferenceToVideoUnsupportedError
+	var inputErr *GrokVideoInputValidationError
 	require.Nil(t, result)
-	require.ErrorAs(t, err, &r2vErr)
-	require.Contains(t, err.Error(), "reference_to_video adapter")
+	require.ErrorAs(t, err, &inputErr)
+	require.Contains(t, inputErr.Message, "mode=multimodal_reference")
 	require.Equal(t, 0, downloaderCalls)
 	require.Nil(t, upstream.lastReq)
 }

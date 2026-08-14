@@ -48,6 +48,10 @@ const (
 	wokeyVideoReferenceImageMaxBytes = 8 << 20
 	wokeyVideoReferenceImageMaxCount = 4
 
+	// Wokey documents multimodal_reference for Grok Imagine Video 1.5 with up
+	// to seven images. This is deliberately separate from the older I2V limit.
+	wokeyVideoMultimodalReferenceMaxCount = 7
+
 	// xAI documents a maximum of seven independent images for reference-to-video.
 	// This validates the public request shape only; it does not certify an
 	// account-specific upstream adapter.
@@ -230,24 +234,6 @@ func (e *GrokVideoInputValidationError) Error() string {
 		return ""
 	}
 	return e.Message
-}
-
-// GrokReferenceToVideoUnsupportedError means the selected media adapter has no
-// verified independent-reference transport. It is intentionally a hard stop:
-// callers must not retry it as I2V or T2V.
-type GrokReferenceToVideoUnsupportedError struct {
-	Adapter string
-}
-
-func (e *GrokReferenceToVideoUnsupportedError) Error() string {
-	adapter := "selected"
-	if e != nil && strings.TrimSpace(e.Adapter) != "" {
-		adapter = strings.TrimSpace(e.Adapter)
-	}
-	return fmt.Sprintf(
-		"reference_to_video adapter: %s upstream has no verified independent multi-image contract; request was rejected before image download or video task creation",
-		adapter,
-	)
 }
 
 // ValidateGrokVideoGenerationRequest validates the public R2V JSON structure
@@ -1233,13 +1219,20 @@ func normalizeWokeyVideoForwardBody(body []byte, contentType string, info GrokMe
 	if !gjson.ValidBytes(body) {
 		return body, contentType, nil
 	}
+	out := body
 	if info.HasReferenceImages() {
 		if err := validateWokeyVideoReferenceURLs(info.ReferenceImageURLs); err != nil {
 			return nil, "", err
 		}
-		return nil, "", &GrokReferenceToVideoUnsupportedError{Adapter: "Aiself Wokey"}
+		if mode := strings.TrimSpace(gjson.GetBytes(out, "mode").String()); mode != "" && mode != "multimodal_reference" {
+			return nil, "", &GrokVideoInputValidationError{Message: "reference_to_video validation: Wokey requires mode=multimodal_reference"}
+		}
+		var err error
+		out, err = sjson.SetBytes(out, "mode", "multimodal_reference")
+		if err != nil {
+			return nil, "", fmt.Errorf("set Wokey reference-to-video mode: %w", err)
+		}
 	}
-	out := body
 	if !gjson.GetBytes(out, "video_resolution").Exists() {
 		if resolution := strings.TrimSpace(gjson.GetBytes(out, "resolution").String()); resolution != "" {
 			var err error
@@ -1277,25 +1270,35 @@ func normalizeWokeyVideoForwardBody(body []byte, contentType string, info GrokMe
 	return out, contentType, nil
 }
 
-// prepareWokeyVideoImageMultipartBody bridges the two image-to-video request
-// shapes accepted by our public API and Wokey's native API. Wokey's reliable
-// contract is multipart/form-data with one or more image[] file parts; a JSON
-// image URL is therefore fetched by Sub2API and uploaded as bytes.
+// prepareWokeyVideoImageMultipartBody bridges public JSON image URLs to Wokey's
+// multipart image[] file parts. R2V references remain separate from I2V until
+// this point, then each reference becomes one ordered multipart file part.
 func prepareWokeyVideoImageMultipartBody(
 	ctx context.Context,
 	body []byte,
 	contentType string,
 	info GrokMediaRequestInfo,
 ) ([]byte, string, error) {
-	if !gjson.ValidBytes(body) || len(info.InputImageURLs) == 0 {
+	if !gjson.ValidBytes(body) {
 		return body, contentType, nil
 	}
-	if len(info.InputImageURLs) > wokeyVideoReferenceImageMaxCount {
-		return nil, "", fmt.Errorf("too many Wokey reference images: maximum %d", wokeyVideoReferenceImageMaxCount)
+	imageURLs := info.InputImageURLs
+	maxImages := wokeyVideoReferenceImageMaxCount
+	mode := "image_to_video"
+	if info.HasReferenceImages() {
+		imageURLs = info.ReferenceImageURLs
+		maxImages = wokeyVideoMultimodalReferenceMaxCount
+		mode = "multimodal_reference"
+	}
+	if len(imageURLs) == 0 {
+		return body, contentType, nil
+	}
+	if len(imageURLs) > maxImages {
+		return nil, "", fmt.Errorf("Wokey %s accepts at most %d images", mode, maxImages)
 	}
 
-	images := make([]wokeyVideoReferenceImage, 0, len(info.InputImageURLs))
-	for _, rawURL := range info.InputImageURLs {
+	images := make([]wokeyVideoReferenceImage, 0, len(imageURLs))
+	for _, rawURL := range imageURLs {
 		image, err := wokeyVideoReferenceImageDownloader(ctx, rawURL)
 		if err != nil {
 			return nil, "", err
