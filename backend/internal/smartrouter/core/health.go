@@ -680,12 +680,11 @@ func (t *HealthTracker) streamInterruptedCooldown() time.Duration {
 }
 
 func shouldStrictCompactQuarantine(class FailureClass) bool {
-	switch class {
-	case FailureCancelled, FailureClientError, FailurePayloadRejected:
-		return false
-	default:
-		return true
-	}
+	// A compact request is expensive, but upstream 5xx responses, timeouts, and
+	// broken streams are still transient transport signals. They must use the
+	// normal bounded cooldown so one provider blip cannot drain the entire
+	// compact pool until the next scheduled calibration.
+	return class == FailureCapabilityError
 }
 
 func isVolatileGPT56Model(model string) bool {
