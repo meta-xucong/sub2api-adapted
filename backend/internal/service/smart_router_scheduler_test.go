@@ -26,8 +26,10 @@ func TestOpenAIGatewayService_SmartRouterDemotesImageGenerationCapabilityAfterDe
 			Concurrency: 1,
 			Priority:    1,
 			GroupIDs:    []int64{groupID},
+			Credentials: map[string]any{"model_mapping": map[string]any{"gpt-image-2": "gpt-image-2"}},
 			Extra: map[string]any{"smart_router": map[string]any{
 				"source_group": "flowyun",
+				"capabilities": []any{"image_generation", "image_edit"},
 			}},
 		},
 		{
@@ -40,8 +42,10 @@ func TestOpenAIGatewayService_SmartRouterDemotesImageGenerationCapabilityAfterDe
 			Concurrency: 1,
 			Priority:    2,
 			GroupIDs:    []int64{groupID},
+			Credentials: map[string]any{"model_mapping": map[string]any{"gpt-image-2": "gpt-image-2"}},
 			Extra: map[string]any{"smart_router": map[string]any{
 				"source_group": "stable",
+				"capabilities": []any{"image_generation", "image_edit"},
 			}},
 		},
 	}
@@ -172,6 +176,9 @@ func TestOpenAIGatewayService_SmartRouterPrefersExplicitImageSizeSpecialist(t *t
 		{
 			ID: 74001, Name: "generic-image", Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
 			Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 1, GroupIDs: []int64{groupID},
+			Credentials: map[string]any{"model_mapping": map[string]any{
+				"gpt-image-2": "gpt-image-2",
+			}},
 			Extra: map[string]any{"smart_router": map[string]any{
 				"capabilities": []any{"image_generation"},
 			}},
@@ -179,6 +186,9 @@ func TestOpenAIGatewayService_SmartRouterPrefersExplicitImageSizeSpecialist(t *t
 		{
 			ID: 74002, Name: "two-k-specialist", Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
 			Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 9, GroupIDs: []int64{groupID},
+			Credentials: map[string]any{"model_mapping": map[string]any{
+				"gpt-image-2": "gpt-image-2",
+			}},
 			Extra: map[string]any{"smart_router": map[string]any{
 				"capabilities": []any{"image_generation"}, "image_size_tiers": []any{"2K", "4K"},
 			}},
@@ -212,6 +222,83 @@ func TestOpenAIGatewayService_SmartRouterPrefersExplicitImageSizeSpecialist(t *t
 	}
 }
 
+func TestOpenAIGatewayService_SmartRouterNeverRoutesImageEditToGenerationOnlyLane(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+	ctx := context.Background()
+	groupID := int64(7403)
+	accounts := []Account{
+		{
+			ID:          74031,
+			Name:        "generation-only",
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    1,
+			GroupIDs:    []int64{groupID},
+			Credentials: map[string]any{"model_mapping": map[string]any{"gpt-image-2": "gpt-image-2"}},
+			Extra: map[string]any{"smart_router": map[string]any{
+				"capabilities": []any{"image_generation"},
+			}},
+		},
+		{
+			ID:          74032,
+			Name:        "declared-editor",
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    2,
+			GroupIDs:    []int64{groupID},
+			Credentials: map[string]any{"model_mapping": map[string]any{"gpt-image-2": "gpt-image-2"}},
+			Extra: map[string]any{"smart_router": map[string]any{
+				"capabilities": []any{"image_generation", "image_edit"},
+			}},
+		},
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:              &schedulerTestGatewayCache{},
+		cfg:                newSmartRouterSchedulerTestConfig(),
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+
+	edit, _, err := svc.SelectAccountWithSchedulerForImageOperation(
+		ctx,
+		&groupID,
+		"",
+		"gpt-image-2",
+		nil,
+		OpenAIImagesCapabilityBasic,
+		true,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, edit)
+	require.Equal(t, int64(74032), edit.Account.ID)
+	if edit.ReleaseFunc != nil {
+		edit.ReleaseFunc()
+	}
+
+	generate, _, err := svc.SelectAccountWithSchedulerForImageOperation(
+		ctx,
+		&groupID,
+		"",
+		"gpt-image-2",
+		nil,
+		OpenAIImagesCapabilityBasic,
+		false,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, generate)
+	require.Equal(t, int64(74031), generate.Account.ID)
+	if generate.ReleaseFunc != nil {
+		generate.ReleaseFunc()
+	}
+}
+
 func TestOpenAIGatewayService_SmartRouterSkipsFailedSourceGroupForImageRetry(t *testing.T) {
 	resetOpenAIAdvancedSchedulerSettingCacheForTest()
 	ctx := context.Background()
@@ -226,8 +313,12 @@ func TestOpenAIGatewayService_SmartRouterSkipsFailedSourceGroupForImageRetry(t *
 			Schedulable: true,
 			Concurrency: 1,
 			Priority:    1,
+			Credentials: map[string]any{"model_mapping": map[string]any{
+				"gpt-image-2": "gpt-image-2",
+			}},
 			Extra: map[string]any{"smart_router": map[string]any{
 				"source_group": "same-upstream",
+				"capabilities": []any{"image_edit"},
 			}},
 		},
 		{
@@ -239,8 +330,12 @@ func TestOpenAIGatewayService_SmartRouterSkipsFailedSourceGroupForImageRetry(t *
 			Schedulable: true,
 			Concurrency: 1,
 			Priority:    1,
+			Credentials: map[string]any{"model_mapping": map[string]any{
+				"gpt-image-2": "gpt-image-2",
+			}},
 			Extra: map[string]any{"smart_router": map[string]any{
 				"source_group": "same-upstream",
+				"capabilities": []any{"image_edit"},
 			}},
 		},
 		{
@@ -252,8 +347,12 @@ func TestOpenAIGatewayService_SmartRouterSkipsFailedSourceGroupForImageRetry(t *
 			Schedulable: true,
 			Concurrency: 1,
 			Priority:    50,
+			Credentials: map[string]any{"model_mapping": map[string]any{
+				"gpt-image-2": "gpt-image-2",
+			}},
 			Extra: map[string]any{"smart_router": map[string]any{
 				"source_group": "other-upstream",
+				"capabilities": []any{"image_edit"},
 			}},
 		},
 	}

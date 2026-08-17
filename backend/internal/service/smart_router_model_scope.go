@@ -77,6 +77,9 @@ func isChatGPTModelIdentifier(model string) bool {
 // lanes out while allowing the exact-model health rule to cover every
 // OpenAI-compatible capability that the endpoint exposes.
 func smartRouterAccountEligibleForSmartRouter(account *Account, capability smartrouter.Capability, requestedModel string, requiredCapability OpenAIEndpointCapability) bool {
+	if capability == smartrouter.CapabilityImageGeneration || capability == smartrouter.CapabilityImageEdit {
+		return smartRouterAccountSupportsDeclaredImageOperation(account, capability, requestedModel)
+	}
 	if capability == smartrouter.CapabilityResponsesCompact {
 		if account == nil || openAICompactSupportTier(account) == 0 {
 			return false
@@ -106,6 +109,33 @@ func smartRouterAccountEligibleForSmartRouter(account *Account, capability smart
 	}
 	requestedModel = strings.ToLower(strings.TrimSpace(requestedModel))
 	if requestedModel == "" {
+		return true
+	}
+	for pattern := range account.GetModelMapping() {
+		if smartRouterModelPatternMatches(pattern, requestedModel) {
+			return true
+		}
+	}
+	return false
+}
+
+// smartRouterAccountSupportsDeclaredImageOperation keeps image generation and
+// reference editing as separate operator-declared capabilities. Image edits
+// must fail closed when a lane has not explicitly declared image_edit rather
+// than falling back to a text-compatible or generation-only account.
+func smartRouterAccountSupportsDeclaredImageOperation(account *Account, capability smartrouter.Capability, requestedModel string) bool {
+	if account == nil || !account.IsOpenAI() {
+		return false
+	}
+	if capability != smartrouter.CapabilityImageGeneration && capability != smartrouter.CapabilityImageEdit {
+		return false
+	}
+	extra := parseSmartRouterAccountExtra(account)
+	if !extra.CapabilitiesSet || !extra.Capabilities[capability] {
+		return false
+	}
+	requestedModel = strings.TrimSpace(requestedModel)
+	if requestedModel == "" || account.IsOpenAIOAuth() {
 		return true
 	}
 	for pattern := range account.GetModelMapping() {

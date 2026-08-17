@@ -1464,6 +1464,12 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatible(ctx context.C
 		s.service.isUpstreamModelRestrictedByChannel(ctx, *req.GroupID, account, req.RequestedModel, req.RequireCompact) {
 		return false
 	}
+	if s != nil && s.service != nil && s.service.isSmartRouterEnabled() &&
+		(req.SmartRouterCapability == smartrouter.CapabilityImageGeneration ||
+			req.SmartRouterCapability == smartrouter.CapabilityImageEdit) &&
+		!smartRouterAccountSupportsDeclaredImageOperation(account, req.SmartRouterCapability, req.RequestedModel) {
+		return false
+	}
 	return accountSupportsOpenAICapabilities(account, req.RequiredCapability, req.RequiredImageCapability)
 }
 
