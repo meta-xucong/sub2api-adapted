@@ -444,7 +444,7 @@ func (t *HealthTracker) Observe(result RouteResult) HealthSnapshot {
 			state.HealthScore = maxFloat(0.05, state.HealthScore*0.45)
 			state.HealthPenalty = minInt(state.HealthPenalty+2, t.policy.MaxPenalty)
 			until := now.Add(t.streamInterruptedCooldown())
-			if threshold := t.policy.sustainedFailureThreshold(result.Capability); threshold > 0 && state.ConsecutiveFailures >= threshold && t.policy.SustainedFailureUntil != nil {
+			if threshold := t.policy.sustainedFailureThreshold(result.Capability); shouldEscalateSustainedFailure(result.Capability, class) && threshold > 0 && state.ConsecutiveFailures >= threshold && t.policy.SustainedFailureUntil != nil {
 				if sustainedUntil := t.policy.SustainedFailureUntil(now); sustainedUntil.After(now) {
 					until = sustainedUntil
 					action = "stream_interrupted_quarantine"
@@ -465,7 +465,7 @@ func (t *HealthTracker) Observe(result RouteResult) HealthSnapshot {
 			if state.ConsecutiveFailures == 2 && t.policy.SecondTransientCooldown > 0 {
 				until = now.Add(t.policy.SecondTransientCooldown)
 			}
-			if threshold := t.policy.sustainedFailureThreshold(result.Capability); threshold > 0 && state.ConsecutiveFailures >= threshold && t.policy.SustainedFailureUntil != nil {
+			if threshold := t.policy.sustainedFailureThreshold(result.Capability); shouldEscalateSustainedFailure(result.Capability, class) && threshold > 0 && state.ConsecutiveFailures >= threshold && t.policy.SustainedFailureUntil != nil {
 				if sustainedUntil := t.policy.SustainedFailureUntil(now); sustainedUntil.After(now) {
 					until = sustainedUntil
 					action = "sustained_failure_quarantine"
@@ -685,6 +685,18 @@ func shouldStrictCompactQuarantine(class FailureClass) bool {
 	// normal bounded cooldown so one provider blip cannot drain the entire
 	// compact pool until the next scheduled calibration.
 	return class == FailureCapabilityError
+}
+
+func shouldEscalateSustainedFailure(capability Capability, class FailureClass) bool {
+	if capability != CapabilityResponsesCompact {
+		return true
+	}
+	switch class {
+	case FailureUpstream5xx, FailureTimeout, FailureStreamInterrupted:
+		return false
+	default:
+		return true
+	}
 }
 
 func isVolatileGPT56Model(model string) bool {

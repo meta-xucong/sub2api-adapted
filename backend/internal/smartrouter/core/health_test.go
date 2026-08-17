@@ -290,6 +290,56 @@ func TestHealthTrackerCompactTransientFailureUsesBoundedCooldown(t *testing.T) {
 	degraded := tracker.Snapshot(LaneSnapshot{LaneID: "yetoken-value", Priority: 3}, CapabilityResponsesCompact, "gpt-5.5", now.Unix())
 	require.Greater(t, degraded.Priority, 3)
 	require.Equal(t, now.Add(30*time.Second).Unix(), degraded.CooldownUntilUnix)
+
+	second := tracker.Observe(RouteResult{
+		LaneID:       "yetoken-value",
+		BasePriority: 3,
+		Capability:   CapabilityResponsesCompact,
+		Model:        "gpt-5.5",
+		StatusCode:   http.StatusBadGateway,
+		ErrorClass:   FailureUpstream5xx,
+	})
+	require.Equal(t, now.Add(10*time.Minute).Unix(), second.CooldownUntilUnix)
+
+	third := tracker.Observe(RouteResult{
+		LaneID:       "yetoken-value",
+		BasePriority: 3,
+		Capability:   CapabilityResponsesCompact,
+		Model:        "gpt-5.5",
+		StatusCode:   http.StatusBadGateway,
+		ErrorClass:   FailureUpstream5xx,
+	})
+	require.Equal(t, now.Add(2*time.Minute).Unix(), third.CooldownUntilUnix)
+	require.NotEqual(t, calibrationAt.Unix(), third.CooldownUntilUnix)
+	require.Equal(t, "transient_cooldown", events[len(events)-1].Action)
+}
+
+func TestHealthTrackerCompactInterruptedStreamsDoNotEscalateToCalibration(t *testing.T) {
+	now := time.Date(2026, time.July, 27, 14, 41, 0, 0, time.FixedZone("Asia/Shanghai", 8*60*60))
+	calibrationAt := time.Date(2026, time.July, 28, 4, 0, 0, 0, now.Location())
+	var events []HealthEvent
+	tracker := NewHealthTracker(HealthPolicy{
+		TransientCooldown:         30 * time.Second,
+		SecondTransientCooldown:   10 * time.Minute,
+		SustainedFailureThreshold: 3,
+		SustainedFailureUntil: func(time.Time) time.Time {
+			return calibrationAt
+		},
+	}, func() time.Time { return now }, func(event HealthEvent) { events = append(events, event) })
+
+	result := RouteResult{
+		LaneID:     "yetoken-value",
+		Capability: CapabilityResponsesCompact,
+		Model:      "gpt-5.5",
+		StatusCode: http.StatusBadGateway,
+		ErrorClass: FailureStreamInterrupted,
+	}
+	tracker.Observe(result)
+	second := tracker.Observe(result)
+
+	require.Equal(t, now.Add(10*time.Minute).Unix(), second.CooldownUntilUnix)
+	require.NotEqual(t, calibrationAt.Unix(), second.CooldownUntilUnix)
+	require.Equal(t, "stream_interrupted_cooldown", events[len(events)-1].Action)
 }
 
 func TestHealthTrackerCompactCapabilityFailureFreezesUntilCalibration(t *testing.T) {
