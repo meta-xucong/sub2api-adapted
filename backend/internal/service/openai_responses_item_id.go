@@ -20,6 +20,12 @@ func shouldStripOpenAIResponsesInputItemID(itemType, id string) bool {
 	if itemType == "reasoning" {
 		return !strings.HasPrefix(id, "rs")
 	}
+	// custom_tool_call is a distinct Responses item type. Its item id uses
+	// the ctc* namespace; treating it as a normal function_call (fc*) allows
+	// invalid replayed ids to reach the upstream validator.
+	if itemType == "custom_tool_call" {
+		return !strings.HasPrefix(id, "ctc")
+	}
 	if isCodexToolCallInputType(itemType) {
 		return !strings.HasPrefix(id, "fc")
 	}

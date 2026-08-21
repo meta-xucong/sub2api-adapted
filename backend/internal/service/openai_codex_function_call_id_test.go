@@ -66,6 +66,40 @@ func TestFilterCodexInput_KeepsFcID_WhenPreservingReferences(t *testing.T) {
 	require.Equal(t, "fc_validID123", fc["id"], "valid fc* id must be preserved")
 }
 
+func TestFilterCodexInput_CustomToolCallUsesCtcIDNamespace(t *testing.T) {
+	input := []any{
+		map[string]any{
+			"type":    "custom_tool_call",
+			"id":      "fc_invalid_custom_id",
+			"call_id": "fc_custom_call",
+			"name":    "apply_patch",
+			"input":   "{}",
+		},
+		map[string]any{
+			"type":    "custom_tool_call",
+			"id":      "ctc_valid_custom_id",
+			"call_id": "fc_custom_call_2",
+			"name":    "apply_patch",
+			"input":   "{}",
+		},
+	}
+
+	filtered := filterCodexInputWithOptions(input, codexInputFilterOptions{
+		PreserveReferences: true,
+	})
+	require.Len(t, filtered, 2)
+
+	invalid, ok := filtered[0].(map[string]any)
+	require.True(t, ok)
+	_, hasID := invalid["id"]
+	require.False(t, hasID, "custom_tool_call must not forward an fc* item id")
+	require.Equal(t, "fc_custom_call", invalid["call_id"])
+
+	valid, ok := filtered[1].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "ctc_valid_custom_id", valid["id"])
+}
+
 // TestFilterCodexInput_StripsItemIDFromAllToolCallInputTypes verifies that
 // item_* ids are stripped from all call-input types (not output types).
 func TestFilterCodexInput_StripsItemIDFromAllToolCallInputTypes(t *testing.T) {
