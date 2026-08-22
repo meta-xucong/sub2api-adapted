@@ -1221,8 +1221,12 @@ func normalizeWokeyVideoForwardBody(body []byte, contentType string, info GrokMe
 	}
 	out := body
 	if info.HasReferenceImages() {
-		if err := validateWokeyVideoReferenceURLs(info.ReferenceImageURLs); err != nil {
-			return nil, "", err
+		// Keep the existing Wokey contract for data URLs, but leave HTTPS
+		// validation to the downloader that owns the actual outbound request.
+		for index, rawURL := range info.ReferenceImageURLs {
+			if strings.HasPrefix(strings.ToLower(strings.TrimSpace(rawURL)), "data:") {
+				return nil, "", &GrokVideoInputValidationError{Message: fmt.Sprintf("reference_to_video validation: reference_images[%d].url must be HTTPS; the Aiself Wokey route does not accept Data URLs", index)}
+			}
 		}
 		if mode := strings.TrimSpace(gjson.GetBytes(out, "mode").String()); mode != "" && mode != "multimodal_reference" {
 			return nil, "", &GrokVideoInputValidationError{Message: "reference_to_video validation: Wokey requires mode=multimodal_reference"}

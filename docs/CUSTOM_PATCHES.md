@@ -78,6 +78,11 @@ to keep them.
 
 ## Wokey Grok video API adapter
 
+Design and audit records for the relay-safe reference-to-video path:
+`docs/WOKEY_REFERENCE_VIDEO_RELAY_DEVELOPMENT.md`,
+`docs/WOKEY_REFERENCE_VIDEO_RELAY_SECURITY_AUDIT.md`, and
+`docs/WOKEY_REFERENCE_VIDEO_RELAY_OPERATIONS.md`.
+
 Wokey's documented video API differs from xAI in one narrow but important way:
 video creation is `POST /v1/videos`, not `POST /v1/videos/generations`. A Grok
 API-key account whose Base URL is exactly `https://api.wokey.ai/v1` is therefore

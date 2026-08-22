@@ -1577,6 +1577,18 @@ func TestForwardGrokMediaWokeyReferenceToVideoUsesMultimodalMultipart(t *testing
 	require.Equal(t, "video-request-wokey-r2v", result.ResponseID)
 }
 
+func TestNormalizeWokeyVideoForwardBodyDoesNotPreflightRelayDNS(t *testing.T) {
+	body := []byte(`{"model":"grok-imagine-video-1.5","reference_images":[{"url":"https://video.aiself.vip/provider-input/relay-token/frame.png"},{"url":"https://video.aiself.vip.invalid/provider-input/test-only/frame.png"}]}`)
+	info := ParseGrokMediaRequest("application/json", body)
+
+	normalized, contentType, err := normalizeWokeyVideoForwardBody(body, "application/json", info)
+
+	require.NoError(t, err)
+	require.Equal(t, "application/json", contentType)
+	require.Equal(t, "multimodal_reference", gjson.GetBytes(normalized, "mode").String())
+	require.Equal(t, "https://video.aiself.vip/provider-input/relay-token/frame.png", gjson.GetBytes(normalized, "reference_images.0.url").String())
+}
+
 func TestForwardGrokMediaWokeyReferenceToVideoRejectsConflictingModeBeforeDownload(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	previousDownloader := wokeyVideoReferenceImageDownloader
