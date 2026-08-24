@@ -429,6 +429,11 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 
 		h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, grokMediaScheduleModel(account, routingModel, result), true, nil)
 		if isGrokVideoCreateEndpoint(endpoint) && strings.TrimSpace(result.ResponseID) != "" {
+			// A video create is asynchronous. The upstream accepted the task at
+			// this point, while billing settles on a later status/content poll.
+			// Record account activity now so the admin "last used" field cannot
+			// remain stale when settlement or polling is delayed.
+			h.gatewayService.ScheduleAccountLastUsed(account.ID)
 			if err := h.gatewayService.BindGrokMediaVideoRequestAccount(
 				requestCtx, apiKey.GroupID, result.ResponseID, subject.UserID, apiKey.ID, account.ID,
 			); err != nil {

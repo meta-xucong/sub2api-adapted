@@ -470,6 +470,16 @@ type OpenAIGatewayService struct {
 	openaiCompatAnthropicDigestSessions sync.Map
 }
 
+// ScheduleAccountLastUsed records that an upstream account accepted a request.
+// Media creation is asynchronous and may not reach the later usage-settlement
+// path, so the account activity timestamp must be scheduled at acceptance time.
+func (s *OpenAIGatewayService) ScheduleAccountLastUsed(accountID int64) {
+	if s == nil || s.deferredService == nil || accountID <= 0 {
+		return
+	}
+	s.deferredService.ScheduleLastUsedUpdate(accountID)
+}
+
 // NewOpenAIGatewayService creates a new OpenAIGatewayService
 func NewOpenAIGatewayService(
 	accountRepo AccountRepository,
