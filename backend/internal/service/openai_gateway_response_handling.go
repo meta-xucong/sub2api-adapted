@@ -742,6 +742,17 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 					return resultWithUsage(), grokStreamIdleFailoverError(account, streamInterval)
 				}
 			}
+			// For every other platform, an idle timeout before the first semantic
+			// output is still safe to fail over. Do not write stream_timeout here:
+			// once an SSE error frame is committed the handler can no longer switch
+			// accounts without corrupting the client's stream.
+			if !openAIStreamClientOutputStarted(c, clientOutputStarted) && !eventShouldFlush {
+				_ = resp.Body.Close()
+				return resultWithUsage(), s.newOpenAIStreamFailoverError(
+					c, account, false, upstreamRequestID, nil,
+					"stream data interval timeout", resp.Header,
+				)
+			}
 			sendErrorEvent("stream_timeout")
 			return resultWithUsage(), fmt.Errorf("stream data interval timeout")
 

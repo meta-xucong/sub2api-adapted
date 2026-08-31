@@ -784,6 +784,21 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			}
 			return wsResult, nil
 		}
+		// The WS forwarder only returns openAIWSFallbackError before it has
+		// emitted downstream bytes. Preserve that boundary and let the common
+		// handler fail over to another account for retryable upstream failures.
+		// Non-streaming requests retain the legacy JSON fallback behavior.
+		if reqStream && c != nil && c.Writer != nil && !c.Writer.Written() {
+			if failoverErr, ok := openAIWSFallbackToUpstreamFailoverError(wsErr); ok {
+				logOpenAIWSModeInfo(
+					"pre_output_failover account_id=%d attempts=%d reason=%s",
+					account.ID,
+					wsAttempts,
+					normalizeOpenAIWSLogValue(wsLastFailureReason),
+				)
+				return nil, failoverErr
+			}
+		}
 		s.writeOpenAIWSFallbackErrorResponse(c, account, wsErr)
 		return nil, wsErr
 	}

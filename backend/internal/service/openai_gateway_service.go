@@ -869,6 +869,75 @@ func resolveOpenAIWSFallbackErrorResponse(err error) (statusCode int, errType st
 	return statusCode, errType, clientMessage, upstreamMessage, true
 }
 
+// openAIWSFallbackToUpstreamFailoverError converts a retryable WS failure that
+// happened before any downstream bytes were committed into the common gateway
+// failover error. The handler can then exclude the failed account and retry the
+// request on another lane, instead of sending a terminal JSON error to the
+// client after an otherwise empty stream.
+//
+// Non-retryable WS failures intentionally return false so the existing client
+// error response (auth, policy, invalid request, etc.) is preserved.
+func openAIWSFallbackToUpstreamFailoverError(err error) (*UpstreamFailoverError, bool) {
+	reason, retryable := classifyOpenAIWSReconnectReason(err)
+	if !retryable {
+		return nil, false
+	}
+
+	statusCode, errType, _, upstreamMessage, _ := resolveOpenAIWSFallbackErrorResponse(err)
+	var fallbackErr *openAIWSFallbackError
+	if errors.As(err, &fallbackErr) && fallbackErr != nil {
+		var dialErr *openAIWSDialError
+		if errors.As(fallbackErr.Err, &dialErr) && dialErr != nil {
+			if statusCode == 0 && dialErr.StatusCode > 0 {
+				statusCode = dialErr.StatusCode
+			}
+			if upstreamMessage == "" && dialErr.Err != nil {
+				upstreamMessage = sanitizeUpstreamErrorMessage(strings.TrimSpace(dialErr.Err.Error()))
+			}
+		}
+		if upstreamMessage == "" && fallbackErr.Err != nil {
+			upstreamMessage = sanitizeUpstreamErrorMessage(strings.TrimSpace(fallbackErr.Err.Error()))
+		}
+	}
+	if statusCode <= 0 {
+		statusCode = http.StatusBadGateway
+	}
+	if upstreamMessage == "" {
+		upstreamMessage = "OpenAI upstream websocket failure"
+		if reason != "" {
+			upstreamMessage += ": " + sanitizeUpstreamErrorMessage(reason)
+		}
+	}
+	if errType == "" {
+		if statusCode == http.StatusTooManyRequests {
+			errType = "rate_limit_error"
+		} else {
+			errType = "upstream_error"
+		}
+	}
+	body, _ := json.Marshal(gin.H{
+		"error": gin.H{
+			"type":    errType,
+			"message": upstreamMessage,
+		},
+	})
+
+	failoverErr := &UpstreamFailoverError{
+		StatusCode:             statusCode,
+		ResponseBody:           body,
+		RetryableOnSameAccount: false,
+		NextAccountAction:      NextAccountRetry,
+	}
+	var dialErr *openAIWSDialError
+	if errors.As(err, &dialErr) && dialErr != nil {
+		failoverErr.ResponseHeaders = dialErr.ResponseHeaders.Clone()
+		if len(dialErr.ResponseBody) > 0 {
+			failoverErr.ResponseBody = append([]byte(nil), dialErr.ResponseBody...)
+		}
+	}
+	return failoverErr, true
+}
+
 func (s *OpenAIGatewayService) writeOpenAIWSFallbackErrorResponse(c *gin.Context, account *Account, wsErr error) bool {
 	if c == nil || c.Writer == nil || c.Writer.Written() {
 		return false

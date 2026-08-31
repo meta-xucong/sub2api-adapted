@@ -1429,12 +1429,47 @@ func TestOpenAIStreamingTimeout(t *testing.T) {
 	_ = pw.Close()
 	_ = pr.Close()
 
-	if err == nil || !strings.Contains(err.Error(), "stream data interval timeout") {
-		t.Fatalf("expected stream timeout error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "upstream error") {
+		t.Fatalf("expected pre-output failover error, got %v", err)
 	}
-	if !strings.Contains(rec.Body.String(), "\"type\":\"error\"") || !strings.Contains(rec.Body.String(), "stream_timeout") {
-		t.Fatalf("expected OpenAI-compatible error SSE event, got %q", rec.Body.String())
+	var failoverErr *UpstreamFailoverError
+	if !errors.As(err, &failoverErr) {
+		t.Fatalf("expected UpstreamFailoverError, got %T: %v", err, err)
 	}
+	if failoverErr.StatusCode != http.StatusBadGateway {
+		t.Fatalf("expected 502 failover status, got %d", failoverErr.StatusCode)
+	}
+	if c.Writer.Written() || rec.Body.Len() != 0 {
+		t.Fatalf("pre-output timeout must not commit downstream bytes: %q", rec.Body.String())
+	}
+}
+
+func TestOpenAIStreamingTimeoutAfterOutputKeepsLegacyErrorEvent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := &config.Config{Gateway: config.GatewayConfig{
+		StreamDataIntervalTimeout: 1,
+		StreamKeepaliveInterval:   0,
+		MaxLineSize:               defaultMaxLineSize,
+	}}
+	svc := &OpenAIGatewayService{cfg: cfg}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	pr, pw := io.Pipe()
+	resp := &http.Response{StatusCode: http.StatusOK, Body: pr, Header: http.Header{}}
+	go func() {
+		_, _ = pw.Write([]byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n"))
+		// Keep the body open until the interval timeout fires.
+		time.Sleep(1500 * time.Millisecond)
+		_ = pw.Close()
+	}()
+
+	_, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, &Account{ID: 1}, time.Now(), "model", "model")
+	_ = pr.Close()
+	require.Error(t, err)
+	var failoverErr *UpstreamFailoverError
+	require.False(t, errors.As(err, &failoverErr), "post-output timeout must not fail over")
+	require.Contains(t, rec.Body.String(), "stream_timeout")
 }
 
 func TestOpenAIStreamingContextCanceledReturnsIncompleteErrorWithoutInjectingErrorEvent(t *testing.T) {

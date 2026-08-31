@@ -120,6 +120,42 @@ func TestClassifyOpenAIWSReconnectReason(t *testing.T) {
 	require.True(t, retryable)
 }
 
+func TestOpenAIWSFallbackToUpstreamFailoverError(t *testing.T) {
+	t.Run("retryable_pre_output_failure", func(t *testing.T) {
+		err := wrapOpenAIWSFallback("read_event", errors.New("upstream stalled"))
+		failoverErr, ok := openAIWSFallbackToUpstreamFailoverError(err)
+		require.True(t, ok)
+		require.NotNil(t, failoverErr)
+		require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
+		require.True(t, failoverErr.ShouldRetryNextAccount())
+		require.Contains(t, string(failoverErr.ResponseBody), "upstream stalled")
+	})
+
+	t.Run("dial_status_and_headers_are_preserved", func(t *testing.T) {
+		err := wrapOpenAIWSFallback("upstream_5xx", &openAIWSDialError{
+			StatusCode: http.StatusBadGateway,
+			ResponseHeaders: http.Header{
+				"X-Request-Id": []string{"ws-req-1"},
+			},
+			ResponseBody: []byte(`{"error":"bad gateway"}`),
+			Err:          errors.New("bad gateway"),
+		})
+		failoverErr, ok := openAIWSFallbackToUpstreamFailoverError(err)
+		require.True(t, ok)
+		require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
+		require.Equal(t, "ws-req-1", failoverErr.ResponseHeaders.Get("X-Request-Id"))
+		require.Equal(t, `{"error":"bad gateway"}`, string(failoverErr.ResponseBody))
+	})
+
+	t.Run("non_retryable_failure_is_unchanged", func(t *testing.T) {
+		failoverErr, ok := openAIWSFallbackToUpstreamFailoverError(
+			wrapOpenAIWSFallback("policy_violation", errors.New("policy")),
+		)
+		require.False(t, ok)
+		require.Nil(t, failoverErr)
+	})
+}
+
 func TestOpenAIWSErrorHTTPStatus(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, openAIWSErrorHTTPStatus([]byte(`{"type":"error","error":{"type":"invalid_request_error","code":"invalid_request","message":"invalid input"}}`)))
 	require.Equal(t, http.StatusUnauthorized, openAIWSErrorHTTPStatus([]byte(`{"type":"error","error":{"type":"authentication_error","code":"invalid_api_key","message":"auth failed"}}`)))
