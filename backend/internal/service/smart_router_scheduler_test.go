@@ -84,6 +84,53 @@ func TestOpenAIGatewayService_SmartRouterDemotesImageGenerationCapabilityAfterDe
 	}
 }
 
+func TestOpenAIGatewayService_SmartRouterEscapesCoolingGPTImage2Session(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+	ctx := context.Background()
+	groupID := int64(7302)
+	accounts := []Account{
+		{
+			ID: 73021, Name: "sticky-image2", Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+			Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 1, GroupIDs: []int64{groupID},
+		},
+		{
+			ID: 73022, Name: "fallback-image2", Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+			Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 2, GroupIDs: []int64{groupID},
+		},
+	}
+	cache := &schedulerTestGatewayCache{sessionBindings: map[string]int64{"image2-sticky": 73021}}
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:              cache,
+		cfg:                newSmartRouterSchedulerTestConfig(),
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+
+	for i := 0; i < 3; i++ {
+		svc.ReportSmartRouterImageResult(
+			&accounts[0],
+			&OpenAIImagesRequest{Endpoint: openAIImagesGenerationsEndpoint, Model: "gpt-image-2"},
+			nil,
+			&UpstreamFailoverError{StatusCode: http.StatusBadGateway, ResponseBody: []byte(`{"error":{"message":"upstream unavailable"}}`)},
+			90000,
+		)
+	}
+
+	selection, decision, err := svc.SelectAccountWithSchedulerForImageOperation(
+		ctx, &groupID, "image2-sticky", "gpt-image-2", nil, OpenAIImagesCapabilityBasic, false,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.Equal(t, int64(73022), selection.Account.ID)
+	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+	require.Equal(t, int64(73021), cache.sessionBindings["image2-sticky"], "cooling should bypass, not delete, the sticky binding")
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+	require.Equal(t, int64(73021), cache.sessionBindings["image2-sticky"], "cooling should bypass, not rewrite, the sticky binding")
+}
+
 func TestOpenAIGatewayService_SmartRouterTracksCompactFailuresSeparately(t *testing.T) {
 	resetOpenAIAdvancedSchedulerSettingCacheForTest()
 	cfg := newSmartRouterSchedulerTestConfig()

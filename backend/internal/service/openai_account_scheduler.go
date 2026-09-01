@@ -492,6 +492,12 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 		return nil, false, nil
 	}
+	// Session affinity must not pin gpt-image-2 image traffic to a lane that
+	// Smart Router has temporarily cooled. Keep the binding intact so the
+	// account can recover automatically; only bypass it for this selection.
+	if s.shouldEscapeGPTImage2Cooling(req, account) {
+		return nil, true, nil
+	}
 	if shouldClearStickySession(account, req.RequestedModel) || account.Platform != normalizeOpenAICompatiblePlatform(req.Platform) || !account.IsOpenAICompatible() || !isOpenAIAccountSchedulableForRequest(ctx, account, req.RequestedModel, req.RequireCompact) {
 		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 		return nil, false, nil
@@ -569,6 +575,26 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		}), false, nil
 	}
 	return nil, false, nil
+}
+
+func (s *defaultOpenAIAccountScheduler) shouldEscapeGPTImage2Cooling(req OpenAIAccountScheduleRequest, account *Account) bool {
+	if s == nil || s.service == nil || account == nil || !s.service.isSmartRouterEnabled() {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(req.RequestedModel), "gpt-image-2") {
+		return false
+	}
+	capability := req.SmartRouterCapability
+	if capability != smartrouter.CapabilityImageGeneration && capability != smartrouter.CapabilityImageEdit {
+		return false
+	}
+	lane, ok := smartRouterLaneSnapshot(account, nil, 0, 0, false)
+	if !ok {
+		return false
+	}
+	nowUnix := time.Now().Unix()
+	snapshot := s.service.smartRouterHealth().Snapshot(lane, capability, req.RequestedModel, nowUnix)
+	return snapshot.RecoveryStage == smartrouter.RecoveryCooling && snapshot.CooldownUntilUnix > nowUnix
 }
 
 func openAIStickyAccountMatchesGroup(account *Account, groupID *int64) bool {

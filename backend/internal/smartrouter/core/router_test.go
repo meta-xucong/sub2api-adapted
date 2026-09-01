@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestOrder_FiltersCapabilityModelAndConcurrencyButRetainsCooldown(t *testing.T) {
+func TestOrder_FiltersCapabilityModelAndConcurrencyButSkipsCoolingGPTImage2(t *testing.T) {
 	policy := DefaultPolicy()
 	policy.Enabled = true
 	plan := Order(RouteRequest{
@@ -19,16 +19,16 @@ func TestOrder_FiltersCapabilityModelAndConcurrencyButRetainsCooldown(t *testing
 		{LaneID: "ok", AccountID: 1, SourceGroup: "ok", Capabilities: map[Capability]bool{CapabilityImageEdit: true}, ModelPatterns: []string{"gpt-image-*"}, MaxConcurrency: 2, CurrentConcurrency: 1},
 		{LaneID: "chat", AccountID: 2, Capabilities: map[Capability]bool{CapabilityChat: true}, ModelPatterns: []string{"gpt-image-*"}},
 		{LaneID: "model", AccountID: 3, Capabilities: map[Capability]bool{CapabilityImageEdit: true}, ModelPatterns: []string{"gpt-5.*"}},
-		{LaneID: "cool", AccountID: 4, SourceGroup: "cool", Capabilities: map[Capability]bool{CapabilityImageEdit: true}, ModelPatterns: []string{"gpt-image-*"}, CooldownUntilUnix: 200},
+		{LaneID: "cool", AccountID: 4, SourceGroup: "cool", Capabilities: map[Capability]bool{CapabilityImageEdit: true}, ModelPatterns: []string{"gpt-image-*"}, CooldownUntilUnix: 200, RecoveryStage: RecoveryCooling},
 		{LaneID: "full", AccountID: 5, Capabilities: map[Capability]bool{CapabilityImageEdit: true}, ModelPatterns: []string{"gpt-image-*"}, MaxConcurrency: 1, CurrentConcurrency: 1},
 	}, policy)
 
 	require.NotEmpty(t, plan.OrderedLaneIDs)
 	require.Contains(t, plan.OrderedLaneIDs, "ok")
-	require.Contains(t, plan.OrderedLaneIDs, "cool")
+	require.Equal(t, "gpt_image2_health_cooldown", plan.SkipReasons["cool"])
+	require.NotContains(t, plan.OrderedLaneIDs, "cool")
 	require.Equal(t, "capability_mismatch", plan.SkipReasons["chat"])
 	require.Equal(t, "model_mismatch", plan.SkipReasons["model"])
-	require.NotContains(t, plan.SkipReasons, "cool")
 	require.Equal(t, "lane_concurrency_full", plan.SkipReasons["full"])
 }
 
@@ -61,10 +61,10 @@ func TestOrder_SkipsGPT56ModelUnavailableUntilCalibration(t *testing.T) {
 func TestOrder_AllLanesCoolingStillLeavesLastResortCandidates(t *testing.T) {
 	policy := DefaultPolicy()
 	policy.Enabled = true
-	plan := Order(RouteRequest{Capability: CapabilityImageGeneration, NowUnix: 100, Seed: 43}, []LaneSnapshot{
-		{LaneID: "cool-a", AccountID: 1, Priority: 30, SourceGroup: "a", CooldownUntilUnix: 200},
-		{LaneID: "cool-b", AccountID: 2, Priority: 31, SourceGroup: "b", CooldownUntilUnix: 200},
-		{LaneID: "cool-c", AccountID: 3, Priority: 32, SourceGroup: "c", CooldownUntilUnix: 200},
+	plan := Order(RouteRequest{Model: "gpt-image-2", Capability: CapabilityImageGeneration, NowUnix: 100, Seed: 43}, []LaneSnapshot{
+		{LaneID: "cool-a", AccountID: 1, Priority: 30, SourceGroup: "a", CooldownUntilUnix: 200, RecoveryStage: RecoveryCooling},
+		{LaneID: "cool-b", AccountID: 2, Priority: 31, SourceGroup: "b", CooldownUntilUnix: 200, RecoveryStage: RecoveryCooling},
+		{LaneID: "cool-c", AccountID: 3, Priority: 32, SourceGroup: "c", CooldownUntilUnix: 200, RecoveryStage: RecoveryCooling},
 	}, policy)
 
 	require.NotEmpty(t, plan.OrderedLaneIDs)
@@ -72,6 +72,18 @@ func TestOrder_AllLanesCoolingStillLeavesLastResortCandidates(t *testing.T) {
 	// Priority layering still chooses the least-bad lane first; a failed
 	// attempt excludes it and the next scheduling pass advances to the next.
 	require.Len(t, plan.Candidates, 1)
+}
+
+func TestOrder_NonGPTImageCoolingRemainsSoftFallback(t *testing.T) {
+	policy := DefaultPolicy()
+	policy.Enabled = true
+	plan := Order(RouteRequest{Model: "gpt-image-1", Capability: CapabilityImageGeneration, NowUnix: 100, Seed: 44}, []LaneSnapshot{
+		{LaneID: "cool", AccountID: 1, Priority: 1, CooldownUntilUnix: 200, RecoveryStage: RecoveryCooling},
+		{LaneID: "healthy", AccountID: 2, Priority: 2},
+	}, policy)
+
+	require.Contains(t, plan.OrderedLaneIDs, "cool")
+	require.NotContains(t, plan.SkipReasons, "cool")
 }
 
 func TestOrder_RespectsAttemptBudget(t *testing.T) {
