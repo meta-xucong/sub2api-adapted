@@ -1418,6 +1418,80 @@ func TestForwardGrokMediaVideoGenerationReturnsTaskIDAsResponseID(t *testing.T) 
 	require.Equal(t, "video-task-123", result.ResponseID)
 }
 
+func TestForwardGrokMediaKIEJobsVideoLifecycle(t *testing.T) {
+	t.Setenv(xai.EnvAllowUnsafeURLOverrides, "true")
+	gin.SetMode(gin.TestMode)
+	account := &Account{
+		ID:          88,
+		Name:        "kie-grok-video",
+		Platform:    PlatformGrok,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":              "api-key",
+			"base_url":             "https://api.kie.ai",
+			"grok_video_transport": "kie_jobs",
+			"model_mapping": map[string]any{
+				"grok-imagine-video-1.5": "grok-imagine-video-1-5-preview",
+			},
+		},
+	}
+
+	t.Run("create task", func(t *testing.T) {
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		body := []byte(`{"model":"grok-imagine-video-1.5","prompt":"waves","aspect_ratio":"9:16","resolution":"720p","duration":10}`)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/videos/generations", bytes.NewReader(body))
+		c.Request.Header.Set("Content-Type", "application/json")
+		upstream := &httpUpstreamRecorder{resp: &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"code":200,"msg":"success","data":{"taskId":"task-kie-123"}}`)),
+		}}
+		svc := &OpenAIGatewayService{httpUpstream: upstream}
+
+		result, err := svc.ForwardGrokMedia(context.Background(), c, account, GrokMediaEndpointVideosGenerations, "", body, "application/json")
+		require.NoError(t, err)
+		require.Equal(t, "https://api.kie.ai/api/v1/jobs/createTask", upstream.lastReq.URL.String())
+		require.JSONEq(t, `{
+  "model":"grok-imagine-video-1-5-preview",
+  "input":{"prompt":"waves","aspect_ratio":"9:16","mode":"normal","resolution":"720p","duration":10}
+}`, string(upstream.lastBody))
+		require.Equal(t, "task-kie-123", result.ResponseID)
+		require.Equal(t, VideoBillingResolution720P, result.VideoResolution)
+		require.Equal(t, 10, result.VideoDurationSeconds)
+		require.JSONEq(t, `{"id":"task-kie-123","request_id":"task-kie-123","status":"pending","model":"grok-imagine-video-1.5"}`, recorder.Body.String())
+	})
+
+	t.Run("poll completed task", func(t *testing.T) {
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest(http.MethodGet, "/v1/videos/task-kie-123", nil)
+		upstream := &httpUpstreamRecorder{resp: &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(`{
+  "code":200,"msg":"success","data":{
+    "taskId":"task-kie-123","model":"grok-imagine-video-1-5-preview","state":"success",
+    "resultJson":"{\"resultUrls\":[\"https://cdn.example.com/task-kie-123.mp4\"]}"
+  }
+}`)),
+		}}
+		svc := &OpenAIGatewayService{httpUpstream: upstream}
+
+		result, err := svc.ForwardGrokMedia(context.Background(), c, account, GrokMediaEndpointVideoStatus, "task-kie-123", nil, "")
+		require.NoError(t, err)
+		require.Equal(t, "https://api.kie.ai/api/v1/jobs/recordInfo?taskId=task-kie-123", upstream.lastReq.URL.String())
+		require.Equal(t, "task-kie-123", result.ResponseID)
+		require.Equal(t, 1, result.VideoCount)
+		require.JSONEq(t, `{
+  "id":"task-kie-123","request_id":"task-kie-123","status":"done",
+  "model":"grok-imagine-video-1-5-preview",
+  "video":{"url":"/v1/videos/task-kie-123/content"}
+}`, recorder.Body.String())
+	})
+}
+
 func TestForwardGrokMediaWokeyImageToVideoUsesNativeImageURL(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	previousDownloader := wokeyVideoReferenceImageDownloader

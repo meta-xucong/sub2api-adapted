@@ -1407,6 +1407,31 @@ func (a *Account) UsesGrokVideosCreatePath() bool {
 	return strings.EqualFold(path, "videos")
 }
 
+// UsesKIEJobsVideoAPI reports whether this account opted into KIE's native
+// asynchronous Market jobs API. It is intentionally an explicit account flag:
+// KIE's createTask/recordInfo contract is not OpenAI or xAI compatible.
+func (a *Account) UsesKIEJobsVideoAPI() bool {
+	if a == nil || !a.IsGrok() {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(a.GetCredential("grok_video_transport")), "kie_jobs")
+}
+
+// SupportsGrokMediaEndpoint keeps a narrowly-scoped KIE video account from
+// being picked for xAI endpoints KIE does not implement. The handler skips it
+// and continues normal failover rather than converting this into a user error.
+func (a *Account) SupportsGrokMediaEndpoint(endpoint GrokMediaEndpoint) bool {
+	if !a.UsesKIEJobsVideoAPI() {
+		return true
+	}
+	switch endpoint {
+	case GrokMediaEndpointVideosGenerations, GrokMediaEndpointVideoStatus, GrokMediaEndpointVideoContent:
+		return true
+	default:
+		return false
+	}
+}
+
 func (a *Account) GetGrokAccessToken() string {
 	if !a.IsGrok() {
 		return ""

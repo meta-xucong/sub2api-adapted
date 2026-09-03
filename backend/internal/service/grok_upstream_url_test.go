@@ -82,6 +82,29 @@ func TestGrokVideoCreatePathOverrideIsAccountScoped(t *testing.T) {
 	require.Equal(t, "https://subrouter.example.test/v1/videos/generations", url)
 }
 
+func TestKIEJobsVideoURLIsAccountScoped(t *testing.T) {
+	cfg := &config.Config{}
+	account := &Account{
+		Platform: PlatformGrok,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"base_url":             "https://api.kie.ai",
+			"grok_video_transport": "kie_jobs",
+		},
+	}
+
+	createURL, err := buildGrokMediaURL(account, cfg, GrokMediaEndpointVideosGenerations, "")
+	require.NoError(t, err)
+	require.Equal(t, "https://api.kie.ai/api/v1/jobs/createTask", createURL)
+
+	statusURL, err := buildGrokMediaURL(account, cfg, GrokMediaEndpointVideoStatus, "task 123")
+	require.NoError(t, err)
+	require.Equal(t, "https://api.kie.ai/api/v1/jobs/recordInfo?taskId=task+123", statusURL)
+
+	_, err = buildGrokMediaURL(account, cfg, GrokMediaEndpointVideosExtensions, "")
+	require.EqualError(t, err, "KIE jobs transport does not support grok media endpoint: videos_extensions")
+}
+
 func TestGrokAPIKeyURLPolicyAppliesAllowlistAndPrivateHostControls(t *testing.T) {
 	account := &Account{
 		Platform: PlatformGrok,

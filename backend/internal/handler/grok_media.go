@@ -290,6 +290,19 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 		)
 
 		account := selection.Account
+		if !account.SupportsGrokMediaEndpoint(endpoint) {
+			failedAccountIDs[account.ID] = struct{}{}
+			reqLog.Debug("grok_media.account_endpoint_unsupported",
+				zap.Int64("account_id", account.ID),
+				zap.String("endpoint", string(endpoint)),
+			)
+			if switchCount >= maxAccountSwitches {
+				h.errorResponse(c, http.StatusServiceUnavailable, "grok_media_no_eligible_account", "No eligible Grok media accounts")
+				return
+			}
+			switchCount++
+			continue
+		}
 		if endpoint.IsGenerationRequest() {
 			eligible, eligibilityReason, eligibilityErr := h.ensureGrokMediaAccountEligibility(requestCtx, account)
 			if !eligible {

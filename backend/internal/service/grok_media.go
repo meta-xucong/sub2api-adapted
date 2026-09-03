@@ -88,6 +88,7 @@ func (e GrokMediaEndpoint) IsGenerationRequest() bool {
 type GrokMediaRequestInfo struct {
 	Model              string
 	Prompt             string
+	AspectRatio        string
 	N                  int
 	Size               string
 	SizeTier           string
@@ -163,6 +164,7 @@ func ParseGrokMediaRequest(contentType string, body []byte) GrokMediaRequestInfo
 	}
 	info.Model = strings.TrimSpace(info.Model)
 	info.Prompt = strings.TrimSpace(info.Prompt)
+	info.AspectRatio = strings.TrimSpace(info.AspectRatio)
 	info.Size = strings.TrimSpace(info.Size)
 	info.SizeTier = NormalizeImageBillingTierOrDefault(info.Size)
 	info.Resolution = NormalizeVideoBillingResolutionOrDefault(info.Resolution)
@@ -179,6 +181,7 @@ func parseGrokMediaJSONRequest(body []byte, info *GrokMediaRequestInfo) {
 	}
 	info.Model = strings.TrimSpace(gjson.GetBytes(body, "model").String())
 	info.Prompt = strings.TrimSpace(gjson.GetBytes(body, "prompt").String())
+	info.AspectRatio = strings.TrimSpace(gjson.GetBytes(body, "aspect_ratio").String())
 	info.Size = strings.TrimSpace(gjson.GetBytes(body, "size").String())
 	info.Resolution = strings.TrimSpace(gjson.GetBytes(body, "resolution").String())
 	if info.Resolution == "" {
@@ -380,6 +383,8 @@ func parseGrokMediaMultipartRequest(contentType string, body []byte, info *GrokM
 			info.Model = value
 		case "prompt":
 			info.Prompt = value
+		case "aspect_ratio":
+			info.AspectRatio = value
 		case "size":
 			info.Size = value
 		case "resolution":
@@ -785,6 +790,12 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 			}
 		}
 	}
+	if account.UsesKIEJobsVideoAPI() && endpoint == GrokMediaEndpointVideosGenerations {
+		body, contentType, err = prepareKIEJobsVideoCreateBody(requestInfo, upstreamModel)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if isWokeyVideoGeneration(account, endpoint) {
 		prepCtx, prepCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		body, contentType, err = prepareWokeyVideoImageMultipartBody(
@@ -851,6 +862,22 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 	if err != nil {
 		return nil, err
 	}
+	if account.UsesKIEJobsVideoAPI() {
+		rawResponseBody := respBody
+		switch endpoint {
+		case GrokMediaEndpointVideosGenerations:
+			respBody, err = normalizeKIEJobsVideoCreateResponse(respBody, requestInfo.Model)
+		case GrokMediaEndpointVideoStatus:
+			respBody, err = normalizeKIEJobsVideoStatusResponse(respBody, requestID)
+		}
+		if err != nil {
+			return nil, &UpstreamFailoverError{
+				StatusCode:      http.StatusBadGateway,
+				ResponseBody:    rawResponseBody,
+				ResponseHeaders: resp.Header.Clone(),
+			}
+		}
+	}
 	if endpoint == GrokMediaEndpointImagesGenerations || endpoint == GrokMediaEndpointImagesEdits {
 		if countOpenAIResponseImageOutputsFromJSONBytes(respBody) <= 0 {
 			setOpsUpstreamError(c, http.StatusBadGateway, "xAI upstream returned no image output", truncateString(string(respBody), 512))
@@ -862,6 +889,9 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 		}
 	}
 	if endpoint == GrokMediaEndpointVideoStatus {
+		if account.UsesKIEJobsVideoAPI() {
+			respBody = rewriteKIEJobsVideoContentURL(respBody, grokMediaContentProxyURL(c, requestID))
+		}
 		respBody = rewriteGrokMediaVideoContentURLs(
 			respBody,
 			requestID,
@@ -956,7 +986,14 @@ func (s *OpenAIGatewayService) forwardGrokMediaVideoContent(
 		return nil, err
 	}
 
-	contentURL, err := grokMediaSignedVideoContentURL(statusBody, requestID)
+	if account.UsesKIEJobsVideoAPI() {
+		statusBody, err = normalizeKIEJobsVideoStatusResponse(statusBody, requestID)
+		if err != nil {
+			SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
+			return nil, err
+		}
+	}
+	contentURL, err := grokMediaSignedVideoContentURLForAccount(account, statusBody, requestID)
 	if err != nil {
 		SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
 		return nil, err
@@ -1051,6 +1088,13 @@ func grokMediaSignedVideoContentURL(body []byte, requestID string) (string, erro
 		return "", fmt.Errorf("grok media status returned an unsupported video content URL")
 	}
 	return parsed.String(), nil
+}
+
+func grokMediaSignedVideoContentURLForAccount(account *Account, body []byte, requestID string) (string, error) {
+	if account != nil && account.UsesKIEJobsVideoAPI() {
+		return kieJobsSignedVideoContentURL(body)
+	}
+	return grokMediaSignedVideoContentURL(body, requestID)
 }
 
 func isGrokCLIProxyTarget(rawURL string) bool {
