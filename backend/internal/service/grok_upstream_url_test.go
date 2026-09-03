@@ -61,6 +61,27 @@ func TestGrokAPIKeyURLPolicyFollowsGlobalSecurityConfig(t *testing.T) {
 	})
 }
 
+func TestGrokVideoCreatePathOverrideIsAccountScoped(t *testing.T) {
+	cfg := &config.Config{}
+	account := &Account{
+		Platform: PlatformGrok,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"base_url":               "https://subrouter.example.test/v1",
+			"grok_video_create_path": "/videos",
+		},
+	}
+
+	url, err := buildGrokMediaURL(account, cfg, GrokMediaEndpointVideosGenerations, "")
+	require.NoError(t, err)
+	require.Equal(t, "https://subrouter.example.test/v1/videos", url)
+
+	account.Credentials["grok_video_create_path"] = "/videos/generations"
+	url, err = buildGrokMediaURL(account, cfg, GrokMediaEndpointVideosGenerations, "")
+	require.NoError(t, err)
+	require.Equal(t, "https://subrouter.example.test/v1/videos/generations", url)
+}
+
 func TestGrokAPIKeyURLPolicyAppliesAllowlistAndPrivateHostControls(t *testing.T) {
 	account := &Account{
 		Platform: PlatformGrok,

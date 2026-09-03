@@ -683,6 +683,18 @@ func BuildVideosGenerationsURL(baseURL string) (string, error) {
 	return BuildVideosGenerationsURLWithValidator(baseURL, nil)
 }
 
+// BuildVideosURLWithValidator builds the OpenAI-compatible video task route
+// used by account-scoped relays that create jobs at /videos rather than xAI's
+// /videos/generations. Callers must opt in per account; this is deliberately
+// not a global fallback because the paths are not interchangeable.
+func BuildVideosURLWithValidator(baseURL string, validator BaseURLValidator) (string, error) {
+	validatedBaseURL, err := validatedBaseURLWithValidator(baseURL, validator)
+	if err != nil {
+		return "", fmt.Errorf("invalid base url: %w", err)
+	}
+	return validatedBaseURL + "/videos", nil
+}
+
 // IsWokeyAPIBaseURL identifies Wokey's documented Grok-compatible root.
 // Wokey creates videos at /v1/videos, rather than xAI's /v1/videos/generations.
 func IsWokeyAPIBaseURL(baseURL string) bool {

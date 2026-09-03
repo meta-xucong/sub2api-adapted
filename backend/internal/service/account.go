@@ -1395,6 +1395,18 @@ func (a *Account) GetGrokMediaBaseURL() string {
 	return baseURL
 }
 
+// UsesGrokVideosCreatePath reports whether this API-key relay explicitly uses
+// the OpenAI-compatible POST /videos creation path. Custom Grok relays default
+// to xAI's /videos/generations, so accepting only this exact opt-in avoids a
+// broad, silent protocol change for existing accounts.
+func (a *Account) UsesGrokVideosCreatePath() bool {
+	if a == nil || !a.IsGrok() {
+		return false
+	}
+	path := strings.Trim(strings.TrimSpace(a.GetCredential("grok_video_create_path")), "/")
+	return strings.EqualFold(path, "videos")
+}
+
 func (a *Account) GetGrokAccessToken() string {
 	if !a.IsGrok() {
 		return ""
