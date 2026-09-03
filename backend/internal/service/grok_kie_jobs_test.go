@@ -50,14 +50,45 @@ func TestPrepareKIEJobsVideoCreateBodyRejectsUnsafeInputs(t *testing.T) {
 		require.EqualError(t, err, "KIE reference image 0 must be a public HTTPS URL")
 	})
 
-	t.Run("multiple references", func(t *testing.T) {
+	t.Run("seven references", func(t *testing.T) {
 		info := ParseGrokMediaRequest("application/json", []byte(`{
   "model":"grok-imagine-video-1.5",
   "prompt":"Motion",
-  "reference_images":[{"url":"https://example.com/a.png"},{"url":"https://example.com/b.png"}]
+  "reference_images":[
+    {"url":"https://example.com/a.png"},
+    {"url":"https://example.com/b.png"},
+    {"url":"https://example.com/c.png"},
+    {"url":"https://example.com/d.png"},
+    {"url":"https://example.com/e.png"},
+    {"url":"https://example.com/f.png"},
+    {"url":"https://example.com/g.png"}
+  ]
+}`))
+		body, _, err := prepareKIEJobsVideoCreateBody(info, "grok-imagine-video-1-5-preview")
+		require.NoError(t, err)
+		imageURLs := gjson.GetBytes(body, "input.image_urls").Array()
+		require.Len(t, imageURLs, 7)
+		require.Equal(t, "https://example.com/a.png", imageURLs[0].String())
+		require.Equal(t, "https://example.com/g.png", imageURLs[6].String())
+	})
+
+	t.Run("eight references", func(t *testing.T) {
+		info := ParseGrokMediaRequest("application/json", []byte(`{
+  "model":"grok-imagine-video-1.5",
+  "prompt":"Motion",
+  "reference_images":[
+    {"url":"https://example.com/a.png"},
+    {"url":"https://example.com/b.png"},
+    {"url":"https://example.com/c.png"},
+    {"url":"https://example.com/d.png"},
+    {"url":"https://example.com/e.png"},
+    {"url":"https://example.com/f.png"},
+    {"url":"https://example.com/g.png"},
+    {"url":"https://example.com/h.png"}
+  ]
 }`))
 		_, _, err := prepareKIEJobsVideoCreateBody(info, "grok-imagine-video-1-5-preview")
-		require.EqualError(t, err, "KIE Grok video accepts at most one reference image")
+		require.EqualError(t, err, "KIE Grok video accepts at most 7 reference images")
 	})
 }
 

@@ -13,7 +13,11 @@ import (
 const (
 	kieJobsVideoDefaultAspectRatio = "16:9"
 	kieJobsVideoDefaultMode        = "normal"
-	kieJobsVideoMaxExternalImages  = 1
+	// KIE's Marketplace form advertises a seven-image limit, while one prose
+	// description of image_urls is stale and says one. The native createTask API
+	// accepted and completed a four-image request on 2026-09-03; preserve the
+	// documented seven-image ceiling rather than regressing to that stale limit.
+	kieJobsVideoMaxExternalImages = 7
 )
 
 // prepareKIEJobsVideoCreateBody projects the public Grok video request into
@@ -30,7 +34,7 @@ func prepareKIEJobsVideoCreateBody(info GrokMediaRequestInfo, upstreamModel stri
 	imageURLs := append([]string{}, info.InputImageURLs...)
 	imageURLs = append(imageURLs, info.ReferenceImageURLs...)
 	if len(imageURLs) > kieJobsVideoMaxExternalImages {
-		return nil, "", &GrokVideoInputValidationError{Message: "KIE Grok video accepts at most one reference image"}
+		return nil, "", &GrokVideoInputValidationError{Message: fmt.Sprintf("KIE Grok video accepts at most %d reference images", kieJobsVideoMaxExternalImages)}
 	}
 	for index, imageURL := range imageURLs {
 		normalized, err := urlvalidator.ValidateHTTPSURL(imageURL, urlvalidator.ValidationOptions{AllowPrivate: false})
