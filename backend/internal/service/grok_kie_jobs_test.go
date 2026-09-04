@@ -3,6 +3,8 @@
 package service
 
 import (
+	"context"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -147,4 +149,61 @@ func TestKIEJobsAccountEndpointSupport(t *testing.T) {
 	require.True(t, account.SupportsGrokMediaEndpoint(GrokMediaEndpointVideosGenerations))
 	require.True(t, account.SupportsGrokMediaEndpoint(GrokMediaEndpointVideoStatus))
 	require.False(t, account.SupportsGrokMediaEndpoint(GrokMediaEndpointVideosEdits))
+}
+
+func TestValidateKIEJobsVideoImageURLs(t *testing.T) {
+	previous := kieJobsVideoImageURLProber
+	t.Cleanup(func() { kieJobsVideoImageURLProber = previous })
+
+	t.Run("accepts supported image", func(t *testing.T) {
+		kieJobsVideoImageURLProber = func(context.Context, string) (kieJobsVideoImageURLProbe, error) {
+			return kieJobsVideoImageURLProbe{statusCode: 200, contentType: "image/png", contentLength: 512}, nil
+		}
+		require.NoError(t, validateKIEJobsVideoImageURLs(context.Background(), []string{"https://example.com/reference.png"}))
+	})
+
+	t.Run("rejects non-2xx before paid submission", func(t *testing.T) {
+		kieJobsVideoImageURLProber = func(context.Context, string) (kieJobsVideoImageURLProbe, error) {
+			return kieJobsVideoImageURLProbe{statusCode: 400, contentType: "text/html"}, nil
+		}
+		err := validateKIEJobsVideoImageURLs(context.Background(), []string{"https://upload.wikimedia.org/example.jpg"})
+		require.EqualError(t, err, "KIE reference image 0 URL returned HTTP 400")
+	})
+
+	t.Run("rejects HTML returned with success status", func(t *testing.T) {
+		kieJobsVideoImageURLProber = func(context.Context, string) (kieJobsVideoImageURLProbe, error) {
+			return kieJobsVideoImageURLProbe{statusCode: 200, contentType: "text/html", contentLength: 100}, nil
+		}
+		err := validateKIEJobsVideoImageURLs(context.Background(), []string{"https://example.com/reference.jpg"})
+		require.EqualError(t, err, "KIE reference image 0 must return JPEG, PNG, or WebP content")
+	})
+
+	t.Run("does not trust an image declaration for HTML bytes", func(t *testing.T) {
+		require.Equal(t, "text/html", kieVideoImageContentType("image/jpeg", []byte("<!doctype html>")))
+	})
+
+	t.Run("rejects an empty response even with an image declaration", func(t *testing.T) {
+		kieJobsVideoImageURLProber = func(context.Context, string) (kieJobsVideoImageURLProbe, error) {
+			return kieJobsVideoImageURLProbe{statusCode: 200, contentType: "", contentLength: 0}, nil
+		}
+		err := validateKIEJobsVideoImageURLs(context.Background(), []string{"https://example.com/empty.jpg"})
+		require.EqualError(t, err, "KIE reference image 0 must return JPEG, PNG, or WebP content")
+	})
+
+	t.Run("rejects oversized image", func(t *testing.T) {
+		kieJobsVideoImageURLProber = func(context.Context, string) (kieJobsVideoImageURLProbe, error) {
+			return kieJobsVideoImageURLProbe{statusCode: 200, contentType: "image/jpeg", contentLength: kieJobsVideoReferenceImageMaxBytes + 1}, nil
+		}
+		err := validateKIEJobsVideoImageURLs(context.Background(), []string{"https://example.com/reference.jpg"})
+		require.EqualError(t, err, "KIE reference image 0 exceeds the 20 MB limit")
+	})
+
+	t.Run("does not expose fetch details", func(t *testing.T) {
+		kieJobsVideoImageURLProber = func(context.Context, string) (kieJobsVideoImageURLProbe, error) {
+			return kieJobsVideoImageURLProbe{}, fmt.Errorf("signed-token-secret")
+		}
+		err := validateKIEJobsVideoImageURLs(context.Background(), []string{"https://example.com/reference.jpg?token=signed-token-secret"})
+		require.EqualError(t, err, "KIE reference image 0 could not be fetched before submission")
+		require.NotContains(t, err.Error(), "signed-token-secret")
+	})
 }

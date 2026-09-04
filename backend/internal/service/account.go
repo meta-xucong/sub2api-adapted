@@ -1407,14 +1407,13 @@ func (a *Account) UsesGrokVideosCreatePath() bool {
 	return strings.EqualFold(path, "videos")
 }
 
-// UsesKIEJobsVideoAPI reports whether this account opted into KIE's native
-// asynchronous Market jobs API. It is intentionally an explicit account flag:
-// KIE's createTask/recordInfo contract is not OpenAI or xAI compatible.
+// UsesKIEJobsVideoAPI reports whether this account resolves to KIE's native
+// asynchronous Market jobs API. The transport resolver honors the historical
+// explicit account flag and also recognizes the exact official KIE host; this
+// keeps native KIE accounts safe while leaving unknown relays on the standard
+// OpenAI-compatible contract.
 func (a *Account) UsesKIEJobsVideoAPI() bool {
-	if a == nil || !a.IsGrok() {
-		return false
-	}
-	return strings.EqualFold(strings.TrimSpace(a.GetCredential("grok_video_transport")), "kie_jobs")
+	return a != nil && a.GrokVideoTransport() == GrokVideoTransportKIEJobs
 }
 
 // SupportsGrokMediaEndpoint keeps a narrowly-scoped KIE video account from

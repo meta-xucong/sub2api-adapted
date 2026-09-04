@@ -117,7 +117,7 @@ func buildGrokMediaURL(account *Account, cfg *config.Config, endpoint GrokMediaE
 		return "", err
 	}
 	baseURL := account.GetGrokMediaBaseURL()
-	if account.UsesKIEJobsVideoAPI() {
+	if account.GrokVideoTransport() == GrokVideoTransportKIEJobs {
 		return buildKIEJobsMediaURL(baseURL, validator, endpoint, requestID)
 	}
 	switch endpoint {

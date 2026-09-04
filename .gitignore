@@ -137,6 +137,7 @@ docs/*
 !docs/ADMIN_PAYMENT_INTEGRATION_API.md
 !docs/ASYNC_IMAGE_TASKS.md
 !docs/OPERATOR_TEST_KEY_RUNBOOK.md
+!docs/grok-video-universal-adapter.md
 !docs/legal/
 !docs/legal/*.md
 .serena/

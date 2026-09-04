@@ -21,7 +21,6 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
 	"github.com/gin-gonic/gin"
@@ -791,6 +790,11 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 		}
 	}
 	if account.UsesKIEJobsVideoAPI() && endpoint == GrokMediaEndpointVideosGenerations {
+		imageURLs := append([]string{}, requestInfo.InputImageURLs...)
+		imageURLs = append(imageURLs, requestInfo.ReferenceImageURLs...)
+		if err := validateKIEJobsVideoImageURLs(ctx, imageURLs); err != nil {
+			return nil, err
+		}
 		body, contentType, err = prepareKIEJobsVideoCreateBody(requestInfo, upstreamModel)
 		if err != nil {
 			return nil, err
@@ -1255,7 +1259,7 @@ func normalizeGrokMediaForwardBodyForAccount(account *Account, endpoint GrokMedi
 }
 
 func isWokeyVideoGeneration(account *Account, endpoint GrokMediaEndpoint) bool {
-	return account != nil && endpoint == GrokMediaEndpointVideosGenerations && xai.IsWokeyAPIBaseURL(account.GetGrokMediaBaseURL())
+	return account != nil && endpoint == GrokMediaEndpointVideosGenerations && account.UsesWokeyVideoMultipart()
 }
 
 // Wokey accepts the standard Grok request shape after this narrow field translation.
