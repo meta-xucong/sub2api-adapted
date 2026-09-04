@@ -26,7 +26,6 @@ func TestPrepareKIEJobsVideoCreateBody(t *testing.T) {
   "input":{
     "prompt":"A slow camera push-in",
     "aspect_ratio":"9:16",
-    "mode":"normal",
     "resolution":"720p",
     "duration":8
   }
@@ -70,6 +69,21 @@ func TestPrepareKIEJobsVideoCreateBodyRejectsUnsafeInputs(t *testing.T) {
 		require.Len(t, imageURLs, 7)
 		require.Equal(t, "https://example.com/a.png", imageURLs[0].String())
 		require.Equal(t, "https://example.com/g.png", imageURLs[6].String())
+	})
+
+	t.Run("reference request follows native KIE input schema", func(t *testing.T) {
+		info := ParseGrokMediaRequest("application/json", []byte(`{
+  "model":"grok-imagine-video-1.5",
+  "prompt":"Animate the supplied image",
+  "reference_images":[{"url":"https://example.com/reference.png"}],
+  "aspect_ratio":"16:9",
+  "resolution":"480p",
+  "duration":8
+}`))
+		body, _, err := prepareKIEJobsVideoCreateBody(info, "grok-imagine-video-1-5-preview")
+		require.NoError(t, err)
+		require.Equal(t, "https://example.com/reference.png", gjson.GetBytes(body, "input.image_urls.0").String())
+		require.False(t, gjson.GetBytes(body, "input.mode").Exists(), "native KIE schema does not define input.mode")
 	})
 
 	t.Run("eight references", func(t *testing.T) {

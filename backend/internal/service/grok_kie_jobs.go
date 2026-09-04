@@ -12,7 +12,6 @@ import (
 
 const (
 	kieJobsVideoDefaultAspectRatio = "16:9"
-	kieJobsVideoDefaultMode        = "normal"
 	// KIE's Marketplace form advertises a seven-image limit, while one prose
 	// description of image_urls is stale and says one. The native createTask API
 	// accepted and completed a four-image request on 2026-09-03; preserve the
@@ -54,10 +53,12 @@ func prepareKIEJobsVideoCreateBody(info GrokMediaRequestInfo, upstreamModel stri
 		return nil, "", &GrokVideoInputValidationError{Message: "KIE video aspect_ratio must be one of 1:1, 2:3, 3:2, 9:16, or 16:9"}
 	}
 
+	// The native 1.5-preview createTask schema does not define the legacy
+	// Grok/Wokey `mode` field; sending it can make the KIE gateway reject an
+	// otherwise valid image-to-video request.
 	input := map[string]any{
 		"prompt":       prompt,
 		"aspect_ratio": aspectRatio,
-		"mode":         kieJobsVideoDefaultMode,
 		"resolution":   info.Resolution,
 		"duration":     info.DurationSeconds,
 	}

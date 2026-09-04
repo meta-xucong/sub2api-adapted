@@ -1455,7 +1455,7 @@ func TestForwardGrokMediaKIEJobsVideoLifecycle(t *testing.T) {
 		require.Equal(t, "https://api.kie.ai/api/v1/jobs/createTask", upstream.lastReq.URL.String())
 		require.JSONEq(t, `{
   "model":"grok-imagine-video-1-5-preview",
-  "input":{"prompt":"waves","aspect_ratio":"9:16","mode":"normal","resolution":"720p","duration":10}
+  "input":{"prompt":"waves","aspect_ratio":"9:16","resolution":"720p","duration":10}
 }`, string(upstream.lastBody))
 		require.Equal(t, "task-kie-123", result.ResponseID)
 		require.Equal(t, VideoBillingResolution720P, result.VideoResolution)
