@@ -11,6 +11,10 @@ ARG NODE_IMAGE=node:24-alpine
 ARG GOLANG_IMAGE=golang:1.26.5-alpine
 ARG ALPINE_IMAGE=alpine:3.21
 ARG POSTGRES_IMAGE=postgres:18-alpine
+# Docker 20.10's classic builder does not inject BuildKit's automatic
+# BUILDPLATFORM argument. Keep the amd64 VPS build reproducible while newer
+# BuildKit builders may still override it explicitly.
+ARG BUILDPLATFORM=linux/amd64
 ARG GOPROXY=https://goproxy.cn,direct
 ARG GOSUMDB=sum.golang.google.cn
 ARG NPM_CONFIG_REGISTRY=
