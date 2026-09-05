@@ -39,11 +39,19 @@
 | --- | --- | --- |
 | `openai_compat` | `/v1/videos/generations` | 按聚合器支持的标准 JSON/URL 传递 |
 | `wokey_multipart` | `/v1/videos` | 服务端下载后写入 multipart `image[]`，参考图使用 `multimodal_reference` |
-| `kie_jobs` | `/api/v1/jobs/createTask` | JSON `input.image_urls[]`；原生 KIE 可使用其临时文件上传后再提交 |
+| `kie_jobs` | `/api/v1/jobs/createTask` | JSON `input.image_urls[]`；Aiself relay 图默认先由 Sub2API 下载并上传到 KIE 临时文件服务，再提交 KIE 返回的 `downloadUrl` |
 
 KIE 的 JSON schema 与 Wokey multipart 不是同一个协议，不能把 Wokey 的 `image[]` 直接发送到 KIE。KIE 官方创建任务接口使用 `input.image_urls`。[KIE Grok Imagine Video 1.5 Preview](https://docs.kie.ai/market/grok-imagine/1-5-preview)
 
-如果 KIE 不能访问 Aiself relay，KIE profile 应在创建任务前将标准化后的图片上传到 KIE 文件服务，再把返回的临时 `downloadUrl` 放入 `image_urls`。KIE 官方提供 multipart 文件流上传接口。[KIE File Stream Upload](https://docs.kie.ai/file-upload-api/upload-file-stream)
+如果 KIE 不能访问 Aiself relay，KIE profile 会在创建任务前将 `video.aiself.vip` 下的标准化图片由 Sub2API 服务端下载，再通过 KIE 的 multipart 文件流接口上传，最后把返回的临时 `downloadUrl` 放入 `image_urls`。这样 KIE 不再需要访问 Aiself relay。KIE 官方提供 multipart 文件流上传接口，上传文件为临时对象，不会创建视频任务。[KIE File Stream Upload](https://docs.kie.ai/file-upload-api/upload-file-stream)
+
+默认只转换 `video.aiself.vip`，普通公网图片仍原样传递，避免无意义的二次上传。账号凭据可用以下可选项扩展范围：
+
+- `kie_reference_upload_mode=always`：原生 KIE 的所有参考图都先上传；
+- `kie_reference_upload_mode=off`：关闭转换，保留旧的公网 URL 行为；
+- `kie_reference_upload_hosts=host-a,host-b`：在默认 relay 之外增加精确主机名。
+
+上传阶段沿用公网 HTTPS、DNS/SSRF、重定向、MIME 和 20 MB 单图校验；下载或上传失败会在 `createTask` 前失败，因此不会产生 KIE provider task 或视频计费。上传只增加首提交的网络往返，不增加视频任务次数。
 
 ## 新增线路的扩展规则
 

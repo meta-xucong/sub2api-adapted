@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -28,6 +30,23 @@ type kieJobsVideoImageURLProbe struct {
 	contentLength int64
 }
 
+// KIEImageProbeRecord is deliberately URL-blind: the hash lets operators
+// correlate a provider-input request without persisting signed URLs or tokens.
+type KIEImageProbeRecord struct {
+	Index         int    `json:"index"`
+	URLSHA256     string `json:"url_sha256"`
+	StatusCode    int    `json:"status_code,omitempty"`
+	ContentType   string `json:"content_type,omitempty"`
+	ContentLength int64  `json:"content_length,omitempty"`
+	DurationMs    int64  `json:"duration_ms"`
+	ErrorClass    string `json:"error_class,omitempty"`
+}
+
+type KIEImageProbeSummary struct {
+	ImageCount int                   `json:"image_count"`
+	Records    []KIEImageProbeRecord `json:"records"`
+}
+
 // Kept injectable so request validation can be tested without network access.
 var kieJobsVideoImageURLProber = probeKIEJobsVideoImageURL
 
@@ -36,28 +55,61 @@ var kieJobsVideoImageURLProber = probeKIEJobsVideoImageURL
 // native API fetches image_urls asynchronously, so without this small preflight
 // a bad public URL is reported later as a generic upstream 502.
 func validateKIEJobsVideoImageURLs(ctx context.Context, imageURLs []string) error {
+	_, err := validateKIEJobsVideoImageURLsWithSummary(ctx, imageURLs)
+	return err
+}
+
+func validateKIEJobsVideoImageURLsWithSummary(ctx context.Context, imageURLs []string) (KIEImageProbeSummary, error) {
+	summary := KIEImageProbeSummary{ImageCount: len(imageURLs)}
 	for index, rawURL := range imageURLs {
+		record := KIEImageProbeRecord{
+			Index:     index,
+			URLSHA256: kieImageURLSHA256(rawURL),
+		}
+		probeStarted := time.Now()
 		normalized, err := urlvalidator.ValidateHTTPSURL(rawURL, urlvalidator.ValidationOptions{AllowPrivate: false})
 		if err != nil {
-			return &GrokVideoInputValidationError{Message: fmt.Sprintf("KIE reference image %d must be a public HTTPS URL", index)}
+			record.DurationMs = time.Since(probeStarted).Milliseconds()
+			record.ErrorClass = "invalid_public_https_url"
+			summary.Records = append(summary.Records, record)
+			return summary, &GrokVideoInputValidationError{Message: fmt.Sprintf("KIE reference image %d must be a public HTTPS URL", index)}
 		}
+		record.URLSHA256 = kieImageURLSHA256(normalized)
 		probe, err := kieJobsVideoImageURLProber(ctx, normalized)
+		record.DurationMs = time.Since(probeStarted).Milliseconds()
+		record.StatusCode = probe.statusCode
+		record.ContentType = probe.contentType
+		record.ContentLength = probe.contentLength
 		if err != nil {
+			record.ErrorClass = "probe_failed"
+			summary.Records = append(summary.Records, record)
 			// Do not include the URL or transport error: signed query strings and
 			// provider tokens must never be reflected in a client-visible error.
-			return &GrokVideoInputValidationError{Message: fmt.Sprintf("KIE reference image %d could not be fetched before submission", index)}
+			return summary, &GrokVideoInputValidationError{Message: fmt.Sprintf("KIE reference image %d could not be fetched before submission", index)}
 		}
 		if probe.statusCode < http.StatusOK || probe.statusCode >= http.StatusMultipleChoices {
-			return &GrokVideoInputValidationError{Message: fmt.Sprintf("KIE reference image %d URL returned HTTP %d", index, probe.statusCode)}
+			record.ErrorClass = "http_status"
+			summary.Records = append(summary.Records, record)
+			return summary, &GrokVideoInputValidationError{Message: fmt.Sprintf("KIE reference image %d URL returned HTTP %d", index, probe.statusCode)}
 		}
 		if probe.contentLength > kieJobsVideoReferenceImageMaxBytes {
-			return &GrokVideoInputValidationError{Message: fmt.Sprintf("KIE reference image %d exceeds the %d MB limit", index, kieJobsVideoReferenceImageMaxBytes/(1<<20))}
+			record.ErrorClass = "size_limit"
+			summary.Records = append(summary.Records, record)
+			return summary, &GrokVideoInputValidationError{Message: fmt.Sprintf("KIE reference image %d exceeds the %d MB limit", index, kieJobsVideoReferenceImageMaxBytes/(1<<20))}
 		}
 		if !isKIESupportedVideoImageContentType(probe.contentType) {
-			return &GrokVideoInputValidationError{Message: fmt.Sprintf("KIE reference image %d must return JPEG, PNG, or WebP content", index)}
+			record.ErrorClass = "unsupported_mime"
+			summary.Records = append(summary.Records, record)
+			return summary, &GrokVideoInputValidationError{Message: fmt.Sprintf("KIE reference image %d must return JPEG, PNG, or WebP content", index)}
 		}
+		summary.Records = append(summary.Records, record)
 	}
-	return nil
+	return summary, nil
+}
+
+func kieImageURLSHA256(rawURL string) string {
+	digest := sha256.Sum256([]byte(strings.TrimSpace(rawURL)))
+	return hex.EncodeToString(digest[:])
 }
 
 func probeKIEJobsVideoImageURL(ctx context.Context, normalizedURL string) (kieJobsVideoImageURLProbe, error) {

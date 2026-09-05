@@ -20,8 +20,9 @@ const (
 )
 
 // prepareKIEJobsVideoCreateBody projects the public Grok video request into
-// KIE's native Market jobs shape. KIE fetches its own public image URL, so do
-// not forward Data URLs or multipart uploads that it cannot resolve.
+// KIE's native Market jobs shape. Relay references are materialized by the
+// KIE transport before createTask; this projection still only emits the
+// provider's public image_urls contract and rejects Data URLs/uploads.
 func prepareKIEJobsVideoCreateBody(info GrokMediaRequestInfo, upstreamModel string) ([]byte, string, error) {
 	prompt := strings.TrimSpace(info.Prompt)
 	if prompt == "" {
@@ -174,6 +175,49 @@ func kieJobsResponseMessage(body []byte) string {
 		return message
 	}
 	return "upstream did not return a task ID"
+}
+
+func kieJobsErrorCode(body []byte) string {
+	for _, path := range []string{"code", "error.code"} {
+		if value := strings.TrimSpace(gjson.GetBytes(body, path).String()); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func kieJobsErrorMessage(body []byte) string {
+	for _, path := range []string{"msg", "message", "error.message", "data.failMsg"} {
+		if value := strings.TrimSpace(gjson.GetBytes(body, path).String()); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+// KIEJobsUpstreamErrorSummary keeps the diagnostic fields needed to identify
+// a native KIE rejection without persisting the full provider response.
+func KIEJobsUpstreamErrorSummary(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	summary := map[string]any{"response_bytes": len(body)}
+	if code := strings.TrimSpace(kieJobsErrorCode(body)); code != "" {
+		summary["code"] = code
+	}
+	if message := strings.TrimSpace(sanitizeUpstreamErrorMessage(kieJobsErrorMessage(body))); message != "" {
+		summary["message"] = message
+	}
+	if !gjson.ValidBytes(body) {
+		summary["json"] = false
+	} else {
+		summary["json"] = true
+	}
+	encoded, err := json.Marshal(summary)
+	if err != nil {
+		return fmt.Sprintf(`{"response_bytes":%d}`, len(body))
+	}
+	return string(encoded)
 }
 
 func rewriteKIEJobsVideoContentURL(body []byte, proxyURL string) []byte {

@@ -792,10 +792,16 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 	if account.UsesKIEJobsVideoAPI() && endpoint == GrokMediaEndpointVideosGenerations {
 		imageURLs := append([]string{}, requestInfo.InputImageURLs...)
 		imageURLs = append(imageURLs, requestInfo.ReferenceImageURLs...)
-		if err := validateKIEJobsVideoImageURLs(ctx, imageURLs); err != nil {
+		probeSummary, err := validateKIEJobsVideoImageURLsWithSummary(ctx, imageURLs)
+		SetOpsKIEImageProbe(c, probeSummary)
+		if err != nil {
 			return nil, err
 		}
 		body, contentType, err = prepareKIEJobsVideoCreateBody(requestInfo, upstreamModel)
+		if err != nil {
+			return nil, err
+		}
+		body, err = s.materializeKIEJobsVideoImageURLs(ctx, account, token, body)
 		if err != nil {
 			return nil, err
 		}
@@ -875,6 +881,30 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 			respBody, err = normalizeKIEJobsVideoStatusResponse(respBody, requestID)
 		}
 		if err != nil {
+			if account.UsesKIEJobsVideoAPI() {
+				providerErrorCode := kieJobsErrorCode(rawResponseBody)
+				providerErrorMessage := sanitizeUpstreamErrorMessage(kieJobsErrorMessage(rawResponseBody))
+				if providerErrorMessage == "" {
+					providerErrorMessage = "KIE task creation response was invalid"
+				}
+				var kieProbe *KIEImageProbeSummary
+				if summary, ok := GetOpsKIEImageProbe(c); ok {
+					kieProbe = &summary
+				}
+				kieErrorSummary := KIEJobsUpstreamErrorSummary(rawResponseBody)
+				SetOpsUpstreamError(c, http.StatusBadGateway, providerErrorMessage, kieErrorSummary)
+				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+					Platform:           account.Platform,
+					AccountID:          account.ID,
+					AccountName:        account.Name,
+					UpstreamStatusCode: http.StatusBadGateway,
+					Kind:               "response_invalid",
+					Message:            providerErrorMessage,
+					Detail:             kieErrorSummary,
+					ProviderErrorCode:  providerErrorCode,
+					KIEImageProbe:      kieProbe,
+				})
+			}
 			return nil, &UpstreamFailoverError{
 				StatusCode:      http.StatusBadGateway,
 				ResponseBody:    rawResponseBody,
@@ -1741,6 +1771,17 @@ func (s *OpenAIGatewayService) handleGrokMediaErrorResponse(
 	// otherwise a Grok 429 can remain schedulable.
 	s.handleGrokAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, body)
 	upstreamMsg := sanitizeUpstreamErrorMessage(strings.TrimSpace(extractUpstreamErrorMessage(body)))
+	providerErrorCode := ""
+	var kieProbe *KIEImageProbeSummary
+	if account != nil && account.UsesKIEJobsVideoAPI() {
+		if kieMessage := strings.TrimSpace(kieJobsErrorMessage(body)); kieMessage != "" {
+			upstreamMsg = sanitizeUpstreamErrorMessage(kieMessage)
+		}
+		providerErrorCode = kieJobsErrorCode(body)
+		if summary, ok := GetOpsKIEImageProbe(c); ok {
+			kieProbe = &summary
+		}
+	}
 	if upstreamMsg == "" {
 		upstreamMsg = fmt.Sprintf("xAI upstream returned status %d", resp.StatusCode)
 	}
@@ -1752,6 +1793,9 @@ func (s *OpenAIGatewayService) handleGrokMediaErrorResponse(
 			maxBytes = 2048
 		}
 		upstreamDetail = truncateString(string(body), maxBytes)
+	}
+	if account != nil && account.UsesKIEJobsVideoAPI() {
+		upstreamDetail = KIEJobsUpstreamErrorSummary(body)
 	}
 	setOpsUpstreamError(c, resp.StatusCode, upstreamMsg, upstreamDetail)
 	if isGrokContentPolicyRejection(resp.StatusCode, body) {
@@ -1765,6 +1809,8 @@ func (s *OpenAIGatewayService) handleGrokMediaErrorResponse(
 			Kind:               "http_error",
 			Message:            clientMsg,
 			Detail:             upstreamDetail,
+			ProviderErrorCode:  providerErrorCode,
+			KIEImageProbe:      kieProbe,
 		})
 		MarkResponseCommitted(c)
 		writeGrokMediaErrorResponse(c, http.StatusForbidden, "invalid_request_error", clientMsg)
@@ -1795,6 +1841,8 @@ func (s *OpenAIGatewayService) handleGrokMediaErrorResponse(
 			Kind:               "http_error",
 			Message:            upstreamMsg,
 			Detail:             upstreamDetail,
+			ProviderErrorCode:  providerErrorCode,
+			KIEImageProbe:      kieProbe,
 		})
 		MarkResponseCommitted(c)
 		writeGrokMediaErrorResponse(c, http.StatusInternalServerError, "upstream_error", "Upstream gateway error")
@@ -1814,6 +1862,8 @@ func (s *OpenAIGatewayService) handleGrokMediaErrorResponse(
 		Kind:               kind,
 		Message:            upstreamMsg,
 		Detail:             upstreamDetail,
+		ProviderErrorCode:  providerErrorCode,
+		KIEImageProbe:      kieProbe,
 	})
 	if kind == "failover" {
 		return nil, &UpstreamFailoverError{

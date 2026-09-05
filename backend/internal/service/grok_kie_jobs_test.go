@@ -207,3 +207,28 @@ func TestValidateKIEJobsVideoImageURLs(t *testing.T) {
 		require.NotContains(t, err.Error(), "signed-token-secret")
 	})
 }
+
+func TestKIEImageProbeSummaryAndErrorSummaryAreRedacted(t *testing.T) {
+	previous := kieJobsVideoImageURLProber
+	t.Cleanup(func() { kieJobsVideoImageURLProber = previous })
+	kieJobsVideoImageURLProber = func(context.Context, string) (kieJobsVideoImageURLProbe, error) {
+		return kieJobsVideoImageURLProbe{statusCode: 200, contentType: "image/png", contentLength: 1234}, nil
+	}
+	summary, err := validateKIEJobsVideoImageURLsWithSummary(context.Background(), []string{
+		"https://video.example/provider-input/token-a",
+		"https://video.example/provider-input/token-b",
+	})
+	require.NoError(t, err)
+	require.Equal(t, 2, summary.ImageCount)
+	require.Len(t, summary.Records, 2)
+	require.Len(t, summary.Records[0].URLSHA256, 64)
+	require.Equal(t, 200, summary.Records[0].StatusCode)
+	require.Equal(t, "image/png", summary.Records[0].ContentType)
+	require.Equal(t, int64(1234), summary.Records[0].ContentLength)
+	require.NotContains(t, fmt.Sprintf("%+v", summary), "token-a")
+
+	errorSummary := KIEJobsUpstreamErrorSummary([]byte(`{"code":422,"msg":"image fetch failed: token-secret"}`))
+	require.Contains(t, errorSummary, `"code":"422"`)
+	require.Contains(t, errorSummary, `"message":"image fetch failed: token-secret"`)
+	require.NotContains(t, errorSummary, "authorization")
+}

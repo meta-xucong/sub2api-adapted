@@ -15,6 +15,7 @@ const (
 	OpsUpstreamErrorMessageKey = "ops_upstream_error_message"
 	OpsUpstreamErrorDetailKey  = "ops_upstream_error_detail"
 	OpsUpstreamErrorsKey       = "ops_upstream_errors"
+	OpsKIEImageProbeKey        = "ops_kie_image_probe"
 
 	// Optional stage latencies (milliseconds) for troubleshooting and alerting.
 	OpsAuthLatencyMsKey      = "ops_auth_latency_ms"
@@ -172,6 +173,25 @@ func SetOpsUpstreamError(c *gin.Context, upstreamStatusCode int, upstreamMessage
 	setOpsUpstreamError(c, upstreamStatusCode, upstreamMessage, upstreamDetail)
 }
 
+func SetOpsKIEImageProbe(c *gin.Context, summary KIEImageProbeSummary) {
+	if c == nil {
+		return
+	}
+	c.Set(OpsKIEImageProbeKey, summary)
+}
+
+func GetOpsKIEImageProbe(c *gin.Context) (KIEImageProbeSummary, bool) {
+	if c == nil {
+		return KIEImageProbeSummary{}, false
+	}
+	v, ok := c.Get(OpsKIEImageProbeKey)
+	if !ok {
+		return KIEImageProbeSummary{}, false
+	}
+	summary, ok := v.(KIEImageProbeSummary)
+	return summary, ok
+}
+
 func setOpsUpstreamError(c *gin.Context, upstreamStatusCode int, upstreamMessage, upstreamDetail string) {
 	if c == nil {
 		return
@@ -210,7 +230,9 @@ type OpsUpstreamErrorEvent struct {
 	UpstreamURL string `json:"upstream_url,omitempty"`
 
 	// Best-effort upstream response capture (sanitized+trimmed).
-	UpstreamResponseBody string `json:"upstream_response_body,omitempty"`
+	UpstreamResponseBody string                `json:"upstream_response_body,omitempty"`
+	ProviderErrorCode    string                `json:"provider_error_code,omitempty"`
+	KIEImageProbe        *KIEImageProbeSummary `json:"kie_image_probe,omitempty"`
 
 	// Kind: http_error | request_error | retry_exhausted | failover
 	Kind string `json:"kind,omitempty"`
@@ -239,6 +261,10 @@ func appendOpsUpstreamError(c *gin.Context, ev OpsUpstreamErrorEvent) {
 	ev.Scope = strings.TrimSpace(ev.Scope)
 	ev.Reason = strings.TrimSpace(ev.Reason)
 	ev.UpstreamURL = strings.TrimSpace(ev.UpstreamURL)
+	ev.ProviderErrorCode = strings.TrimSpace(ev.ProviderErrorCode)
+	if len(ev.ProviderErrorCode) > 128 {
+		ev.ProviderErrorCode = ev.ProviderErrorCode[:128]
+	}
 	ev.Message = strings.TrimSpace(ev.Message)
 	ev.Detail = strings.TrimSpace(ev.Detail)
 	if ev.Message != "" {
