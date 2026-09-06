@@ -8,6 +8,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"path"
 	"strings"
@@ -124,7 +125,8 @@ func (s *OpenAIGatewayService) uploadKIEJobsReferenceImage(
 	image kieJobsVideoReferenceImage,
 	sourceURL string,
 ) (string, error) {
-	if len(image.Data) == 0 || !isKIESupportedVideoImageContentType(image.ContentType) {
+	contentType := normalizeKIEVideoImageContentType(image.ContentType)
+	if len(image.Data) == 0 || !isKIESupportedVideoImageContentType(contentType) {
 		return "", errors.New("unsupported reference image")
 	}
 	if len(image.Data) > kieJobsVideoReferenceImageMaxBytes {
@@ -132,11 +134,19 @@ func (s *OpenAIGatewayService) uploadKIEJobsReferenceImage(
 	}
 	fileName := strings.TrimSpace(image.FileName)
 	if fileName == "" {
-		fileName = safeKIEJobsReferenceFileName(sourceURL, image.ContentType)
+		fileName = sourceURL
 	}
+	fileName = safeKIEJobsReferenceFileName(fileName, contentType)
 	var buffer bytes.Buffer
 	writer := multipart.NewWriter(&buffer)
-	part, err := writer.CreateFormFile("file", fileName)
+	// multipart.Writer.CreateFormFile uses application/octet-stream for the
+	// file part. KIE's upload endpoint may accept that upload, but its returned
+	// temporary URL can then be rejected by createTask as "File type not
+	// supported". Preserve the detected image MIME explicitly.
+	partHeader := make(textproto.MIMEHeader)
+	partHeader.Set("Content-Disposition", multipart.FileContentDisposition("file", fileName))
+	partHeader.Set("Content-Type", contentType)
+	part, err := writer.CreatePart(partHeader)
 	if err != nil {
 		return "", err
 	}
@@ -190,6 +200,15 @@ func (s *OpenAIGatewayService) uploadKIEJobsReferenceImage(
 	}
 	if success := gjson.GetBytes(responseBody, "success"); success.Exists() && !success.Bool() {
 		return "", errors.New("KIE file upload was not successful")
+	}
+	if uploadedContentType := gjson.GetBytes(responseBody, "data.mimeType").String(); strings.TrimSpace(uploadedContentType) != "" {
+		normalizedUploadedContentType := normalizeKIEVideoImageContentType(uploadedContentType)
+		if !isKIESupportedVideoImageContentType(normalizedUploadedContentType) {
+			return "", fmt.Errorf("KIE file upload returned unsupported MIME type %q", normalizedUploadedContentType)
+		}
+		if normalizedUploadedContentType != contentType {
+			return "", fmt.Errorf("KIE file upload MIME type %q does not match %q", normalizedUploadedContentType, contentType)
+		}
 	}
 	downloadURL := strings.TrimSpace(firstNonEmpty(
 		gjson.GetBytes(responseBody, "data.downloadUrl").String(),
@@ -278,15 +297,24 @@ func safeKIEJobsReferenceFileName(source string, contentType string) string {
 	if name == "" || name == "." || name == "/" || strings.ContainsAny(name, "\\\x00\r\n") {
 		name = "reference"
 	}
-	if !strings.Contains(name, ".") {
-		switch contentType {
-		case "image/jpeg", "image/jpg":
-			name += ".jpg"
-		case "image/webp":
-			name += ".webp"
-		default:
-			name += ".png"
-		}
+	ext := path.Ext(name)
+	expectedExt := ".png"
+	switch normalizeKIEVideoImageContentType(contentType) {
+	case "image/jpeg", "image/jpg":
+		expectedExt = ".jpg"
+	case "image/webp":
+		expectedExt = ".webp"
+	}
+	if !strings.EqualFold(ext, expectedExt) {
+		name = strings.TrimSuffix(name, ext) + expectedExt
 	}
 	return name
+}
+
+func normalizeKIEVideoImageContentType(value string) string {
+	value = strings.ToLower(strings.TrimSpace(strings.SplitN(value, ";", 2)[0]))
+	if value == "image/jpg" {
+		return "image/jpeg"
+	}
+	return value
 }

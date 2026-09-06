@@ -53,6 +53,20 @@ KIE 的 JSON schema 与 Wokey multipart 不是同一个协议，不能把 Wokey 
 
 上传阶段沿用公网 HTTPS、DNS/SSRF、重定向、MIME 和 20 MB 单图校验；下载或上传失败会在 `createTask` 前失败，因此不会产生 KIE provider task 或视频计费。上传只增加首提交的网络往返，不增加视频任务次数。
 
+### KIE 临时文件 MIME 保真
+
+KIE 文件流上传不能只依赖文件名后缀。上传 multipart 的 `file` part 必须显式携带已探测到的 `image/png`、`image/jpeg` 或 `image/webp`；否则文件服务可能先返回 `downloadUrl`，但后续 `createTask` 会以 `File type not supported` 拒绝该临时文件。
+
+实现约束：
+
+- 文件名扩展名按真实 MIME 规范化，避免 URL 后缀与图片内容不一致；
+- 上传响应若返回 `data.mimeType`，必须是支持的图片类型且与本地探测结果一致；
+- MIME 不匹配时在 `createTask` 前失败，不将其伪装成上游任务失败；
+- 单元测试必须检查 multipart 文件 part 的 `Content-Type`，并覆盖 KIE 返回不支持 MIME 的场景；
+- `input.image_urls[]` 仍只放 KIE 返回的临时 `downloadUrl`，不把本地文件、Data URL 或 Aiself relay URL 直接交给 KIE。
+
+该补丁只改变原生 KIE relay 图片上传的 multipart 元数据和前置校验，不改变 Wokey、Subrouter 或无参考图请求。
+
 ## 新增线路的扩展规则
 
 新增线路先判断它属于哪一种协议：
@@ -77,5 +91,6 @@ KIE 的 JSON schema 与 Wokey multipart 不是同一个协议，不能把 Wokey 
 - 官方 KIE host 或显式 `kie_jobs` 使用原生 KIE URL；
 - 无图请求不触发图片下载；
 - 无效/HTML/非公网/超限图片在付费提交前失败；
+- KIE 上传的图片 part 保留正确 MIME，且 KIE 返回的 MIME 不匹配时在创建任务前失败；
 - 未来未知 transport 不会误走 KIE；
 - 现有 service、handler 和 Grok 视频生命周期测试全部通过。
