@@ -34,3 +34,13 @@ At the initial deployment canary no production API key was used for live upstrea
 A user-provided test key was later used without persisting it. The key exposed only OpenAI models. Chat Completions succeeded for `gpt-5.4`, `gpt-5.5`, `gpt-5.6`, `gpt-5.6-sol`, and `gpt-5.6-terra`; Responses succeeded for `gpt-5.5`. `gpt-5.4-mini` returned 502/503, and application logs attributed that to upstream account failures and model-support filtering. The image generation endpoint passed authenticated request validation without starting a generation task. Non-OpenAI providers were not tested because this key did not expose them.
 
 The test key should be revoked or rotated after testing because it was shared in chat.
+
+## aiself follow-up switch
+
+After the user confirmed that `gpt-5.4-mini` is retired upstream and should not block this release, the same candidate was applied to the direct `aiself.vip` deployment.
+
+- A fresh PostgreSQL/Redis/Compose/old-image backup was created before switching.
+- Only the application container was recreated; PostgreSQL and Redis were left running.
+- The legacy Docker Engine produced a different image ID, but the loaded image had identical layers, architecture, Entrypoint/Cmd, environment, and labels to the candidate.
+- Migration reached schema `283` / `234_group_codex_models_manifest_config.sql`; key counts remained accounts=110, groups=10, composite_model_routes=0, usage_billing_dedup=224896, smart_router_health_events=106211.
+- The public root, health, and setup endpoints returned 200; Redis returned `PONG`; unauthenticated API POST routes returned the expected 401. The application stayed `running/healthy`.
