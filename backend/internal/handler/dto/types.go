@@ -144,6 +144,10 @@ type Group struct {
 	AllowMessagesDispatch bool `json:"allow_messages_dispatch"`
 	// OpenAI Live 接口开关
 	AllowLive bool `json:"allow_live"`
+	// ModelsListConfig 是用户侧安全可见的公开模型目录。
+	// 它只决定 /v1/models 与客户端引导显示哪些模型，不包含账号或路由内部信息。
+	ModelsListConfig domain.GroupModelsListConfig `json:"models_list_config"`
+	DefaultMappedModel string `json:"default_mapped_model"`
 
 	// 账号过滤控制（仅 OpenAI/Antigravity 平台有效）
 	RequireOAuthOnly  bool `json:"require_oauth_only"`

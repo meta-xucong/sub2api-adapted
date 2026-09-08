@@ -566,7 +566,7 @@ describe('UseKeyModal', () => {
     expect(wrapper.findAll('pre code').map((code) => code.text()).join('\n')).not.toContain('x-openai-actor-authorization')
   })
 
-  it('renders GPT-5.4 mini entry in OpenCode config', async () => {
+  it('does not expose retired GPT-5.4 entries in OpenCode config', async () => {
     const wrapper = mount(UseKeyModal, {
       props: {
         show: true,
@@ -596,7 +596,8 @@ describe('UseKeyModal', () => {
 
     const codeBlock = wrapper.find('pre code')
     expect(codeBlock.exists()).toBe(true)
-    expect(codeBlock.text()).toContain('"name": "GPT-5.4 Mini"')
+    expect(codeBlock.text()).not.toContain('"name": "GPT-5.4 Mini"')
+    expect(codeBlock.text()).not.toContain('"name": "GPT-5.4"')
     expect(codeBlock.text()).not.toContain('"name": "GPT-5.4 Nano"')
   })
 
@@ -647,6 +648,50 @@ describe('UseKeyModal', () => {
       options: { store: false },
       variants: { low: {}, medium: {}, high: {}, xhigh: {}, max: {} }
     })
+  })
+
+  it('uses the selected group model catalog for routed providers and versioned URLs', async () => {
+    const wrapper = mount(UseKeyModal, {
+      props: {
+        show: true,
+        apiKey: 'sk-routed-test',
+        baseUrl: 'https://example.com',
+        platform: 'openai',
+        availableModels: ['deepseek-v4-flash', 'doubao-seed-2.0-code'],
+        defaultMappedModel: 'deepseek-v4-flash'
+      },
+      global: {
+        stubs: {
+          BaseDialog: {
+            template: '<div><slot /><slot name="footer" /></div>'
+          },
+          Icon: {
+            template: '<span />'
+          }
+        }
+      }
+    })
+
+    expect(wrapper.find('[data-testid="gateway-model-scope"]').exists()).toBe(true)
+    const defaultConfig = wrapper.findAll('pre code').map((code) => code.text())
+      .find((content) => content.includes('model_provider = "OpenAI"'))
+    expect(defaultConfig).toBeDefined()
+    expect(defaultConfig).toContain('model = "deepseek-v4-flash"')
+    expect(defaultConfig).toContain('base_url = "https://example.com/v1"')
+
+    const opencodeTab = wrapper.findAll('button').find((button) =>
+      button.text().includes('keys.useKeyModal.cliTabs.opencode')
+    )
+    expect(opencodeTab).toBeDefined()
+    await opencodeTab!.trigger('click')
+    await nextTick()
+
+    const parsed = JSON.parse(wrapper.find('pre code').text())
+    expect(Object.keys(parsed.provider.openai.models)).toEqual([
+      'deepseek-v4-flash',
+      'doubao-seed-2.0-code'
+    ])
+    expect(parsed.provider.openai.models['gpt-5.5']).toBeUndefined()
   })
 
   it('renders Claude Fable 5 OpenCode config with adaptive thinking', async () => {

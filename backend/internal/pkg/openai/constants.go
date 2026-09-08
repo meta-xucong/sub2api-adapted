@@ -25,8 +25,6 @@ var DefaultModels = []Model{
 	{ID: "gpt-5.6-luna", Object: "model", Created: 1780876800, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.6 Luna"},
 	{ID: "gpt-6-astra", Object: "model", Created: 1788480000, OwnedBy: "openai", Type: "model", DisplayName: "GPT-6 Astra"},
 	{ID: "gpt-5.5", Object: "model", Created: 1776873600, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.5"},
-	{ID: "gpt-5.4", Object: "model", Created: 1738368000, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.4"},
-	{ID: "gpt-5.4-mini", Object: "model", Created: 1738368000, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.4 Mini"},
 	{ID: "gpt-5.3-codex-spark", Object: "model", Created: 1735689600, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.3 Codex Spark"},
 	{ID: "codex-auto-review", Object: "model", Created: 1776902400, OwnedBy: "openai", Type: "model", DisplayName: "Codex Auto Review"},
 	{ID: "gpt-5.2", Object: "model", Created: 1733875200, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.2"},
@@ -45,7 +43,7 @@ func DefaultModelIDs() []string {
 }
 
 // DefaultTestModel default model for testing OpenAI accounts
-const DefaultTestModel = "gpt-5.4"
+const DefaultTestModel = "gpt-5.5"
 
 // CodexUsageProbeModel is the model used for OAuth Codex usage probes.
 const CodexUsageProbeModel = "codex-auto-review"
@@ -83,7 +81,7 @@ func latestCodexInstructions() string {
 //   - gpt-5.5 系非 codex 模型 → GPT-5.5 prompt
 //   - gpt-5.2 系非 codex 模型 → GPT-5.2 prompt
 //   - gpt-5.1 系非 codex 模型 → GPT-5.1 prompt
-//   - 其它（含 gpt-5.3 / gpt-5.4 / 裸 gpt-5 / 未知模型）→ 回退到最新版本（当前 GPT-5.5）
+//   - 其它旧版 / 裸 gpt-5 / 未知模型 → 回退到最新版本（当前 GPT-5.5）
 //
 // 任一专用 prompt 意外为空时回退链最终落到 DefaultInstructions，保证返回非空。
 func CodexBaseInstructionsForModel(model string) string {

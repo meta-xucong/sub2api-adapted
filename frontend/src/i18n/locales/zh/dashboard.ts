@@ -130,6 +130,7 @@ export default {
     useKeyModal: {
       title: '使用 API 密钥',
       description: '将以下环境变量添加到您的终端配置文件或直接在终端中运行。',
+      modelScopeHint: '当前分组模型：{models}。引导默认选择：{selected}；如需其他模型，请以该分组的 /v1/models 返回为准。',
       copy: '复制',
       copied: '已复制',
       note: '这些环境变量将在当前终端会话中生效。如需永久配置，请将其添加到 ~/.bashrc、~/.zshrc 或相应的配置文件中。',

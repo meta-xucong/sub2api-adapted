@@ -27,6 +27,13 @@
         <p class="text-sm text-gray-600 dark:text-gray-400">
           {{ platformDescription }}
         </p>
+        <p
+          v-if="modelScopeSummary"
+          data-testid="gateway-model-scope"
+          class="rounded-lg border border-indigo-100 bg-indigo-50 px-3 py-2 text-xs leading-5 text-indigo-700 dark:border-indigo-900/60 dark:bg-indigo-950/30 dark:text-indigo-300"
+        >
+          {{ modelScopeSummary }}
+        </p>
 
         <!-- Client Tabs -->
         <div v-if="clientTabs.length" class="overflow-x-auto border-b border-gray-200 dark:border-dark-700">
@@ -275,6 +282,10 @@ interface Props {
   apiKey: string
   baseUrl: string
   platform: GroupPlatform | null
+  /** Public models exposed by the selected group when its model list is enabled. */
+  availableModels?: string[]
+  /** Group-level default model, used before the generic platform fallback. */
+  defaultMappedModel?: string
   allowMessagesDispatch?: boolean
 }
 
@@ -327,7 +338,33 @@ const codexModelCatalogPath = computed(() => {
 
 const codexManifestContext = computed(() => {
   if (!showCodexModelCatalog.value) return ''
-  return `${props.platform}|${props.baseUrl}|${props.apiKey}`
+  return `${props.platform}|${props.baseUrl}|${props.apiKey}|${props.defaultMappedModel || ''}|${(props.availableModels || []).join(',')}`
+})
+
+const configuredModelIDs = computed<string[] | null>(() => {
+  if (!Array.isArray(props.availableModels)) return null
+  const seen = new Set<string>()
+  const models: string[] = []
+  for (const raw of props.availableModels) {
+    const model = String(raw || '').trim()
+    if (!model || seen.has(model)) continue
+    seen.add(model)
+    models.push(model)
+  }
+  return models.length > 0 ? models : null
+})
+
+const modelScopeSummary = computed(() => {
+  const models = configuredModelIDs.value
+  if (!models) return ''
+  const visible = models.slice(0, 8).join(', ')
+  const suffix = models.length > 8 ? ` (+${models.length - 8})` : ''
+  const preferred = props.defaultMappedModel?.trim()
+  const selected = preferred && models.includes(preferred) ? preferred : models[0]
+  return t('keys.useKeyModal.modelScopeHint', {
+    models: `${visible}${suffix}`,
+    selected
+  })
 })
 
 // Reset tabs when platform changes
@@ -659,6 +696,44 @@ function selectCodexCatalogModel(preferredModel: string): string {
   return codexCatalogModelSlugs.value[0] || preferredModel
 }
 
+function selectGatewayModel(preferredModel: string, fallbacks: string[] = []): string {
+  const models = configuredModelIDs.value
+  if (!models) return preferredModel
+
+  const candidates = [props.defaultMappedModel?.trim(), preferredModel, ...fallbacks]
+    .filter((model): model is string => Boolean(model))
+  const exact = candidates.find((model) => models.includes(model))
+  if (exact) return exact
+
+  // Prefer a text model when a group is media-only, unless it has no text
+  // model at all. This keeps image-only groups usable while avoiding a
+  // surprising gpt-image default for ordinary CLI setup.
+  const textModel = models.find((model) => !/(^|[-_])(image|video|imagine)([-_]|$)/i.test(model))
+  return textModel || models[0]
+}
+
+function genericOpenCodeModel(model: string) {
+  return {
+    name: model,
+    limit: {
+      context: 200000,
+      output: 64000
+    },
+    options: {
+      store: false
+    }
+  }
+}
+
+function buildOpenCodeModelCatalog(
+  catalog: Record<string, Record<string, any>>
+): Record<string, Record<string, any>> {
+  const configured = configuredModelIDs.value
+  if (!configured) return catalog
+
+  return Object.fromEntries(configured.map((model) => [model, catalog[model] || genericOpenCodeModel(model)]))
+}
+
 function codexReasoningEffortTomlLine(modelSlug: string): string {
   return formatCodexReasoningEffortTomlLine(
     selectCodexConfigReasoningEffort(findCodexCatalogModel(codexModelManifestContent.value, modelSlug))
@@ -725,25 +800,25 @@ const currentFiles = computed((): FileConfig[] => {
   switch (props.platform) {
     case 'openai':
       if (activeClientTab.value === 'claude') {
-        return generateAnthropicFiles(baseUrl, apiKey)
+        return generateAnthropicFiles(baseRoot, apiKey)
       }
       if (activeClientTab.value === 'codex-ws') {
-        return generateOpenAIWsFiles(baseUrl, apiKey)
+        return generateOpenAIWsFiles(apiBase, apiKey)
       }
-      return generateOpenAIFiles(baseUrl, apiKey)
+      return generateOpenAIFiles(apiBase, apiKey)
     case 'gemini':
       if (activeClientTab.value === 'codex') {
         return generateRoutedCodexFiles(apiBase, apiKey, 'gemini')
       }
-      return [generateGeminiCliContent(baseUrl, apiKey)]
+      return [generateGeminiCliContent(geminiBase, apiKey)]
     case 'antigravity':
       if (activeClientTab.value === 'codex') {
         return generateRoutedCodexFiles(apiBase, apiKey, 'antigravity')
       }
       if (activeClientTab.value === 'gemini') {
-        return [generateGeminiCliContent(`${baseUrl}/antigravity`, apiKey)]
+        return [generateGeminiCliContent(antigravityGeminiBase, apiKey)]
       }
-      return generateAnthropicFiles(`${baseUrl}/antigravity`, apiKey)
+      return generateAnthropicFiles(`${baseRoot}/antigravity`, apiKey)
     case 'grok':
       if (activeClientTab.value === 'claude') {
         return generateGrokClaudeFiles(baseRoot, apiKey)
@@ -766,7 +841,7 @@ const currentFiles = computed((): FileConfig[] => {
       if (activeClientTab.value === 'codex' && props.platform) {
         return generateRoutedCodexFiles(apiBase, apiKey, props.platform)
       }
-      return generateAnthropicFiles(baseUrl, apiKey)
+      return generateAnthropicFiles(baseRoot, apiKey)
   }
 })
 
@@ -926,7 +1001,7 @@ function generateOpenAIFiles(baseUrl: string, apiKey: string): FileConfig[] {
   const isWindows = activeTab.value === 'windows'
   const configDir = isWindows ? '%userprofile%\\.codex' : '~/.codex'
 
-  const model = selectCodexCatalogModel('gpt-5.5')
+  const model = selectCodexCatalogModel(selectGatewayModel('gpt-5.5'))
   const reasoningEffortLine = codexReasoningEffortTomlLine(model)
 
   // config.toml content
@@ -1222,7 +1297,7 @@ function generateRoutedCodexFiles(
     composite: 'gpt-5.5'
   }
   const preferredModel = preferredModels[platform] || ''
-  const model = selectCodexCatalogModel(preferredModel)
+  const model = selectCodexCatalogModel(selectGatewayModel(preferredModel))
   const labels: Record<GroupPlatform, string> = {
     anthropic: 'Anthropic',
     openai: 'OpenAI',
@@ -1271,7 +1346,7 @@ supports_websockets = false`
 function generateOpenAIWsFiles(baseUrl: string, apiKey: string): FileConfig[] {
   const isWindows = activeTab.value === 'windows'
   const configDir = isWindows ? '%userprofile%\\.codex' : '~/.codex'
-  const model = selectCodexCatalogModel('gpt-5.5')
+  const model = selectCodexCatalogModel(selectGatewayModel('gpt-5.5'))
   const reasoningEffortLine = codexReasoningEffortTomlLine(model)
 
   // config.toml content with WebSocket v2
@@ -1429,38 +1504,6 @@ function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: strin
       name: 'GPT-5.5',
       limit: {
         context: 1050000,
-        output: 128000
-      },
-      options: {
-        store: false
-      },
-      variants: {
-        low: {},
-        medium: {},
-        high: {},
-        xhigh: {}
-      }
-    },
-    'gpt-5.4': {
-      name: 'GPT-5.4',
-      limit: {
-        context: 1050000,
-        output: 128000
-      },
-      options: {
-        store: false
-      },
-      variants: {
-        low: {},
-        medium: {},
-        high: {},
-        xhigh: {}
-      }
-    },
-    'gpt-5.4-mini': {
-      name: 'GPT-5.4 Mini',
-      limit: {
-        context: 400000,
         output: 128000
       },
       options: {
@@ -1848,7 +1891,7 @@ function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: strin
     provider[platform].name = 'Antigravity (Gemini)'
     provider[platform].models = antigravityGeminiModels
   } else if (platform === 'openai') {
-    provider[platform].models = openaiModels
+    provider[platform].models = buildOpenCodeModelCatalog(openaiModels)
   } else if (platform === 'grok') {
     // Custom provider pointing at Sub2API OpenAI-compatible Responses/Chat endpoints.
     provider[platform].npm = '@ai-sdk/openai-compatible'

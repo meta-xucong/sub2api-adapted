@@ -7,12 +7,12 @@ vi.mock('@/api/admin/accounts', () => ({
 import { buildModelMappingObject, getModelsByPlatform, getPresetMappingsByPlatform, splitModelMappingObject } from '../useModelWhitelist'
 
 describe('useModelWhitelist', () => {
-  it('openai 模型列表包含 GPT-5.4 官方快照', () => {
+  it('openai 模型列表包含当前 GPT 系列且不再暴露 GPT-5.4', () => {
     const models = getModelsByPlatform('openai')
 
-    expect(models).toContain('gpt-5.4')
-    expect(models).toContain('gpt-5.4-mini')
-    expect(models).toContain('gpt-5.4-2026-03-05')
+    expect(models).not.toContain('gpt-5.4')
+    expect(models).not.toContain('gpt-5.4-mini')
+    expect(models).not.toContain('gpt-5.4-2026-03-05')
     expect(models).toContain('codex-auto-review')
     expect(models).toContain('gpt-5.6')
     expect(models).toContain('gpt-6')
@@ -122,49 +122,33 @@ describe('useModelWhitelist', () => {
     })
   })
 
-  it('whitelist 模式会保留 GPT-5.4 官方快照的精确映射', () => {
-    const mapping = buildModelMappingObject('whitelist', ['gpt-5.4-2026-03-05'], [])
-
-    expect(mapping).toEqual({
-      'gpt-5.4-2026-03-05': 'gpt-5.4-2026-03-05'
-    })
-  })
-
-  it('whitelist keeps GPT-5.4 mini exact mappings', () => {
-    const mapping = buildModelMappingObject('whitelist', ['gpt-5.4-mini'], [])
-
-    expect(mapping).toEqual({
-      'gpt-5.4-mini': 'gpt-5.4-mini'
-    })
-  })
-
   it('combined 模式会同时保留白名单身份映射和模型映射', () => {
     const mapping = buildModelMappingObject(
       'combined',
-      ['gpt-5.4', 'claude-*'],
+      ['gpt-5.5', 'claude-*'],
       [
-        { from: 'gpt-latest', to: 'gpt-5.4' },
-        { from: 'gpt-5.4', to: 'gpt-5.4-mini' }
+        { from: 'gpt-latest', to: 'gpt-5.5' },
+        { from: 'gpt-5.5', to: 'gpt-6-astra' }
       ]
     )
 
     expect(mapping).toEqual({
-      'gpt-5.4': 'gpt-5.4-mini',
-      'gpt-latest': 'gpt-5.4'
+      'gpt-5.5': 'gpt-6-astra',
+      'gpt-latest': 'gpt-5.5'
     })
   })
 
   it('splitModelMappingObject 会把身份映射还原成白名单，其余保留为映射', () => {
     const parsed = splitModelMappingObject({
-      'gpt-5.4': 'gpt-5.4',
-      'gpt-latest': 'gpt-5.4',
+      'gpt-5.5': 'gpt-5.5',
+      'gpt-latest': 'gpt-5.5',
       ' ': 'gpt-empty',
       broken: 123
     })
 
     expect(parsed).toEqual({
-      allowedModels: ['gpt-5.4'],
-      modelMappings: [{ from: 'gpt-latest', to: 'gpt-5.4' }]
+      allowedModels: ['gpt-5.5'],
+      modelMappings: [{ from: 'gpt-latest', to: 'gpt-5.5' }]
     })
   })
 })

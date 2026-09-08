@@ -18,9 +18,9 @@ describe("groupsMessagesDispatch", () => {
   it("returns the expected default form state", () => {
     expect(createDefaultMessagesDispatchFormState()).toEqual({
       allow_messages_dispatch: false,
-      opus_mapped_model: "gpt-5.4",
+      opus_mapped_model: "gpt-5.5",
       sonnet_mapped_model: "gpt-5.3-codex",
-      haiku_mapped_model: "gpt-5.4-mini",
+      haiku_mapped_model: "gpt-5.5",
       exact_model_mappings: [],
     });
   });
@@ -92,9 +92,9 @@ describe("groupsMessagesDispatch", () => {
 
     expect(state).toEqual({
       allow_messages_dispatch: false,
-      opus_mapped_model: "gpt-5.4",
+      opus_mapped_model: "gpt-5.5",
       sonnet_mapped_model: "gpt-5.3-codex",
-      haiku_mapped_model: "gpt-5.4-mini",
+      haiku_mapped_model: "gpt-5.5",
       exact_model_mappings: [],
     });
   });

@@ -131,6 +131,7 @@ export default {
       title: 'Use API Key',
       description:
         'Add the following environment variables to your terminal profile or run directly in terminal to configure API access.',
+      modelScopeHint: 'Models in this group: {models}. The guide defaults to {selected}; use this group\'s /v1/models response as the source of truth for other models.',
       copy: 'Copy',
       copied: 'Copied',
       note: 'These environment variables will be active in the current terminal session. For permanent configuration, add them to ~/.bashrc, ~/.zshrc, or the appropriate configuration file.',

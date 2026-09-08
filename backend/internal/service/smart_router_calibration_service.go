@@ -285,7 +285,7 @@ func smartRouterAutoEnrollmentProbes(account *Account) []smartrouter.Calibration
 	for _, capability := range ordered {
 		if capabilities[capability] {
 			if capability == smartrouter.CapabilityResponsesCompact {
-				for _, model := range smartRouterCompactProbeModelsForAccount(account, "gpt-5.4") {
+				for _, model := range smartRouterCompactProbeModelsForAccount(account, smartRouterCalibrationTextModel) {
 					probes = append(probes, smartrouter.CalibrationProbe{LaneID: lane.LaneID, Capability: capability, Model: model, Reason: "new_or_changed_lane"})
 				}
 				continue
@@ -681,7 +681,7 @@ func (s *SmartRouterCalibrationService) calibrationModelForCapability(account *A
 		}
 		return "text-embedding-3-small"
 	}
-	preferred := []string{"gpt-5.5", "gpt-5.4", "gpt-5.4-mini"}
+	preferred := []string{"gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"}
 	if account != nil {
 		mapping := account.GetModelMapping()
 		patterns := make([]string, 0, len(mapping))
@@ -751,7 +751,7 @@ func (s *SmartRouterCalibrationService) compactCalibrationModel() string {
 			return model
 		}
 	}
-	return "gpt-5.4"
+	return smartRouterCalibrationTextModel
 }
 
 func (s *SmartRouterCalibrationService) ensureCompactModelCalibrationProbes(
@@ -876,7 +876,7 @@ func smartRouterAccountSupportsRecoveryModel(account *Account, capability smartr
 
 func smartRouterCompactProbeModelsForAccount(account *Account, fallback string) []string {
 	fallback = strings.ToLower(strings.TrimSpace(fallback))
-	defaults := []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4"}
+	defaults := []string{"gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"}
 	patterns := smartRouterCompactModelPatterns(account)
 	seen := make(map[string]struct{}, len(defaults)+len(patterns)+1)
 	models := make([]string, 0, len(defaults)+1)
@@ -1098,7 +1098,7 @@ func (s *OpenAIGatewayService) RunSmartRouterCompactCalibrationProbe(ctx context
 	}
 	model = strings.TrimSpace(model)
 	if model == "" {
-		model = "gpt-5.4"
+		model = smartRouterCalibrationTextModel
 	}
 	body, err := json.Marshal(createOpenAICompactProbePayload(model, account.Type == AccountTypeOAuth))
 	if err != nil {

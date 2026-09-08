@@ -994,6 +994,8 @@
       :api-key="selectedKey?.key || ''"
       :base-url="publicSettings?.api_base_url || ''"
       :platform="selectedKey?.group?.platform || null"
+      :available-models="selectedKey?.group?.models_list_config?.enabled ? selectedKey?.group?.models_list_config?.models : undefined"
+      :default-mapped-model="selectedKey?.group?.default_mapped_model || ''"
       :allow-messages-dispatch="selectedKey?.group?.allow_messages_dispatch || false"
       @close="closeUseKeyModal"
     />
@@ -1149,6 +1151,7 @@ import {
   buildCcSwitchImportDeeplink,
   type CcSwitchClientType
 } from '@/utils/ccswitchImport'
+import { trimGatewayBaseUrl, withOpenAICompatibleVersion } from '@/utils/gatewayBaseUrl'
 
 // Helper to format date for datetime-local input
 const formatDateTimeLocal = (isoDate: string): string => {
@@ -1886,10 +1889,11 @@ const importToCcswitch = (row: ApiKey) => {
 const executeCcsImport = (row: ApiKey, clientType: CcSwitchClientType) => {
   const baseUrl = publicSettings.value?.api_base_url || window.location.origin
   const platform = row.group?.platform || 'anthropic'
+  const usageBaseUrl = withOpenAICompatibleVersion(trimGatewayBaseUrl(baseUrl))
 
   const usageScript = `({
     request: {
-      url: "{{baseUrl}}/v1/usage",
+      url: "${usageBaseUrl}/usage",
       method: "GET",
       headers: { "Authorization": "Bearer {{apiKey}}" }
     },

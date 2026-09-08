@@ -607,6 +607,8 @@ export interface Group {
   allow_messages_dispatch?: boolean
   // OpenAI Live 接口开关
   allow_live: boolean
+  // 用户侧安全可见的公开模型目录；启用时用于 Use Key/OpenCode 引导。
+  models_list_config?: ModelsListConfig
   default_mapped_model?: string
   messages_dispatch_model_config?: OpenAIMessagesDispatchModelConfig
   require_oauth_only: boolean
