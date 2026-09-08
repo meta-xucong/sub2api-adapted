@@ -44,3 +44,4 @@ After the user confirmed that `gpt-5.4-mini` is retired upstream and should not 
 - The legacy Docker Engine produced a different image ID, but the loaded image had identical layers, architecture, Entrypoint/Cmd, environment, and labels to the candidate.
 - Migration reached schema `283` / `234_group_codex_models_manifest_config.sql`; key counts remained accounts=110, groups=10, composite_model_routes=0, usage_billing_dedup=224896, smart_router_health_events=106211.
 - The public root, health, and setup endpoints returned 200; Redis returned `PONG`; unauthenticated API POST routes returned the expected 401. The application stayed `running/healthy`.
+- During a short post-switch observation, `usage_billing_dedup` increased by six; a read-only check matched six recent records and logs showed normal DeepSeek Messages and image traffic, with no duplicate-billing, panic, or fatal signal.
