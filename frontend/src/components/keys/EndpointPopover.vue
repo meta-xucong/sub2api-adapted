@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useClipboard } from '@/composables/useClipboard'
 import type { CustomEndpoint } from '@/types'
+import { ensureOpenAIBaseUrl } from '@/utils/url'
 
 const props = defineProps<{
   apiBaseUrl: string
@@ -20,8 +21,8 @@ const allEndpoints = computed(() => {
   if (props.apiBaseUrl) {
     items.push({
       name: t('keys.endpoints.title'),
-      endpoint: props.apiBaseUrl,
-      description: '',
+      endpoint: ensureOpenAIBaseUrl(props.apiBaseUrl),
+      description: t('keys.endpoints.openaiBaseHint'),
       isDefault: true,
     })
   }

@@ -731,6 +731,27 @@ go generate ./cmd/server
 
 ---
 
+## 面向客户端的 API 地址约定
+
+设置中的 `api_base_url` 表示站点根地址，用于回调地址建议。OpenAI 兼容
+客户端实际应使用 `<根地址>/v1`，例如
+`https://your-sub2api.example.com/v1`。
+
+请不要把模型 API 和管理 API 混淆：
+
+| 用途 | 基础路径 |
+| --- | --- |
+| OpenAI、Codex、Grok Build | `/v1` |
+| Gemini | `/v1beta`（按客户端约定） |
+| Claude Code | `/v1/messages`（客户端基地址为根域名） |
+| Antigravity Claude/Gemini | `/antigravity/v1/...` 或 `/antigravity/v1beta/...` |
+| 管理 API 与 OAuth 回调 | `/api/v1` |
+
+API Keys 页面和 Grok Build 的 CC Switch 导入会把裸域名规范化为恰好一个
+`/v1`。自定义端点请直接填写完整的协议路径。
+
+详见 [API Endpoint URL Contract](docs/API_ENDPOINT_URL_CONTRACT.md)。
+
 ## Antigravity 使用说明
 
 Sub2API 支持 [Antigravity](https://antigravity.so/) 账户，授权后可通过专用端点访问 Claude 和 Gemini 模型。

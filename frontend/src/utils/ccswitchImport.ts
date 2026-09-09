@@ -1,4 +1,5 @@
 import type { GroupPlatform } from '@/types'
+import { ensureOpenAIBaseUrl } from '@/utils/url'
 
 export const OPENAI_CC_SWITCH_CODEX_MODEL = 'gpt-5.5'
 export const GROK_CC_SWITCH_MODEL = 'grok-4.5'
@@ -18,11 +19,6 @@ export interface CcSwitchImportDeeplinkInput {
   providerName: string
   apiKey: string
   usageScript: string
-}
-
-function withV1Endpoint(baseUrl: string): string {
-  const normalizedBaseUrl = baseUrl.replace(/\/+$/, '')
-  return normalizedBaseUrl.endsWith('/v1') ? normalizedBaseUrl : `${normalizedBaseUrl}/v1`
 }
 
 export function resolveCcSwitchImportConfig(
@@ -50,7 +46,7 @@ export function resolveCcSwitchImportConfig(
     case 'grok':
       return {
         app: 'grokbuild',
-        endpoint: withV1Endpoint(baseUrl),
+        endpoint: ensureOpenAIBaseUrl(baseUrl),
         model: GROK_CC_SWITCH_MODEL
       }
     default:

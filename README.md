@@ -800,6 +800,29 @@ Administrators can override automatic media eligibility through the account crea
 
 ---
 
+## Client-Facing API URL Contract
+
+The site setting `api_base_url` is the public site origin used for callback
+suggestions. OpenAI-compatible clients must use the model gateway under
+`<origin>/v1`, for example `https://your-sub2api.example.com/v1`.
+
+Do not confuse the client gateway with the management API:
+
+| Use | Base path |
+| --- | --- |
+| OpenAI, Codex, Grok Build | `/v1` |
+| Gemini | `/v1beta` (client-specific) |
+| Claude Code | `/v1/messages` (the client base is the origin) |
+| Antigravity Claude/Gemini | `/antigravity/v1/...` or `/antigravity/v1beta/...` |
+| Admin API and OAuth callbacks | `/api/v1` |
+
+The API Keys page and the Grok Build CC Switch import normalize a bare origin
+to exactly one `/v1` suffix. Custom endpoint entries should include their full
+protocol path explicitly.
+
+See [API Endpoint URL Contract](docs/API_ENDPOINT_URL_CONTRACT.md) for the
+implementation and compatibility rules.
+
 ## Antigravity Support
 
 Sub2API supports [Antigravity](https://antigravity.so/) accounts. After authorization, dedicated endpoints are available for Claude and Gemini models.

@@ -75,6 +75,7 @@ export default {
       copied: 'Copied',
       copiedHint: 'Copied to clipboard',
       clickToCopy: 'Click to copy this endpoint',
+      openaiBaseHint: 'OpenAI-compatible model API base; the client URL ends with /v1',
       speedTest: 'Speed Test',
     },
     allGroups: 'All Groups',

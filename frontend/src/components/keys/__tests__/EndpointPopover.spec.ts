@@ -9,6 +9,7 @@ const messages: Record<string, string> = {
   'keys.endpoints.copied': '已复制',
   'keys.endpoints.copiedHint': '已复制到剪贴板',
   'keys.endpoints.clickToCopy': '点击可复制此端点',
+  'keys.endpoints.openaiBaseHint': 'OpenAI 兼容模型 API 基地址，实际调用地址以 /v1 结尾',
   'keys.endpoints.speedTest': '测速',
 }
 
@@ -65,5 +66,33 @@ describe('EndpointPopover', () => {
     expect(copyToClipboard).toHaveBeenCalledWith('https://default.example.com/v1', '已复制')
     expect(wrapper.text()).toContain('已复制到剪贴板')
     expect(wrapper.find('button[aria-label="已复制到剪贴板"]').exists()).toBe(true)
+  })
+
+  it('裸站点地址显示并复制为 OpenAI 兼容的 /v1 端点', async () => {
+    const wrapper = mount(EndpointPopover, {
+      props: {
+        apiBaseUrl: 'https://default.example.com/',
+        customEndpoints: [],
+      },
+    })
+
+    expect(wrapper.text()).toContain('https://default.example.com/v1')
+
+    await wrapper.find('[role="button"]').trigger('click')
+    await flushPromises()
+
+    expect(copyToClipboard).toHaveBeenCalledWith('https://default.example.com/v1', '已复制')
+  })
+
+  it('不会改写带明确路径的默认端点', () => {
+    const wrapper = mount(EndpointPopover, {
+      props: {
+        apiBaseUrl: 'https://default.example.com/api/v1/',
+        customEndpoints: [],
+      },
+    })
+
+    expect(wrapper.text()).toContain('https://default.example.com/api/v1')
+    expect(wrapper.text()).not.toContain('/api/v1/v1')
   })
 })
