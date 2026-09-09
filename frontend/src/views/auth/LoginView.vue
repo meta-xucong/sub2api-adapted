@@ -261,6 +261,20 @@ const router = useRouter()
 const authStore = useAuthStore()
 const appStore = useAppStore()
 
+/**
+ * Veyra return targets are served by the backend portal middleware, not Vue
+ * Router. A full document navigation lets that middleware return the portal
+ * shell and lets its app.js resolve the target (home, console, or Alchemy).
+ */
+async function navigateAfterLogin(redirectTo: string): Promise<void> {
+  if (redirectTo.startsWith('/_veyra/')) {
+    window.location.assign(redirectTo)
+    return
+  }
+
+  await router.push(redirectTo)
+}
+
 // ==================== State ====================
 
 const isLoading = ref<boolean>(false)
@@ -602,7 +616,7 @@ async function handleLogin(): Promise<void> {
 
     // Redirect to dashboard or intended route
     const redirectTo = (router.currentRoute.value.query.redirect as string) || '/dashboard'
-    await router.push(redirectTo)
+    await navigateAfterLogin(redirectTo)
   } catch (error: unknown) {
     errorMessage.value = extractI18nErrorMessage(error, t, 'auth.errors', t('auth.loginFailed'))
 
@@ -643,7 +657,7 @@ async function handlePasskeyLogin(): Promise<void> {
     clearAllAffiliateReferralCodes()
     appStore.showSuccess(t('auth.loginSuccess'))
     const redirectTo = (router.currentRoute.value.query.redirect as string) || '/dashboard'
-    await router.push(redirectTo)
+    await navigateAfterLogin(redirectTo)
   } catch (error: unknown) {
     const fallback = error instanceof DOMException && error.name === 'NotAllowedError'
       ? t('auth.passkeyCancelled')
@@ -712,7 +726,7 @@ async function handle2FAVerify(code: string): Promise<void> {
 
     // Redirect to dashboard or intended route
     const redirectTo = (router.currentRoute.value.query.redirect as string) || '/dashboard'
-    await router.push(redirectTo)
+    await navigateAfterLogin(redirectTo)
   } catch (error: unknown) {
     const err = error as { message?: string; response?: { data?: { message?: string } } }
     const message = err.response?.data?.message || err.message || t('profile.totp.loginFailed')
