@@ -185,18 +185,18 @@ button {
 
 .entry-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
 }
 
 .entry-card {
-  min-height: 250px;
+  min-height: 238px;
   position: relative;
   display: grid;
   align-content: start;
-  gap: 12px;
+  gap: 10px;
   overflow: hidden;
-  padding: 18px;
+  padding: 16px;
   border: 1px solid var(--line);
   border-radius: 16px;
   background: var(--surface);
@@ -210,13 +210,13 @@ button {
 
 .entry-card strong {
   display: block;
-  font-size: clamp(25px, 3vw, 36px);
+  font-size: clamp(23px, 2.5vw, 31px);
   line-height: 1.08;
   font-weight: 300;
 }
 
 .entry-card p {
-  max-width: 360px;
+  max-width: calc(100% - 118px);
   margin: 0;
   color: var(--muted);
   font-size: 14px;
@@ -224,14 +224,14 @@ button {
 }
 
 .image-entry {
-  min-height: 310px;
+  min-height: 252px;
 }
 
 .image-entry img {
   position: absolute;
   right: 14px;
   bottom: 14px;
-  width: min(34%, 170px);
+  width: min(38%, 120px);
   aspect-ratio: 1;
   object-fit: cover;
   border: 1px solid var(--line);
@@ -508,5 +508,11 @@ button {
 
   .account-strip strong {
     font-size: 18px;
+  }
+}
+
+@media (min-width: 761px) and (max-width: 940px) {
+  .entry-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
