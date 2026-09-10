@@ -28,6 +28,13 @@ func TestMemoryTicketStoreConsumesOnce(t *testing.T) {
 	require.ErrorIs(t, err, ErrTicketInvalid)
 }
 
+func TestMemoryTicketStorePreservesVideoIntent(t *testing.T) {
+	store := NewMemoryTicketStore()
+	ticket, err := store.Create(context.Background(), 42, "video", time.Minute)
+	require.NoError(t, err)
+	require.Equal(t, PortalIntentVideo, ticket.Intent)
+}
+
 func TestMemoryTicketStoreExpires(t *testing.T) {
 	store := NewMemoryTicketStore()
 	now := time.Date(2026, 6, 11, 1, 2, 3, 0, time.UTC)

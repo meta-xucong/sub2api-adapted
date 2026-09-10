@@ -198,6 +198,7 @@ veyra:
   enabled: false
   portal_enabled: false
   alchemy_base_url: "https://alchemy.aiself.vip"
+  video_base_url: "https://video.aiself.vip"
   internal_token: ""
   login_ticket_ttl_seconds: 120
 

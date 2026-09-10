@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 	"strings"
@@ -50,6 +51,16 @@ type UsageHandler struct {
 	apiKeyService  *service.APIKeyService
 	opsService     *service.OpsService
 	settingService *service.SettingService
+}
+
+// GetVideoUsage is the narrow internal reader used by the Video OS Veyra
+// bridge. It exposes only the already-settled usage row; it does not debit or
+// otherwise mutate the account.
+func (h *UsageHandler) GetVideoUsage(ctx context.Context, userID int64, requestID string) (service.VideoUsageFact, error) {
+	if h == nil || h.usageService == nil {
+		return service.VideoUsageFact{}, service.ErrUsageLogNotFound
+	}
+	return h.usageService.GetVideoUsage(ctx, userID, requestID)
 }
 
 // NewUsageHandler creates a new UsageHandler
