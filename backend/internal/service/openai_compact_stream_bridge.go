@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -117,8 +118,11 @@ func writeOpenAICompactSSEFailureMessage(c *gin.Context, statusCode int, errType
 		"response": map[string]any{
 			"id":     "resp_" + strings.ReplaceAll(uuid.NewString(), "-", ""),
 			"object": "response",
-			"status": "failed",
-			"output": []any{},
+			// 严格客户端把 created_at 当必填字段，缺失会反序列化失败，
+			// 终止事件就白发了（退化成盲重连）。与 writeResponsesFailedSSE 对齐。
+			"created_at": time.Now().Unix(),
+			"status":     "failed",
+			"output":     []any{},
 			"error": map[string]any{
 				"code":    errType,
 				"message": message,
@@ -172,7 +176,6 @@ func buildOpenAICompactSSEPayload(finalResponse []byte) ([]byte, bool) {
 
 	var buf bytes.Buffer
 	outputIndex := 0
-	compactionItems := 0
 	appendEvent := func(eventType string, data []byte) {
 		_, _ = buf.WriteString("event: ")
 		_, _ = buf.WriteString(eventType)
@@ -184,9 +187,6 @@ func buildOpenAICompactSSEPayload(finalResponse []byte) ([]byte, bool) {
 		if !item.IsObject() {
 			continue
 		}
-		if isResponsesCompactionItemType(item.Get("type").String()) {
-			compactionItems++
-		}
 		event, err := sjson.SetBytes([]byte(`{"type":"response.output_item.done"}`), "output_index", outputIndex)
 		if err != nil {
 			return nil, false
@@ -197,9 +197,6 @@ func buildOpenAICompactSSEPayload(finalResponse []byte) ([]byte, bool) {
 		}
 		appendEvent("response.output_item.done", event)
 		outputIndex++
-	}
-	if compactionItems != 1 {
-		return nil, false
 	}
 
 	completed, err := sjson.SetRawBytes([]byte(`{"type":"response.completed"}`), "response", response)

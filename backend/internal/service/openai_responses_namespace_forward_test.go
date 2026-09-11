@@ -30,7 +30,6 @@ const codexNamespaceRequestBody = `{
 }`
 
 const namespaceForwardOKResponse = `{"id":"resp_ns","output":[],"usage":{"input_tokens":1,"output_tokens":1,"input_tokens_details":{"cached_tokens":0}}}`
-const namespaceCompactForwardOKResponse = `{"id":"resp_ns_compact","output":[{"id":"cmp_ns","type":"compaction","encrypted_content":"compact-payload"}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`
 
 // OAuth 出口即 namespace 扩展的定义方：声明必须原样送达，历史调用项必须保留
 // namespace（缺字段上游会 400 "Missing namespace for function_call"），而非调用项上的
@@ -67,13 +66,36 @@ func TestOpenAIGatewayService_OAuthPreservesCodexNamespaceTools(t *testing.T) {
 	require.Empty(t, openAIResponsesNamespaceNames(c))
 }
 
+// API Key 自定义上游若接受 namespace 工具声明，也要求历史 function_call 原样携带
+// namespace。声明仍为命名空间工具却清掉调用项字段，会触发 Missing namespace。
+func TestOpenAIGatewayService_APIKeyPreservesDeclaredNamespaceToolCalls(t *testing.T) {
+	body := []byte(codexNamespaceRequestBody)
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{
+		newOpenAIRejectedFieldTestResponse(http.StatusOK, namespaceForwardOKResponse),
+	}}
+	c := newOpenAIRejectedFieldTestContext(body)
+
+	result, err := newOpenAIRejectedFieldTestService(upstream).Forward(
+		context.Background(), c, newOpenAIRejectedFieldTestAccount(), body,
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, upstream.bodies, 1)
+	forwarded := upstream.bodies[0]
+
+	require.True(t, gjson.GetBytes(forwarded, `tools.#(type=="namespace")`).Exists())
+	require.Equal(t, "collaboration", gjson.GetBytes(forwarded, "input.0.namespace").String())
+	require.False(t, gjson.GetBytes(forwarded, "input.1.namespace").Exists())
+}
+
 // compact 端点 schema 更窄：input[].namespace 会 400 Unknown parameter（issue #4761），
 // 且没有证据表明它接受 namespace 工具声明。compact 只做历史摘要、不需要模型寻址工具，
 // 因此保持既有的摊平 + 全量清理行为，不随默认值翻转扩大风险面。
 func TestOpenAIGatewayService_OAuthCompactKeepsFlattening(t *testing.T) {
 	body := []byte(codexNamespaceRequestBody)
 	upstream := &httpUpstreamRecorder{responses: []*http.Response{
-		newOpenAIRejectedFieldTestResponse(http.StatusOK, namespaceCompactForwardOKResponse),
+		newOpenAIRejectedFieldTestResponse(http.StatusOK, namespaceForwardOKResponse),
 	}}
 	c := newOpenAIRejectedFieldTestContext(body)
 	c.Request.URL.Path = "/v1/responses/compact"

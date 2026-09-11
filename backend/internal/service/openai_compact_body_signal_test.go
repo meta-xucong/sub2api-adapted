@@ -5,8 +5,19 @@ package service
 import (
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
+
+func TestIsOpenAINativeCompactionV2ReadsOnlyRequestMarker(t *testing.T) {
+	c, _ := gin.CreateTestContext(nil)
+	require.False(t, IsOpenAINativeCompactionV2(c))
+
+	MarkOpenAINativeCompactionV2(c)
+	require.True(t, IsOpenAINativeCompactionV2(c))
+	require.False(t, IsOpenAINativeCompactionV2(nil))
+}
 
 func TestHasCompactionTriggerInInput_DetectsCompactSignal(t *testing.T) {
 	body := []byte(`{
@@ -55,56 +66,53 @@ func TestHasCompactionTriggerInInput_CompactTriggerOnly(t *testing.T) {
 	require.True(t, HasCompactionTriggerInInput(body))
 }
 
-func TestDetectOpenAICompactBodySignal_CodexPreSamplingCompaction(t *testing.T) {
-	body := []byte(`{
-		"model":"gpt-5.6-luna",
-		"stream":true,
-		"client_metadata":{
-			"x-codex-turn-metadata":"{\"request_kind\":\"compaction\",\"thread_id\":\"redacted\"}"
-		},
-		"input":[
-			{"type":"additional_tools","role":"developer","tools":[]},
-			{"type":"message","role":"user","content":[]},
-			{"type":"compaction","id":"cmp_test","encrypted_content":"opaque"}
-		]
-	}`)
-	signal := DetectOpenAICompactBodySignal(body)
-	require.Equal(t, OpenAICompactBodySignal{Detected: true, Kind: "codex.request_kind_compaction"}, signal)
+func TestNormalizeCompactionTriggerInputOrder_MovesAndCollapsesTriggers(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.5","input":[{"type":"compaction_trigger"},{"type":"message","role":"user","content":"tail"},{"type":"compaction_trigger"}]}`)
+	normalized, changed, err := NormalizeCompactionTriggerInputOrder(body)
+	require.NoError(t, err)
+	require.True(t, changed)
+	items := gjson.GetBytes(normalized, "input").Array()
+	require.Len(t, items, 2)
+	require.Equal(t, "message", items[0].Get("type").String())
+	require.Equal(t, "compaction_trigger", items[1].Get("type").String())
 }
 
-func TestDetectOpenAICompactBodySignal_OrdinaryCodex56TurnIsUntouched(t *testing.T) {
-	body := []byte(`{
-		"model":"gpt-5.6-terra",
-		"stream":true,
-		"client_metadata":{
-			"x-codex-turn-metadata":"{\"request_kind\":\"turn\"}"
-		},
-		"input":[
-			{"type":"additional_tools","role":"developer","tools":[]},
-			{"type":"message","role":"user","content":[]}
-		]
-	}`)
-	require.Equal(t, OpenAICompactBodySignal{}, DetectOpenAICompactBodySignal(body))
+func TestNormalizeCompactionTriggerInputOrder_AlreadyFinalPreservesBytes(t *testing.T) {
+	body := []byte(`{"input":[{"type":"message"},{"type":"compaction_trigger"}]}`)
+	normalized, changed, err := NormalizeCompactionTriggerInputOrder(body)
+	require.NoError(t, err)
+	require.False(t, changed)
+	require.Equal(t, string(body), string(normalized))
 }
 
-func TestDetectOpenAICompactBodySignal_CompactionItemWithoutCodexMetadataIsUntouched(t *testing.T) {
-	body := []byte(`{
-		"model":"gpt-5.6-luna",
-		"input":[{"type":"compaction","encrypted_content":"opaque"}]
-	}`)
-	require.Equal(t, OpenAICompactBodySignal{}, DetectOpenAICompactBodySignal(body))
+func TestNormalizeCompactionTriggerInputOrder_PreservesHistoryAndLargeNumbers(t *testing.T) {
+	body := []byte(`{"input":[{"type":"compaction_trigger"},{"type":"message","id":"msg_1","content":"visible"},{"type":"function_call_output","call_id":"call_1","output":"result","sequence":9007199254740993}]}`)
+
+	normalized, changed, err := NormalizeCompactionTriggerInputOrder(body)
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.Equal(t, "message", gjson.GetBytes(normalized, "input.0.type").String())
+	require.Equal(t, "function_call_output", gjson.GetBytes(normalized, "input.1.type").String())
+	require.Equal(t, "9007199254740993", gjson.GetBytes(normalized, "input.1.sequence").Raw)
+	require.Equal(t, "compaction_trigger", gjson.GetBytes(normalized, "input.2.type").String())
+
+	second, changedAgain, err := NormalizeCompactionTriggerInputOrder(normalized)
+	require.NoError(t, err)
+	require.False(t, changedAgain)
+	require.Equal(t, normalized, second)
 }
 
-func TestDetectOpenAICompactBodySignal_EmptyEncryptedContentIsUntouched(t *testing.T) {
-	body := []byte(`{
-		"model":"gpt-5.6-luna",
-		"client_metadata":{"x-codex-turn-metadata":"{\"request_kind\":\"compaction\"}"},
-		"input":[{"type":"compaction","encrypted_content":""}]
-	}`)
-	require.Equal(t, OpenAICompactBodySignal{}, DetectOpenAICompactBodySignal(body))
-}
+func TestWebSocketCompatibilityNormalizesTriggerAfterPairedOutputCleanup(t *testing.T) {
+	body := []byte(`{"type":"response.create","model":"gpt-5.4","input":[{"type":"compaction_trigger"},{"type":"function_call","call_id":"call_1","name":"lookup","arguments":"{}"},{"type":"function_call_output","call_id":"call_1","output":"ok"},{"type":"message","role":"user","content":"visible"}]}`)
+	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth}
 
-func TestDetectOpenAICompactBodySignal_ContextManagementAloneIsNotCompact(t *testing.T) {
-	body := []byte(`{"model":"gpt-5.6-terra","stream":true,"context_management":[{"type":"compaction","compact_threshold":272000}],"input":[{"type":"message","role":"user","content":"hello"}]}`)
-	require.Equal(t, OpenAICompactBodySignal{}, DetectOpenAICompactBodySignal(body))
+	normalized, changed, err := normalizeOpenAIResponsesWebSocketCompatibilityBody(body, account, false)
+	require.NoError(t, err)
+	require.True(t, changed)
+	items := gjson.GetBytes(normalized, "input").Array()
+	require.Len(t, items, 4)
+	require.Equal(t, "function_call", items[0].Get("type").String())
+	require.Equal(t, "function_call_output", items[1].Get("type").String())
+	require.Equal(t, "message", items[2].Get("type").String())
+	require.Equal(t, "compaction_trigger", items[3].Get("type").String())
 }

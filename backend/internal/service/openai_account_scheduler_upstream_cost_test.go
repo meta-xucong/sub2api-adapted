@@ -293,19 +293,6 @@ func TestAdvancedCostSchedulerKeepsCompactSupportedOverflowAheadOfUnknown(t *tes
 	selection.ReleaseFunc()
 }
 
-func TestCompactSelectionKeepsManualPriorityAheadOfSupportEvidence(t *testing.T) {
-	unknownCheaper := &Account{ID: 61, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Priority: 1}
-	knownHigherPriorityNumber := &Account{ID: 62, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Priority: 2, Extra: map[string]any{"openai_compact_supported": true}}
-
-	order := selectTopKOpenAICompactCandidates([]openAIAccountCandidateScore{
-		{account: unknownCheaper, loadInfo: &AccountLoadInfo{AccountID: unknownCheaper.ID}, score: 1},
-		{account: knownHigherPriorityNumber, loadInfo: &AccountLoadInfo{AccountID: knownHigherPriorityNumber.ID}, score: 1},
-	}, 1)
-
-	require.Len(t, order, 1)
-	require.Equal(t, unknownCheaper.ID, order[0].account.ID)
-}
-
 func TestAdvancedSchedulerUnknownLoadFailsOpen(t *testing.T) {
 	account := &Account{ID: 21, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1}
 	cache := &upstreamCostTrackingConcurrencyCache{}

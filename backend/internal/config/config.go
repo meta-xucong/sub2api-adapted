@@ -32,7 +32,7 @@ const (
 
 // DefaultCSPPolicy is the default Content-Security-Policy with nonce support
 // __CSP_NONCE__ will be replaced with actual nonce at request time by the SecurityHeaders middleware
-const DefaultCSPPolicy = "default-src 'self'; worker-src 'self' blob:; script-src 'self' __CSP_NONCE__ https://challenges.cloudflare.com https://*.alicdn.com https://static.cloudflareinsights.com https://turing.captcha.qcloud.com https://turing.captcha.gtimg.com https://ca.turing.captcha.qcloud.com https://global.turing.captcha.gtimg.com https://www.tycaptcha.com https://cloudcache.tencentcs.com https://*.stripe.com https://static.airwallex.com https://checkout.airwallex.com https://static-demo.airwallex.com https://checkout-demo.airwallex.com; style-src 'self' 'unsafe-inline' https://*.captcha.gtimg.com https://fonts.googleapis.com https://*.alicdn.com https://static.airwallex.com https://checkout.airwallex.com https://static-demo.airwallex.com https://checkout-demo.airwallex.com; img-src 'self' data: blob: https:; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' https://turing.captcha.qcloud.com https://www.tycaptcha.com https://rce.tencentrio.com https:; frame-src https://challenges.cloudflare.com https://turing.captcha.qcloud.com https://ca.turing.captcha.qcloud.com https://www.tycaptcha.com https://*.stripe.com https://checkout.airwallex.com https://checkout-demo.airwallex.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+const DefaultCSPPolicy = "default-src 'self'; worker-src 'self' blob:; script-src 'self' __CSP_NONCE__ https://challenges.cloudflare.com https://*.alicdn.com https://static.cloudflareinsights.com https://turing.captcha.qcloud.com https://turing.captcha.gtimg.com https://ca.turing.captcha.qcloud.com https://global.turing.captcha.gtimg.com https://www.tycaptcha.com https://cloudcache.tencentcs.com https://*.stripe.com https://static.airwallex.com https://checkout.airwallex.com https://static-demo.airwallex.com https://checkout-demo.airwallex.com; style-src 'self' 'unsafe-inline' https://*.captcha.gtimg.com https://fonts.googleapis.com https://*.alicdn.com https://static.airwallex.com https://checkout.airwallex.com https://static-demo.airwallex.com https://checkout-demo.airwallex.com; img-src 'self' data: blob: https:; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' https://turing.captcha.qcloud.com https://www.tycaptcha.com https://rce.tencentrio.com https:; frame-src 'self' https://challenges.cloudflare.com https://turing.captcha.qcloud.com https://ca.turing.captcha.qcloud.com https://www.tycaptcha.com https://*.stripe.com https://checkout.airwallex.com https://checkout-demo.airwallex.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
 
 // UMQ（用户消息队列）模式常量
 const (
@@ -60,6 +60,10 @@ const (
 // 128 MB 可容纳 2-3 张 4K PNG（base64 膨胀 33%，单张 4K PNG 最坏约 67MB base64）。
 // 可通过 gateway.upstream_response_read_max_bytes 配置项覆盖。
 const DefaultUpstreamResponseReadMaxBytes int64 = 128 * 1024 * 1024
+
+// DefaultModelsListReadMaxBytes 上游模型列表响应体的默认读取上限。
+// 可通过 gateway.models_list_read_max_bytes 配置项覆盖。
+const DefaultModelsListReadMaxBytes int64 = 8 * 1024 * 1024
 
 type Config struct {
 	Server                  ServerConfig                  `mapstructure:"server"`
@@ -100,6 +104,7 @@ type Config struct {
 	Idempotency             IdempotencyConfig             `mapstructure:"idempotency"`
 	BatchImage              BatchImageConfig              `mapstructure:"batch_image"`
 	ImageStorage            ImageStorageConfig            `mapstructure:"image_storage"`
+	Plugins                 PluginConfig                  `mapstructure:"plugins"`
 }
 
 // VeyraConfig controls the optional aiself portal integration.
@@ -107,9 +112,19 @@ type VeyraConfig struct {
 	Enabled               bool   `mapstructure:"enabled"`
 	PortalEnabled         bool   `mapstructure:"portal_enabled"`
 	AlchemyBaseURL        string `mapstructure:"alchemy_base_url"`
-	VideoBaseURL          string `mapstructure:"video_base_url"`
 	InternalToken         string `mapstructure:"internal_token"`
 	LoginTicketTTLSeconds int    `mapstructure:"login_ticket_ttl_seconds"`
+}
+
+// PluginConfig 控制管理员手动上传的本地进程插件。
+// 默认不包含插件，也不允许安装未签名插件；TrustedPublishers 用于追加第三方发布者。
+type PluginConfig struct {
+	DataDir              string            `mapstructure:"data_dir"`
+	AllowUnsigned        bool              `mapstructure:"allow_unsigned"`
+	TrustedPublishers    map[string]string `mapstructure:"trusted_publishers"`
+	MaxUploadBytes       int64             `mapstructure:"max_upload_bytes"`
+	MaxUncompressedBytes int64             `mapstructure:"max_uncompressed_bytes"`
+	StartTimeoutSeconds  int               `mapstructure:"start_timeout_seconds"`
 }
 
 type LogConfig struct {
@@ -662,6 +677,8 @@ type PricingConfig struct {
 	DataDir string `mapstructure:"data_dir"`
 	// 回退文件路径
 	FallbackFile string `mapstructure:"fallback_file"`
+	// 覆盖补丁文件路径（可选）：条目按字段浅合并覆盖目录/回退数据，优先级最高
+	OverrideFile string `mapstructure:"override_file"`
 	// 更新间隔（小时）
 	UpdateIntervalHours int `mapstructure:"update_interval_hours"`
 	// 哈希校验间隔（分钟）
@@ -841,6 +858,53 @@ type ProxyFallbackConfig struct {
 
 type ProxyProbeConfig struct {
 	InsecureSkipVerify bool `mapstructure:"insecure_skip_verify"` // 已禁用：禁止跳过 TLS 证书验证
+	// URLs 按优先级排列的自定义探测 URL 列表。
+	// 留空时使用内置默认列表（ip-api → ipify）。
+	// 某些 AI API 专用代理只允许访问特定域名，配置多个备选可提高探测成功率。
+	URLs []ProbeURLConfig `mapstructure:"urls"`
+}
+
+// ProbeURLConfig 描述一个探测端点及其响应解析方式。
+type ProbeURLConfig struct {
+	URL    string `mapstructure:"url"`
+	Parser string `mapstructure:"parser"` // "ip-api" / "ipify" / "chatgpt-trace"
+}
+
+func normalizeProxyProbeURLs(targets []ProbeURLConfig) ([]ProbeURLConfig, error) {
+	if len(targets) == 0 {
+		return nil, nil
+	}
+
+	normalized := make([]ProbeURLConfig, 0, len(targets))
+	for i, target := range targets {
+		rawURL := strings.TrimSpace(target.URL)
+		parser := strings.ToLower(strings.TrimSpace(target.Parser))
+		if rawURL == "" {
+			return nil, fmt.Errorf("entry %d: url is required", i)
+		}
+		if parser == "" {
+			return nil, fmt.Errorf("entry %d: parser is required", i)
+		}
+		switch parser {
+		case "ip-api", "ipify", "chatgpt-trace":
+		default:
+			return nil, fmt.Errorf("entry %d: unsupported parser %q", i, target.Parser)
+		}
+
+		parsed, err := url.Parse(rawURL)
+		if err != nil || parsed.Host == "" {
+			return nil, fmt.Errorf("entry %d: invalid url %q", i, target.URL)
+		}
+		if parsed.Scheme != "http" && parsed.Scheme != "https" {
+			return nil, fmt.Errorf("entry %d: url scheme must be http or https", i)
+		}
+
+		normalized = append(normalized, ProbeURLConfig{
+			URL:    rawURL,
+			Parser: parser,
+		})
+	}
+	return normalized, nil
 }
 
 type BillingConfig struct {
@@ -885,6 +949,18 @@ type ImageConcurrencyConfig struct {
 	MaxWaitingRequests int `mapstructure:"max_waiting_requests"`
 }
 
+// GatewayOperatorTestGuardConfig scopes local operator smoke tests to dedicated
+// ops keys so maintenance scripts cannot accidentally spend customer keys.
+type GatewayOperatorTestGuardConfig struct {
+	Enabled            bool     `mapstructure:"enabled"`
+	RequireAdminUser   bool     `mapstructure:"require_admin_user"`
+	TrustedClientIPs   []string `mapstructure:"trusted_client_ips"`
+	BlockedUserAgents  []string `mapstructure:"blocked_user_agents"`
+	AllowedUserEmails  []string `mapstructure:"allowed_user_emails"`
+	AllowedAPIKeyNames []string `mapstructure:"allowed_api_key_names"`
+	Paths              []string `mapstructure:"paths"`
+}
+
 const (
 	ImageConcurrencyOverflowModeReject = "reject"
 	ImageConcurrencyOverflowModeWait   = "wait"
@@ -898,6 +974,9 @@ type GatewayConfig struct {
 	// OpenAIResponseHeaderTimeout: OpenAI/Codex 上游等待响应头的超时时间（秒），0表示无超时
 	// OpenAI/Codex 请求可能在上游排队较久；默认不使用通用响应头超时截断。
 	OpenAIResponseHeaderTimeout int `mapstructure:"openai_response_header_timeout"`
+	// GrokResponseHeaderTimeout bounds the pre-first-byte wait for xAI/Grok.
+	// A zero value uses the provider-safe default instead of the generic gateway timeout.
+	GrokResponseHeaderTimeout int `mapstructure:"grok_response_header_timeout"`
 	// OpenAIFirstOutputTimeoutSeconds: native HTTP Responses 首个语义输出超时（秒），0表示禁用。
 	OpenAIFirstOutputTimeoutSeconds int `mapstructure:"openai_first_output_timeout_seconds"`
 	// OpenAIHighEffortFirstOutputTimeoutSeconds: high/xhigh/max 推理的首个语义输出超时（秒）。
@@ -909,6 +988,8 @@ type GatewayConfig struct {
 	TextMaxBodySize int64 `mapstructure:"text_max_body_size"`
 	// 非流式上游响应体读取上限（字节），用于防止无界读取导致内存放大
 	UpstreamResponseReadMaxBytes int64 `mapstructure:"upstream_response_read_max_bytes"`
+	// 上游模型列表响应体读取上限（字节）
+	ModelsListReadMaxBytes int64 `mapstructure:"models_list_read_max_bytes"`
 	// 代理探测响应体读取上限（字节）
 	ProxyProbeResponseReadMaxBytes int64 `mapstructure:"proxy_probe_response_read_max_bytes"`
 	// Gemini 上游响应头调试日志开关（默认关闭，避免高频日志开销）
@@ -933,9 +1014,6 @@ type GatewayConfig struct {
 	// CodexImageGenerationBridgeEnabled: 是否为 Codex `/v1/responses` 自动注入 image_generation 工具和桥接指令。
 	// 默认关闭，避免纯文本 Codex 请求被意外改写；显式携带 image_generation 工具的请求仍按分组能力转发。
 	CodexImageGenerationBridgeEnabled bool `mapstructure:"codex_image_generation_bridge_enabled"`
-	// ResponsesImageBridge adapts explicit Responses image_generation requests to
-	// accounts that only expose the OpenAI Images API.
-	ResponsesImageBridge ResponsesImageBridgeConfig `mapstructure:"responses_image_bridge"`
 	// OperatorTestGuard blocks local maintenance probes from consuming customer API keys.
 	OperatorTestGuard GatewayOperatorTestGuardConfig `mapstructure:"operator_test_guard"`
 	// ForcedCodexInstructionsTemplateFile: 服务端强制附加到 Codex 顶层 instructions 的模板文件路径。
@@ -958,6 +1036,13 @@ type GatewayConfig struct {
 	OpenAIScheduler GatewayOpenAISchedulerConfig `mapstructure:"openai_scheduler"`
 	// SmartRouter: optional multi-line routing enhancement layer.
 	SmartRouter GatewaySmartRouterConfig `mapstructure:"smart_router"`
+	// UnifiedGatewayAdminUIEnabled exposes the isolated aggregate configuration
+	// editor.  It is intentionally false by default; enabling the UI does not
+	// enable unified runtime traffic.
+	UnifiedGatewayAdminUIEnabled bool `mapstructure:"unified_gateway_admin_ui_enabled"`
+	// UnifiedGatewayRuntimeEnabled is a separate production gate.  The admin
+	// API cannot change it and the zero value must remain fail-closed.
+	UnifiedGatewayRuntimeEnabled bool `mapstructure:"unified_gateway_runtime_enabled"`
 	// OpenAIHTTP2: OpenAI HTTP 上游协议策略（默认启用 HTTP/2，可按代理能力回退 HTTP/1.1）
 	OpenAIHTTP2 GatewayOpenAIHTTP2Config `mapstructure:"openai_http2"`
 	// OpenAIProxyStreamCircuit: Responses SSE 代理断流熔断策略。
@@ -1051,6 +1136,10 @@ type GatewayConfig struct {
 
 	// Grok: Grok/xAI gateway scheduling and free-tier soft-gate settings.
 	Grok GatewayGrokConfig `mapstructure:"grok"`
+
+	// CNProviders: 国产 OpenAI 兼容供应商（kimi/zhipu/deepseek）的余额检测配置。
+	// 仅作用于 payg（按量付费）账号：周期探测余额，低于阈值则临时停调。
+	CNProviders GatewayCNProvidersConfig `mapstructure:"cn_providers"`
 }
 
 // GatewayGrokConfig holds Grok-specific gateway scheduling knobs.
@@ -1083,30 +1172,16 @@ type GatewayGrokConfig struct {
 	FreeQuotaStatsCacheSeconds int `mapstructure:"free_quota_stats_cache_seconds"`
 }
 
-type GatewayLiveConfig struct {
-	// MaxSessionDurationSeconds 是 Live 会话的硬上限。
-	MaxSessionDurationSeconds int `mapstructure:"max_session_duration_seconds"`
-}
-
-// ResponsesImageBridgeConfig controls the opt-in Responses -> Images API
-// protocol adapter. Account-level capability marking remains mandatory.
-type ResponsesImageBridgeConfig struct {
-	Enabled           bool   `mapstructure:"enabled"`
-	ApplyToProtocol   string `mapstructure:"apply_to_protocol"`
-	MaxRequestBytes   int    `mapstructure:"max_request_bytes"`
-	PreserveStreaming bool   `mapstructure:"preserve_streaming"`
-}
-
-// GatewayOperatorTestGuardConfig scopes local operator smoke tests to dedicated
-// ops keys so maintenance scripts cannot accidentally spend customer keys.
-type GatewayOperatorTestGuardConfig struct {
-	Enabled            bool     `mapstructure:"enabled"`
-	RequireAdminUser   bool     `mapstructure:"require_admin_user"`
-	TrustedClientIPs   []string `mapstructure:"trusted_client_ips"`
-	BlockedUserAgents  []string `mapstructure:"blocked_user_agents"`
-	AllowedUserEmails  []string `mapstructure:"allowed_user_emails"`
-	AllowedAPIKeyNames []string `mapstructure:"allowed_api_key_names"`
-	Paths              []string `mapstructure:"paths"`
+// GatewayCNProvidersConfig 国产 OpenAI 兼容供应商（kimi/zhipu/deepseek）的余额检测配置。
+//
+// 仅作用于 payg（按量付费）账号（kimi/deepseek 有公开余额端点；zhipu 无，仅靠响应式 429/402）。
+//   - balance_check_enabled: 是否启用周期余额检测（默认 true）
+//   - balance_threshold: 余额低于此值（账户货币单位，默认 0.5）触发临时停调
+//   - balance_check_interval_minutes: 余额检测周期（分钟，默认 10）
+type GatewayCNProvidersConfig struct {
+	BalanceCheckEnabled         bool    `mapstructure:"balance_check_enabled"`
+	BalanceThreshold            float64 `mapstructure:"balance_threshold"`
+	BalanceCheckIntervalMinutes int     `mapstructure:"balance_check_interval_minutes"`
 }
 
 // GatewaySmartRouterConfig configures the optional Smart Router module.
@@ -1133,17 +1208,11 @@ type GatewaySmartRouterConfig struct {
 // GatewaySmartRouterRecoveryConfig governs capability-scoped penalties. It
 // never changes the account's manually configured base priority.
 type GatewaySmartRouterRecoveryConfig struct {
-	SecondFailureCooldownSeconds int `mapstructure:"second_failure_cooldown_seconds"`
-	SustainedFailureThreshold    int `mapstructure:"sustained_failure_threshold"`
-	// ImageSustainedFailureThreshold overrides the generic threshold only for
-	// image generation and image edit lanes. Zero keeps the generic threshold.
-	ImageSustainedFailureThreshold int `mapstructure:"image_sustained_failure_threshold"`
-	// RecoveryEscalationFailureThreshold controls how many additional
-	// consecutive failures move a degraded lane another FIFO step backward.
+	SecondFailureCooldownSeconds       int `mapstructure:"second_failure_cooldown_seconds"`
+	SustainedFailureThreshold          int `mapstructure:"sustained_failure_threshold"`
+	ImageSustainedFailureThreshold     int `mapstructure:"image_sustained_failure_threshold"`
 	RecoveryEscalationFailureThreshold int `mapstructure:"recovery_escalation_failure_threshold"`
-	// RecoveryPriorityStep is added to the lane's current recovery priority at
-	// each escalation. Zero uses the Smart Router default of 30.
-	RecoveryPriorityStep int `mapstructure:"recovery_priority_step"`
+	RecoveryPriorityStep               int `mapstructure:"recovery_priority_step"`
 }
 
 // GatewaySmartRouterCalibrationConfig controls the durable daily health probes.
@@ -1169,16 +1238,13 @@ type GatewaySmartRouterAdaptiveTimeoutConfig struct {
 	Multiplier                float64 `mapstructure:"multiplier"`
 	SuccessStepSeconds        int     `mapstructure:"success_step_seconds"`
 	SuccessFloorMarginSeconds int     `mapstructure:"success_floor_margin_seconds"`
-	// FailureBackoffMultiplier is retained for config compatibility; image
-	// timeout failures now reset to the full base window instead of shrinking.
-	FailureBackoffMultiplier float64 `mapstructure:"failure_backoff_multiplier"`
-	WindowSize               int     `mapstructure:"window_size"`
-	ReserveSeconds           int     `mapstructure:"reserve_seconds"`
+	FailureBackoffMultiplier  float64 `mapstructure:"failure_backoff_multiplier"`
+	WindowSize                int     `mapstructure:"window_size"`
+	ReserveSeconds            int     `mapstructure:"reserve_seconds"`
 }
 
 // GatewaySmartRouterImageResilienceConfig controls the optional image-only
-// resilience overlay. It never changes non-image routing or the stored
-// account priority.
+// resilience overlay. It never changes non-image routing or stored priority.
 type GatewaySmartRouterImageResilienceConfig struct {
 	Enabled                  bool    `mapstructure:"enabled"`
 	GenerationEnabled        bool    `mapstructure:"generation_enabled"`
@@ -1198,8 +1264,8 @@ type GatewaySmartRouterImageResilienceConfig struct {
 }
 
 // GatewaySmartRouterRateLimitBackoffConfig controls upstream 429 recovery.
-// It is separate from health demotion because a concurrency 429 is usually a
-// temporary busy signal, not proof that the account or lane is unhealthy.
+// A concurrency 429 is usually a temporary busy signal, not proof that the
+// account or lane is unhealthy.
 type GatewaySmartRouterRateLimitBackoffConfig struct {
 	Enabled              bool    `mapstructure:"enabled"`
 	InitialSeconds       int     `mapstructure:"initial_seconds"`
@@ -1218,6 +1284,11 @@ type GatewaySmartRouterScoringConfig struct {
 	Queue    float64 `mapstructure:"queue"`
 	Latency  float64 `mapstructure:"latency"`
 	Recovery float64 `mapstructure:"recovery"`
+}
+
+type GatewayLiveConfig struct {
+	// MaxSessionDurationSeconds 是 Live 会话的硬上限。
+	MaxSessionDurationSeconds int `mapstructure:"max_session_duration_seconds"`
 }
 
 // GatewayOpenAIHTTP2Config OpenAI HTTP 上游协议配置。
@@ -1861,6 +1932,10 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 	// 环境变量支持
 	viper.AutomaticEnv()
 	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	if tz, ok := os.LookupEnv("TZ"); ok && strings.TrimSpace(tz) != "" {
+		// AutomaticEnv 会先把 timezone 映射到 TIMEZONE；显式 Set 保证标准 TZ 变量优先。
+		viper.Set("timezone", strings.TrimSpace(tz))
+	}
 	if err := viper.BindEnv("server.enable_server_timing", "ENABLE_SERVER_TIMING"); err != nil {
 		return nil, fmt.Errorf("bind ENABLE_SERVER_TIMING: %w", err)
 	}
@@ -2354,13 +2429,22 @@ func setDefaults() {
 	viper.SetDefault("rate_limit.overload_cooldown_minutes", 10)
 	viper.SetDefault("rate_limit.oauth_401_cooldown_minutes", 10)
 
-	// Pricing - 从 model-price-repo 同步模型定价和上下文窗口数据（固定到 commit，避免分支漂移）
+	// Pricing - 从 model-price-repo main 分支同步模型定价和上下文窗口数据
 	viper.SetDefault("pricing.remote_url", "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.json")
 	viper.SetDefault("pricing.hash_url", "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.sha256")
 	viper.SetDefault("pricing.data_dir", "./data")
 	viper.SetDefault("pricing.fallback_file", "./resources/model-pricing/model_prices_and_context_window.json")
+	viper.SetDefault("pricing.override_file", "")
 	viper.SetDefault("pricing.update_interval_hours", 24)
 	viper.SetDefault("pricing.hash_check_interval_minutes", 10)
+
+	// 本地进程插件。插件必须由管理员手动上传，项目默认不携带任何插件能力。
+	viper.SetDefault("plugins.data_dir", "")
+	viper.SetDefault("plugins.allow_unsigned", false)
+	viper.SetDefault("plugins.trusted_publishers", map[string]string{})
+	viper.SetDefault("plugins.max_upload_bytes", int64(128*1024*1024))
+	viper.SetDefault("plugins.max_uncompressed_bytes", int64(256*1024*1024))
+	viper.SetDefault("plugins.start_timeout_seconds", 15)
 
 	// Timezone (default to Asia/Shanghai for Chinese users)
 	viper.SetDefault("timezone", "Asia/Shanghai")
@@ -2419,24 +2503,18 @@ func setDefaults() {
 	viper.SetDefault("idempotency.max_stored_response_len", 64*1024)
 	viper.SetDefault("idempotency.cleanup_interval_seconds", 60)
 	viper.SetDefault("idempotency.cleanup_batch_size", 500)
-	viper.SetDefault("veyra.enabled", false)
-	viper.SetDefault("veyra.portal_enabled", false)
-	viper.SetDefault("veyra.alchemy_base_url", "https://alchemy.aiself.vip")
-	viper.SetDefault("veyra.video_base_url", "https://video.aiself.vip")
-	viper.SetDefault("veyra.internal_token", "")
-	viper.SetDefault("veyra.login_ticket_ttl_seconds", 120)
 
 	// Optional aiself/Veyra portal integration.
 	viper.SetDefault("veyra.enabled", false)
 	viper.SetDefault("veyra.portal_enabled", false)
 	viper.SetDefault("veyra.alchemy_base_url", "https://alchemy.aiself.vip")
-	viper.SetDefault("veyra.video_base_url", "https://video.aiself.vip")
 	viper.SetDefault("veyra.internal_token", "")
 	viper.SetDefault("veyra.login_ticket_ttl_seconds", 120)
 
 	// Gateway
 	viper.SetDefault("gateway.response_header_timeout", 600) // 600秒(10分钟)等待上游响应头，LLM高负载时可能排队较久
 	viper.SetDefault("gateway.openai_response_header_timeout", 0)
+	viper.SetDefault("gateway.grok_response_header_timeout", 120)
 	viper.SetDefault("gateway.openai_first_output_timeout_seconds", 0)
 	viper.SetDefault("gateway.openai_high_effort_first_output_timeout_seconds", 0)
 	viper.SetDefault("gateway.log_upstream_error_body", true)
@@ -2449,8 +2527,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.smart_router.top_k", 5)
 	viper.SetDefault("gateway.smart_router.max_attempts_image", 2)
 	viper.SetDefault("gateway.smart_router.max_attempts_chat", 3)
-	// 0 means dynamic: compact failover may try every eligible lane once;
-	// operators can set a positive value to impose an explicit upper bound.
+	// 0 means dynamic: compact failover may try every eligible lane once.
 	viper.SetDefault("gateway.smart_router.max_attempts_compact", 0)
 	viper.SetDefault("gateway.smart_router.max_attempts_default", 3)
 	viper.SetDefault("gateway.smart_router.same_source_group_attempts", 1)
@@ -2513,10 +2590,6 @@ func setDefaults() {
 	viper.SetDefault("gateway.disable_codex_identity_enforcement", false)
 	viper.SetDefault("gateway.disable_codex_originator_normalization", false)
 	viper.SetDefault("gateway.codex_image_generation_bridge_enabled", false)
-	viper.SetDefault("gateway.responses_image_bridge.enabled", false)
-	viper.SetDefault("gateway.responses_image_bridge.apply_to_protocol", "images_api_only")
-	viper.SetDefault("gateway.responses_image_bridge.max_request_bytes", 16<<20)
-	viper.SetDefault("gateway.responses_image_bridge.preserve_streaming", true)
 	viper.SetDefault("gateway.operator_test_guard.enabled", false)
 	viper.SetDefault("gateway.operator_test_guard.require_admin_user", true)
 	viper.SetDefault("gateway.operator_test_guard.trusted_client_ips", []string{"127.0.0.1", "::1"})
@@ -2536,7 +2609,7 @@ func setDefaults() {
 		"/chat/completions",
 	})
 	viper.SetDefault("gateway.openai_passthrough_allow_timeout_headers", false)
-	viper.SetDefault("gateway.openai_compact_model", "")
+	viper.SetDefault("gateway.openai_compact_model", "gpt-5.4")
 	viper.SetDefault("gateway.live.max_session_duration_seconds", 3600)
 	// OpenAI Responses WebSocket（默认开启；可通过 force_http 紧急回滚）
 	viper.SetDefault("gateway.openai_ws.enabled", true)
@@ -2614,6 +2687,10 @@ func setDefaults() {
 	viper.SetDefault("gateway.grok.free_quota_soft_gate_percent", 95)
 	viper.SetDefault("gateway.grok.free_quota_window_hours", 24)
 	viper.SetDefault("gateway.grok.free_quota_stats_cache_seconds", 60)
+	// 国产供应商余额检测（kimi/deepseek payg；zhipu 无余额端点，仅靠响应式 429/402）。
+	viper.SetDefault("gateway.cn_providers.balance_check_enabled", true)
+	viper.SetDefault("gateway.cn_providers.balance_threshold", 0.5)
+	viper.SetDefault("gateway.cn_providers.balance_check_interval_minutes", 10)
 	viper.SetDefault("gateway.image_concurrency.enabled", false)
 	viper.SetDefault("gateway.image_concurrency.max_concurrent_requests", 0)
 	viper.SetDefault("gateway.image_concurrency.overflow_mode", ImageConcurrencyOverflowModeReject)
@@ -2624,6 +2701,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.max_body_size", int64(256*1024*1024))
 	viper.SetDefault("gateway.text_max_body_size", int64(32*1024*1024))
 	viper.SetDefault("gateway.upstream_response_read_max_bytes", DefaultUpstreamResponseReadMaxBytes)
+	viper.SetDefault("gateway.models_list_read_max_bytes", DefaultModelsListReadMaxBytes)
 	viper.SetDefault("gateway.proxy_probe_response_read_max_bytes", int64(1024*1024))
 	viper.SetDefault("gateway.gemini_debug_response_headers", false)
 	viper.SetDefault("gateway.connection_pool_isolation", ConnectionPoolIsolationAccountProxy)
@@ -2812,6 +2890,20 @@ func (c *Config) Validate() error {
 	}
 	c.Security.ForwardedClientIPHeaders = forwardedClientIPHeaders
 	c.SetForwardedClientIPSettings(c.Security.TrustForwardedIPForAPIKeyACL, forwardedClientIPHeaders)
+	proxyProbeURLs, err := normalizeProxyProbeURLs(c.Security.ProxyProbe.URLs)
+	if err != nil {
+		return fmt.Errorf("security.proxy_probe.urls: %w", err)
+	}
+	c.Security.ProxyProbe.URLs = proxyProbeURLs
+	if c.Plugins.MaxUploadBytes <= 0 || c.Plugins.MaxUploadBytes > 1024*1024*1024 {
+		return fmt.Errorf("plugins.max_upload_bytes must be between 1 and 1073741824")
+	}
+	if c.Plugins.MaxUncompressedBytes < c.Plugins.MaxUploadBytes || c.Plugins.MaxUncompressedBytes > 2*1024*1024*1024 {
+		return fmt.Errorf("plugins.max_uncompressed_bytes must be between max_upload_bytes and 2147483648")
+	}
+	if c.Plugins.StartTimeoutSeconds < 1 || c.Plugins.StartTimeoutSeconds > 120 {
+		return fmt.Errorf("plugins.start_timeout_seconds must be between 1 and 120")
+	}
 	if c.Server.ReadHeaderTimeout < 1 || c.Server.ReadHeaderTimeout > 60 {
 		return fmt.Errorf("server.read_header_timeout must be between 1 and 60 seconds")
 	}
@@ -3423,6 +3515,9 @@ func (c *Config) Validate() error {
 	if c.Gateway.UpstreamResponseReadMaxBytes <= 0 {
 		return fmt.Errorf("gateway.upstream_response_read_max_bytes must be positive")
 	}
+	if c.Gateway.ModelsListReadMaxBytes <= 0 {
+		return fmt.Errorf("gateway.models_list_read_max_bytes must be positive")
+	}
 	if c.Gateway.ProxyProbeResponseReadMaxBytes <= 0 {
 		return fmt.Errorf("gateway.proxy_probe_response_read_max_bytes must be positive")
 	}
@@ -3431,6 +3526,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.OpenAIResponseHeaderTimeout < 0 {
 		return fmt.Errorf("gateway.openai_response_header_timeout must be non-negative")
+	}
+	if c.Gateway.GrokResponseHeaderTimeout < 0 || c.Gateway.GrokResponseHeaderTimeout > 1800 {
+		return fmt.Errorf("gateway.grok_response_header_timeout must be between 0-1800 seconds")
 	}
 	if c.Gateway.OpenAIFirstOutputTimeoutSeconds < 0 || c.Gateway.OpenAIFirstOutputTimeoutSeconds > 600 ||
 		(c.Gateway.OpenAIFirstOutputTimeoutSeconds > 0 && c.Gateway.OpenAIFirstOutputTimeoutSeconds < 30) {
@@ -3536,14 +3634,6 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.ImageGenerationTransientCooldownSeconds < 0 {
 		return fmt.Errorf("gateway.image_generation_transient_cooldown_seconds must be non-negative")
-	}
-	if c.Gateway.ResponsesImageBridge.MaxRequestBytes <= 0 {
-		return fmt.Errorf("gateway.responses_image_bridge.max_request_bytes must be positive")
-	}
-	switch strings.ToLower(strings.TrimSpace(c.Gateway.ResponsesImageBridge.ApplyToProtocol)) {
-	case "images_api_only":
-	default:
-		return fmt.Errorf("gateway.responses_image_bridge.apply_to_protocol must be images_api_only")
 	}
 	if c.Gateway.OperatorTestGuard.Enabled {
 		if len(c.Gateway.OperatorTestGuard.TrustedClientIPs) == 0 {

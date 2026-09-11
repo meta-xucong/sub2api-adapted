@@ -1100,7 +1100,7 @@ func (s *OpenAIGatewayService) RunSmartRouterCompactCalibrationProbe(ctx context
 	if model == "" {
 		model = "gpt-5.4"
 	}
-	body, err := json.Marshal(createOpenAICompactProbePayload(model))
+	body, err := json.Marshal(createOpenAICompactProbePayload(model, account.Type == AccountTypeOAuth))
 	if err != nil {
 		return 0, 0, err
 	}

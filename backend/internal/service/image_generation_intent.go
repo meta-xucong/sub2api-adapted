@@ -184,69 +184,6 @@ func IsImageGenerationIntentMap(endpoint string, requestedModel string, reqBody 
 	return openAIAnyToolChoiceSelectsImageGeneration(reqBody["tool_choice"])
 }
 
-// ResolveOpenAIResponsesImageRoutingModel returns the image model used only for
-// account selection. The forwarded Responses request keeps its original model.
-func ResolveOpenAIResponsesImageRoutingModel(requestedModel string, body []byte) string {
-	requestedModel = strings.TrimSpace(requestedModel)
-	if !IsImageGenerationIntent(openAIResponsesEndpoint, requestedModel, body) {
-		return requestedModel
-	}
-	if isOpenAIImageGenerationModel(requestedModel) {
-		return requestedModel
-	}
-	if cfg, err := resolveOpenAIResponsesImageBillingConfigDetailedFromBody(body, requestedModel); err == nil {
-		if model := strings.TrimSpace(cfg.Model); isOpenAIImageGenerationModel(model) {
-			return model
-		}
-	}
-	return "gpt-image-2"
-}
-
-// IsOpenAIResponsesReferenceImageRequest inspects structured Responses input
-// parts only. Prompt text is never used to infer image-edit mode.
-func IsOpenAIResponsesReferenceImageRequest(body []byte) bool {
-	if len(body) == 0 || !gjson.ValidBytes(body) {
-		return false
-	}
-	return openAIJSONInputContainsReferenceImage(gjson.GetBytes(body, "input"))
-}
-
-func openAIJSONInputContainsReferenceImage(value gjson.Result) bool {
-	if !value.Exists() {
-		return false
-	}
-	if value.IsArray() {
-		found := false
-		value.ForEach(func(_, item gjson.Result) bool {
-			if openAIJSONInputContainsReferenceImage(item) {
-				found = true
-				return false
-			}
-			return true
-		})
-		return found
-	}
-	if value.IsObject() {
-		typeValue := strings.TrimSpace(value.Get("type").String())
-		if typeValue == "input_image" || typeValue == "image_url" || typeValue == "image" {
-			return true
-		}
-		found := false
-		value.ForEach(func(key, item gjson.Result) bool {
-			switch key.String() {
-			case "input", "content", "message", "messages":
-				if openAIJSONInputContainsReferenceImage(item) {
-					found = true
-					return false
-				}
-			}
-			return true
-		})
-		return found
-	}
-	return false
-}
-
 // IsImageGenerationEndpoint identifies dedicated generated-image endpoints.
 func IsImageGenerationEndpoint(endpoint string) bool {
 	switch normalizeImageGenerationEndpoint(endpoint) {
@@ -356,8 +293,13 @@ func openAIRequestBodyImageGenerationToolNeedsNormalization(body []byte) bool {
 		if openAIJSONString(item.Get("type")) != "image_generation" {
 			return true
 		}
-		// 只有旧字段需要迁移时才进入 map 修改，纯计费读取保持 raw 路径。
+		// 只有旧字段或明确的模型不兼容字段需要修正时才进入 map 修改。
 		if item.Get("format").Exists() || item.Get("compression").Exists() {
+			needsNormalization = true
+			return false
+		}
+		imageModel := strings.ToLower(strings.TrimSpace(item.Get("model").String()))
+		if strings.HasPrefix(imageModel, "gpt-image-2") && item.Get("input_fidelity").Exists() {
 			needsNormalization = true
 			return false
 		}

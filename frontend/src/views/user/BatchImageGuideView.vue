@@ -1029,10 +1029,7 @@ const currentDisplayJob = computed(() => {
 
 const endpointBase = computed(() => {
   const configured = appStore.apiBaseUrl?.trim()
-  if (configured) {
-    const normalized = configured.replace(/\/+$/, '')
-    return normalized.replace(/\/v1$/, '')
-  }
+  if (configured) return configured.replace(/\/+$/, '')
   if (typeof window !== 'undefined') return window.location.origin.replace(/\/+$/, '')
   return '<你的 Sub2API API 端点>'
 })

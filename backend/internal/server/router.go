@@ -141,8 +141,8 @@ func registerRoutes(
 	veyraTicketStore := veyra.NewMemoryTicketStore()
 	veyraDebitLedger := veyra.NewMemoryDebitLedger()
 	veyraConfig := veyra.RoutesConfigFromConfig(cfg)
-	veyra.RegisterRoutes(v1, jwtAuth, veyraConfig, veyraTicketStore, veyraDebitLedger, userService, h.Usage)
-	veyra.RegisterRoutes(r.Group("/api"), jwtAuth, veyraConfig, veyraTicketStore, veyraDebitLedger, userService, h.Usage)
+	veyra.RegisterRoutes(v1, jwtAuth, veyraConfig, veyraTicketStore, veyraDebitLedger, userService)
+	veyra.RegisterRoutes(r.Group("/api"), jwtAuth, veyraConfig, veyraTicketStore, veyraDebitLedger, userService)
 
 	handler.RegisterPageRoutes(v1, cfg.Pricing.DataDir, gin.HandlerFunc(jwtAuth), gin.HandlerFunc(adminAuth), settingService)
 }

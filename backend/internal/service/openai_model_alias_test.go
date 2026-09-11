@@ -6,6 +6,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestNormalizeKnownOpenAICodexModelGPT6Astra(t *testing.T) {
+	for _, model := range []string{"gpt-6-astra", "openai/gpt-6-astra", "gpt-6", "openai/gpt-6"} {
+		require.Equal(t, "gpt-6-astra", normalizeKnownOpenAICodexModel(model))
+	}
+}
+
 func TestNormalizeKnownOpenAICodexModel_BareGPT56RoutesToSol(t *testing.T) {
 	tests := map[string]string{
 		"gpt-5.6":            "gpt-5.6-sol",
@@ -15,21 +21,6 @@ func TestNormalizeKnownOpenAICodexModel_BareGPT56RoutesToSol(t *testing.T) {
 		"gpt-5.6-max":        "gpt-5.6-sol",
 		"gpt-5.6-2026-07-09": "gpt-5.6-sol",
 		"openai/gpt-5.6-max": "gpt-5.6-sol",
-	}
-
-	for input, expected := range tests {
-		t.Run(input, func(t *testing.T) {
-			require.Equal(t, expected, normalizeKnownOpenAICodexModel(input))
-		})
-	}
-}
-
-func TestNormalizeKnownOpenAICodexModel_ExplicitGPT56VariantsStayIndependent(t *testing.T) {
-	tests := map[string]string{
-		"gpt-5.6-sol":        "gpt-5.6-sol",
-		"openai/gpt-5.6-sol": "gpt-5.6-sol",
-		"gpt-5.6-terra":      "gpt-5.6-terra",
-		"gpt-5.6-luna":       "gpt-5.6-luna",
 	}
 
 	for input, expected := range tests {

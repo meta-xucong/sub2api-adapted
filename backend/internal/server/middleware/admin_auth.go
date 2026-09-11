@@ -4,6 +4,7 @@ package middleware
 import (
 	"crypto/subtle"
 	"errors"
+	"strconv"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -150,6 +151,7 @@ func validateAdminAPIKey(
 	c.Set(string(ContextKeyUserRole), admin.Role)
 	c.Set(ContextKeyAuthEmail, admin.Email)
 	c.Set("auth_method", "admin_api_key")
+	c.Request = c.Request.WithContext(service.WithUnifiedGatewayAdminActor(c.Request.Context(), strconv.FormatInt(admin.ID, 10)))
 	return true
 }
 
@@ -211,6 +213,7 @@ func validateJWTForAdmin(
 	c.Set(ContextKeyAuthEmail, user.Email)
 	c.Set(ContextKeySessionID, claims.SessionID)
 	c.Set("auth_method", "jwt")
+	c.Request = c.Request.WithContext(service.WithUnifiedGatewayAdminActor(c.Request.Context(), strconv.FormatInt(user.ID, 10)))
 
 	return true
 }

@@ -1,0 +1,32 @@
+# Template only. No credentials or live secrets belong in this file.
+schema_version: 1
+environment: aiself
+captured_at: "YYYY-MM-DDThh:mm:ss+08:00"
+source_commit: "COMMIT_OR_IMAGE_DIGEST"
+entries:
+  - provider_identity: "openai|deepseek|kimi|ark|gemini|grok|..."
+    source_channel: "direct|kie|subrouter|other"
+    account_ref: "logical-account-ref-only"
+    account_schedulable: true
+    public_model: "client-visible-model"
+    upstream_model: "actual-upstream-model"
+    upstream_endpoint: "/v1/..."
+    transport_platform: "openai|anthropic|gemini|grok|..."
+    capabilities:
+      text: false
+      stream: false
+      tools: false
+      vision: false
+      image_generation: false
+      video_generation: false
+      video_polling: false
+    limits:
+      max_input_tokens: null
+      max_output_tokens: null
+      concurrency: null
+      timeout_seconds: null
+    usage_source: "provider_usage|estimated|not_supported"
+    last_verified_at: "YYYY-MM-DDThh:mm:ss+08:00"
+    verification_request_ref: "redacted-request-ref"
+    evidence_ref: "path-or-audit-id"
+    status: "candidate|enabled|disabled|blocked"

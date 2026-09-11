@@ -1,9 +1,7 @@
 package veyra
 
 import (
-	"context"
 	"crypto/subtle"
-	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -12,14 +10,12 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	servermiddleware "github.com/Wei-Shaw/sub2api/internal/server/middleware"
-	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 )
 
 type RoutesConfig struct {
 	Enabled               bool
 	AlchemyBaseURL        string
-	VideoBaseURL          string
 	InternalToken         string
 	LoginTicketTTLSeconds int
 }
@@ -62,19 +58,6 @@ type debitResponse struct {
 	Replayed       bool    `json:"replayed"`
 }
 
-// VideoUsageReader is deliberately read-only. It is backed by Sub2API's
-// existing usage_logs and does not create another balance or usage ledger.
-type VideoUsageReader interface {
-	GetVideoUsage(ctx context.Context, userID int64, requestID string) (service.VideoUsageFact, error)
-}
-
-type videoUsageResponse struct {
-	UserID     int64  `json:"user_id"`
-	RequestID  string `json:"request_id"`
-	Model      string `json:"model"`
-	ActualCost string `json:"actual_cost"`
-}
-
 type accountSummaryResponse struct {
 	UserID      int64   `json:"user_id"`
 	Email       string  `json:"email"`
@@ -86,7 +69,6 @@ type accountSummaryResponse struct {
 
 type portalConfigResponse struct {
 	AlchemyBaseURL string `json:"alchemy_base_url"`
-	VideoBaseURL   string `json:"video_base_url"`
 }
 
 func RoutesConfigFromConfig(cfg *config.Config) RoutesConfig {
@@ -96,13 +78,12 @@ func RoutesConfigFromConfig(cfg *config.Config) RoutesConfig {
 	return RoutesConfig{
 		Enabled:               cfg.Veyra.Enabled,
 		AlchemyBaseURL:        cfg.Veyra.AlchemyBaseURL,
-		VideoBaseURL:          cfg.Veyra.VideoBaseURL,
 		InternalToken:         cfg.Veyra.InternalToken,
 		LoginTicketTTLSeconds: cfg.Veyra.LoginTicketTTLSeconds,
 	}
 }
 
-func RegisterRoutes(base *gin.RouterGroup, jwtAuth servermiddleware.JWTAuthMiddleware, cfg RoutesConfig, store TicketStore, ledger DebitLedger, users BalanceAccountService, usageReaders ...VideoUsageReader) {
+func RegisterRoutes(base *gin.RouterGroup, jwtAuth servermiddleware.JWTAuthMiddleware, cfg RoutesConfig, store TicketStore, ledger DebitLedger, users BalanceAccountService) {
 	if base == nil || !cfg.Enabled {
 		return
 	}
@@ -121,11 +102,6 @@ func RegisterRoutes(base *gin.RouterGroup, jwtAuth servermiddleware.JWTAuthMiddl
 	internal.Use(internalTokenGuard(cfg.InternalToken))
 	internal.POST("/login-ticket/exchange", exchangeLoginTicketHandler(store))
 	internal.GET("/users/:user_id/account", accountSummaryHandler(users))
-	var usageReader VideoUsageReader
-	if len(usageReaders) > 0 {
-		usageReader = usageReaders[0]
-	}
-	internal.GET("/users/:user_id/usage/:request_id", videoUsageHandler(usageReader))
 	internal.POST("/billing/debit", debitHandler(users, ledger))
 }
 
@@ -133,19 +109,14 @@ func portalConfigHandler(cfg RoutesConfig) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		response.Success(c, portalConfigResponse{
 			AlchemyBaseURL: normalizePortalBaseURL(cfg.AlchemyBaseURL),
-			VideoBaseURL:   normalizePortalBaseURLWithFallback(cfg.VideoBaseURL, "https://video.aiself.vip"),
 		})
 	}
 }
 
 func normalizePortalBaseURL(raw string) string {
-	return normalizePortalBaseURLWithFallback(raw, "https://alchemy.aiself.vip")
-}
-
-func normalizePortalBaseURLWithFallback(raw string, fallback string) string {
 	baseURL := strings.TrimSpace(raw)
 	if baseURL == "" {
-		return fallback
+		return "https://alchemy.aiself.vip"
 	}
 	return strings.TrimRight(baseURL, "/")
 }
@@ -215,37 +186,6 @@ func accountSummaryHandler(users SessionUserReader) gin.HandlerFunc {
 			Balance:     user.Balance,
 			Status:      user.Status,
 			Concurrency: user.Concurrency,
-		})
-	}
-}
-
-func videoUsageHandler(reader VideoUsageReader) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		if reader == nil {
-			response.Error(c, http.StatusServiceUnavailable, "Video usage service is not configured")
-			return
-		}
-		userID, err := strconv.ParseInt(strings.TrimSpace(c.Param("user_id")), 10, 64)
-		requestID := strings.TrimSpace(c.Param("request_id"))
-		if err != nil || userID <= 0 || requestID == "" || len(requestID) > 255 {
-			response.BadRequest(c, "Invalid video usage lookup")
-			return
-		}
-		fact, err := reader.GetVideoUsage(c.Request.Context(), userID, requestID)
-		if err != nil {
-			if errors.Is(err, service.ErrUsageLogNotFound) {
-				response.NotFound(c, "Video usage is not settled")
-				return
-			}
-			response.InternalError(c, "Video usage could not be read")
-			return
-		}
-		if fact.UserID != userID || strings.TrimSpace(fact.RequestID) == "" || strings.TrimSpace(fact.Model) == "" || strings.TrimSpace(fact.ActualCost) == "" {
-			response.InternalError(c, "Video usage returned an invalid fact")
-			return
-		}
-		response.Success(c, videoUsageResponse{
-			UserID: fact.UserID, RequestID: fact.RequestID, Model: fact.Model, ActualCost: fact.ActualCost,
 		})
 	}
 }

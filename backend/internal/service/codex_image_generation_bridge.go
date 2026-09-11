@@ -145,10 +145,8 @@ func (a *Account) responsesImageModeOverride() (string, bool) {
 	return "", false
 }
 
-// isAutomaticallyImagesAPIOnly identifies the account shape produced by the
-// normal admin form for third-party image-only lines. The explicit metadata
-// remains available for exceptional providers, but new image lines do not
-// need an Extra JSON edit merely to use the Responses bridge.
+// isAutomaticallyImagesAPIOnly identifies third-party OpenAI-compatible
+// accounts whose configured model mapping contains image models only.
 func (a *Account) isAutomaticallyImagesAPIOnly() bool {
 	if a == nil || a.Platform != PlatformOpenAI {
 		return false
