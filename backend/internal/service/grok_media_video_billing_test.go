@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func TestGrokVideoE2EDurationFromCreatedAt(t *testing.T) {
@@ -51,6 +52,27 @@ func TestIsGrokVideoStatusBillable(t *testing.T) {
 	require.False(t, IsGrokVideoStatusBillable([]byte(`{"download_url":"/v1/videos/task/content"}`)))
 	// "completed" is not the official enum value
 	require.False(t, IsGrokVideoStatusBillable([]byte(`{"status":"completed","video":{"url":"https://vidgen.x.ai/x.mp4"}}`)))
+}
+
+func TestNormalizeWokeyVideoStatusForBilling(t *testing.T) {
+	t.Parallel()
+
+	completed := []byte(`{"id":"wokey-video-1","status":"completed","model":"grok-imagine-video-1.5","seconds":"6","video_url":"https://cdn.example/video.mp4"}`)
+	normalized := normalizeWokeyVideoStatusForBilling(completed)
+	require.Equal(t, "done", gjson.GetBytes(normalized, "status").String())
+	require.Equal(t, "https://cdn.example/video.mp4", gjson.GetBytes(normalized, "video.url").String())
+	require.Equal(t, 1, ExtractGrokVideoBillingFromStatusBody(normalized, nil, "wokey-video-1").VideoCount)
+
+	// Wokey processing and failure responses remain non-billable.
+	for _, body := range []string{
+		`{"status":"processing","video_url":"https://cdn.example/video.mp4"}`,
+		`{"status":"failed","video_url":"https://cdn.example/video.mp4"}`,
+		`{"status":"completed"}`,
+	} {
+		got := normalizeWokeyVideoStatusForBilling([]byte(body))
+		require.Equal(t, body, string(got))
+		require.Nil(t, ExtractGrokVideoBillingFromStatusBody(got, nil, "wokey-video-1"))
+	}
 }
 
 func TestExtractGrokVideoBillingFromStatusBodyPrefersUpstreamParams(t *testing.T) {

@@ -109,6 +109,16 @@ bound to the same upstream account that created the task. The adapter is purpose
 built for Wokey's documented API, not a generic bypass for arbitrary Grok
 proxies.
 
+Wokey completion responses use the compatible `status=completed` plus
+`video_url` shape. The billing path keeps the provider response unchanged for
+callers, but projects that exact Wokey shape to the existing internal
+`status=done` + `video.url` billable shape for status/content completion
+observation. The projection is enabled only for the Wokey transport profile;
+processing, failed, incomplete, and unknown responses remain non-billable. The
+existing stable `grok-video:<request_id>` claim and usage deduplication are
+unchanged, so status and content observation still create at most one usage
+record and never estimate a cost.
+
 ## Codex auto-review model overlay
 
 Codex approval/review traffic can arrive as the synthetic model

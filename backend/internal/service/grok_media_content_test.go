@@ -115,6 +115,37 @@ func TestForwardGrokMediaContentUsesUpstreamCredentialAndStreamsRange(t *testing
 	require.True(t, IsResponseCommitted(c))
 }
 
+func TestForwardGrokMediaWokeyContentCompletionIsBillable(t *testing.T) {
+	upstream := &grokMediaContentUpstreamStub{
+		responses: []*http.Response{
+			grokMediaContentStatusResponse(`{"id":"wokey-video-2","status":"completed","model":"grok-imagine-video-1.5","seconds":"6","video_url":"https://cdn.example/video.mp4"}`),
+			{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"video/mp4"}},
+				Body:       io.NopCloser(strings.NewReader("video-payload")),
+			},
+		},
+	}
+	account := grokMediaContentTestAccount()
+	account.Credentials["base_url"] = "https://api.wokey.ai/v1"
+	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
+	c, recorder := grokMediaContentTestContext(http.MethodGet, "https://api.example/v1/videos/wokey-video-2/content", nil)
+
+	result, err := svc.ForwardGrokMedia(
+		context.Background(), c, account,
+		GrokMediaEndpointVideoContent, "wokey-video-2", nil, "",
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 1, result.VideoCount)
+	require.Equal(t, "wokey-video-2", result.ResponseID)
+	require.Equal(t, "video-payload", recorder.Body.String())
+	require.Len(t, upstream.requests, 2)
+	require.Equal(t, "https://api.wokey.ai/v1/videos/wokey-video-2", upstream.requests[0].URL.String())
+	require.Equal(t, "https://api.wokey.ai/v1/videos/wokey-video-2/content", upstream.requests[1].URL.String())
+}
+
 func TestForwardGrokMediaContentStreamsFullResponseWithSafeDefaults(t *testing.T) {
 	upstream := &grokMediaContentUpstreamStub{
 		responses: []*http.Response{grokMediaContentStatusResponse(`{"status":"completed"}`), {
@@ -322,6 +353,32 @@ func TestForwardGrokVideoStatusRewritesOnlyProtectedContentURL(t *testing.T) {
 	require.Equal(t, "https://vidgen.x.ai/task-1.mp4", gjson.Get(recorder.Body.String(), "video_url").String())
 	require.Equal(t, "9007199254740993", gjson.Get(recorder.Body.String(), "counter").String())
 	require.NotContains(t, recorder.Body.String(), "malicious.invalid")
+}
+
+func TestForwardGrokVideoStatusWokeyCompletionIsBillable(t *testing.T) {
+	upstream := &grokMediaContentUpstreamStub{
+		response: grokMediaContentStatusResponse(`{"id":"wokey-video-1","status":"completed","model":"grok-imagine-video-1.5","seconds":"6","video_url":"https://cdn.example/video.mp4"}`),
+	}
+	account := grokMediaContentTestAccount()
+	account.Credentials["base_url"] = "https://api.wokey.ai/v1"
+	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
+	c, recorder := grokMediaContentTestContext(http.MethodGet, "https://api.example/v1/videos/wokey-video-1", nil)
+
+	result, err := svc.ForwardGrokMedia(
+		context.Background(), c, account,
+		GrokMediaEndpointVideoStatus, "wokey-video-1", nil, "",
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 1, result.VideoCount)
+	require.Equal(t, "wokey-video-1", result.ResponseID)
+	// The provider response remains Wokey-native; only the internal billing view
+	// is normalized.
+	require.Equal(t, "completed", gjson.Get(recorder.Body.String(), "status").String())
+	require.Equal(t, "https://cdn.example/video.mp4", gjson.Get(recorder.Body.String(), "video_url").String())
+	require.Len(t, upstream.requests, 1)
+	require.Equal(t, "https://api.wokey.ai/v1/videos/wokey-video-1", upstream.requests[0].URL.String())
 }
 
 func TestRewriteGrokMediaVideoContentURLsPreservesOtherIDsAndHandlesNestedEscapedID(t *testing.T) {

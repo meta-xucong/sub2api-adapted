@@ -657,6 +657,36 @@ func IsGrokVideoStatusBillable(statusBody []byte) bool {
 	return strings.TrimSpace(gjson.GetBytes(statusBody, "video.url").String()) != ""
 }
 
+// normalizeWokeyVideoStatusForBilling projects Wokey's documented
+// OpenAI-compatible completion shape onto the official Grok billing shape.
+// Wokey returns status=completed and video_url, while the xAI response used by
+// the common billing path is status=done and video.url.  This is deliberately
+// account-scoped and only returns a changed body when both Wokey completion
+// fields are present; unknown or incomplete responses remain non-billable.
+func normalizeWokeyVideoStatusForBilling(statusBody []byte) []byte {
+	if len(statusBody) == 0 || !gjson.ValidBytes(statusBody) {
+		return statusBody
+	}
+	status := strings.TrimSpace(gjson.GetBytes(statusBody, "status").String())
+	videoURL := strings.TrimSpace(gjson.GetBytes(statusBody, "video_url").String())
+	if !strings.EqualFold(status, "completed") || videoURL == "" {
+		return statusBody
+	}
+	out := statusBody
+	var err error
+	out, err = sjson.SetBytes(out, "status", "done")
+	if err != nil {
+		return statusBody
+	}
+	if strings.TrimSpace(gjson.GetBytes(out, "video.url").String()) == "" {
+		out, err = sjson.SetBytes(out, "video.url", videoURL)
+		if err != nil {
+			return statusBody
+		}
+	}
+	return out
+}
+
 func isOfficialGrokVideoStatusDone(statusBody []byte) bool {
 	// Official enum: pending | done | expired | failed.
 	return strings.EqualFold(strings.TrimSpace(gjson.GetBytes(statusBody, "status").String()), "done")
@@ -912,6 +942,10 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 			}
 		}
 	}
+	usageBody := respBody
+	if endpoint == GrokMediaEndpointVideoStatus && account.UsesWokeyVideoMultipart() {
+		usageBody = normalizeWokeyVideoStatusForBilling(respBody)
+	}
 	if endpoint == GrokMediaEndpointImagesGenerations || endpoint == GrokMediaEndpointImagesEdits {
 		if countOpenAIResponseImageOutputsFromJSONBytes(respBody) <= 0 {
 			setOpsUpstreamError(c, http.StatusBadGateway, "xAI upstream returned no image output", truncateString(string(respBody), 512))
@@ -933,7 +967,7 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 		)
 	}
 	writeGrokMediaResponse(c, resp, respBody, s.responseHeaderFilter)
-	usage := grokMediaUsageFromResponse(endpoint, requestInfo, respBody)
+	usage := grokMediaUsageFromResponse(endpoint, requestInfo, usageBody)
 	resultModel := requestModel
 	resultBillingModel := requestModel
 	if endpoint == GrokMediaEndpointVideoStatus {
@@ -1027,6 +1061,10 @@ func (s *OpenAIGatewayService) forwardGrokMediaVideoContent(
 			return nil, err
 		}
 	}
+	billingStatusBody := statusBody
+	if account.UsesWokeyVideoMultipart() {
+		billingStatusBody = normalizeWokeyVideoStatusForBilling(statusBody)
+	}
 	contentURL, err := grokMediaSignedVideoContentURLForAccount(account, statusBody, requestID)
 	if err != nil {
 		SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
@@ -1091,7 +1129,7 @@ func (s *OpenAIGatewayService) forwardGrokMediaVideoContent(
 		ResponseHeaders: contentResp.Header.Clone(),
 		Duration:        time.Since(startTime),
 	}
-	if billed := ExtractGrokVideoBillingFromStatusBody(statusBody, nil, requestID); billed != nil {
+	if billed := ExtractGrokVideoBillingFromStatusBody(billingStatusBody, nil, requestID); billed != nil {
 		result.ResponseID = firstNonEmpty(billed.ResponseID, strings.TrimSpace(requestID))
 		result.Model = billed.Model
 		result.BillingModel = billed.BillingModel
