@@ -366,6 +366,21 @@ func (t *HealthTracker) Observe(result RouteResult) HealthSnapshot {
 				action = "policy_reject_recovered"
 			}
 		}
+	} else if result.Capability == CapabilityResponsesCompact && class == FailureConcurrencyLimited {
+		// Compact requests are especially sensitive to a saturated upstream
+		// account, but a busy response is not evidence that the lane is broken.
+		// Apply the normal short exponential cooldown and a single temporary
+		// priority penalty; do not quarantine until calibration or allocate a
+		// recovery slot.  A later success clears the cooldown and gradually
+		// removes the penalty through the existing recovery path.
+		state.ConsecutiveFailures++
+		state.ConsecutiveSuccesses = 0
+		state.HealthScore = maxFloat(0.05, state.HealthScore*0.85)
+		state.HealthPenalty = minInt(state.HealthPenalty+1, t.policy.MaxPenalty)
+		state.CooldownUntilUnix = now.Add(t.cooldownFor(state.ConsecutiveFailures)).Unix()
+		state.RecoveryStage = RecoveryCooling
+		action = "compact_concurrency_cooldown"
+		state.lastFailureUnix = now.Unix()
 	} else if result.Capability == CapabilityResponsesCompact &&
 		shouldStrictCompactQuarantine(class) &&
 		!(class == FailureCapabilityError && isVolatileGPT56Model(result.Model)) {

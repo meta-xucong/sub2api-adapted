@@ -18,6 +18,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	smartrouter "github.com/Wei-Shaw/sub2api/internal/smartrouter/core"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
@@ -880,7 +881,7 @@ func openAIStreamFailedEventSemanticStatus(payload []byte, message string) int {
 	}
 	combined := strings.TrimSpace(errType + " " + code + " " + strings.ToLower(strings.TrimSpace(message)))
 	switch {
-	case strings.Contains(combined, "rate_limit"):
+	case smartrouter.IsConcurrencyRateLimit(message, code):
 		return http.StatusTooManyRequests
 	case strings.Contains(errType, "invalid_request"):
 		return http.StatusBadRequest
@@ -888,10 +889,53 @@ func openAIStreamFailedEventSemanticStatus(payload []byte, message string) int {
 		return http.StatusUnauthorized
 	case strings.Contains(combined, "permission") || strings.Contains(combined, "forbidden") || strings.Contains(combined, "access denied"):
 		return http.StatusForbidden
+	case strings.Contains(combined, "rate_limit"):
+		return http.StatusTooManyRequests
 	case code == "server_is_overloaded" || code == "slow_down":
 		return http.StatusServiceUnavailable
 	default:
 		return http.StatusBadGateway
+	}
+}
+
+// markOpenAICompactFailedEvent closes the observability loop for a semantic
+// response.failed that was actually committed to the client.  A compact SSE
+// stream can have an HTTP 200 status already, so the handler cannot infer the
+// final outcome from the wire status alone.  Pre-output failover paths return
+// before this helper is called and therefore keep the request eligible for a
+// successful alternate account.
+func markOpenAICompactFailedEvent(c *gin.Context, payload []byte, message string) {
+	if c == nil || !IsOpenAIResponsesCompactRequest(c) {
+		return
+	}
+	status := openAIStreamFailedEventSemanticStatus(payload, message)
+	code := openAIStreamFailedEventErrorCode(payload)
+	errType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(payload, "response.error.type").String()))
+	if errType == "" {
+		errType = strings.ToLower(strings.TrimSpace(gjson.GetBytes(payload, "error.type").String()))
+	}
+	if errType == "" {
+		errType = "server_error"
+	}
+	if strings.TrimSpace(message) == "" {
+		message = extractOpenAISSEErrorMessage(payload)
+	}
+	message = truncateString(sanitizeUpstreamErrorMessage(strings.TrimSpace(message)), 2048)
+	code = truncateString(sanitizeUpstreamErrorMessage(strings.TrimSpace(code)), 128)
+	if status == http.StatusTooManyRequests || status >= 500 {
+		MarkOpsStreamFailure(c, errType, code, message, status)
+		return
+	}
+	// MarkOpsStreamError predates the optional stable code field.  Preserve the
+	// code for deterministic 4xx failures as well, while retaining its
+	// first-wins semantics and keeping CountTowardsSLA false.
+	if _, exists := GetOpsStreamError(c); !exists {
+		c.Set(OpsStreamErrorKey, OpsStreamError{
+			ErrType:        errType,
+			Code:           code,
+			Message:        message,
+			IntendedStatus: status,
+		})
 	}
 }
 
@@ -1165,6 +1209,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	sawFailedEvent := false
 	semanticOutputSeen := false
 	failedMessage := ""
+	var failedPayload []byte
 	clientOutputStarted := false
 	upstreamRequestID := strings.TrimSpace(resp.Header.Get("x-request-id"))
 	// pendingLines 在首个可见输出前保留前导事件，确保无输出失败仍可安全 failover。
@@ -1257,6 +1302,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 			eventType := strings.TrimSpace(gjson.Get(trimmedData, "type").String())
 			if eventType == "response.failed" {
 				failedMessage = extractOpenAISSEErrorMessage(dataBytes)
+				failedPayload = append(failedPayload[:0], dataBytes...)
 				// response.failed 自带上游已消耗的 usage（input token 通常已扣）；必须先解析
 				// 再打 cyber 标记，否则 mark 记到的是解析前的 0，导致流式 cyber 按 0 token 计费
 				// 而漏记真实用量。对齐 WS V2 / Chat 流式路径（均先解析 usage 再 Mark）。
@@ -1273,6 +1319,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 				}
 				if !openAIStreamClientOutputStarted(c, clientOutputStarted) {
 					if status, errType, errMsg, matched := applyOpenAIStreamFailedErrorPassthroughRule(c, account.Platform, dataBytes, failedMessage); matched {
+						markOpenAICompactFailedEvent(c, dataBytes, failedMessage)
 						// 命中透传规则也要记录 ops 上游错误事件（对齐 CC/Messages 与
 						// antigravity 先例），否则透传命中的 failed 在监控中不可见。
 						s.recordOpenAIStreamUpstreamError(c, account, true, upstreamRequestID, "http_error", dataBytes, failedMessage)
@@ -1361,6 +1408,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 			return resultWithUsage(), nil
 		}
 		if sawFailedEvent {
+			markOpenAICompactFailedEvent(c, failedPayload, failedMessage)
 			return resultWithUsage(), fmt.Errorf("upstream response failed: %s", failedMessage)
 		}
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -1391,6 +1439,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 		return resultWithUsage(), fmt.Errorf("stream read error: %w", err)
 	}
 	if sawFailedEvent {
+		markOpenAICompactFailedEvent(c, failedPayload, failedMessage)
 		return resultWithUsage(), fmt.Errorf("upstream response failed: %s", failedMessage)
 	}
 	if !clientDisconnected && !sawDone && !sawTerminalEvent && ctx.Err() == nil {
