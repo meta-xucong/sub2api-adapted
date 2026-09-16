@@ -23,6 +23,11 @@ const (
 	defaultSmartRouterImageReserveSeconds     = 15
 )
 
+func isNetTimeoutError(err error) bool {
+	var netErr net.Error
+	return err != nil && errors.As(err, &netErr) && netErr.Timeout()
+}
+
 // OpenAIImageSmartRouterBudgetState carries the live budget into account
 // selection. It is deliberately separate from chat scheduling state.
 type OpenAIImageSmartRouterBudgetState struct {
@@ -481,6 +486,10 @@ func (s *OpenAIGatewayService) reportSmartRouterImageResult(source string, accou
 	if errors.As(err, &failoverErr) && failoverErr != nil {
 		statusCode = failoverErr.StatusCode
 		message = string(failoverErr.ResponseBody)
+		code = string(failoverErr.Reason)
+	}
+	if err != nil && message == "" {
+		message = err.Error()
 	}
 	clientCancelled := errors.Is(err, context.Canceled) || strings.Contains(strings.ToLower(message), "context canceled")
 	success := err == nil || (result != nil && result.ImageCount > 0)
@@ -489,7 +498,13 @@ func (s *OpenAIGatewayService) reportSmartRouterImageResult(source string, accou
 	}
 	errorClass := smartrouter.FailureClass("")
 	if !success {
-		errorClass = smartrouter.ClassifyFailureDetails(statusCode, capability, message, code, clientCancelled)
+		if failoverErr != nil && failoverErr.Reason == GatewayFailureReason("openai_image_attempt_timeout") {
+			errorClass = smartrouter.FailureTimeout
+		} else if errors.Is(err, context.DeadlineExceeded) || isNetTimeoutError(err) {
+			errorClass = smartrouter.FailureTimeout
+		} else {
+			errorClass = smartrouter.ClassifyFailureDetails(statusCode, capability, message, code, clientCancelled)
+		}
 	}
 	s.smartRouterHealth().Observe(smartrouter.RouteResult{
 		Source:         source,
@@ -503,7 +518,7 @@ func (s *OpenAIGatewayService) reportSmartRouterImageResult(source string, accou
 		StatusCode:     statusCode,
 		ErrorClass:     errorClass,
 		TotalLatencyMs: durationMs,
-		ErrorSummary:   code,
+		ErrorSummary:   firstNonEmptyString(code, message),
 	})
 }
 

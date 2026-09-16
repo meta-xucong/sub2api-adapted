@@ -1730,9 +1730,9 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 	if resp != nil {
 		statusCode = resp.StatusCode
 	}
-	s.observeSmartRouterImageAttempt(imageUpstreamCtx, account, imageCapability, time.Since(upstreamStart), statusCode, err == nil && statusCode < 400, err)
 	SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
 	if err != nil {
+		s.observeSmartRouterImageAttempt(imageUpstreamCtx, account, imageCapability, time.Since(upstreamStart), statusCode, false, err)
 		return nil, s.handleOpenAIUpstreamTransportError(imageUpstreamCtx, c, account, err, false)
 	}
 	if resp.StatusCode >= 400 {
@@ -1749,6 +1749,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+		s.observeSmartRouterImageAttempt(imageUpstreamCtx, account, imageCapability, time.Since(upstreamStart), resp.StatusCode, false, nil)
 		if s.shouldFailoverOpenAIImagesResponse(resp.StatusCode, upstreamMsg, respBody) {
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 				Platform:           account.Platform,
@@ -1783,6 +1784,12 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 	if parsed.Stream {
 		usage, imageCount, imageOutputSizes, firstTokenMs, err = s.handleOpenAIImagesOAuthStreamingResponse(resp, c, startTime, parsed.ResponseFormat, openAIImagesStreamPrefix(parsed), requestModel)
 		if err != nil {
+			responseWritten := OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c) != writerSizeBeforeResponse
+			if isOpenAIImageAttemptTimeout(err, imageUpstreamCtx, ctx) && !responseWritten {
+				s.observeSmartRouterImageAttempt(imageUpstreamCtx, account, imageCapability, time.Since(upstreamStart), resp.StatusCode, false, err)
+				return nil, newOpenAIImageAttemptTimeoutFailover(resp)
+			}
+			s.observeSmartRouterImageAttempt(imageUpstreamCtx, account, imageCapability, time.Since(upstreamStart), resp.StatusCode, false, err)
 			if imageCount > 0 {
 				return &OpenAIForwardResult{
 					RequestID:        resp.Header.Get("x-request-id"),
@@ -1810,9 +1817,14 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 				err,
 			)
 		}
+		s.observeSmartRouterImageAttempt(imageUpstreamCtx, account, imageCapability, time.Since(upstreamStart), resp.StatusCode, true, nil)
 	} else {
 		usage, imageCount, imageOutputSizes, err = s.handleOpenAIImagesOAuthNonStreamingResponse(resp, c, parsed.ResponseFormat, requestModel)
 		if err != nil {
+			s.observeSmartRouterImageAttempt(imageUpstreamCtx, account, imageCapability, time.Since(upstreamStart), resp.StatusCode, false, err)
+			if isOpenAIImageAttemptTimeout(err, imageUpstreamCtx, ctx) && OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c) == writerSizeBeforeResponse {
+				return nil, newOpenAIImageAttemptTimeoutFailover(resp)
+			}
 			return nil, s.handleOpenAIImagesOAuthResponseError(
 				upstreamCtx,
 				c,
@@ -1824,6 +1836,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 				err,
 			)
 		}
+		s.observeSmartRouterImageAttempt(imageUpstreamCtx, account, imageCapability, time.Since(upstreamStart), resp.StatusCode, true, nil)
 	}
 	if imageCount <= 0 {
 		imageCount = parsed.N

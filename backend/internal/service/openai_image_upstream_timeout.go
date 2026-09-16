@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strconv"
 	"time"
 
@@ -178,4 +179,36 @@ func detachOpenAIImageUpstreamContext(ctx context.Context) (context.Context, con
 		return context.WithDeadline(context.Background(), deadline)
 	}
 	return context.WithoutCancel(ctx), func() {}
+}
+
+// isOpenAIImageAttemptTimeout reports a timeout owned by the current upstream
+// attempt, as opposed to the caller cancelling the request or the request-wide
+// image budget expiring.  Only the former is safe to replay on another lane:
+// the handler still has time left in the same request and no semantic image
+// bytes have necessarily reached the client yet.
+func isOpenAIImageAttemptTimeout(err error, attemptCtx context.Context, requestCtx context.Context) bool {
+	if err == nil || !errors.Is(err, context.DeadlineExceeded) || attemptCtx == nil {
+		return false
+	}
+	if requestCtx != nil && requestCtx.Err() != nil {
+		return false
+	}
+	return errors.Is(attemptCtx.Err(), context.DeadlineExceeded)
+}
+
+// newOpenAIImageAttemptTimeoutFailover keeps the public error contract stable
+// (502/upstream_error) while attaching an internal reason for Smart Router
+// health classification.  Response headers are copied for request tracing;
+// no upstream body or credentials are exposed.
+func newOpenAIImageAttemptTimeoutFailover(resp *http.Response) *UpstreamFailoverError {
+	var headers http.Header
+	if resp != nil {
+		headers = resp.Header.Clone()
+	}
+	return &UpstreamFailoverError{
+		StatusCode:      http.StatusBadGateway,
+		ResponseBody:    []byte(`{"error":{"type":"upstream_error","code":"upstream_timeout","message":"Upstream image request timed out"}}`),
+		ResponseHeaders: headers,
+		Reason:          GatewayFailureReason("openai_image_attempt_timeout"),
+	}
 }
