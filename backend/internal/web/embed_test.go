@@ -689,6 +689,17 @@ func TestEmbeddedFrontendBypassesBareVideoAPIRoutes(t *testing.T) {
 	}
 }
 
+func TestEmbeddedFrontendBypassesUnifiedGatewayRoutes(t *testing.T) {
+	for _, path := range []string{
+		"/unified/v1/models",
+		"/unified/v1/chat/completions",
+		"/unified/v1/images/generations",
+		"/unified/v1/videos/request-123",
+	} {
+		require.True(t, shouldBypassEmbeddedFrontend(path), "path=%s", path)
+	}
+}
+
 func TestNewFrontendServer(t *testing.T) {
 	t.Run("creates_server_successfully", func(t *testing.T) {
 		provider := &mockSettingsProvider{
