@@ -70,6 +70,16 @@ func grokMediaContentStatusResponse(body string) *http.Response {
 	}
 }
 
+func TestGrokMediaContentProxyURLPreservesUnifiedGatewayPrefix(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	legacyContext, _ := grokMediaContentTestContext(http.MethodGet, "/v1/videos/video-1", nil)
+	require.Equal(t, "/v1/videos/video-1/content", grokMediaContentProxyURL(legacyContext, "video-1"))
+
+	unifiedContext, _ := grokMediaContentTestContext(http.MethodGet, "/unified/v1/videos/video-1", nil)
+	require.Equal(t, "/unified/v1/videos/video-1/content", grokMediaContentProxyURL(unifiedContext, "video-1"))
+}
+
 func TestForwardGrokMediaContentUsesUpstreamCredentialAndStreamsRange(t *testing.T) {
 	upstream := &grokMediaContentUpstreamStub{
 		responses: []*http.Response{grokMediaContentStatusResponse(`{"status":"completed"}`), {

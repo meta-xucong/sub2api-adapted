@@ -92,6 +92,26 @@ func TestMemoryUnifiedGatewayRouteCatalogDoesNotReuseExplicitIDs(t *testing.T) {
 	require.NoError(t, catalog.AddBinding(UnifiedGatewayAccountBinding{RouteTargetID: autoID, AccountID: 401, Enabled: true}))
 }
 
+func TestMemoryUnifiedGatewayRouteCatalogUsesBindingEndpointOverride(t *testing.T) {
+	catalog := NewMemoryUnifiedGatewayRouteCatalog()
+	targetID, err := catalog.CreateTarget(UnifiedGatewayRouteTarget{
+		AccessGroupID: 42, BillingLaneID: "responses-lane", PublicModel: "gpt-6-astra",
+		ProviderIdentity: "openai", UpstreamModel: "gpt-6-astra", Endpoint: "chat_completions",
+		BillingMode: string(BillingModeToken), RateMode: UnifiedRateModeManualOnly,
+		RateBasis: UnifiedRateBasisToken, Enabled: true,
+	})
+	require.NoError(t, err)
+	require.NoError(t, catalog.AddBinding(UnifiedGatewayAccountBinding{
+		RouteTargetID: targetID, AccountID: 601, Endpoint: "responses", Enabled: true,
+	}))
+
+	_, err = catalog.Resolve(context.Background(), 42, "gpt-6-astra", "chat_completions")
+	require.ErrorIs(t, err, ErrUnifiedGatewayRouteNotFound)
+	selection, err := catalog.Resolve(context.Background(), 42, "gpt-6-astra", "responses")
+	require.NoError(t, err)
+	require.Equal(t, "responses", selection.Endpoint())
+}
+
 func TestUnifiedGatewayCreatesOneAPIAndChargesActualLane(t *testing.T) {
 	fixture := newUnifiedGatewayFixture(t)
 	now := fixture.clock
@@ -207,14 +227,18 @@ func TestUnifiedGatewayPerRequestUsesManualProviderRule(t *testing.T) {
 		}, Enabled: true,
 	}, UnifiedGatewayAccountBinding{ID: 41, AccountID: 401, Enabled: true})
 	result, err := fixture.gateway.Execute(context.Background(), UnifiedGatewayRequest{
-		RequestID: "req-ark-1", AttemptID: "1", AccessGroupID: 42, APIKeyID: 9, UserID: 7, PublicModel: "ark-request-model", Endpoint: "chat_completions", EstimatedUnits: 0,
-		RawBody: []byte(`{"model":"ark-request-model","measured_units":0}`),
+		RequestID: "req-ark-1", AttemptID: "1", AccessGroupID: 42, APIKeyID: 9, UserID: 7, PublicModel: "ark-request-model", Endpoint: "chat_completions", EstimatedUnits: 12,
+		RawBody: []byte(`{"model":"ark-request-model","measured_units":12}`),
 	})
 	require.NoError(t, err)
-	// The per-request basis defaults a successful request to one unit when the
-	// provider does not return token usage.
+	// A per-request route is exactly one billable unit even if the adapter
+	// receives token-like usage from a provider-specific response.
 	require.Equal(t, UnifiedRateBasisProviderSpecific, result.Record.Snapshot.RateBasis)
+	require.Equal(t, float64(1), result.MeasuredUnits)
 	require.InDelta(t, 0.0024, result.Charge, 1e-12)
+	balance, balanceErr := fixture.ledger.Balance(context.Background(), 7)
+	require.NoError(t, balanceErr)
+	require.InDelta(t, 9.9976, balance, 1e-12)
 }
 
 type failCapturedSnapshotStore struct {

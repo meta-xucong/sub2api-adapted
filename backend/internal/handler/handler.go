@@ -69,6 +69,9 @@ type Handlers struct {
 	ModelPlaza       *ModelPlazaHandler
 	AsyncImage       *AsyncImageHandler
 	BatchImage       *BatchImageHandler
+	// UnifiedGatewayRuntime is mounted only at /unified/v1. It never replaces
+	// the legacy Gateway/OpenAIGateway handlers.
+	UnifiedGatewayRuntime *UnifiedGatewayRuntimeHandler
 }
 
 // BuildInfo contains build-time information

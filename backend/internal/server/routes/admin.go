@@ -141,6 +141,7 @@ func registerUnifiedGatewayAdminRoutes(admin *gin.RouterGroup, h *handler.Handle
 	{
 		group.GET("/meta", h.Admin.UnifiedGateway.Meta)
 		group.GET("/options", h.Admin.UnifiedGateway.ListOptions)
+		group.GET("/model-candidates", h.Admin.UnifiedGateway.ListModelCandidates)
 		group.GET("/configs", h.Admin.UnifiedGateway.ListConfigs)
 		group.GET("/configs/:id", h.Admin.UnifiedGateway.GetConfig)
 		group.GET("/configs/:id/revisions", h.Admin.UnifiedGateway.ListRevisions)

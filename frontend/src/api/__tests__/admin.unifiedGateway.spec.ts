@@ -8,7 +8,7 @@ const { get, post, put } = vi.hoisted(() => ({
 
 vi.mock('@/api/client', () => ({ apiClient: { get, post, put } }))
 
-import { createDraft, createDraftFromConfig, pricingImportApply, publishDraft, restoreConfig, validateDraft } from '@/api/admin/unifiedGateway'
+import { createDraft, createDraftFromConfig, disableConfig, pricingImportApply, previewDraft, publishDraft, restoreConfig, validateDraft } from '@/api/admin/unifiedGateway'
 
 describe('unified gateway admin API contract', () => {
   beforeEach(() => {
@@ -61,5 +61,23 @@ describe('unified gateway admin API contract', () => {
     expect(post).toHaveBeenCalledWith('/admin/unified-gateway/drafts/draft_1/pricing-import/apply', {
       lane_id: 'lane_1', source_group_id: 'ag_7', import_digest: 'sha256:preview',
     }, { headers: { 'Idempotency-Key': 'import-key', 'If-Match': '4' } })
+  })
+
+  it('keeps a supported endpoint in the price preview document', async () => {
+    const document = { access_group_id: 'ag_7', public_model: 'gpt-5.5', endpoint: 'responses', lanes: [] }
+    await previewDraft('draft_1', { lane_id: 'lane_1', target_id: 'target_1', binding_id: 'binding_1', delivery_state: 'success' }, document)
+
+    expect(post).toHaveBeenCalledWith('/admin/unified-gateway/drafts/draft_1/preview', {
+      document,
+      preview: { lane_id: 'lane_1', target_id: 'target_1', binding_id: 'binding_1', delivery_state: 'success' },
+    })
+  })
+
+  it('disables a config with the current revision and idempotency key', async () => {
+    await disableConfig('config_1', 7, 'disable now', 'disable-key')
+
+    expect(post).toHaveBeenCalledWith('/admin/unified-gateway/configs/config_1/disable', { reason: 'disable now' }, {
+      headers: { 'Idempotency-Key': 'disable-key', 'If-Match': '7' },
+    })
   })
 })

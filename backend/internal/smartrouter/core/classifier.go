@@ -36,6 +36,14 @@ func ClassifyFailureDetails(statusCode int, capability Capability, message strin
 	if strings.Contains(lower, "moderation") || strings.Contains(lower, "content policy") || strings.Contains(lower, "safety violation") {
 		return FailureContentRejected
 	}
+	// Some providers deliver concurrency saturation as an in-band
+	// `response.failed` event over HTTP 200 (or as an ordinary error with no
+	// HTTP status). Preserve the explicit busy semantics before the generic
+	// post-start stream interruption classifier gets a chance to consume it.
+	if IsConcurrencyRateLimit(message, code) &&
+		(statusCode == 0 || statusCode == http.StatusTooManyRequests) {
+		return FailureConcurrencyLimited
+	}
 	if isStreamingCapability(capability) && looksLikePostStartStreamFailure(lower) {
 		return FailureStreamInterrupted
 	}

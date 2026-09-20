@@ -36,6 +36,7 @@ func (r *unifiedGatewayAdminRepository) CheckSchema(ctx context.Context) (servic
 		return service.UnifiedGatewaySchemaReadiness{}, err
 	}
 	var tables, lanes, profiles, drafts, revisions, idem, schemaTable bool
+	var snapshots, ledger, recovery, routeTargets, routeBindings bool
 	err := r.db.QueryRowContext(ctx, `
 		SELECT
 			EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'unified_gateway_model_configs'),
@@ -44,24 +45,45 @@ func (r *unifiedGatewayAdminRepository) CheckSchema(ctx context.Context) (servic
 			EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'unified_gateway_drafts'),
 			EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'unified_gateway_config_revisions'),
 			EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'unified_gateway_admin_idempotency'),
-			EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'unified_gateway_schema_version')
-	`).Scan(&tables, &lanes, &profiles, &drafts, &revisions, &idem, &schemaTable)
+			EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'unified_gateway_schema_version'),
+			EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'unified_route_price_snapshots'),
+			EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'unified_gateway_charge_ledger'),
+			EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'unified_gateway_recovery_tasks'),
+			EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'unified_route_targets'),
+			EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'unified_route_account_bindings')
+	`).Scan(&tables, &lanes, &profiles, &drafts, &revisions, &idem, &schemaTable, &snapshots, &ledger, &recovery, &routeTargets, &routeBindings)
 	if err != nil {
 		return service.UnifiedGatewaySchemaReadiness{}, err
 	}
 	missing := make([]string, 0)
 	if schemaTable {
-		var schemaVersion bool
+		var schemaVersion, recoverySchemaVersion bool
 		if err := r.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM unified_gateway_schema_version WHERE version = $1)`, service.UnifiedGatewayAdminSchemaVersion).Scan(&schemaVersion); err != nil {
 			return service.UnifiedGatewaySchemaReadiness{}, err
 		}
 		if !schemaVersion {
 			missing = append(missing, "schema_version_value")
 		}
+		if err := r.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM unified_gateway_schema_version WHERE version = $1)`, service.UnifiedGatewayRecoverySchemaVersion).Scan(&recoverySchemaVersion); err != nil {
+			return service.UnifiedGatewaySchemaReadiness{}, err
+		}
+		if !recoverySchemaVersion {
+			missing = append(missing, "recovery_schema_version_value")
+		}
 	} else {
-		missing = append(missing, "schema_version", "schema_version_value")
+		missing = append(missing, "schema_version", "schema_version_value", "recovery_schema_version_value")
 	}
-	for name, present := range map[string]bool{"model_configs": tables, "billing_lanes": lanes, "pricing_profiles": profiles, "drafts": drafts, "config_revisions": revisions, "idempotency": idem} {
+	for name, present := range map[string]bool{
+		"model_configs":                  tables,
+		"billing_lanes":                  lanes,
+		"pricing_profiles":               profiles,
+		"drafts":                         drafts,
+		"config_revisions":               revisions,
+		"idempotency":                    idem,
+		"unified_route_price_snapshots":  snapshots,
+		"unified_gateway_charge_ledger":  ledger,
+		"unified_gateway_recovery_tasks": recovery,
+	} {
 		if !present {
 			missing = append(missing, name)
 		}
@@ -73,6 +95,10 @@ func (r *unifiedGatewayAdminRepository) CheckSchema(ctx context.Context) (servic
 		"unified_gateway_drafts":            {"id", "config_id", "revision", "document", "created_by", "updated_by"},
 		"unified_gateway_config_revisions":  {"id", "config_id", "revision", "lifecycle", "document", "actor_id", "reason", "digest"},
 		"unified_gateway_admin_idempotency": {"actor_id", "operation", "resource_id", "idempotency_key", "request_digest", "response_status", "response_json"},
+		"unified_route_price_snapshots":     {"id", "api_key_id", "user_id", "request_id", "attempt_id", "status", "selection_json", "snapshot_json", "response_body", "response_body_bytes", "measured_units", "user_charge", "upstream_request_id", "failure_message", "created_at", "finalized_at"},
+		"unified_gateway_charge_ledger":     {"id", "reservation_key", "user_id", "reserved_amount", "captured_amount", "status", "created_at", "updated_at"},
+		"users":                             {"frozen_balance"},
+		"unified_gateway_recovery_tasks":    {"id", "api_key_id", "user_id", "access_group_id", "request_id", "attempt_id", "reservation_key", "snapshot_status", "user_charge", "status", "attempts", "next_attempt_at", "locked_until", "last_error", "created_at", "updated_at"},
 		"unified_route_targets":             {"unified_config_id", "unified_lane_id", "unified_profile_id", "unified_revision", "currency", "rounding_mode", "fallback_reason", "pricing_schema_id", "source_group_id", "source_group_revision"},
 		"unified_route_account_bindings":    {"unified_config_id", "unified_revision", "probe_status", "probe_snapshot_ref"},
 	}
@@ -106,6 +132,8 @@ func (r *unifiedGatewayAdminRepository) CheckSchema(ctx context.Context) (servic
 		"unified_gateway_admin_idempotency_pkey":                  {columns: "actor_id,operation,resource_id,idempotency_key"},
 		"idx_unified_route_targets_legacy_unique":                 {columns: "access_group_id,billing_lane_id,public_model,endpoint,provider_identity", predicate: "unified_config_idisnull"},
 		"idx_unified_route_targets_admin_unique":                  {columns: "unified_config_id,unified_lane_id,public_model,endpoint,provider_identity", predicate: "unified_config_idisnotnull"},
+		"idx_unified_gateway_charge_ledger_reservation_key":       {columns: "reservation_key"},
+		"unified_gateway_recovery_tasks_request_key":              {columns: "api_key_id,user_id,access_group_id,request_id,attempt_id"},
 	}
 	for indexName, expectation := range requiredIndexes {
 		var definition, predicate string
@@ -124,19 +152,27 @@ func (r *unifiedGatewayAdminRepository) CheckSchema(ctx context.Context) (servic
 			missing = append(missing, indexName+"_predicate")
 		}
 	}
-	var legacyConstraintCount int
-	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pg_constraint WHERE conrelid='unified_route_targets'::regclass AND contype='u' AND pg_get_constraintdef(oid) = 'UNIQUE (access_group_id, billing_lane_id, public_model, endpoint, provider_identity)'`).Scan(&legacyConstraintCount); err != nil {
-		return service.UnifiedGatewaySchemaReadiness{}, err
+	if routeTargets {
+		var legacyConstraintCount int
+		if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pg_constraint WHERE conrelid='unified_route_targets'::regclass AND contype='u' AND pg_get_constraintdef(oid) = 'UNIQUE (access_group_id, billing_lane_id, public_model, endpoint, provider_identity)'`).Scan(&legacyConstraintCount); err != nil {
+			return service.UnifiedGatewaySchemaReadiness{}, err
+		}
+		if legacyConstraintCount != 0 {
+			missing = append(missing, "legacy_route_targets_unique_constraint_removed")
+		}
+	} else {
+		missing = append(missing, "unified_route_targets")
 	}
-	if legacyConstraintCount != 0 {
-		missing = append(missing, "legacy_route_targets_unique_constraint_removed")
-	}
-	var restrictFKCount int
-	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pg_constraint WHERE conrelid='unified_route_account_bindings'::regclass AND conname='unified_route_account_bindings_route_target_id_fkey' AND contype='f' AND pg_get_constraintdef(oid) LIKE 'FOREIGN KEY (route_target_id) REFERENCES unified_route_targets(id) ON DELETE RESTRICT%'`).Scan(&restrictFKCount); err != nil {
-		return service.UnifiedGatewaySchemaReadiness{}, err
-	}
-	if restrictFKCount != 1 {
-		missing = append(missing, "unified_route_account_bindings_route_target_id_fkey_definition")
+	if routeBindings {
+		var restrictFKCount int
+		if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pg_constraint WHERE conrelid='unified_route_account_bindings'::regclass AND conname='unified_route_account_bindings_route_target_id_fkey' AND contype='f' AND pg_get_constraintdef(oid) LIKE 'FOREIGN KEY (route_target_id) REFERENCES unified_route_targets(id) ON DELETE RESTRICT%'`).Scan(&restrictFKCount); err != nil {
+			return service.UnifiedGatewaySchemaReadiness{}, err
+		}
+		if restrictFKCount != 1 {
+			missing = append(missing, "unified_route_account_bindings_route_target_id_fkey_definition")
+		}
+	} else {
+		missing = append(missing, "unified_route_account_bindings")
 	}
 	return service.UnifiedGatewaySchemaReadiness{Ready: len(missing) == 0, Version: service.UnifiedGatewayAdminSchemaVersion, Missing: missing}, nil
 }
@@ -744,6 +780,10 @@ func (r *unifiedGatewayAdminRepository) materialize(ctx context.Context, tx *sql
 		if err != nil {
 			return err
 		}
+		ruleRaw, err := materializedUnifiedRateRuleJSON(lane.Profile)
+		if err != nil {
+			return err
+		}
 		profileDigest := digestForRaw(profileRaw)
 		profileVersion := parseVersion(lane.Profile.Version)
 		if _, err := tx.ExecContext(ctx, `INSERT INTO unified_gateway_billing_lanes (id, config_id, code, name, selection_strategy, pricing_source_group_id, pricing_source_revision, current_profile_id, revision, enabled, updated_at) VALUES ($1,$2,$3,$4,$5,NULLIF($6,0),$7,$8,$9,TRUE,NOW()) ON CONFLICT (config_id, code) DO UPDATE SET name=EXCLUDED.name, selection_strategy=EXCLUDED.selection_strategy, pricing_source_group_id=EXCLUDED.pricing_source_group_id, pricing_source_revision=EXCLUDED.pricing_source_revision, current_profile_id=EXCLUDED.current_profile_id, revision=EXCLUDED.revision, enabled=TRUE, updated_at=NOW()`, lane.ID, configID, lane.Code, lane.Name, lane.SelectionStrategy, numericSourceGroup(lane.PricingSourceGroupID), lane.PricingSourceRevision, lane.Profile.ID, revision); err != nil {
@@ -754,7 +794,7 @@ func (r *unifiedGatewayAdminRepository) materialize(ctx context.Context, tx *sql
 		}
 		for _, target := range lane.Targets {
 			var targetID int64
-			err = tx.QueryRowContext(ctx, `INSERT INTO unified_route_targets (access_group_id, billing_lane_id, public_model, provider_identity, upstream_model, endpoint, pool_id, billing_mode, rate_mode, rate_basis, lane_rule, pool_rule, priority, enabled, unified_config_id, unified_lane_id, unified_profile_id, unified_revision, currency, rounding_mode, fallback_reason, pricing_schema_id, source_group_id, source_group_revision, updated_at) VALUES ($1,$2,$3,$4,$5,$6,'',$7,$8,$9,$10::jsonb,'{}'::jsonb,$11,TRUE,$12,$13,$14,$15,$16,$17,$18,$19,NULLIF($20,0),$21,NOW()) ON CONFLICT (unified_config_id, unified_lane_id, public_model, endpoint, provider_identity) WHERE unified_config_id IS NOT NULL DO UPDATE SET upstream_model=EXCLUDED.upstream_model, endpoint=EXCLUDED.endpoint, billing_mode=EXCLUDED.billing_mode, rate_mode=EXCLUDED.rate_mode, rate_basis=EXCLUDED.rate_basis, lane_rule=EXCLUDED.lane_rule, pool_rule=EXCLUDED.pool_rule, priority=EXCLUDED.priority, enabled=TRUE, unified_profile_id=EXCLUDED.unified_profile_id, unified_revision=EXCLUDED.unified_revision, currency=EXCLUDED.currency, rounding_mode=EXCLUDED.rounding_mode, fallback_reason=EXCLUDED.fallback_reason, pricing_schema_id=EXCLUDED.pricing_schema_id, source_group_id=EXCLUDED.source_group_id, source_group_revision=EXCLUDED.source_group_revision, updated_at=NOW() RETURNING id`, groupID, lane.ID, document.PublicModel, target.ProviderIdentity, target.UpstreamModel, target.Endpoint, lane.Profile.BillingMode, lane.Profile.RateMode, lane.Profile.RateBasis, profileRaw, target.Priority, configID, lane.ID, lane.Profile.ID, revision, lane.Profile.Currency, lane.Profile.RoundingMode, fallbackReason(lane.Profile.FallbackReason), lane.Profile.PricingSchemaID, numericSourceGroup(lane.PricingSourceGroupID), lane.PricingSourceRevision).Scan(&targetID)
+			err = tx.QueryRowContext(ctx, `INSERT INTO unified_route_targets (access_group_id, billing_lane_id, public_model, provider_identity, upstream_model, endpoint, pool_id, billing_mode, rate_mode, rate_basis, lane_rule, pool_rule, priority, enabled, unified_config_id, unified_lane_id, unified_profile_id, unified_revision, currency, rounding_mode, fallback_reason, pricing_schema_id, source_group_id, source_group_revision, updated_at) VALUES ($1,$2,$3,$4,$5,$6,'',$7,$8,$9,$10::jsonb,'{}'::jsonb,$11,TRUE,$12,$13,$14,$15,$16,$17,$18,$19,NULLIF($20,0),$21,NOW()) ON CONFLICT (unified_config_id, unified_lane_id, public_model, endpoint, provider_identity) WHERE unified_config_id IS NOT NULL DO UPDATE SET upstream_model=EXCLUDED.upstream_model, endpoint=EXCLUDED.endpoint, billing_mode=EXCLUDED.billing_mode, rate_mode=EXCLUDED.rate_mode, rate_basis=EXCLUDED.rate_basis, lane_rule=EXCLUDED.lane_rule, pool_rule=EXCLUDED.pool_rule, priority=EXCLUDED.priority, enabled=TRUE, unified_profile_id=EXCLUDED.unified_profile_id, unified_revision=EXCLUDED.unified_revision, currency=EXCLUDED.currency, rounding_mode=EXCLUDED.rounding_mode, fallback_reason=EXCLUDED.fallback_reason, pricing_schema_id=EXCLUDED.pricing_schema_id, source_group_id=EXCLUDED.source_group_id, source_group_revision=EXCLUDED.source_group_revision, updated_at=NOW() RETURNING id`, groupID, lane.ID, document.PublicModel, target.ProviderIdentity, target.UpstreamModel, target.Endpoint, lane.Profile.BillingMode, lane.Profile.RateMode, lane.Profile.RateBasis, ruleRaw, target.Priority, configID, lane.ID, lane.Profile.ID, revision, lane.Profile.Currency, lane.Profile.RoundingMode, fallbackReason(lane.Profile.FallbackReason), lane.Profile.PricingSchemaID, numericSourceGroup(lane.PricingSourceGroupID), lane.PricingSourceRevision).Scan(&targetID)
 			if err != nil {
 				return err
 			}
@@ -764,7 +804,11 @@ func (r *unifiedGatewayAdminRepository) materialize(ctx context.Context, tx *sql
 					return err
 				}
 				probeRaw, _ := json.Marshal(binding.Probe)
-				if _, err := tx.ExecContext(ctx, `INSERT INTO unified_route_account_bindings (route_target_id, account_id, provider_identity, upstream_model, endpoint, account_rule, probe_snapshot, priority, enabled, unified_config_id, unified_revision, probe_status, probe_snapshot_ref) VALUES ($1,$2,$3,$4,$5,'{}'::jsonb,$6::jsonb,$7,$8,$9,$10,$11,$12) ON CONFLICT (route_target_id, account_id) DO UPDATE SET provider_identity=EXCLUDED.provider_identity, upstream_model=EXCLUDED.upstream_model, endpoint=EXCLUDED.endpoint, probe_snapshot=EXCLUDED.probe_snapshot, priority=EXCLUDED.priority, enabled=EXCLUDED.enabled, unified_config_id=EXCLUDED.unified_config_id, unified_revision=EXCLUDED.unified_revision, probe_status=EXCLUDED.probe_status, probe_snapshot_ref=EXCLUDED.probe_snapshot_ref, updated_at=NOW()`, targetID, accountID, target.ProviderIdentity, target.UpstreamModel, target.Endpoint, probeRaw, binding.Priority, binding.Enabled, configID, revision, probeStatus(binding.Probe), probeRef(binding.Probe)); err != nil {
+				bindingEndpoint := strings.TrimSpace(binding.Endpoint)
+				if bindingEndpoint == "" {
+					bindingEndpoint = target.Endpoint
+				}
+				if _, err := tx.ExecContext(ctx, `INSERT INTO unified_route_account_bindings (route_target_id, account_id, provider_identity, upstream_model, endpoint, account_rule, probe_snapshot, priority, enabled, unified_config_id, unified_revision, probe_status, probe_snapshot_ref) VALUES ($1,$2,$3,$4,$5,'{}'::jsonb,$6::jsonb,$7,$8,$9,$10,$11,$12) ON CONFLICT (route_target_id, account_id) DO UPDATE SET provider_identity=EXCLUDED.provider_identity, upstream_model=EXCLUDED.upstream_model, endpoint=EXCLUDED.endpoint, probe_snapshot=EXCLUDED.probe_snapshot, priority=EXCLUDED.priority, enabled=EXCLUDED.enabled, unified_config_id=EXCLUDED.unified_config_id, unified_revision=EXCLUDED.unified_revision, probe_status=EXCLUDED.probe_status, probe_snapshot_ref=EXCLUDED.probe_snapshot_ref, updated_at=NOW()`, targetID, accountID, target.ProviderIdentity, target.UpstreamModel, bindingEndpoint, probeRaw, binding.Priority, binding.Enabled, configID, revision, probeStatus(binding.Probe), probeRef(binding.Probe)); err != nil {
 					return err
 				}
 			}
@@ -814,6 +858,30 @@ func probeRef(value *service.UnifiedGatewayAdminProbe) string {
 	}
 	return value.SnapshotRef
 }
+
+func materializedUnifiedRateRuleJSON(profile service.UnifiedGatewayPricingProfile) ([]byte, error) {
+	// The aggregate admin document intentionally uses decimal strings and a
+	// richer profile schema. The runtime catalog consumes UnifiedRateRule, so
+	// materialize an explicit, lossless bridge instead of relying on unknown
+	// JSON fields being ignored by its decoder. This also preserves precision.
+	return json.Marshal(map[string]any{
+		"profile_id":                 profile.ID,
+		"version":                    profile.Version,
+		"billing_mode":               profile.BillingMode,
+		"upstream_rate_basis":        profile.RateBasis,
+		"base_price_semantics":       profile.BasePriceSemantics,
+		"provider_base_unit_price":   profile.ProviderBaseUnitPrice,
+		"manual_base_unit_price":     profile.ManualBaseUnitPrice,
+		"final_user_unit_price":      profile.FinalUserUnitPrice,
+		"manual_upstream_multiplier": profile.ManualUpstreamMultiplier,
+		"user_markup_multiplier":     profile.UserMarkupMultiplier,
+		"fixed_fee":                  profile.FixedFee,
+		"minimum_charge":             profile.MinimumCharge,
+		"rounding_precision":         profile.Precision,
+		"manual_pricing_rules":       profile.ManualPricingRules,
+	})
+}
+
 func digestForRaw(value []byte) string { sum := sha256Sum(value); return fmt.Sprintf("sha256:%x", sum) }
 func sha256Sum(value []byte) [32]byte  { return sha256.Sum256(value) }
 func classifyAdminDBError(err error) error {

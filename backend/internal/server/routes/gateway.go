@@ -507,6 +507,9 @@ func RegisterGatewayRoutes(
 		antigravityV1Beta.POST("/models/*modelAction", h.Gateway.GeminiV1BetaModels)
 	}
 
+	if h != nil && h.UnifiedGatewayRuntime != nil {
+		registerUnifiedGatewayRuntimeRoutes(r, h.UnifiedGatewayRuntime, apiKeyAuth, bodyLimit, clientRequestID, opsErrorLogger, endpointNorm)
+	}
 }
 
 func dispatchCodexModelsGateway(c *gin.Context, openAIHandler, generatedHandler gin.HandlerFunc) {

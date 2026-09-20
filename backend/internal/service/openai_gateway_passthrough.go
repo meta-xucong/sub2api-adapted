@@ -18,6 +18,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	smartrouter "github.com/Wei-Shaw/sub2api/internal/smartrouter/core"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
@@ -1384,7 +1385,7 @@ func openAIStreamFailedEventSemanticStatus(payload []byte, message string) int {
 		}
 	}
 	switch {
-	case strings.Contains(combined, "rate_limit"):
+	case smartrouter.IsConcurrencyRateLimit(message, code):
 		return http.StatusTooManyRequests
 	case strings.Contains(errType, "invalid_request"):
 		return http.StatusBadRequest
@@ -1392,12 +1393,51 @@ func openAIStreamFailedEventSemanticStatus(payload []byte, message string) int {
 		return http.StatusUnauthorized
 	case strings.Contains(combined, "permission") || strings.Contains(combined, "forbidden") || strings.Contains(combined, "access denied"):
 		return http.StatusForbidden
+	case strings.Contains(combined, "rate_limit"):
+		return http.StatusTooManyRequests
 	case isOpenAIUpstreamAccessStateError(message, payload):
 		return http.StatusForbidden
 	case isOpenAIUpstreamCapacityShedEvent(payload):
 		return http.StatusServiceUnavailable
 	default:
 		return http.StatusBadGateway
+	}
+}
+
+// markOpenAICompactFailedEvent closes the observability loop for a semantic
+// response.failed that was actually committed to the client. A compact SSE
+// stream can have an HTTP 200 status already, so the handler cannot infer the
+// final outcome from the wire status alone. Pre-output failover paths return
+// before this helper is called and remain eligible for a successful alternate.
+func markOpenAICompactFailedEvent(c *gin.Context, payload []byte, message string) {
+	if c == nil || !IsOpenAIResponsesCompactRequest(c) {
+		return
+	}
+	status := openAIStreamFailedEventSemanticStatus(payload, message)
+	code := openAIStreamFailedEventErrorCode(payload)
+	errType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(payload, "response.error.type").String()))
+	if errType == "" {
+		errType = strings.ToLower(strings.TrimSpace(gjson.GetBytes(payload, "error.type").String()))
+	}
+	if errType == "" {
+		errType = "server_error"
+	}
+	if strings.TrimSpace(message) == "" {
+		message = extractOpenAISSEErrorMessage(payload)
+	}
+	message = truncateString(sanitizeUpstreamErrorMessage(strings.TrimSpace(message)), 2048)
+	code = truncateString(sanitizeUpstreamErrorMessage(strings.TrimSpace(code)), 128)
+	if status == http.StatusTooManyRequests || status >= 500 {
+		MarkOpsStreamFailure(c, errType, code, message, status)
+		return
+	}
+	if _, exists := GetOpsStreamError(c); !exists {
+		c.Set(OpsStreamErrorKey, OpsStreamError{
+			ErrType:        errType,
+			Code:           code,
+			Message:        message,
+			IntendedStatus: status,
+		})
 	}
 }
 
@@ -1869,6 +1909,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	semanticOutputSeen := false
 	capacityFailoverSuppressedLogged := false
 	failedMessage := ""
+	var failedPayload []byte
 	clientOutputStarted := false
 	codexFailureTerminal := account != nil && account.Platform == PlatformOpenAI
 	failureDelivered := false
@@ -2046,6 +2087,9 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 				}
 				responseFailedPending = !codexFailureTerminal || eventType == "response.failed"
 				failedMessage = extractOpenAISSEErrorMessage(dataBytes)
+				if eventType == "response.failed" {
+					failedPayload = append(failedPayload[:0], dataBytes...)
+				}
 				if failedMessage == "" {
 					failedMessage = "Upstream response failed"
 				}
@@ -2095,6 +2139,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 					}
 					if !cyberHit && !sawBareError {
 						if status, errType, errMsg, matched := applyOpenAIStreamFailedErrorPassthroughRule(c, account.Platform, dataBytes, failedMessage); matched {
+							markOpenAICompactFailedEvent(c, dataBytes, failedMessage)
 							// 命中透传规则也要记录 ops 上游错误事件（对齐 CC/Messages 与
 							// antigravity 先例），否则透传命中的 failed 在监控中不可见。
 							s.recordOpenAIStreamUpstreamError(c, account, true, upstreamRequestID, "http_error", dataBytes, failedMessage)
@@ -2202,6 +2247,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 			return resultWithUsage(), nil
 		}
 		if sawFailedEvent {
+			markOpenAICompactFailedEvent(c, failedPayload, failedMessage)
 			return resultWithUsage(), fmt.Errorf("upstream response failed: %s", failedMessage)
 		}
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -2232,6 +2278,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 		return resultWithUsage(), fmt.Errorf("stream read error: %w", err)
 	}
 	if sawFailedEvent {
+		markOpenAICompactFailedEvent(c, failedPayload, failedMessage)
 		return resultWithUsage(), fmt.Errorf("upstream response failed: %s", failedMessage)
 	}
 	if !clientDisconnected && !sawDone && !sawTerminalEvent && ctx.Err() == nil {

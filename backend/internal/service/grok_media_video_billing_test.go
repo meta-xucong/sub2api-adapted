@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func TestGrokVideoE2EDurationFromCreatedAt(t *testing.T) {
@@ -51,6 +52,32 @@ func TestIsGrokVideoStatusBillable(t *testing.T) {
 	require.False(t, IsGrokVideoStatusBillable([]byte(`{"download_url":"/v1/videos/task/content"}`)))
 	// "completed" is not the official enum value
 	require.False(t, IsGrokVideoStatusBillable([]byte(`{"status":"completed","video":{"url":"https://vidgen.x.ai/x.mp4"}}`)))
+}
+
+func TestNormalizeWokeyVideoStatusForBillingAcceptsCurrentContentURL(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`{
+		"id":"video-1",
+		"status":"completed",
+		"model":"grok-imagine-video-1.5",
+		"duration_seconds":6,
+		"resolution":"480p",
+		"content_url":"/v1/videos/video-1/content",
+		"content_status":"available"
+	}`)
+
+	normalized := normalizeWokeyVideoStatusForBilling(body)
+	require.Equal(t, "done", gjson.GetBytes(normalized, "status").String())
+	require.Equal(t, "/v1/videos/video-1/content", gjson.GetBytes(normalized, "video.url").String())
+	require.Equal(t, int64(6), gjson.GetBytes(normalized, "video.duration").Int())
+	require.True(t, IsGrokVideoStatusBillable(normalized))
+
+	billed := ExtractGrokVideoBillingFromStatusBody(normalized, nil, "video-1")
+	require.NotNil(t, billed)
+	require.Equal(t, 1, billed.VideoCount)
+	require.Equal(t, "grok-imagine-video-1.5", billed.Model)
+	require.Equal(t, 6, billed.VideoDurationSeconds)
 }
 
 func TestExtractGrokVideoBillingFromStatusBodyPrefersUpstreamParams(t *testing.T) {

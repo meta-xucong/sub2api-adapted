@@ -379,10 +379,12 @@ func (s *OpenAIGatewayService) reportSmartRouterTextResult(source string, accoun
 	}
 	statusCode := 0
 	message := ""
+	code := ""
 	var failoverErr *UpstreamFailoverError
 	if errors.As(err, &failoverErr) && failoverErr != nil {
 		statusCode = failoverErr.StatusCode
 		message = string(failoverErr.ResponseBody)
+		code = string(failoverErr.Reason)
 	}
 	if err != nil && message == "" {
 		message = err.Error()
@@ -394,7 +396,7 @@ func (s *OpenAIGatewayService) reportSmartRouterTextResult(source string, accoun
 	}
 	errorClass := smartrouter.FailureClass("")
 	if !success {
-		errorClass = smartrouter.ClassifyFailureDetails(statusCode, capability, message, "", clientCancelled)
+		errorClass = smartrouter.ClassifyFailureDetails(statusCode, capability, message, code, clientCancelled)
 	}
 	s.smartRouterHealth().Observe(smartrouter.RouteResult{
 		Source:         source,
@@ -408,7 +410,7 @@ func (s *OpenAIGatewayService) reportSmartRouterTextResult(source string, accoun
 		StatusCode:     statusCode,
 		ErrorClass:     errorClass,
 		TotalLatencyMs: durationMs,
-		ErrorSummary:   message,
+		ErrorSummary:   firstNonEmptyString(code, message),
 	})
 }
 
@@ -489,7 +491,13 @@ func (s *OpenAIGatewayService) reportSmartRouterImageResult(source string, accou
 	}
 	errorClass := smartrouter.FailureClass("")
 	if !success {
-		errorClass = smartrouter.ClassifyFailureDetails(statusCode, capability, message, code, clientCancelled)
+		if failoverErr != nil && failoverErr.Reason == GatewayFailureReason("openai_image_attempt_timeout") {
+			errorClass = smartrouter.FailureTimeout
+		} else if errors.Is(err, context.DeadlineExceeded) || isNetTimeoutError(err) {
+			errorClass = smartrouter.FailureTimeout
+		} else {
+			errorClass = smartrouter.ClassifyFailureDetails(statusCode, capability, message, code, clientCancelled)
+		}
 	}
 	s.smartRouterHealth().Observe(smartrouter.RouteResult{
 		Source:         source,
@@ -503,8 +511,17 @@ func (s *OpenAIGatewayService) reportSmartRouterImageResult(source string, accou
 		StatusCode:     statusCode,
 		ErrorClass:     errorClass,
 		TotalLatencyMs: durationMs,
-		ErrorSummary:   code,
+		ErrorSummary:   firstNonEmptyString(code, message),
 	})
+}
+
+// isNetTimeoutError keeps timeout classification local to the smart-router
+// adapter.  The unified image failover path may wrap a net.Error several times;
+// errors.As is required so a wrapped timeout is not recorded as a generic
+// provider failure.
+func isNetTimeoutError(err error) bool {
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr != nil && netErr.Timeout()
 }
 
 func (s *OpenAIGatewayService) smartRouterAdaptiveTimeoutConfig() smartrouter.AdaptiveTimeoutConfig {

@@ -666,6 +666,49 @@ func IsGrokVideoStatusBillable(statusBody []byte) bool {
 	return strings.TrimSpace(gjson.GetBytes(statusBody, "video.url").String()) != ""
 }
 
+// normalizeWokeyVideoStatusForBilling projects Wokey's OpenAI-compatible
+// completion shape onto the official Grok billing shape. Wokey has returned
+// both video_url (older relays) and content_url (current API) over time, while
+// the xAI response used by the common billing path is status=done and
+// video.url. This is deliberately account-scoped and only returns a changed
+// body when a completed response carries a usable content URL; unknown or
+// incomplete responses remain non-billable.
+func normalizeWokeyVideoStatusForBilling(statusBody []byte) []byte {
+	if len(statusBody) == 0 || !gjson.ValidBytes(statusBody) {
+		return statusBody
+	}
+	status := strings.TrimSpace(gjson.GetBytes(statusBody, "status").String())
+	videoURL := strings.TrimSpace(gjson.GetBytes(statusBody, "video_url").String())
+	if videoURL == "" {
+		videoURL = strings.TrimSpace(gjson.GetBytes(statusBody, "content_url").String())
+	}
+	if !strings.EqualFold(status, "completed") || videoURL == "" {
+		return statusBody
+	}
+	out := statusBody
+	var err error
+	out, err = sjson.SetBytes(out, "status", "done")
+	if err != nil {
+		return statusBody
+	}
+	if strings.TrimSpace(gjson.GetBytes(out, "video.url").String()) == "" {
+		out, err = sjson.SetBytes(out, "video.url", videoURL)
+		if err != nil {
+			return statusBody
+		}
+	}
+	if !gjson.GetBytes(out, "video.duration").Exists() {
+		duration := gjson.GetBytes(statusBody, "duration_seconds")
+		if duration.Exists() && duration.Type == gjson.Number {
+			out, err = sjson.SetBytes(out, "video.duration", duration.Int())
+			if err != nil {
+				return statusBody
+			}
+		}
+	}
+	return out
+}
+
 func isOfficialGrokVideoStatusDone(statusBody []byte) bool {
 	// Official enum: pending | done | expired | failed.
 	return strings.EqualFold(strings.TrimSpace(gjson.GetBytes(statusBody, "status").String()), "done")
@@ -937,7 +980,11 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 		)
 	}
 	writeGrokMediaResponse(c, resp, respBody, s.responseHeaderFilter)
-	usage := grokMediaUsageFromResponse(endpoint, requestInfo, respBody)
+	usageBody := respBody
+	if endpoint == GrokMediaEndpointVideoStatus && account.UsesWokeyVideoMultipart() {
+		usageBody = normalizeWokeyVideoStatusForBilling(respBody)
+	}
+	usage := grokMediaUsageFromResponse(endpoint, requestInfo, usageBody)
 	resultModel := requestModel
 	resultBillingModel := requestModel
 	if endpoint == GrokMediaEndpointVideoStatus {
@@ -1097,7 +1144,11 @@ func (s *OpenAIGatewayService) forwardGrokMediaVideoContent(
 		ResponseHeaders: contentResp.Header.Clone(),
 		Duration:        time.Since(startTime),
 	}
-	if billed := ExtractGrokVideoBillingFromStatusBody(statusBody, nil, requestID); billed != nil {
+	billingStatusBody := statusBody
+	if account.UsesWokeyVideoMultipart() {
+		billingStatusBody = normalizeWokeyVideoStatusForBilling(statusBody)
+	}
+	if billed := ExtractGrokVideoBillingFromStatusBody(billingStatusBody, nil, requestID); billed != nil {
 		result.ResponseID = firstNonEmpty(billed.ResponseID, strings.TrimSpace(requestID))
 		result.Model = billed.Model
 		result.BillingModel = billed.BillingModel
@@ -2059,7 +2110,10 @@ func grokMediaContentProxyURL(c *gin.Context, requestID string) string {
 		return ""
 	}
 	pathPrefix := ""
-	if strings.HasPrefix(c.Request.URL.Path, "/v1/") {
+	switch {
+	case strings.HasPrefix(c.Request.URL.Path, "/unified/v1/"):
+		pathPrefix = "/unified/v1"
+	case strings.HasPrefix(c.Request.URL.Path, "/v1/"):
 		pathPrefix = "/v1"
 	}
 	return pathPrefix + "/videos/" + url.PathEscape(strings.Trim(requestID, "/")) + "/content"

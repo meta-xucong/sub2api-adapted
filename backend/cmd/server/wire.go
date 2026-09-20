@@ -127,6 +127,7 @@ func provideCleanup(
 	ollamaCloudUsage *service.OllamaCloudUsageService,
 	auditLog *service.AuditLogService,
 	openAIAutoReset *service.OpenAIQuotaAutoResetService,
+	unifiedGatewayRecovery *service.UnifiedGatewayRecoveryRuntime,
 	promptAudit *securityaudit.PromptService,
 	pluginManager *service.PluginManager,
 ) func() {
@@ -252,6 +253,12 @@ func provideCleanup(
 			{"BatchImageWorkerRuntime", func() error {
 				if batchImageWorker != nil {
 					batchImageWorker.Stop()
+				}
+				return nil
+			}},
+			{"UnifiedGatewayRecoveryRuntime", func() error {
+				if unifiedGatewayRecovery != nil {
+					unifiedGatewayRecovery.Stop()
 				}
 				return nil
 			}},

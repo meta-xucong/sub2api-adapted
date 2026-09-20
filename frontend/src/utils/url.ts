@@ -41,3 +41,28 @@ export function sanitizeUrl(value: string, options: SanitizeOptions = {}): strin
     return ''
   }
 }
+
+// OpenAI-compatible providers conventionally expose their API below /v1.
+// Keep custom paths intact because relays may use a provider-specific prefix.
+export function ensureOpenAIBaseUrl(value: string): string {
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return ''
+  }
+
+  if (trimmed.startsWith('/') && !trimmed.startsWith('//')) {
+    return trimmed
+  }
+
+  try {
+    const parsed = new URL(trimmed)
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return trimmed
+    }
+    const pathname = parsed.pathname.replace(/\/+$/, '')
+    parsed.pathname = pathname === '' ? '/v1' : pathname
+    return parsed.toString()
+  } catch {
+    return trimmed
+  }
+}

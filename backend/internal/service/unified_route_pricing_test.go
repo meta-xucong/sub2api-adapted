@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -143,6 +144,39 @@ func TestResolveUnifiedRoutePriceManualOnlyPerRequest(t *testing.T) {
 	require.InDelta(t, 0.0024, snapshot.UserUnitPrice, 1e-12)
 	require.InDelta(t, 0.0053, snapshot.Charge(2, true), 1e-12)
 	require.Zero(t, snapshot.Charge(2, false))
+}
+
+func TestUnifiedRateRuleUnmarshalAcceptsAdminDecimalStringsAndFlatPrice(t *testing.T) {
+	var rule UnifiedRateRule
+	err := json.Unmarshal([]byte(`{
+		"profile_id":"flat-v1",
+		"billing_mode":"per_request",
+		"upstream_rate_basis":"provider_specific",
+		"base_price_semantics":"final_user_price",
+		"minimum_charge":"0.05000000",
+		"manual_pricing_rules":{"formula_id":"flat_unit_price","unit":"request","unit_price":"0.01250000"}
+	}`), &rule)
+	require.NoError(t, err)
+	require.NotNil(t, rule.FinalUserUnitPrice)
+	require.InDelta(t, 0.0125, *rule.FinalUserUnitPrice, 1e-12)
+	require.NotNil(t, rule.MinimumCharge)
+	require.InDelta(t, 0.05, *rule.MinimumCharge, 1e-12)
+}
+
+func TestResolveUnifiedRoutePriceAppliesMinimumCharge(t *testing.T) {
+	now := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	rule := &UnifiedRateRule{
+		BillingMode:        string(BillingModePerRequest),
+		UpstreamRateBasis:  UnifiedRateBasisProviderSpecific,
+		BasePriceSemantics: UnifiedBasePriceFinalUser,
+		FinalUserUnitPrice: unifiedFloat(0.01),
+		MinimumCharge:      unifiedFloat(0.05),
+	}
+	snapshot, err := ResolveUnifiedRoutePrice(unifiedPricingInput(now, UnifiedRateModeManualOnly, UnifiedRateBasisProviderSpecific, string(BillingModePerRequest), rule))
+	require.NoError(t, err)
+	require.InDelta(t, 0.05, snapshot.Charge(1, true), 1e-12)
+	require.InDelta(t, 0.06, snapshot.Charge(6, true), 1e-12)
+	require.Zero(t, snapshot.Charge(1, false))
 }
 
 func TestResolveUnifiedRoutePriceRejectsBasisMismatch(t *testing.T) {

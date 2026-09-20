@@ -3,6 +3,7 @@ import type {
   UnifiedGatewayConfig,
   UnifiedGatewayDraft,
   UnifiedGatewayMeta,
+  UnifiedGatewayModelCandidate,
   UnifiedGatewayOptionsPage,
   UnifiedGatewayPreviewRequest,
   UnifiedGatewayPreviewResult,
@@ -33,6 +34,11 @@ export async function getMeta(): Promise<UnifiedGatewayMeta> {
 
 export async function getOptions(page = 1, pageSize = 100): Promise<UnifiedGatewayOptionsPage> {
   const { data } = await apiClient.get<UnifiedGatewayOptionsPage>(`${basePath}/options`, { params: { page, page_size: pageSize } })
+  return data
+}
+
+export async function listModelCandidates(): Promise<{ items: UnifiedGatewayModelCandidate[] }> {
+  const { data } = await apiClient.get<{ items: UnifiedGatewayModelCandidate[] }>(`${basePath}/model-candidates`)
   return data
 }
 
@@ -119,6 +125,7 @@ export async function probeBinding(bindingId: string, key = idempotencyKey()): P
 export const unifiedGatewayAPI = {
   getMeta,
   getOptions,
+  listModelCandidates,
   listConfigs,
   getConfig,
   createDraft,

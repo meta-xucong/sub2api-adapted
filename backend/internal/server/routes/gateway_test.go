@@ -58,6 +58,56 @@ func newGatewayRoutesTestRouterWithConfig(cfg *config.Config, platform ...string
 	return router
 }
 
+func newUnifiedGatewayRoutesTestRouter() *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	cfg := &config.Config{Gateway: config.GatewayConfig{MaxBodySize: 1024 * 1024, TextMaxBodySize: 1024 * 1024}}
+	RegisterGatewayRoutes(
+		router,
+		&handler.Handlers{
+			Gateway:               &handler.GatewayHandler{},
+			OpenAIGateway:         &handler.OpenAIGatewayHandler{},
+			AsyncImage:            handler.NewAsyncImageHandler(nil, nil),
+			UnifiedGatewayRuntime: handler.NewUnifiedGatewayRuntimeHandler(nil, cfg),
+		},
+		servermiddleware.APIKeyAuthMiddleware(func(c *gin.Context) { c.Next() }),
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		cfg,
+	)
+	return router
+}
+
+func TestGatewayRoutesUnifiedRuntimePathsAreRegisteredInAnIsolatedNamespace(t *testing.T) {
+	router := newUnifiedGatewayRoutesTestRouter()
+	registered := make(map[string]bool)
+	for _, route := range router.Routes() {
+		registered[route.Method+" "+route.Path] = true
+	}
+
+	for _, route := range []string{
+		"GET /unified/v1/models",
+		"POST /unified/v1/chat/completions",
+		"POST /unified/v1/responses",
+		"POST /unified/v1/images/generations",
+		"POST /unified/v1/images/edits",
+		"POST /unified/v1/videos",
+		"GET /unified/v1/videos/:request_id",
+		"GET /unified/v1/videos/:request_id/content",
+	} {
+		require.True(t, registered[route], "%s should be registered", route)
+	}
+
+	for _, route := range router.Routes() {
+		if strings.HasPrefix(route.Path, "/unified/v1/") {
+			require.NotContains(t, route.Path, "/v1/v1/", "unified route must not rewrite legacy paths")
+		}
+	}
+}
+
 func TestGatewayRoutesOpenAIResponsesCompactPathIsRegistered(t *testing.T) {
 	router := newGatewayRoutesTestRouter()
 

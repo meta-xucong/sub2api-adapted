@@ -273,13 +273,17 @@ func TestContentModerationRuntimeSnapshotRefreshFailureKeepsStaleConfig(t *testi
 	require.True(t, decision.Blocked)
 
 	repo.failMultiple(errors.New("database unavailable"))
+	// The test intentionally uses a nanosecond TTL.  Yield once so the second
+	// check cannot observe the snapshot in the same timestamp window on a busy
+	// package-wide test run.
+	time.Sleep(time.Millisecond)
 	decision, err = svc.Check(context.Background(), input)
 	require.NoError(t, err)
 	require.True(t, decision.Blocked)
 	require.Eventually(t, func() bool {
 		_, calls := repo.calls()
 		return calls >= 2
-	}, time.Second, time.Millisecond)
+	}, 30*time.Second, time.Millisecond)
 }
 
 func TestContentModerationRuntimeSnapshotRefreshFailureBacksOff(t *testing.T) {

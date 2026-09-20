@@ -36,6 +36,7 @@ var (
 const (
 	UnifiedGatewaySnapshotQuoted           UnifiedGatewaySnapshotStatus = "quoted"
 	UnifiedGatewaySnapshotReserved         UnifiedGatewaySnapshotStatus = "reserved"
+	UnifiedGatewaySnapshotPending          UnifiedGatewaySnapshotStatus = "pending"
 	UnifiedGatewaySnapshotCaptured         UnifiedGatewaySnapshotStatus = "captured"
 	UnifiedGatewaySnapshotReleased         UnifiedGatewaySnapshotStatus = "released"
 	UnifiedGatewaySnapshotSettlementFailed UnifiedGatewaySnapshotStatus = "settlement_failed"
@@ -204,10 +205,9 @@ func (c *MemoryUnifiedGatewayRouteCatalog) Resolve(_ context.Context, accessGrou
 	var candidates []UnifiedGatewayRouteSelection
 	matchedTarget := false
 	for _, target := range c.targets {
-		if !target.Enabled || target.AccessGroupID != accessGroupID || target.PublicModel != publicModel || (endpoint != "" && target.Endpoint != endpoint) {
+		if !target.Enabled || target.AccessGroupID != accessGroupID || target.PublicModel != publicModel {
 			continue
 		}
-		matchedTarget = true
 		bindings := append([]UnifiedGatewayAccountBinding(nil), c.bindings[target.ID]...)
 		sort.SliceStable(bindings, func(i, j int) bool {
 			if bindings[i].Priority != bindings[j].Priority {
@@ -216,7 +216,8 @@ func (c *MemoryUnifiedGatewayRouteCatalog) Resolve(_ context.Context, accessGrou
 			return bindings[i].ID < bindings[j].ID
 		})
 		for _, binding := range bindings {
-			if binding.Enabled {
+			if binding.Enabled && unifiedGatewayRouteEndpointMatches(target, binding, endpoint) {
+				matchedTarget = true
 				candidates = append(candidates, UnifiedGatewayRouteSelection{Target: target, Binding: binding})
 				break
 			}
@@ -248,7 +249,7 @@ func (c *MemoryUnifiedGatewayRouteCatalog) List(_ context.Context, accessGroupID
 	defer c.mu.RUnlock()
 	var out []UnifiedGatewayRouteSelection
 	for _, target := range c.targets {
-		if !target.Enabled || target.AccessGroupID != accessGroupID || (publicModel != "" && target.PublicModel != publicModel) || (endpoint != "" && target.Endpoint != endpoint) {
+		if !target.Enabled || target.AccessGroupID != accessGroupID || (publicModel != "" && target.PublicModel != publicModel) {
 			continue
 		}
 		bindings := append([]UnifiedGatewayAccountBinding(nil), c.bindings[target.ID]...)
@@ -259,7 +260,7 @@ func (c *MemoryUnifiedGatewayRouteCatalog) List(_ context.Context, accessGroupID
 			return bindings[i].ID < bindings[j].ID
 		})
 		for _, binding := range bindings {
-			if binding.Enabled {
+			if binding.Enabled && unifiedGatewayRouteEndpointMatches(target, binding, endpoint) {
 				out = append(out, UnifiedGatewayRouteSelection{Target: target, Binding: binding})
 			}
 		}
@@ -274,6 +275,22 @@ func (c *MemoryUnifiedGatewayRouteCatalog) List(_ context.Context, accessGroupID
 		return out[i].Binding.ID < out[j].Binding.ID
 	})
 	return out, nil
+}
+
+// unifiedGatewayRouteEndpointMatches uses the same effective endpoint rule as
+// the persistent catalog: a binding override wins over the target endpoint.
+// Keeping this in the memory catalog prevents local simulations from accepting
+// a route that the production SQL catalog would reject (or vice versa).
+func unifiedGatewayRouteEndpointMatches(target UnifiedGatewayRouteTarget, binding UnifiedGatewayAccountBinding, requested string) bool {
+	requested = strings.TrimSpace(requested)
+	if requested == "" {
+		return true
+	}
+	effective := strings.TrimSpace(binding.Endpoint)
+	if effective == "" {
+		effective = strings.TrimSpace(target.Endpoint)
+	}
+	return effective == requested
 }
 
 func validateUnifiedGatewayTarget(target UnifiedGatewayRouteTarget) error {
@@ -361,6 +378,32 @@ func (s *MemoryUnifiedGatewayPriceSnapshotStore) Get(_ context.Context, apiKeyID
 	return unifiedGatewaySnapshotClone(record), nil
 }
 
+// FindByUpstreamRequestID is an optional lookup used by asynchronous provider
+// workflows. It is deliberately separate from UnifiedGatewayPriceSnapshotStore
+// so existing test doubles and legacy snapshot adapters remain source
+// compatible. Production repositories should implement the same contract.
+func (s *MemoryUnifiedGatewayPriceSnapshotStore) FindByUpstreamRequestID(_ context.Context, apiKeyID, userID, accessGroupID int64, upstreamRequestID string) (*UnifiedGatewayPriceSnapshotRecord, error) {
+	if s == nil || strings.TrimSpace(upstreamRequestID) == "" {
+		return nil, ErrUnifiedGatewaySnapshotNotFound
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var found *UnifiedGatewayPriceSnapshotRecord
+	for _, record := range s.records {
+		if record.APIKeyID != apiKeyID || record.UserID != userID || record.AccessGroupID != accessGroupID || strings.TrimSpace(record.UpstreamRequestID) != strings.TrimSpace(upstreamRequestID) {
+			continue
+		}
+		if found != nil && found.RequestID != record.RequestID {
+			return nil, fmt.Errorf("%w: duplicate upstream request id", ErrUnifiedGatewaySnapshotConflict)
+		}
+		found = record
+	}
+	if found == nil {
+		return nil, ErrUnifiedGatewaySnapshotNotFound
+	}
+	return unifiedGatewaySnapshotClone(found), nil
+}
+
 func (s *MemoryUnifiedGatewayPriceSnapshotStore) Finalize(_ context.Context, apiKeyID, userID, accessGroupID int64, requestID, attemptID string, status UnifiedGatewaySnapshotStatus, measuredUnits, userCharge float64, upstreamRequestID string, responseBody []byte, failureMessage string) error {
 	if s == nil {
 		return ErrUnifiedGatewaySnapshotNotFound
@@ -371,11 +414,21 @@ func (s *MemoryUnifiedGatewayPriceSnapshotStore) Finalize(_ context.Context, api
 	if !ok {
 		return ErrUnifiedGatewaySnapshotNotFound
 	}
+	// A pending job may be polled more than once.  Allow the same-state update
+	// so a provider-issued replacement job id or the latest pending document is
+	// durable in the in-memory simulator just as it is in SQL.  Keep all other
+	// same-state finalizations idempotent and immutable.
+	if record.Status == status && status != UnifiedGatewaySnapshotPending {
+		return nil
+	}
 	if !unifiedGatewaySnapshotTransitionAllowed(record.Status, status) {
-		if record.Status == status {
-			return nil
-		}
 		return fmt.Errorf("%w: %s -> %s", ErrUnifiedGatewaySnapshotConflict, record.Status, status)
+	}
+	if status == UnifiedGatewaySnapshotPending && len(responseBody) == 0 {
+		responseBody = record.ResponseBody
+	}
+	if strings.TrimSpace(upstreamRequestID) == "" && status == UnifiedGatewaySnapshotPending {
+		upstreamRequestID = record.UpstreamRequestID
 	}
 	record.Status = status
 	record.MeasuredUnits = measuredUnits
@@ -395,6 +448,8 @@ func unifiedGatewaySnapshotTransitionAllowed(from, to UnifiedGatewaySnapshotStat
 	case UnifiedGatewaySnapshotQuoted:
 		return to == UnifiedGatewaySnapshotReserved || to == UnifiedGatewaySnapshotReleased || to == UnifiedGatewaySnapshotSettlementFailed || to == UnifiedGatewaySnapshotCaptured
 	case UnifiedGatewaySnapshotReserved:
+		return to == UnifiedGatewaySnapshotPending || to == UnifiedGatewaySnapshotCaptured || to == UnifiedGatewaySnapshotReleased || to == UnifiedGatewaySnapshotSettlementFailed
+	case UnifiedGatewaySnapshotPending:
 		return to == UnifiedGatewaySnapshotCaptured || to == UnifiedGatewaySnapshotReleased || to == UnifiedGatewaySnapshotSettlementFailed
 	default:
 		return false
@@ -584,10 +639,19 @@ type UnifiedGatewayRequest struct {
 	Endpoint       string
 	EstimatedUnits float64
 	RawBody        []byte
+	// SelectionOverride is used by the runtime scheduler after it has applied
+	// eligibility/failover policy. It is not serialized and cannot bypass the
+	// access-group check because the runtime validates the catalog candidates
+	// before setting it.
+	SelectionOverride *UnifiedGatewayRouteSelection `json:"-"`
 }
 
 type UnifiedGatewayUpstreamResult struct {
-	Delivered         bool
+	Delivered bool
+	// Pending means the provider accepted an asynchronous job but has not
+	// delivered billable output yet. UpstreamRequestID must identify that job;
+	// the reserved amount remains held until CompleteAsync settles it.
+	Pending           bool
 	MeasuredUnits     float64
 	UpstreamRequestID string
 	ResponseBody      []byte
@@ -605,6 +669,7 @@ func (f UnifiedGatewayUpstreamExecutorFunc) Forward(ctx context.Context, selecti
 
 type UnifiedGatewayExecutionResult struct {
 	Record            *UnifiedGatewayPriceSnapshotRecord
+	Pending           bool
 	Charge            float64
 	MeasuredUnits     float64
 	ResponseBody      []byte
@@ -612,11 +677,14 @@ type UnifiedGatewayExecutionResult struct {
 }
 
 type UnifiedGateway struct {
-	catalog   UnifiedGatewayRouteCatalog
-	snapshots UnifiedGatewayPriceSnapshotStore
-	ledger    UnifiedGatewayChargeLedger
-	upstream  UnifiedGatewayUpstreamExecutor
-	now       func() time.Time
+	catalog       UnifiedGatewayRouteCatalog
+	snapshots     UnifiedGatewayPriceSnapshotStore
+	ledger        UnifiedGatewayChargeLedger
+	upstream      UnifiedGatewayUpstreamExecutor
+	accountReader interface {
+		GetByID(context.Context, int64) (*Account, error)
+	}
+	now func() time.Time
 }
 
 func NewUnifiedGateway(catalog UnifiedGatewayRouteCatalog, snapshots UnifiedGatewayPriceSnapshotStore, ledger UnifiedGatewayChargeLedger, upstream UnifiedGatewayUpstreamExecutor) *UnifiedGateway {
@@ -627,6 +695,38 @@ func (g *UnifiedGateway) SetClock(now func() time.Time) {
 	if g != nil && now != nil {
 		g.now = now
 	}
+}
+
+// SetAccountReader enables the runtime capability guard without expanding the
+// legacy constructor contract used by in-memory tests. Production wiring sets
+// the existing account repository; a nil reader preserves simulator behavior.
+func (g *UnifiedGateway) SetAccountReader(reader interface {
+	GetByID(context.Context, int64) (*Account, error)
+}) {
+	if g != nil {
+		g.accountReader = reader
+	}
+}
+
+func (g *UnifiedGateway) validateSelectionCapability(ctx context.Context, selection UnifiedGatewayRouteSelection) error {
+	if g == nil || g.accountReader == nil {
+		return nil
+	}
+	account, err := g.accountReader.GetByID(ctx, selection.Binding.AccountID)
+	if err != nil {
+		return err
+	}
+	if account == nil {
+		return ErrUnifiedGatewayNoEligibleAccount
+	}
+	if !account.IsSchedulable() {
+		return ErrUnifiedGatewayNoEligibleAccount
+	}
+	decision := CheckUnifiedGatewayProviderCapability(selection.ProviderIdentity(), account, selection.Endpoint())
+	if !decision.Allowed {
+		return fmt.Errorf("%w: %s", ErrUnifiedGatewayRuntimeUnsupported, decision.Message)
+	}
+	return nil
 }
 
 func (g *UnifiedGateway) Execute(ctx context.Context, request UnifiedGatewayRequest) (*UnifiedGatewayExecutionResult, error) {
@@ -640,6 +740,9 @@ func (g *UnifiedGateway) Execute(ctx context.Context, request UnifiedGatewayRequ
 		if existing.Status == UnifiedGatewaySnapshotCaptured {
 			return unifiedGatewayExecutionFromRecord(existing), nil
 		}
+		if existing.Status == UnifiedGatewaySnapshotPending {
+			return unifiedGatewayExecutionFromRecord(existing), nil
+		}
 		if existing.Status == UnifiedGatewaySnapshotReleased {
 			return unifiedGatewayExecutionFromRecord(existing), fmt.Errorf("%w: previous attempt was released", ErrUnifiedGatewayUpstreamFailed)
 		}
@@ -651,8 +754,37 @@ func (g *UnifiedGateway) Execute(ctx context.Context, request UnifiedGatewayRequ
 		return nil, err
 	}
 
-	selection, err := g.catalog.Resolve(ctx, request.AccessGroupID, request.PublicModel, request.Endpoint)
-	if err != nil {
+	var selection UnifiedGatewayRouteSelection
+	var err error
+	if request.SelectionOverride != nil {
+		selection = *request.SelectionOverride
+		if selection.Target.AccessGroupID != request.AccessGroupID || !selection.Target.Enabled || !selection.Binding.Enabled {
+			return nil, ErrUnifiedGatewayUnauthorized
+		}
+		if selection.Target.PublicModel != request.PublicModel || selection.Endpoint() != request.Endpoint {
+			return nil, ErrUnifiedGatewayRouteNotFound
+		}
+		candidates, listErr := g.catalog.List(ctx, request.AccessGroupID, request.PublicModel, request.Endpoint)
+		if listErr != nil {
+			return nil, listErr
+		}
+		matched := false
+		for _, candidate := range candidates {
+			if candidate.Target.ID == selection.Target.ID && candidate.Binding.ID == selection.Binding.ID && candidate.Binding.AccountID == selection.Binding.AccountID {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return nil, ErrUnifiedGatewayUnauthorized
+		}
+	} else {
+		selection, err = g.catalog.Resolve(ctx, request.AccessGroupID, request.PublicModel, request.Endpoint)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if err := g.validateSelectionCapability(ctx, selection); err != nil {
 		return nil, err
 	}
 	now := g.now()
@@ -701,18 +833,22 @@ func (g *UnifiedGateway) Execute(ctx context.Context, request UnifiedGatewayRequ
 	}
 
 	reservationKey := unifiedGatewaySnapshotKey(request.APIKeyID, request.UserID, request.AccessGroupID, request.RequestID, request.AttemptID)
-	estimatedCharge := pricing.Charge(request.EstimatedUnits, true)
+	estimatedUnits := request.EstimatedUnits
+	if pricing.RateBasis == UnifiedRateBasisPerRequest || pricing.BillingMode == string(BillingModePerRequest) {
+		estimatedUnits = 1
+	}
+	estimatedCharge := pricing.Charge(estimatedUnits, true)
 	if _, err = g.ledger.Reserve(ctx, UnifiedGatewayReserveCommand{Key: reservationKey, UserID: request.UserID, Amount: estimatedCharge}); err != nil {
 		_ = g.snapshots.Finalize(ctx, request.APIKeyID, request.UserID, request.AccessGroupID, request.RequestID, request.AttemptID, UnifiedGatewaySnapshotReleased, 0, 0, "", nil, err.Error())
 		return nil, err
 	}
-	if err = g.snapshots.Finalize(ctx, request.APIKeyID, request.UserID, request.AccessGroupID, request.RequestID, request.AttemptID, UnifiedGatewaySnapshotReserved, request.EstimatedUnits, estimatedCharge, "", nil, ""); err != nil {
+	if err = g.snapshots.Finalize(ctx, request.APIKeyID, request.UserID, request.AccessGroupID, request.RequestID, request.AttemptID, UnifiedGatewaySnapshotReserved, estimatedUnits, estimatedCharge, "", nil, ""); err != nil {
 		_, _ = g.ledger.Release(ctx, UnifiedGatewayReserveCommand{Key: reservationKey, UserID: request.UserID})
 		return nil, err
 	}
 
 	upstreamResult, upstreamErr := g.upstream.Forward(ctx, selection, request)
-	if upstreamErr != nil || !upstreamResult.Delivered {
+	if upstreamErr != nil {
 		failureMessage := "upstream did not deliver a successful result"
 		if upstreamErr != nil {
 			failureMessage = upstreamErr.Error()
@@ -724,9 +860,34 @@ func (g *UnifiedGateway) Execute(ctx context.Context, request UnifiedGatewayRequ
 		}
 		return nil, fmt.Errorf("%w: %s", ErrUnifiedGatewayUpstreamFailed, failureMessage)
 	}
+	if upstreamResult.Pending {
+		upstreamRequestID := strings.TrimSpace(upstreamResult.UpstreamRequestID)
+		if upstreamRequestID == "" {
+			_, releaseErr := g.ledger.Release(ctx, UnifiedGatewayReserveCommand{Key: reservationKey, UserID: request.UserID})
+			finalizeErr := g.snapshots.Finalize(ctx, request.APIKeyID, request.UserID, request.AccessGroupID, request.RequestID, request.AttemptID, UnifiedGatewaySnapshotReleased, 0, 0, "", nil, "async upstream did not return a request id")
+			return nil, errors.Join(fmt.Errorf("%w: async upstream request id is missing", ErrUnifiedGatewayUpstreamFailed), releaseErr, finalizeErr)
+		}
+		if err = g.snapshots.Finalize(ctx, request.APIKeyID, request.UserID, request.AccessGroupID, request.RequestID, request.AttemptID, UnifiedGatewaySnapshotPending, estimatedUnits, estimatedCharge, upstreamRequestID, upstreamResult.ResponseBody, ""); err != nil {
+			_, releaseErr := g.ledger.Release(ctx, UnifiedGatewayReserveCommand{Key: reservationKey, UserID: request.UserID})
+			return nil, errors.Join(err, releaseErr)
+		}
+		created.Status = UnifiedGatewaySnapshotPending
+		created.UpstreamRequestID = upstreamRequestID
+		created.ResponseBody = append([]byte(nil), upstreamResult.ResponseBody...)
+		return &UnifiedGatewayExecutionResult{Record: created, Pending: true, ResponseBody: append([]byte(nil), upstreamResult.ResponseBody...), UpstreamRequestID: upstreamRequestID}, nil
+	}
+	if !upstreamResult.Delivered {
+		failureMessage := "upstream did not deliver a successful result"
+		_, releaseErr := g.ledger.Release(ctx, UnifiedGatewayReserveCommand{Key: reservationKey, UserID: request.UserID})
+		finalizeErr := g.snapshots.Finalize(ctx, request.APIKeyID, request.UserID, request.AccessGroupID, request.RequestID, request.AttemptID, UnifiedGatewaySnapshotReleased, upstreamResult.MeasuredUnits, 0, upstreamResult.UpstreamRequestID, nil, failureMessage)
+		if releaseErr != nil || finalizeErr != nil {
+			return nil, errors.Join(fmt.Errorf("%w: %s", ErrUnifiedGatewayUpstreamFailed, failureMessage), releaseErr, finalizeErr)
+		}
+		return nil, fmt.Errorf("%w: %s", ErrUnifiedGatewayUpstreamFailed, failureMessage)
+	}
 
 	units := upstreamResult.MeasuredUnits
-	if units <= 0 && (pricing.RateBasis == UnifiedRateBasisPerRequest || pricing.BillingMode == string(BillingModePerRequest)) {
+	if pricing.RateBasis == UnifiedRateBasisPerRequest || pricing.BillingMode == string(BillingModePerRequest) {
 		units = 1
 	}
 	if !isFinitePositive(units) {
@@ -763,6 +924,99 @@ func (g *UnifiedGateway) Execute(ctx context.Context, request UnifiedGatewayRequ
 	return &UnifiedGatewayExecutionResult{Record: created, Charge: charge, MeasuredUnits: units, ResponseBody: append([]byte(nil), upstreamResult.ResponseBody...), UpstreamRequestID: upstreamResult.UpstreamRequestID}, nil
 }
 
+// UnifiedGatewayAsyncSnapshotLookup is implemented by persistent snapshot
+// stores that can locate a pending request by the provider's job id. It is
+// intentionally optional so the original synchronous store contract remains
+// usable by focused tests and local simulators.
+type UnifiedGatewayAsyncSnapshotLookup interface {
+	FindByUpstreamRequestID(ctx context.Context, apiKeyID, userID, accessGroupID int64, upstreamRequestID string) (*UnifiedGatewayPriceSnapshotRecord, error)
+}
+
+// CompleteAsync settles an asynchronous request using the immutable price
+// snapshot created at submission time. A pending result leaves the hold in
+// place; a failed result releases it; only a delivered result captures the
+// measured charge. Repeating the same completion is idempotent.
+func (g *UnifiedGateway) CompleteAsync(ctx context.Context, request UnifiedGatewayRequest, upstreamResult UnifiedGatewayUpstreamResult) (*UnifiedGatewayExecutionResult, error) {
+	if g == nil || g.snapshots == nil || g.ledger == nil {
+		return nil, ErrUnifiedGatewayInvalidRequest
+	}
+	if err := validateUnifiedGatewayRequest(request); err != nil {
+		return nil, err
+	}
+	record, err := g.snapshots.Get(ctx, request.APIKeyID, request.UserID, request.AccessGroupID, request.RequestID, request.AttemptID)
+	if err != nil {
+		return nil, err
+	}
+	if record.Status == UnifiedGatewaySnapshotCaptured {
+		return unifiedGatewayExecutionFromRecord(record), nil
+	}
+	if record.Status == UnifiedGatewaySnapshotReleased {
+		return unifiedGatewayExecutionFromRecord(record), fmt.Errorf("%w: asynchronous request was released", ErrUnifiedGatewayUpstreamFailed)
+	}
+	if record.Status == UnifiedGatewaySnapshotSettlementFailed {
+		return unifiedGatewayExecutionFromRecord(record), ErrUnifiedGatewaySettlementFailed
+	}
+	if record.Status != UnifiedGatewaySnapshotPending && record.Status != UnifiedGatewaySnapshotReserved {
+		return nil, ErrUnifiedGatewaySnapshotInProgress
+	}
+	reservationKey := unifiedGatewaySnapshotKey(request.APIKeyID, request.UserID, request.AccessGroupID, request.RequestID, request.AttemptID)
+	if upstreamResult.Pending {
+		upstreamRequestID := firstNonEmptyString(strings.TrimSpace(upstreamResult.UpstreamRequestID), record.UpstreamRequestID)
+		responseBody := append([]byte(nil), upstreamResult.ResponseBody...)
+		if err := g.snapshots.Finalize(ctx, request.APIKeyID, request.UserID, request.AccessGroupID, request.RequestID, request.AttemptID, UnifiedGatewaySnapshotPending, record.MeasuredUnits, record.UserCharge, upstreamRequestID, responseBody, ""); err != nil {
+			return nil, err
+		}
+		record.UpstreamRequestID = upstreamRequestID
+		record.ResponseBody = responseBody
+		return &UnifiedGatewayExecutionResult{
+			Record:            record,
+			Pending:           true,
+			ResponseBody:      responseBody,
+			UpstreamRequestID: upstreamRequestID,
+		}, nil
+	}
+	if !upstreamResult.Delivered {
+		failureMessage := "asynchronous upstream did not deliver a successful result"
+		if strings.TrimSpace(upstreamResult.UpstreamRequestID) != "" {
+			record.UpstreamRequestID = strings.TrimSpace(upstreamResult.UpstreamRequestID)
+		}
+		_, releaseErr := g.ledger.Release(ctx, UnifiedGatewayReserveCommand{Key: reservationKey, UserID: request.UserID})
+		finalizeErr := g.snapshots.Finalize(ctx, request.APIKeyID, request.UserID, request.AccessGroupID, request.RequestID, request.AttemptID, UnifiedGatewaySnapshotReleased, upstreamResult.MeasuredUnits, 0, record.UpstreamRequestID, nil, failureMessage)
+		if releaseErr != nil || finalizeErr != nil {
+			return nil, errors.Join(fmt.Errorf("%w: %s", ErrUnifiedGatewayUpstreamFailed, failureMessage), releaseErr, finalizeErr)
+		}
+		return nil, fmt.Errorf("%w: %s", ErrUnifiedGatewayUpstreamFailed, failureMessage)
+	}
+
+	units := upstreamResult.MeasuredUnits
+	if record.Snapshot.RateBasis == UnifiedRateBasisPerRequest || record.Snapshot.BillingMode == string(BillingModePerRequest) {
+		units = 1
+	}
+	if !isFinitePositive(units) {
+		_, releaseErr := g.ledger.Release(ctx, UnifiedGatewayReserveCommand{Key: reservationKey, UserID: request.UserID})
+		finalizeErr := g.snapshots.Finalize(ctx, request.APIKeyID, request.UserID, request.AccessGroupID, request.RequestID, request.AttemptID, UnifiedGatewaySnapshotReleased, units, 0, record.UpstreamRequestID, nil, ErrUnifiedGatewayUsageMissing.Error())
+		return nil, errors.Join(ErrUnifiedGatewayUsageMissing, releaseErr, finalizeErr)
+	}
+	charge := record.Snapshot.Charge(units, true)
+	if _, err = g.ledger.Capture(ctx, UnifiedGatewayCaptureCommand{Key: reservationKey, UserID: request.UserID, Amount: charge}); err != nil {
+		_, releaseErr := g.ledger.Release(ctx, UnifiedGatewayReserveCommand{Key: reservationKey, UserID: request.UserID})
+		finalizeErr := g.snapshots.Finalize(ctx, request.APIKeyID, request.UserID, request.AccessGroupID, request.RequestID, request.AttemptID, UnifiedGatewaySnapshotSettlementFailed, units, 0, record.UpstreamRequestID, upstreamResult.ResponseBody, err.Error())
+		return nil, errors.Join(ErrUnifiedGatewaySettlementFailed, err, releaseErr, finalizeErr)
+	}
+	if err = g.snapshots.Finalize(ctx, request.APIKeyID, request.UserID, request.AccessGroupID, request.RequestID, request.AttemptID, UnifiedGatewaySnapshotCaptured, units, charge, record.UpstreamRequestID, upstreamResult.ResponseBody, ""); err != nil {
+		latest, getErr := g.snapshots.Get(ctx, request.APIKeyID, request.UserID, request.AccessGroupID, request.RequestID, request.AttemptID)
+		if getErr == nil && latest.Status == UnifiedGatewaySnapshotCaptured {
+			return unifiedGatewayExecutionFromRecord(latest), nil
+		}
+		return nil, errors.Join(ErrUnifiedGatewaySettlementFailed, err, getErr)
+	}
+	record.Status = UnifiedGatewaySnapshotCaptured
+	record.MeasuredUnits = units
+	record.UserCharge = charge
+	record.ResponseBody = append([]byte(nil), upstreamResult.ResponseBody...)
+	return &UnifiedGatewayExecutionResult{Record: record, Charge: charge, MeasuredUnits: units, ResponseBody: append([]byte(nil), upstreamResult.ResponseBody...), UpstreamRequestID: record.UpstreamRequestID}, nil
+}
+
 func (g *UnifiedGateway) ListModels(ctx context.Context, accessGroupID int64) ([]UnifiedGatewayModel, error) {
 	if g == nil || g.catalog == nil {
 		return nil, ErrUnifiedGatewayInvalidRequest
@@ -775,6 +1029,12 @@ func (g *UnifiedGateway) ListModels(ctx context.Context, accessGroupID int64) ([
 	models := make(map[modelKey]*UnifiedGatewayModel)
 	now := g.now()
 	for _, selection := range selections {
+		if err := g.validateSelectionCapability(ctx, selection); err != nil {
+			if errors.Is(err, ErrUnifiedGatewayNoEligibleAccount) || errors.Is(err, ErrUnifiedGatewayRuntimeUnsupported) {
+				continue
+			}
+			return nil, err
+		}
 		_, err := ResolveUnifiedRoutePrice(UnifiedRoutePricingInput{
 			RouteID: selection.Target.ID, BillingLaneID: selection.Target.BillingLaneID, AccountID: selection.Binding.AccountID,
 			ProviderIdentity: selection.ProviderIdentity(), PublicModel: selection.Target.PublicModel, UpstreamModel: selection.UpstreamModel(), Endpoint: selection.Endpoint(),
@@ -829,6 +1089,7 @@ func unifiedGatewayExecutionFromRecord(record *UnifiedGatewayPriceSnapshotRecord
 	}
 	return &UnifiedGatewayExecutionResult{
 		Record:            unifiedGatewaySnapshotClone(record),
+		Pending:           record.Status == UnifiedGatewaySnapshotPending,
 		Charge:            record.UserCharge,
 		MeasuredUnits:     record.MeasuredUnits,
 		ResponseBody:      append([]byte(nil), record.ResponseBody...),

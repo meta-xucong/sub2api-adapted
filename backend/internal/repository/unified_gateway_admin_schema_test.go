@@ -1,8 +1,10 @@
 package repository
 
 import (
+	"encoding/json"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
 )
 
@@ -17,3 +19,26 @@ func TestNormalizeUnifiedGatewaySchemaSQLPreservesColumnOrder(t *testing.T) {
 	require.Contains(t, definition, "(unified_config_id,unified_lane_id,public_model,endpoint,provider_identity)")
 	require.NotContains(t, definition, "(public_model,endpoint,unified_config_id,unified_lane_id,provider_identity)")
 }
+
+func TestMaterializedUnifiedRateRulePreservesAdminPricingShape(t *testing.T) {
+	profile := service.UnifiedGatewayPricingProfile{
+		ID: "profile_1", Version: "7", BillingMode: "image", RateBasis: "image",
+		BasePriceSemantics: "provider_base", ProviderBaseUnitPrice: stringPointer("0.01000000"),
+		ManualUpstreamMultiplier: stringPointer("1.250000"), UserMarkupMultiplier: stringPointer("1.200000"),
+		MinimumCharge: stringPointer("0.05000000"), Precision: 8,
+		ManualPricingRules: &service.UnifiedGatewayManualRule{FormulaID: "flat_unit_price", Unit: "image", UnitPrice: stringPointer("0.08000000")},
+	}
+	raw, err := materializedUnifiedRateRuleJSON(profile)
+	require.NoError(t, err)
+
+	var rule service.UnifiedRateRule
+	require.NoError(t, json.Unmarshal(raw, &rule))
+	require.Equal(t, profile.ID, rule.ProfileID)
+	require.Equal(t, service.UnifiedRateBasisImage, rule.UpstreamRateBasis)
+	require.Equal(t, 8, rule.RoundingPrecision)
+	require.Equal(t, 0.01, *rule.ProviderBaseUnitPrice)
+	require.Equal(t, 1.25, *rule.ManualUpstreamMultiplier)
+	require.Equal(t, 0.05, *rule.MinimumCharge)
+}
+
+func stringPointer(value string) *string { return &value }

@@ -25,7 +25,7 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-const UnifiedGatewayAdminContractRevision = "v1.3.1-route-guard"
+const UnifiedGatewayAdminContractRevision = "v1.3.2-route-guard"
 
 const (
 	UnifiedGatewayAdminSchemaVersion = "unified_gateway_admin_v1"
@@ -33,6 +33,7 @@ const (
 	UnifiedGatewayEndpointChatCompletions = "chat_completions"
 	UnifiedGatewayEndpointResponses       = "responses"
 	UnifiedGatewayEndpointImages          = "images_generations"
+	UnifiedGatewayEndpointImageEdits      = "images_edits"
 	UnifiedGatewayEndpointVideos          = "videos"
 
 	UnifiedGatewayLifecycleDraft     = "draft"
@@ -175,6 +176,7 @@ type UnifiedGatewayAdminRouteTarget struct {
 type UnifiedGatewayAdminAccountBinding struct {
 	ID          string                    `json:"id"`
 	AccountID   string                    `json:"account_id"`
+	Endpoint    string                    `json:"endpoint,omitempty"`
 	DisplayName string                    `json:"display_name,omitempty"`
 	Schedulable bool                      `json:"schedulable"`
 	Eligibility string                    `json:"eligibility"`
@@ -300,6 +302,7 @@ type UnifiedGatewayAdminMeta struct {
 	ServerTime             time.Time             `json:"server_time"`
 	AdminUIEnabled         bool                  `json:"admin_ui_enabled"`
 	RuntimeEnabled         bool                  `json:"runtime_enabled"`
+	RuntimeEffective       bool                  `json:"runtime_effective"`
 	MigrationReady         bool                  `json:"migration_ready"`
 	SchemaVersion          string                `json:"schema_version"`
 	Capabilities           map[string]bool       `json:"capabilities"`
@@ -324,6 +327,23 @@ type UnifiedGatewayOptions struct {
 	AccessGroups        []UnifiedGatewayOption `json:"access_groups"`
 	PricingSourceGroups []UnifiedGatewayOption `json:"pricing_source_groups"`
 	Accounts            []UnifiedGatewayOption `json:"accounts"`
+}
+
+// UnifiedGatewayModelCandidate is a read-only preview assembled from the
+// designated group's current account model mappings. It is deliberately not
+// a second model registry: publishing still requires an explicit route,
+// binding and valid price profile in a draft.
+type UnifiedGatewayModelCandidate struct {
+	PublicModel      string                `json:"public_model"`
+	UpstreamModel    string                `json:"upstream_model"`
+	ProviderIdentity string                `json:"provider_identity"`
+	Endpoint         string                `json:"endpoint"`
+	AccountID        string                `json:"account_id"`
+	AccountName      string                `json:"account_name"`
+	AccountStatus    string                `json:"account_status"`
+	Schedulable      bool                  `json:"schedulable"`
+	RuntimeEligible  bool                  `json:"runtime_eligible"`
+	Blockers         []UnifiedGatewayIssue `json:"blockers,omitempty"`
 }
 
 type UnifiedGatewaySchemaReadiness struct {
@@ -461,6 +481,21 @@ func (s *UnifiedGatewayAdminService) runtimeEnabled() bool {
 	return s != nil && s.cfg != nil && s.cfg.Gateway.UnifiedGatewayRuntimeEnabled
 }
 
+func (s *UnifiedGatewayAdminService) unifiedAccessGroupID() (int64, bool) {
+	if s == nil || s.cfg == nil || s.cfg.Gateway.UnifiedGatewayAccessGroupID <= 0 {
+		return 0, false
+	}
+	return s.cfg.Gateway.UnifiedGatewayAccessGroupID, true
+}
+
+func (s *UnifiedGatewayAdminService) requireUnifiedAccessGroupConfigured() (int64, error) {
+	groupID, ok := s.unifiedAccessGroupID()
+	if !ok {
+		return 0, adminError(http.StatusServiceUnavailable, "UNIFIED_GATEWAY_ACCESS_GROUP_UNCONFIGURED", "unified gateway access group is not configured", nil, ErrUnifiedGatewayAdminInvalidRequest)
+	}
+	return groupID, nil
+}
+
 func (s *UnifiedGatewayAdminService) Meta(ctx context.Context) UnifiedGatewayAdminMeta {
 	meta := UnifiedGatewayAdminMeta{
 		ContractRev:            UnifiedGatewayAdminContractRevision,
@@ -469,7 +504,7 @@ func (s *UnifiedGatewayAdminService) Meta(ctx context.Context) UnifiedGatewayAdm
 		RuntimeEnabled:         s.runtimeEnabled(),
 		SchemaVersion:          UnifiedGatewayAdminSchemaVersion,
 		Capabilities:           map[string]bool{"read": true, "draft": false, "publish": false, "probe": false},
-		SupportedEndpoints:     []string{UnifiedGatewayEndpointChatCompletions, UnifiedGatewayEndpointResponses, UnifiedGatewayEndpointImages, UnifiedGatewayEndpointVideos},
+		SupportedEndpoints:     []string{UnifiedGatewayEndpointChatCompletions, UnifiedGatewayEndpointResponses, UnifiedGatewayEndpointImages, UnifiedGatewayEndpointImageEdits, UnifiedGatewayEndpointVideos},
 		SupportedBillingModes:  []string{"token", "per_request", "image", "video"},
 		SupportedRateBases:     []string{"token", "per_request", "image", "video", "provider_specific"},
 		SupportedRateModes:     []string{"probe_preferred", "manual_only", "probe_only"},
@@ -485,6 +520,11 @@ func (s *UnifiedGatewayAdminService) Meta(ctx context.Context) UnifiedGatewayAdm
 		return meta
 	}
 	meta.MigrationReady = true
+	meta.RuntimeEffective = meta.RuntimeEnabled && meta.MigrationReady
+	if _, ok := s.unifiedAccessGroupID(); !ok {
+		meta.Blockers = append(meta.Blockers, UnifiedGatewayIssue{Code: "access_group_unconfigured", Message: "unified gateway access group is not configured"})
+		meta.RuntimeEffective = false
+	}
 	if meta.AdminUIEnabled {
 		meta.Capabilities["draft"] = true
 		meta.Capabilities["publish"] = true
@@ -510,6 +550,9 @@ func (s *UnifiedGatewayAdminService) requireAdminMutation(ctx context.Context) e
 	readiness, err := s.repo.CheckSchema(ctx)
 	if err != nil || !readiness.Ready {
 		return adminError(http.StatusServiceUnavailable, "UNIFIED_GATEWAY_MIGRATION_NOT_READY", "unified gateway admin migration is not ready", nil, ErrUnifiedGatewayAdminMigration)
+	}
+	if _, err := s.requireUnifiedAccessGroupConfigured(); err != nil {
+		return err
 	}
 	return nil
 }
@@ -551,6 +594,13 @@ func (s *UnifiedGatewayAdminService) authorizeAccessGroup(ctx context.Context, a
 	groupID, err := parseAccessGroupID(accessGroupID)
 	if err != nil {
 		return adminError(http.StatusNotFound, "UNIFIED_GATEWAY_SCOPE_DENIED", "resource is outside the administrator scope", nil, ErrUnifiedGatewayAdminNotFound)
+	}
+	designatedGroupID, err := s.requireUnifiedAccessGroupConfigured()
+	if err != nil {
+		return err
+	}
+	if groupID != designatedGroupID {
+		return adminError(http.StatusNotFound, "UNIFIED_GATEWAY_ACCESS_GROUP_DENIED", "resource is not the configured unified gateway access group", nil, ErrUnifiedGatewayAdminNotFound)
 	}
 	allowed, restricted, err := s.adminScope(ctx)
 	if err != nil {
@@ -599,13 +649,21 @@ func (s *UnifiedGatewayAdminService) ListConfigs(ctx context.Context, filter Uni
 	if err := s.requireAdminRead(ctx); err != nil {
 		return nil, 0, err
 	}
+	designatedGroupID, err := s.requireUnifiedAccessGroupConfigured()
+	if err != nil {
+		return nil, 0, err
+	}
 	filter.Page, filter.PageSize = normalizePage(filter.Page, filter.PageSize)
 	ids, restricted, err := s.scopeFilter(ctx)
 	if err != nil {
 		return nil, 0, err
 	}
+	if restricted && !containsInt64(ids, designatedGroupID) {
+		return nil, 0, adminError(http.StatusNotFound, "UNIFIED_GATEWAY_SCOPE_DENIED", "resource is outside the administrator scope", nil, ErrUnifiedGatewayAdminNotFound)
+	}
+	filter.AccessGroupIDs = []int64{designatedGroupID}
 	if restricted {
-		filter.AccessGroupIDs = ids
+		filter.AccessGroupIDs = []int64{designatedGroupID}
 	}
 	return s.repo.ListConfigs(ctx, filter)
 }
@@ -1043,13 +1101,27 @@ func (s *UnifiedGatewayAdminService) ListSnapshots(ctx context.Context, filter U
 	if err := s.requireAdminRead(ctx); err != nil {
 		return nil, 0, err
 	}
+	designatedGroupID, err := s.requireUnifiedAccessGroupConfigured()
+	if err != nil {
+		return nil, 0, err
+	}
+	if strings.TrimSpace(filter.AccessGroupID) != "" {
+		requestedGroupID, parseErr := parseAccessGroupID(filter.AccessGroupID)
+		if parseErr != nil || requestedGroupID != designatedGroupID {
+			return nil, 0, adminError(http.StatusNotFound, "UNIFIED_GATEWAY_ACCESS_GROUP_DENIED", "snapshot scope is outside the configured unified gateway access group", nil, ErrUnifiedGatewayAdminNotFound)
+		}
+	}
 	filter.Page, filter.PageSize = normalizePage(filter.Page, filter.PageSize)
 	ids, restricted, err := s.scopeFilter(ctx)
 	if err != nil {
 		return nil, 0, err
 	}
+	if restricted && !containsInt64(ids, designatedGroupID) {
+		return nil, 0, adminError(http.StatusNotFound, "UNIFIED_GATEWAY_SCOPE_DENIED", "resource is outside the administrator scope", nil, ErrUnifiedGatewayAdminNotFound)
+	}
+	filter.AccessGroupIDs = []int64{designatedGroupID}
 	if restricted {
-		filter.AccessGroupIDs = ids
+		filter.AccessGroupIDs = []int64{designatedGroupID}
 	}
 	items, total, err := s.repo.ListSnapshots(ctx, filter)
 	if err != nil {
@@ -1062,26 +1134,30 @@ func (s *UnifiedGatewayAdminService) Options(ctx context.Context, page, pageSize
 	if err := s.requireAdminRead(ctx); err != nil {
 		return nil, 0, err
 	}
+	designatedGroupID, err := s.requireUnifiedAccessGroupConfigured()
+	if err != nil {
+		return nil, 0, err
+	}
 	page, pageSize = normalizePage(page, pageSize)
 	out := &UnifiedGatewayOptions{}
 	groupIDs, restricted, err := s.scopeFilter(ctx)
 	if err != nil {
 		return nil, 0, err
 	}
-	allowedAccounts := map[int64]struct{}(nil)
-	if restricted {
-		reader, ok := s.groups.(unifiedGatewayGroupAccountReader)
-		if !ok {
-			return nil, 0, adminError(http.StatusServiceUnavailable, "UNIFIED_GATEWAY_SCOPE_UNAVAILABLE", "account group scope is unavailable", nil, ErrUnifiedGatewayAdminInvalidRequest)
-		}
-		accountIDs, err := reader.GetAccountIDsByGroupIDs(ctx, groupIDs)
-		if err != nil {
-			return nil, 0, err
-		}
-		allowedAccounts = make(map[int64]struct{}, len(accountIDs))
-		for _, id := range accountIDs {
-			allowedAccounts[id] = struct{}{}
-		}
+	if restricted && !containsInt64(groupIDs, designatedGroupID) {
+		return nil, 0, adminError(http.StatusNotFound, "UNIFIED_GATEWAY_SCOPE_DENIED", "resource is outside the administrator scope", nil, ErrUnifiedGatewayAdminNotFound)
+	}
+	reader, ok := s.groups.(unifiedGatewayGroupAccountReader)
+	if !ok {
+		return nil, 0, adminError(http.StatusServiceUnavailable, "UNIFIED_GATEWAY_SCOPE_UNAVAILABLE", "account group scope is unavailable", nil, ErrUnifiedGatewayAdminInvalidRequest)
+	}
+	accountIDs, err := reader.GetAccountIDsByGroupIDs(ctx, []int64{designatedGroupID})
+	if err != nil {
+		return nil, 0, err
+	}
+	allowedAccounts := make(map[int64]struct{}, len(accountIDs))
+	for _, id := range accountIDs {
+		allowedAccounts[id] = struct{}{}
 	}
 	if s.groups != nil {
 		groups, err := s.groups.ListActive(ctx)
@@ -1089,52 +1165,164 @@ func (s *UnifiedGatewayAdminService) Options(ctx context.Context, page, pageSize
 			return nil, 0, err
 		}
 		for _, group := range groups {
-			if restricted {
-				if !containsInt64(groupIDs, group.ID) {
-					continue
-				}
+			if group.ID == designatedGroupID {
+				out.AccessGroups = append(out.AccessGroups, UnifiedGatewayOption{ID: opaqueNumericID("ag", group.ID), Name: group.Name, Platform: group.Platform, Status: group.Status})
+			}
+			if restricted && !containsInt64(groupIDs, group.ID) {
+				continue
 			}
 			opt := UnifiedGatewayOption{ID: opaqueNumericID("ag", group.ID), Name: group.Name, Platform: group.Platform, Status: group.Status}
-			out.AccessGroups = append(out.AccessGroups, opt)
 			out.PricingSourceGroups = append(out.PricingSourceGroups, opt)
 		}
 	}
 	var total int64
 	if s.accounts != nil {
 		var accounts []Account
-		if restricted {
-			ids := make([]int64, 0, len(allowedAccounts))
-			for id := range allowedAccounts {
-				ids = append(ids, id)
-			}
-			sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
-			if len(ids) > 0 {
-				loaded, err := s.accounts.GetByIDs(ctx, ids)
-				if err != nil {
-					return nil, 0, err
-				}
-				for _, account := range loaded {
-					if account != nil {
-						accounts = append(accounts, *account)
-					}
-				}
-			}
-			total = int64(len(accounts))
-		} else {
-			var result *pagination.PaginationResult
-			accounts, result, err = s.accounts.List(ctx, pagination.PaginationParams{Page: page, PageSize: pageSize})
+		ids := make([]int64, 0, len(allowedAccounts))
+		for id := range allowedAccounts {
+			ids = append(ids, id)
+		}
+		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+		if len(ids) > 0 {
+			loaded, err := s.accounts.GetByIDs(ctx, ids)
 			if err != nil {
 				return nil, 0, err
 			}
-			if result != nil {
-				total = result.Total
+			for _, account := range loaded {
+				if account != nil {
+					accounts = append(accounts, *account)
+				}
 			}
 		}
+		total = int64(len(accounts))
 		for _, account := range accounts {
 			out.Accounts = append(out.Accounts, UnifiedGatewayOption{ID: opaqueNumericID("acct", account.ID), Name: maskAccountName(account.Name, account.ID), Platform: account.Platform, Status: account.Status, Schedulable: account.Schedulable, Capabilities: []string{account.Platform}})
 		}
 	}
 	return out, total, nil
+}
+
+func (s *UnifiedGatewayAdminService) ListModelCandidates(ctx context.Context) ([]UnifiedGatewayModelCandidate, error) {
+	if err := s.requireAdminRead(ctx); err != nil {
+		return nil, err
+	}
+	designatedGroupID, err := s.requireUnifiedAccessGroupConfigured()
+	if err != nil {
+		return nil, err
+	}
+	reader, ok := s.groups.(unifiedGatewayGroupAccountReader)
+	if !ok || s.accounts == nil {
+		return nil, adminError(http.StatusServiceUnavailable, "UNIFIED_GATEWAY_SCOPE_UNAVAILABLE", "account group scope is unavailable", nil, ErrUnifiedGatewayAdminInvalidRequest)
+	}
+	accountIDs, err := reader.GetAccountIDsByGroupIDs(ctx, []int64{designatedGroupID})
+	if err != nil {
+		return nil, err
+	}
+	accounts, err := s.accounts.GetByIDs(ctx, accountIDs)
+	if err != nil {
+		return nil, err
+	}
+	candidates := make([]UnifiedGatewayModelCandidate, 0)
+	for _, account := range accounts {
+		if account == nil {
+			continue
+		}
+		provider := unifiedGatewayCandidateProvider(account)
+		mapping := account.GetModelMapping()
+		models := make([]string, 0, len(mapping))
+		for model := range mapping {
+			if strings.TrimSpace(model) != "" {
+				models = append(models, strings.TrimSpace(model))
+			}
+		}
+		sort.Strings(models)
+		for _, publicModel := range models {
+			upstreamModel := strings.TrimSpace(mapping[publicModel])
+			if upstreamModel == "" {
+				continue
+			}
+			endpoint := unifiedGatewayCandidateEndpoint(account, publicModel)
+			candidate := UnifiedGatewayModelCandidate{
+				PublicModel: publicModel, UpstreamModel: upstreamModel, ProviderIdentity: provider, Endpoint: endpoint,
+				AccountID: opaqueNumericID("acct", account.ID), AccountName: maskAccountName(account.Name, account.ID),
+				AccountStatus: account.Status, Schedulable: account.Schedulable,
+			}
+			if !account.IsActive() {
+				candidate.Blockers = append(candidate.Blockers, UnifiedGatewayIssue{Code: "account_inactive", Message: "account is not active"})
+			}
+			if !account.IsSchedulable() {
+				candidate.Blockers = append(candidate.Blockers, UnifiedGatewayIssue{Code: "account_unschedulable", Message: "account is not currently schedulable"})
+			}
+			decision := CheckUnifiedGatewayProviderCapability(provider, account, endpoint)
+			if !decision.Allowed {
+				candidate.Blockers = append(candidate.Blockers, UnifiedGatewayIssue{Code: decision.Code, Message: decision.Message})
+			}
+			candidate.RuntimeEligible = len(candidate.Blockers) == 0
+			candidates = append(candidates, candidate)
+		}
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].PublicModel != candidates[j].PublicModel {
+			return candidates[i].PublicModel < candidates[j].PublicModel
+		}
+		if candidates[i].ProviderIdentity != candidates[j].ProviderIdentity {
+			return candidates[i].ProviderIdentity < candidates[j].ProviderIdentity
+		}
+		if candidates[i].AccountID != candidates[j].AccountID {
+			return candidates[i].AccountID < candidates[j].AccountID
+		}
+		return candidates[i].Endpoint < candidates[j].Endpoint
+	})
+	return candidates, nil
+}
+
+func unifiedGatewayCandidateProvider(account *Account) string {
+	if account == nil {
+		return ""
+	}
+	switch account.Platform {
+	case PlatformGrok:
+		return UnifiedGatewayProviderGrok
+	case PlatformGemini:
+		return UnifiedGatewayProviderGemini
+	case PlatformAntigravity:
+		return UnifiedGatewayProviderAntigravity
+	case PlatformAnthropic:
+		if account.Type == AccountTypeAPIKey {
+			return UnifiedGatewayProviderAnthropicAPIKey
+		}
+		return ""
+	case PlatformKimi, PlatformZhipu, PlatformDeepseek:
+		if account.GetAPIProtocol() == APIProtocolAnthropic {
+			return UnifiedGatewayProviderNativeAnthropicCN
+		}
+		return UnifiedGatewayProviderOpenAICompatible
+	case PlatformOpenAI:
+		if isVolcengineArkOpenAIAccount(account) {
+			return UnifiedGatewayProviderVolcengineArk
+		}
+		baseURL, _ := account.Credentials["base_url"].(string)
+		if strings.TrimSpace(baseURL) != "" && !strings.Contains(strings.ToLower(baseURL), "api.openai.com") {
+			return UnifiedGatewayProviderOpenAICompatible
+		}
+		if account.Type == AccountTypeAPIKey {
+			return UnifiedGatewayProviderOpenAIAPIKey
+		}
+		return UnifiedGatewayProviderOpenAIOAuth
+	default:
+		return UnifiedGatewayProviderOpenAICompatible
+	}
+}
+
+func unifiedGatewayCandidateEndpoint(account *Account, publicModel string) string {
+	model := strings.ToLower(strings.TrimSpace(publicModel))
+	if strings.HasPrefix(model, "gpt-image-") || strings.HasPrefix(model, "image-") {
+		return UnifiedGatewayEndpointImages
+	}
+	if account != nil && account.GetAPIProtocol() == APIProtocolResponses {
+		return UnifiedGatewayEndpointResponses
+	}
+	return UnifiedGatewayEndpointChatCompletions
 }
 
 func (s *UnifiedGatewayAdminService) ProbeBinding(ctx context.Context, actorID, key, bindingID string) (map[string]any, error) {
@@ -1148,6 +1336,18 @@ func (s *UnifiedGatewayAdminService) ProbeBinding(ctx context.Context, actorID, 
 	if err != nil {
 		return nil, err
 	}
+	designatedGroupID, err := s.requireUnifiedAccessGroupConfigured()
+	if err != nil {
+		return nil, err
+	}
+	if scopeRestricted && !containsInt64(scopeGroupIDs, designatedGroupID) {
+		return nil, adminError(http.StatusNotFound, "UNIFIED_GATEWAY_SCOPE_DENIED", "binding is outside the administrator scope", nil, ErrUnifiedGatewayAdminNotFound)
+	}
+	// A binding probe is always scoped to the designated unified access group,
+	// including for superadmins; it must never become a cross-group existence
+	// oracle.
+	scopeGroupIDs = []int64{designatedGroupID}
+	scopeRestricted = true
 	if scopeRestricted && len(scopeGroupIDs) == 0 {
 		return nil, adminError(http.StatusNotFound, "UNIFIED_GATEWAY_SCOPE_DENIED", "binding is outside the administrator scope", nil, ErrUnifiedGatewayAdminNotFound)
 	}
@@ -1510,24 +1710,22 @@ func (s *UnifiedGatewayAdminService) validateDocument(ctx context.Context, docum
 	if groupErr != nil {
 		add("access_group_required", "access_group_id must be a positive opaque group id", "access_group_id")
 	} else {
-		_, scopeRestricted, scopeErr := s.scopeFilter(ctx)
-		if scopeErr != nil {
-			return nil, scopeErr
-		}
-		if scopeRestricted {
-			reader, ok := s.groups.(unifiedGatewayGroupAccountReader)
-			if s.groups == nil || s.accounts == nil || !ok {
-				add("account_scope_unavailable", "account group scope is unavailable", "lanes")
-			} else {
-				accountIDs, err := reader.GetAccountIDsByGroupIDs(ctx, []int64{groupID})
-				if err != nil {
-					return nil, err
-				}
-				scopedAccountIDs = make(map[int64]struct{}, len(accountIDs))
-				for _, accountID := range accountIDs {
-					scopedAccountIDs[accountID] = struct{}{}
-				}
+		// Account ownership is part of the unified access-group contract, not
+		// only a delegated-admin restriction. This check therefore also runs for
+		// superadmins, whose user scope is otherwise unrestricted.
+		reader, ok := s.groups.(unifiedGatewayGroupAccountReader)
+		if s.groups == nil || s.accounts == nil || !ok {
+			add("account_scope_unavailable", "account group scope is unavailable", "lanes")
+		} else {
+			accountIDs, err := reader.GetAccountIDsByGroupIDs(ctx, []int64{groupID})
+			if err != nil {
+				return nil, err
 			}
+			scopedAccountIDs = make(map[int64]struct{}, len(accountIDs))
+			for _, accountID := range accountIDs {
+				scopedAccountIDs[accountID] = struct{}{}
+			}
+			scopeRestricted = true
 		}
 		if s.groups != nil {
 			groups, err := s.groups.ListActive(ctx)
@@ -1557,6 +1755,8 @@ func (s *UnifiedGatewayAdminService) validateDocument(ctx context.Context, docum
 	}
 	seenLane := map[string]bool{}
 	accountIDs := make([]int64, 0)
+	accountsByID := map[int64]*Account{}
+	accountsKnown := false
 	seenBinding := map[string]bool{}
 	for i := range document.Lanes {
 		lane := &document.Lanes[i]
@@ -1624,6 +1824,9 @@ func (s *UnifiedGatewayAdminService) validateDocument(ctx context.Context, docum
 				if binding.Enabled && binding.Eligibility == "eligible" && binding.Schedulable {
 					laneHasEnabledBinding = true
 				}
+				if strings.TrimSpace(binding.Endpoint) != "" && !validUnifiedEndpoint(strings.TrimSpace(binding.Endpoint)) {
+					add("binding_endpoint_unsupported", "binding endpoint is not supported by the unified admin contract", bpath+".endpoint")
+				}
 			}
 		}
 		if !laneHasEnabledBinding {
@@ -1643,10 +1846,10 @@ func (s *UnifiedGatewayAdminService) validateDocument(ctx context.Context, docum
 		if err != nil {
 			return nil, err
 		}
-		byID := map[int64]*Account{}
+		accountsKnown = true
 		for _, account := range accounts {
 			if account != nil {
-				byID[account.ID] = account
+				accountsByID[account.ID] = account
 			}
 		}
 		for i := range document.Lanes {
@@ -1654,7 +1857,7 @@ func (s *UnifiedGatewayAdminService) validateDocument(ctx context.Context, docum
 				for k := range document.Lanes[i].Targets[j].Bindings {
 					b := &document.Lanes[i].Targets[j].Bindings[k]
 					id, _ := parseOpaqueNumericID(b.AccountID, "acct")
-					account := byID[id]
+					account := accountsByID[id]
 					if account == nil {
 						add("account_not_found", "account does not exist", fmt.Sprintf("lanes[%d].targets[%d].bindings[%d].account_id", i, j, k))
 						continue
@@ -1675,6 +1878,9 @@ func (s *UnifiedGatewayAdminService) validateDocument(ctx context.Context, docum
 				}
 			}
 		}
+	}
+	for _, issue := range unifiedGatewayCapabilityIssues(document, accountsByID, accountsKnown) {
+		add(issue.Code, issue.Message, issue.Path)
 	}
 	for i := range document.Lanes {
 		profile := document.Lanes[i].Profile
@@ -1744,8 +1950,8 @@ func validatePricingProfile(blockers, warnings *[]UnifiedGatewayIssue, profile U
 	if profile.BasePriceSemantics != "provider_base" && profile.BasePriceSemantics != "final_user_price" {
 		add("base_semantics_invalid", "base_price_semantics is invalid", ".base_price_semantics")
 	}
-	if endpoint == UnifiedGatewayEndpointImages && profile.BillingMode != "image" {
-		add("billing_mode_endpoint_mismatch", "images endpoint requires image billing", ".billing_mode")
+	if (endpoint == UnifiedGatewayEndpointImages || endpoint == UnifiedGatewayEndpointImageEdits) && profile.BillingMode != "image" {
+		add("billing_mode_endpoint_mismatch", "image endpoint requires image billing", ".billing_mode")
 	}
 	if endpoint == UnifiedGatewayEndpointVideos && profile.BillingMode != "video" {
 		add("billing_mode_endpoint_mismatch", "videos endpoint requires video billing", ".billing_mode")
@@ -1856,7 +2062,7 @@ func (s *UnifiedGatewayAdminService) newIdempotencyRecord(actorID, operation, re
 
 func validateUnifiedEndpoint(endpoint string) bool {
 	switch endpoint {
-	case UnifiedGatewayEndpointChatCompletions, UnifiedGatewayEndpointResponses, UnifiedGatewayEndpointImages, UnifiedGatewayEndpointVideos:
+	case UnifiedGatewayEndpointChatCompletions, UnifiedGatewayEndpointResponses, UnifiedGatewayEndpointImages, UnifiedGatewayEndpointImageEdits, UnifiedGatewayEndpointVideos:
 		return true
 	}
 	return false

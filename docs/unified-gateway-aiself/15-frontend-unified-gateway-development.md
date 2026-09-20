@@ -4,6 +4,8 @@
 >
 > 本文是本轮前端和管理面开发的唯一实施依据。它定义“如何方便地配置同一个公共模型对应的多个上游 provider、账号和独立价格”，不代表统一运行时已经启用。
 
+> 当前状态说明：本文主体沿用 Revision 5 的前端契约与管理面验收记录。Revision 6 已将该管理面与本地隔离运行时、账号绑定 endpoint 覆盖和 provider 适配接线对齐；当前实现状态与最终测试证据以 [README](./README.md) 和 [16-runtime-implementation-and-final-audit.md](./16-runtime-implementation-and-final-audit.md) 为准。生产 gate 仍保持关闭。
+
 ## 1. 目标、边界和现状
 
 用户需要在 Sub2api 管理后台完成：

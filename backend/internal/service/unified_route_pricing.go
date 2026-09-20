@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -86,7 +87,114 @@ type UnifiedRateRule struct {
 	ManualUpstreamMultiplier *float64                  `json:"manual_upstream_multiplier,omitempty"`
 	UserMarkupMultiplier     *float64                  `json:"user_markup_multiplier,omitempty"`
 	FixedFee                 *float64                  `json:"fixed_fee,omitempty"`
+	MinimumCharge            *float64                  `json:"minimum_charge,omitempty"`
 	RoundingPrecision        int                       `json:"rounding_precision,omitempty"`
+}
+
+// UnmarshalJSON accepts both the runtime form (JSON numbers) and the admin
+// document form (decimal strings). The admin API intentionally uses strings
+// for money to avoid browser floating-point loss, while published route rules
+// are stored verbatim in JSONB and consumed by this type.
+func (r *UnifiedRateRule) UnmarshalJSON(data []byte) error {
+	type rawRule struct {
+		ProfileID                string                    `json:"profile_id,omitempty"`
+		Version                  string                    `json:"version,omitempty"`
+		BillingMode              string                    `json:"billing_mode,omitempty"`
+		UpstreamRateBasis        UnifiedRateBasis          `json:"upstream_rate_basis,omitempty"`
+		BasePriceSemantics       UnifiedBasePriceSemantics `json:"base_price_semantics,omitempty"`
+		ProviderBaseUnitPrice    json.RawMessage           `json:"provider_base_unit_price"`
+		ManualBaseUnitPrice      json.RawMessage           `json:"manual_base_unit_price"`
+		FinalUserUnitPrice       json.RawMessage           `json:"final_user_unit_price"`
+		ManualUpstreamMultiplier json.RawMessage           `json:"manual_upstream_multiplier"`
+		UserMarkupMultiplier     json.RawMessage           `json:"user_markup_multiplier"`
+		FixedFee                 json.RawMessage           `json:"fixed_fee"`
+		MinimumCharge            json.RawMessage           `json:"minimum_charge"`
+		ManualPricingRules       *struct {
+			UnitPrice json.RawMessage `json:"unit_price"`
+		} `json:"manual_pricing_rules"`
+		RoundingPrecision int `json:"rounding_precision,omitempty"`
+	}
+	var raw rawRule
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	providerBase, err := decodeUnifiedDecimalJSON(raw.ProviderBaseUnitPrice)
+	if err != nil {
+		return fmt.Errorf("provider_base_unit_price: %w", err)
+	}
+	manualBase, err := decodeUnifiedDecimalJSON(raw.ManualBaseUnitPrice)
+	if err != nil {
+		return fmt.Errorf("manual_base_unit_price: %w", err)
+	}
+	finalUser, err := decodeUnifiedDecimalJSON(raw.FinalUserUnitPrice)
+	if err != nil {
+		return fmt.Errorf("final_user_unit_price: %w", err)
+	}
+	manualMultiplier, err := decodeUnifiedDecimalJSON(raw.ManualUpstreamMultiplier)
+	if err != nil {
+		return fmt.Errorf("manual_upstream_multiplier: %w", err)
+	}
+	userMarkup, err := decodeUnifiedDecimalJSON(raw.UserMarkupMultiplier)
+	if err != nil {
+		return fmt.Errorf("user_markup_multiplier: %w", err)
+	}
+	fixedFee, err := decodeUnifiedDecimalJSON(raw.FixedFee)
+	if err != nil {
+		return fmt.Errorf("fixed_fee: %w", err)
+	}
+	minimumCharge, err := decodeUnifiedDecimalJSON(raw.MinimumCharge)
+	if err != nil {
+		return fmt.Errorf("minimum_charge: %w", err)
+	}
+	// The admin document intentionally keeps money as decimal strings and the
+	// flat pricing schema stores its final price under
+	// manual_pricing_rules.unit_price. Materialized route rules are consumed by
+	// this runtime type, so accept that documented shape without silently
+	// dropping the manual price.
+	if finalUser == nil && raw.ManualPricingRules != nil {
+		finalUser, err = decodeUnifiedDecimalJSON(raw.ManualPricingRules.UnitPrice)
+		if err != nil {
+			return fmt.Errorf("manual_pricing_rules.unit_price: %w", err)
+		}
+	}
+	*r = UnifiedRateRule{
+		ProfileID:                raw.ProfileID,
+		Version:                  raw.Version,
+		BillingMode:              raw.BillingMode,
+		UpstreamRateBasis:        raw.UpstreamRateBasis,
+		BasePriceSemantics:       raw.BasePriceSemantics,
+		ProviderBaseUnitPrice:    providerBase,
+		ManualBaseUnitPrice:      manualBase,
+		FinalUserUnitPrice:       finalUser,
+		ManualUpstreamMultiplier: manualMultiplier,
+		UserMarkupMultiplier:     userMarkup,
+		FixedFee:                 fixedFee,
+		MinimumCharge:            minimumCharge,
+		RoundingPrecision:        raw.RoundingPrecision,
+	}
+	return nil
+}
+
+func decodeUnifiedDecimalJSON(raw json.RawMessage) (*float64, error) {
+	value := strings.TrimSpace(string(raw))
+	if value == "" || value == "null" {
+		return nil, nil
+	}
+	if len(value) >= 2 && value[0] == '"' && value[len(value)-1] == '"' {
+		var quoted string
+		if err := json.Unmarshal(raw, &quoted); err != nil {
+			return nil, err
+		}
+		value = strings.TrimSpace(quoted)
+		if value == "" {
+			return nil, nil
+		}
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return nil, fmt.Errorf("must be a finite decimal number: %w", err)
+	}
+	return &parsed, nil
 }
 
 // UnifiedProbeSnapshot is the already-collected upstream declaration. The
@@ -148,6 +256,7 @@ type UnifiedRoutePriceSnapshot struct {
 	EffectiveRateMultiplier *float64                  `json:"effective_rate_multiplier,omitempty"`
 	UserMarkupMultiplier    float64                   `json:"user_markup_multiplier"`
 	FixedFee                float64                   `json:"fixed_fee"`
+	MinimumCharge           float64                   `json:"minimum_charge"`
 	ProviderUnitPrice       float64                   `json:"provider_unit_price"`
 	UserUnitPrice           float64                   `json:"user_unit_price"`
 	RoundingPrecision       int                       `json:"rounding_precision"`
@@ -223,6 +332,9 @@ func ResolveUnifiedRoutePrice(input UnifiedRoutePricingInput) (UnifiedRoutePrice
 	if rule.FixedFee != nil && (*rule.FixedFee < 0 || math.IsNaN(*rule.FixedFee) || math.IsInf(*rule.FixedFee, 0)) {
 		return UnifiedRoutePriceSnapshot{}, fmt.Errorf("%w: fixed fee must be finite and non-negative", ErrUnifiedPricingInvalidRate)
 	}
+	if rule.MinimumCharge != nil && (*rule.MinimumCharge < 0 || math.IsNaN(*rule.MinimumCharge) || math.IsInf(*rule.MinimumCharge, 0)) {
+		return UnifiedRoutePriceSnapshot{}, fmt.Errorf("%w: minimum charge must be finite and non-negative", ErrUnifiedPricingInvalidRate)
+	}
 	if rule.RoundingPrecision < 0 || rule.RoundingPrecision > 12 {
 		return UnifiedRoutePriceSnapshot{}, fmt.Errorf("%w: rounding precision must be between 0 and 12", ErrUnifiedPricingInvalidRate)
 	}
@@ -258,6 +370,9 @@ func ResolveUnifiedRoutePrice(input UnifiedRoutePricingInput) (UnifiedRoutePrice
 	}
 	if rule.FixedFee != nil {
 		snapshot.FixedFee = *rule.FixedFee
+	}
+	if rule.MinimumCharge != nil {
+		snapshot.MinimumCharge = *rule.MinimumCharge
 	}
 
 	switch rule.BasePriceSemantics {
@@ -317,6 +432,9 @@ func (snapshot UnifiedRoutePriceSnapshot) Charge(measuredUnits float64, delivere
 		return 0
 	}
 	charge := snapshot.UserUnitPrice*measuredUnits + snapshot.FixedFee
+	if charge < snapshot.MinimumCharge {
+		charge = snapshot.MinimumCharge
+	}
 	if snapshot.RoundingPrecision <= 0 {
 		return charge
 	}
@@ -401,6 +519,9 @@ func mergeUnifiedRateRule(dst, src *UnifiedRateRule) {
 	}
 	if src.FixedFee != nil {
 		dst.FixedFee = src.FixedFee
+	}
+	if src.MinimumCharge != nil {
+		dst.MinimumCharge = src.MinimumCharge
 	}
 	if src.RoundingPrecision != 0 {
 		dst.RoundingPrecision = src.RoundingPrecision

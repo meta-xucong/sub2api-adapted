@@ -1,4 +1,4 @@
-export type UnifiedGatewayEndpoint = 'chat_completions' | 'responses' | 'images_generations' | 'videos'
+export type UnifiedGatewayEndpoint = 'chat_completions' | 'responses' | 'images_generations' | 'images_edits' | 'videos'
 export type UnifiedGatewayBillingMode = 'token' | 'per_request' | 'image' | 'video'
 export type UnifiedGatewayRateMode = 'probe_preferred' | 'manual_only' | 'probe_only'
 export type UnifiedGatewayRateBasis = 'token' | 'per_request' | 'image' | 'video' | 'provider_specific'
@@ -53,6 +53,7 @@ export interface UnifiedGatewayPricingProfile {
 export interface UnifiedGatewayAccountBinding {
   id: string
   account_id: string
+  endpoint?: UnifiedGatewayEndpoint | ''
   display_name?: string
   schedulable: boolean
   eligibility: string
@@ -195,6 +196,7 @@ export interface UnifiedGatewayMeta {
   server_time: string
   admin_ui_enabled: boolean
   runtime_enabled: boolean
+  runtime_effective?: boolean
   migration_ready: boolean
   schema_version: string
   capabilities: Record<string, boolean>
@@ -219,6 +221,19 @@ export interface UnifiedGatewayOptions {
   access_groups: UnifiedGatewayOption[]
   pricing_source_groups: UnifiedGatewayOption[]
   accounts: UnifiedGatewayOption[]
+}
+
+export interface UnifiedGatewayModelCandidate {
+  public_model: string
+  upstream_model: string
+  provider_identity: string
+  endpoint: UnifiedGatewayEndpoint
+  account_id: string
+  account_name: string
+  account_status: string
+  schedulable: boolean
+  runtime_eligible: boolean
+  blockers?: UnifiedGatewayIssue[]
 }
 
 export interface UnifiedGatewayOptionsPage {

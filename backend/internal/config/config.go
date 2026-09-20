@@ -1043,6 +1043,10 @@ type GatewayConfig struct {
 	// UnifiedGatewayRuntimeEnabled is a separate production gate.  The admin
 	// API cannot change it and the zero value must remain fail-closed.
 	UnifiedGatewayRuntimeEnabled bool `mapstructure:"unified_gateway_runtime_enabled"`
+	// UnifiedGatewayAccessGroupID is the single API-key group allowed to use
+	// the isolated unified gateway.  Zero is intentionally fail-closed: the
+	// runtime and admin plane must never infer a group from request data.
+	UnifiedGatewayAccessGroupID int64 `mapstructure:"unified_gateway_access_group_id"`
 	// OpenAIHTTP2: OpenAI HTTP 上游协议策略（默认启用 HTTP/2，可按代理能力回退 HTTP/1.1）
 	OpenAIHTTP2 GatewayOpenAIHTTP2Config `mapstructure:"openai_http2"`
 	// OpenAIProxyStreamCircuit: Responses SSE 代理断流熔断策略。
@@ -2524,6 +2528,13 @@ func setDefaults() {
 	viper.SetDefault("gateway.max_account_switches", 10)
 	viper.SetDefault("gateway.max_account_switches_gemini", 3)
 	viper.SetDefault("gateway.smart_router.enabled", false)
+	// Unified gateway is deliberately disabled until the operator explicitly
+	// enables it and assigns one designated API-key group. Registering zero
+	// defaults also keeps these scalar fields reachable from environment-only
+	// deployments during Viper unmarshal.
+	viper.SetDefault("gateway.unified_gateway_admin_ui_enabled", false)
+	viper.SetDefault("gateway.unified_gateway_runtime_enabled", false)
+	viper.SetDefault("gateway.unified_gateway_access_group_id", int64(0))
 	viper.SetDefault("gateway.smart_router.top_k", 5)
 	viper.SetDefault("gateway.smart_router.max_attempts_image", 2)
 	viper.SetDefault("gateway.smart_router.max_attempts_chat", 3)

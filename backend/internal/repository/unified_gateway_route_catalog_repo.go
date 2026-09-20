@@ -50,7 +50,11 @@ func (r *unifiedGatewayRouteCatalogRepository) List(ctx context.Context, accessG
 		JOIN unified_route_account_bindings b ON b.route_target_id = t.id
 		WHERE t.access_group_id = $1
 			AND ($2 = '' OR t.public_model = $2)
-			AND ($3 = '' OR t.endpoint = $3)
+			AND ($3 = '' OR COALESCE(NULLIF(b.endpoint, ''), t.endpoint) = $3)
+			AND t.unified_config_id IS NOT NULL
+			AND b.unified_config_id IS NOT NULL
+			AND t.unified_config_id = b.unified_config_id
+			AND t.unified_revision = b.unified_revision
 			AND t.enabled = TRUE AND b.enabled = TRUE
 		ORDER BY t.priority ASC, t.id ASC, b.priority ASC, b.id ASC
 	`, accessGroupID, strings.TrimSpace(publicModel), strings.TrimSpace(endpoint))

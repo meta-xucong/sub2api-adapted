@@ -69,6 +69,23 @@ func AdminSelectableModelIDs() []string {
 	return append([]string(nil), adminSelectableOpenAIModels...)
 }
 
+// AdminSelectableModels returns the curated OpenAI models as full model
+// descriptors for admin-facing model pickers. Keep the order aligned with
+// AdminSelectableModelIDs so callers can preserve the configured display
+// order without exposing internal aliases or stale snapshots.
+func AdminSelectableModels() []Model {
+	models := make([]Model, 0, len(adminSelectableOpenAIModels))
+	for _, id := range adminSelectableOpenAIModels {
+		for _, model := range DefaultModels {
+			if model.ID == id {
+				models = append(models, model)
+				break
+			}
+		}
+	}
+	return models
+}
+
 // IsAdminSelectableModelID reports whether a model may be offered as a normal
 // OpenAI admin picker choice. Non-OpenAI-looking aliases are preserved because
 // providers commonly expose custom names such as "aiai-gpt-image-2".

@@ -62,8 +62,8 @@ func TestUnifiedGatewaySnapshotRepositoryCreateGetAndFinalize(t *testing.T) {
 	finalizedAt := createdAt.Add(time.Minute)
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, api_key_id, user_id, access_group_id, request_id, attempt_id, status, selection_json, snapshot_json")).
 		WithArgs(record.APIKeyID, record.UserID, record.AccessGroupID, requestID, attemptID).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "api_key_id", "user_id", "access_group_id", "request_id", "attempt_id", "status", "selection_json", "snapshot_json", "response_body", "measured_units", "user_charge", "upstream_request_id", "failure_message", "created_at", "finalized_at"}).
-			AddRow(123, record.APIKeyID, record.UserID, record.AccessGroupID, requestID, attemptID, "captured", selectionJSON, snapshotJSON, []byte(`{"ok":true}`), 1.0, 0.0024, "upstream-1", "", createdAt, finalizedAt))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "api_key_id", "user_id", "access_group_id", "request_id", "attempt_id", "status", "selection_json", "snapshot_json", "response_body", "response_body_bytes", "measured_units", "user_charge", "upstream_request_id", "failure_message", "created_at", "finalized_at"}).
+			AddRow(123, record.APIKeyID, record.UserID, record.AccessGroupID, requestID, attemptID, "captured", selectionJSON, snapshotJSON, []byte(`{"ok":true}`), nil, 1.0, 0.0024, "upstream-1", "", createdAt, finalizedAt))
 	got, err := repo.Get(context.Background(), record.APIKeyID, record.UserID, record.AccessGroupID, requestID, attemptID)
 	require.NoError(t, err)
 	require.Equal(t, service.UnifiedGatewaySnapshotCaptured, got.Status)
@@ -71,7 +71,7 @@ func TestUnifiedGatewaySnapshotRepositoryCreateGetAndFinalize(t *testing.T) {
 	require.Equal(t, []byte(`{"ok":true}`), got.ResponseBody)
 
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE unified_route_price_snapshots")).
-		WithArgs(record.APIKeyID, record.UserID, record.AccessGroupID, requestID, attemptID, "captured", 1.0, 0.0024, "upstream-1", sqlmock.AnyArg(), "").
+		WithArgs(record.APIKeyID, record.UserID, record.AccessGroupID, requestID, attemptID, "captured", 1.0, 0.0024, "upstream-1", sqlmock.AnyArg(), sqlmock.AnyArg(), "").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	require.NoError(t, repo.Finalize(context.Background(), record.APIKeyID, record.UserID, record.AccessGroupID, requestID, attemptID, service.UnifiedGatewaySnapshotCaptured, 1, 0.0024, "upstream-1", []byte(`{"ok":true}`), ""))
 	require.NoError(t, mock.ExpectationsWereMet())

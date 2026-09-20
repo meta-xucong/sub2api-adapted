@@ -67,6 +67,15 @@ func (h *UnifiedGatewayHandler) ListOptions(c *gin.Context) {
 	response.Success(c, gin.H{"items": result, "total": total, "page": page, "page_size": size})
 }
 
+func (h *UnifiedGatewayHandler) ListModelCandidates(c *gin.Context) {
+	items, err := h.svc.ListModelCandidates(c.Request.Context())
+	if err != nil {
+		writeUnifiedError(c, err)
+		return
+	}
+	response.Success(c, gin.H{"items": items})
+}
+
 func (h *UnifiedGatewayHandler) ListConfigs(c *gin.Context) {
 	page, size := response.ParsePagination(c)
 	items, total, err := h.svc.ListConfigs(c.Request.Context(), service.UnifiedGatewayConfigListFilter{Page: page, PageSize: size, Lifecycle: strings.TrimSpace(c.Query("status"))})

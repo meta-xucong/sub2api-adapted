@@ -11,15 +11,76 @@
 
       <div v-if="loading" class="card p-8 text-center text-sm text-gray-500">{{ t('common.loading') }}</div>
 
-      <div v-else-if="!meta || !meta.admin_ui_enabled || !meta.migration_ready || meta.capabilities?.read !== true" class="card border-amber-200 p-6 dark:border-amber-800">
-        <h2 class="font-medium text-amber-800 dark:text-amber-200">{{ t('admin.unifiedGateway.gatedTitle') }}</h2>
-        <p class="mt-2 text-sm text-amber-700 dark:text-amber-300">{{ gateMessage }}</p>
-        <p class="mt-3 text-xs text-gray-500">{{ t('admin.unifiedGateway.runtimeOff') }}</p>
-      </div>
+      <div v-else class="space-y-6">
+        <section data-testid="gateway-status" class="card space-y-4 p-5">
+          <div class="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">{{ t('admin.unifiedGateway.statusTitle') }}</h2>
+              <p class="mt-1 text-sm text-gray-500">{{ gateMessage }}</p>
+            </div>
+            <span data-testid="status-management" :class="managementStatusClass">{{ managementStatusLabel }}</span>
+          </div>
+          <dl class="grid gap-3 text-sm sm:grid-cols-2 xl:grid-cols-4">
+            <div>
+              <dt class="text-xs text-gray-500">{{ t('admin.unifiedGateway.statusAdminUi') }}</dt>
+              <dd data-testid="status-admin-ui" class="font-medium">{{ booleanStatus(meta?.admin_ui_enabled) }}</dd>
+            </div>
+            <div>
+              <dt class="text-xs text-gray-500">{{ t('admin.unifiedGateway.statusMigration') }}</dt>
+              <dd data-testid="status-migration" class="font-medium">{{ readinessStatus(meta?.migration_ready) }}</dd>
+            </div>
+            <div>
+              <dt class="text-xs text-gray-500">{{ t('admin.unifiedGateway.statusRuntimeEnabled') }}</dt>
+              <dd data-testid="status-runtime-enabled" class="font-medium">{{ booleanStatus(meta?.runtime_enabled) }}</dd>
+            </div>
+            <div>
+              <dt class="text-xs text-gray-500">{{ t('admin.unifiedGateway.statusRuntimeEffective') }}</dt>
+              <dd data-testid="status-runtime-effective" class="font-medium">{{ runtimeEffectiveLabel(currentRuntimeEffective) }}</dd>
+            </div>
+            <div>
+              <dt class="text-xs text-gray-500">{{ t('admin.unifiedGateway.statusCapabilityRead') }}</dt>
+              <dd data-testid="status-read" class="font-medium">{{ capabilityStatus(meta?.capabilities?.read) }}</dd>
+            </div>
+            <div>
+              <dt class="text-xs text-gray-500">{{ t('admin.unifiedGateway.statusCapabilityWrite') }}</dt>
+              <dd data-testid="status-write" class="font-medium">{{ capabilityStatus(writeCapability) }}</dd>
+            </div>
+            <div>
+              <dt class="text-xs text-gray-500">{{ t('admin.unifiedGateway.statusCapabilityProbe') }}</dt>
+              <dd data-testid="status-probe" class="font-medium">{{ capabilityStatus(meta?.capabilities?.probe) }}</dd>
+            </div>
+          </dl>
+          <ul v-if="meta?.blockers?.length" class="list-disc space-y-1 pl-5 text-xs text-amber-700 dark:text-amber-300">
+            <li v-for="blocker in meta.blockers" :key="`${blocker.code}-${blocker.path ?? ''}`">{{ blocker.message }}</li>
+          </ul>
+        </section>
 
-      <template v-else>
+        <div v-if="!managementAvailable" data-testid="gateway-gate" class="card border-amber-200 p-6 dark:border-amber-800">
+          <h2 class="font-medium text-amber-800 dark:text-amber-200">{{ t('admin.unifiedGateway.gatedTitle') }}</h2>
+          <p class="mt-2 text-sm text-amber-700 dark:text-amber-300">{{ gateMessage }}</p>
+        </div>
+
+        <section v-if="managementAvailable" data-testid="gateway-model-candidates" class="card space-y-3 p-5">
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">{{ t('admin.unifiedGateway.modelCandidates') }}</h2>
+              <p class="text-xs text-gray-500">{{ t('admin.unifiedGateway.modelCandidatesHint') }}</p>
+            </div>
+            <button class="btn btn-secondary text-xs" :disabled="saving || loading" @click="loadModelCandidates">{{ t('admin.unifiedGateway.refreshCandidates') }}</button>
+          </div>
+          <div v-if="modelCandidates.length === 0" class="text-sm text-gray-500">{{ t('admin.unifiedGateway.noModelCandidates') }}</div>
+          <div v-else class="overflow-x-auto">
+            <table class="min-w-full text-left text-xs">
+              <thead class="text-gray-500"><tr><th class="px-2 py-1">{{ t('admin.unifiedGateway.publicModel') }}</th><th class="px-2 py-1">{{ t('admin.unifiedGateway.provider') }}</th><th class="px-2 py-1">{{ t('admin.unifiedGateway.upstreamModel') }}</th><th class="px-2 py-1">{{ t('admin.unifiedGateway.account') }}</th><th class="px-2 py-1">{{ t('admin.unifiedGateway.eligibility') }}</th></tr></thead>
+              <tbody><tr v-for="candidate in modelCandidates" :key="`${candidate.public_model}-${candidate.provider_identity}-${candidate.account_id}-${candidate.endpoint}`" class="border-t border-gray-100 dark:border-gray-700"><td class="px-2 py-2 font-medium">{{ candidate.public_model }}</td><td class="px-2 py-2">{{ candidate.provider_identity }} · {{ candidate.endpoint }}</td><td class="px-2 py-2">{{ candidate.upstream_model }}</td><td class="px-2 py-2">{{ candidate.account_name }} · {{ candidate.account_id }}</td><td class="px-2 py-2"><span :class="candidate.runtime_eligible ? 'text-green-600' : 'text-amber-600'">{{ candidate.runtime_eligible ? t('admin.unifiedGateway.eligible') : (candidate.blockers?.map(item => item.code).join(', ') || t('admin.unifiedGateway.blocked')) }}</span></td></tr></tbody>
+            </table>
+          </div>
+        </section>
+
+        <template v-if="managementAvailable">
         <div class="grid gap-6 xl:grid-cols-[minmax(0,1.5fr)_minmax(360px,1fr)]">
-          <section class="card space-y-5 p-5">
+          <section data-testid="gateway-editor" class="card space-y-5 p-5">
+            <fieldset :disabled="!canWrite" class="m-0 space-y-5 border-0 p-0">
             <div class="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h2 class="text-lg font-semibold text-gray-900 dark:text-white">{{ t('admin.unifiedGateway.editor') }}</h2>
@@ -27,7 +88,7 @@
               </div>
               <div class="flex gap-2">
                 <button class="btn btn-secondary" :disabled="saving" @click="resetDocument">{{ t('admin.unifiedGateway.newDraft') }}</button>
-                <button class="btn btn-primary" :disabled="saving" @click="saveDraft">{{ saving ? t('common.saving') : t('common.save') }}</button>
+                <button data-testid="gateway-save" class="btn btn-primary" :disabled="saving" @click="saveDraft">{{ saving ? t('common.saving') : t('common.save') }}</button>
               </div>
             </div>
 
@@ -42,7 +103,7 @@
                 <input v-model.trim="document.public_model" class="input mt-1" placeholder="gpt-5.5 / deepseek-chat" />
               </label>
               <label class="field-label">{{ t('admin.unifiedGateway.endpoint') }}
-                <select v-model="document.endpoint" class="input mt-1">
+                <select data-testid="gateway-endpoint" v-model="document.endpoint" class="input mt-1">
                   <option v-for="endpoint in (meta?.supported_endpoints ?? [])" :key="endpoint" :value="endpoint">{{ endpoint }}</option>
                 </select>
               </label>
@@ -119,8 +180,9 @@
                       <label class="field-label">{{ t('admin.unifiedGateway.targetEndpoint') }}<select v-model="target.endpoint" class="input mt-1"><option v-for="endpoint in (meta?.supported_endpoints ?? [])" :key="endpoint" :value="endpoint">{{ endpoint }}</option></select></label>
                       <label class="field-label">{{ t('admin.unifiedGateway.priority') }}<input v-model.number="target.priority" type="number" class="input mt-1" /></label>
                     </div>
-                    <div v-for="(binding, bindingIndex) in target.bindings" :key="binding.id" class="mt-3 grid gap-3 md:grid-cols-[minmax(0,1fr)_120px_100px_60px]">
-                      <label class="field-label">{{ t('admin.unifiedGateway.account') }}<select v-model="binding.account_id" class="input mt-1" @change="syncBindingFromAccount(binding)"><option value="">{{ t('admin.unifiedGateway.selectAccount') }}</option><option v-for="account in options?.items.accounts ?? []" :key="account.id" :value="account.id">{{ account.name }} · {{ account.platform }} · {{ account.id }}</option></select><span v-if="accountOption(binding.account_id)" class="mt-1 block text-[11px] text-gray-500">{{ accountOption(binding.account_id)?.status }} · {{ accountOption(binding.account_id)?.schedulable ? t('admin.unifiedGateway.schedulable') : t('admin.unifiedGateway.unschedulable') }} · {{ t('admin.unifiedGateway.eligibility') }}: {{ binding.eligibility }}<span v-if="accountOption(binding.account_id)?.capabilities?.length"> · {{ accountOption(binding.account_id)?.capabilities?.join(', ') }}</span></span><button v-if="binding.id" type="button" class="mt-1 text-[11px] text-teal-700" @click="probeBinding(binding)">{{ t('admin.unifiedGateway.probeAction') }}</button><span v-if="probeResults[binding.id]" class="ml-2 text-[11px] text-gray-500">{{ probeResults[binding.id] }}</span></label>
+                    <div v-for="(binding, bindingIndex) in target.bindings" :key="binding.id" class="mt-3 grid gap-3 md:grid-cols-[minmax(0,1fr)_160px_120px_100px_60px]">
+                      <label class="field-label">{{ t('admin.unifiedGateway.account') }}<select v-model="binding.account_id" class="input mt-1" @change="syncBindingFromAccount(binding)"><option value="">{{ t('admin.unifiedGateway.selectAccount') }}</option><option v-for="account in options?.items.accounts ?? []" :key="account.id" :value="account.id">{{ account.name }} · {{ account.platform }} · {{ account.id }}</option></select><span v-if="accountOption(binding.account_id)" class="mt-1 block text-[11px] text-gray-500">{{ accountOption(binding.account_id)?.status }} · {{ accountOption(binding.account_id)?.schedulable ? t('admin.unifiedGateway.schedulable') : t('admin.unifiedGateway.unschedulable') }} · {{ t('admin.unifiedGateway.eligibility') }}: {{ binding.eligibility }}<span v-if="accountOption(binding.account_id)?.capabilities?.length"> · {{ accountOption(binding.account_id)?.capabilities?.join(', ') }}</span></span><span v-if="canProbe && binding.id && binding.account_id" class="mt-1 block text-[11px]"><button data-testid="gateway-probe" type="button" class="text-teal-700" @click="probeBinding(binding)">{{ t('admin.unifiedGateway.probeCapabilityAction') }}</button><span v-if="probeResults[binding.id]" class="ml-2 text-gray-500">{{ probeResults[binding.id] }}</span></span><span v-else-if="meta?.capabilities?.probe !== true" data-testid="gateway-probe-unsupported" class="mt-1 block text-[11px] text-amber-700 dark:text-amber-300">{{ t('admin.unifiedGateway.probeUnsupported') }}</span><span v-else class="mt-1 block text-[11px] text-gray-500">{{ t('admin.unifiedGateway.probeManualConfirmation') }}</span></label>
+                      <label class="field-label">{{ t('admin.unifiedGateway.bindingEndpoint') }}<select v-model="binding.endpoint" class="input mt-1"><option value="">{{ t('admin.unifiedGateway.inheritTargetEndpoint') }}</option><option v-for="endpoint in (meta?.supported_endpoints ?? [])" :key="endpoint" :value="endpoint">{{ endpoint }}</option></select></label>
                       <label class="field-label">{{ t('admin.unifiedGateway.bindingPriority') }}<input v-model.number="binding.priority" type="number" class="input mt-1" /></label>
                       <label class="mt-6 flex items-center gap-2 text-xs"><input v-model="binding.enabled" type="checkbox" />{{ t('common.enabled') }}</label>
                       <button v-if="target.bindings.length > 1" class="mt-6 text-xs text-red-600" @click="removeBinding(target, bindingIndex)">{{ t('common.delete') }}</button>
@@ -131,6 +193,7 @@
               </div>
               <button class="btn btn-secondary w-full" @click="addLane">{{ t('admin.unifiedGateway.addLane') }}</button>
             </div>
+            </fieldset>
           </section>
 
           <aside class="space-y-6">
@@ -154,14 +217,15 @@
             <section class="card space-y-3 p-5">
               <h2 class="text-lg font-semibold">{{ t('admin.unifiedGateway.publish') }}</h2>
               <p class="text-sm text-gray-500">{{ t('admin.unifiedGateway.publishHint') }}</p>
-              <button class="btn btn-primary w-full" :disabled="saving || !draftId || !validation?.valid" @click="publishCurrent">{{ t('admin.unifiedGateway.publishAction') }}</button>
-              <p class="text-xs text-gray-500">{{ t('admin.unifiedGateway.runtimeOff') }}</p>
+              <button data-testid="gateway-publish" class="btn btn-primary w-full" :disabled="saving || !canWrite || !draftId || !validation?.valid" @click="publishCurrent">{{ t('admin.unifiedGateway.publishAction') }}</button>
+              <p class="text-xs text-gray-500">{{ runtimeStatusMessage }}</p>
             </section>
 
-            <section class="card p-5"><h2 class="text-lg font-semibold">{{ t('admin.unifiedGateway.publishedConfigs') }}</h2><div v-if="configs.length === 0" class="mt-3 text-sm text-gray-500">{{ t('admin.unifiedGateway.noConfigs') }}</div><div v-for="item in configs" :key="item.id" class="mt-3 rounded-lg border border-gray-100 p-3 text-sm dark:border-gray-700"><div class="flex justify-between gap-2"><button class="truncate text-left font-semibold text-teal-700" @click="editPublished(item)">{{ item.public_model }}</button><span :class="item.readiness === 'ready' ? 'text-green-600' : 'text-amber-600'">{{ item.readiness }}</span></div><div class="mt-1 text-xs text-gray-500">{{ item.endpoint }} · {{ item.lifecycle }} · rev {{ item.revision }}</div><div class="mt-3 flex flex-wrap gap-2"><button class="btn btn-secondary text-xs" :disabled="saving" @click="editPublished(item)">{{ t('admin.unifiedGateway.editDraft') }}</button><button v-if="item.lifecycle === 'published'" class="btn btn-secondary text-xs" :disabled="saving" @click="disablePublished(item)">{{ t('admin.unifiedGateway.disableAction') }}</button><button v-if="item.lifecycle === 'disabled'" class="btn btn-secondary text-xs" :disabled="saving" @click="restorePublished(item)">{{ t('admin.unifiedGateway.restoreAction') }}</button><button class="btn btn-secondary text-xs" :disabled="saving" @click="showRevisions(item)">{{ t('admin.unifiedGateway.revisionsAction') }}</button></div><div v-if="selectedConfigId === item.id && revisions.length" class="mt-3 rounded bg-gray-50 p-2 text-xs dark:bg-gray-800/60"><div v-for="revision in revisions" :key="revision.revision" class="flex items-center justify-between gap-2 py-1"><span>rev {{ revision.revision }} · {{ revision.lifecycle }} · {{ revision.reason || '-' }}</span><button v-if="item.lifecycle === 'disabled' && revision.lifecycle === 'published'" class="text-teal-700" @click="restorePublished(item, revision.revision)">{{ t('admin.unifiedGateway.restoreAction') }}</button></div><div class="mt-3 border-t border-gray-200 pt-2 dark:border-gray-700"><div class="font-medium">{{ t('admin.unifiedGateway.snapshots') }}</div><div v-if="snapshots.length === 0" class="mt-1 text-gray-500">{{ t('admin.unifiedGateway.noSnapshots') }}</div><div v-for="snapshot in snapshots" :key="snapshot.id" class="mt-1 text-gray-500">{{ snapshot.status }} · {{ snapshot.provider_identity }} · {{ snapshot.user_charge }} {{ snapshot.currency }}</div></div></div></div></section>
+            <section class="card p-5"><h2 class="text-lg font-semibold">{{ t('admin.unifiedGateway.publishedConfigs') }}</h2><div v-if="configs.length === 0" class="mt-3 text-sm text-gray-500">{{ t('admin.unifiedGateway.noConfigs') }}</div><div v-for="item in configs" :key="item.id" class="mt-3 rounded-lg border border-gray-100 p-3 text-sm dark:border-gray-700"><div class="flex justify-between gap-2"><button class="truncate text-left font-semibold text-teal-700" :disabled="saving || !canWrite" @click="editPublished(item)">{{ item.public_model }}</button><span :class="item.readiness === 'ready' ? 'text-green-600' : 'text-amber-600'">{{ item.readiness }}</span></div><div class="mt-1 text-xs text-gray-500">{{ item.endpoint }} · {{ item.lifecycle }} · rev {{ item.revision }} · {{ t('admin.unifiedGateway.statusRuntimeEffective') }}: {{ runtimeEffectiveLabel(item.runtime_effective) }}</div><div class="mt-3 flex flex-wrap gap-2"><button class="btn btn-secondary text-xs" :disabled="saving || !canWrite" @click="editPublished(item)">{{ t('admin.unifiedGateway.editDraft') }}</button><button v-if="item.lifecycle === 'published'" class="btn btn-secondary text-xs" :disabled="saving || !canWrite" @click="disablePublished(item)">{{ t('admin.unifiedGateway.disableAction') }}</button><button v-if="item.lifecycle === 'disabled'" class="btn btn-secondary text-xs" :disabled="saving || !canWrite" @click="restorePublished(item)">{{ t('admin.unifiedGateway.restoreAction') }}</button><button class="btn btn-secondary text-xs" :disabled="saving" @click="showRevisions(item)">{{ t('admin.unifiedGateway.revisionsAction') }}</button></div><div v-if="selectedConfigId === item.id && revisions.length" class="mt-3 rounded bg-gray-50 p-2 text-xs dark:bg-gray-800/60"><div v-for="revision in revisions" :key="revision.revision" class="flex items-center justify-between gap-2 py-1"><span>rev {{ revision.revision }} · {{ revision.lifecycle }} · {{ revision.reason || '-' }}</span><button v-if="item.lifecycle === 'disabled' && revision.lifecycle === 'published'" class="text-teal-700" :disabled="!canWrite" @click="restorePublished(item, revision.revision)">{{ t('admin.unifiedGateway.restoreAction') }}</button></div><div class="mt-3 border-t border-gray-200 pt-2 dark:border-gray-700"><div class="font-medium">{{ t('admin.unifiedGateway.snapshots') }}</div><div v-if="snapshots.length === 0" class="mt-1 text-gray-500">{{ t('admin.unifiedGateway.noSnapshots') }}</div><div v-for="snapshot in snapshots" :key="snapshot.id" class="mt-1 text-gray-500">{{ snapshot.status }} · {{ snapshot.provider_identity }} · {{ snapshot.user_charge }} {{ snapshot.currency }}</div></div></div></div></section>
           </aside>
         </div>
-      </template>
+        </template>
+      </div>
       <TotpStepUpDialog :controller="gatewayStepUp" />
     </div>
   </AppLayout>
@@ -174,7 +238,7 @@ import { useAppStore } from '@/stores/app'
 import { adminAPI } from '@/api/admin'
 import TotpStepUpDialog from '@/components/auth/TotpStepUpDialog.vue'
 import { isStepUpBlocked, isStepUpCancelled, stepUpBlockReason, useStepUp } from '@/composables/useStepUp'
-import type { UnifiedGatewayAccountBinding, UnifiedGatewayBillingLane, UnifiedGatewayConfig, UnifiedGatewayMeta, UnifiedGatewayOptionsPage, UnifiedGatewayPricingImportResult, UnifiedGatewayPreviewResult, UnifiedGatewayRevision, UnifiedGatewayRouteTarget, UnifiedGatewaySnapshotView, UnifiedGatewayValidationResult, UnifiedGatewayEndpoint } from '@/types/unifiedGateway'
+import type { UnifiedGatewayAccountBinding, UnifiedGatewayBillingLane, UnifiedGatewayConfig, UnifiedGatewayMeta, UnifiedGatewayModelCandidate, UnifiedGatewayOptionsPage, UnifiedGatewayPricingImportResult, UnifiedGatewayPreviewResult, UnifiedGatewayRevision, UnifiedGatewayRouteTarget, UnifiedGatewaySnapshotView, UnifiedGatewayValidationResult, UnifiedGatewayEndpoint } from '@/types/unifiedGateway'
 
 const { t } = useI18n()
 const appStore = useAppStore()
@@ -182,6 +246,7 @@ const loading = ref(true)
 const saving = ref(false)
 const meta = ref<UnifiedGatewayMeta | null>(null)
 const options = ref<UnifiedGatewayOptionsPage | null>(null)
+const modelCandidates = ref<UnifiedGatewayModelCandidate[]>([])
 const configs = ref<UnifiedGatewayConfig[]>([])
 const draftId = ref('')
 const draftRevision = ref(0)
@@ -203,12 +268,38 @@ const pricingImports = ref<Record<string, string>>({})
 const pricingImportPreviews = ref<Record<string, UnifiedGatewayPricingImportResult>>({})
 const gatewayStepUp = useStepUp()
 
-function newBinding() { return { id: `binding_${crypto.randomUUID?.() ?? Date.now()}`, account_id: '', schedulable: true, eligibility: 'unknown', priority: 10, enabled: true, revision: 1 } }
+function newBinding(): UnifiedGatewayAccountBinding { return { id: `binding_${crypto.randomUUID?.() ?? Date.now()}`, account_id: '', endpoint: '', schedulable: true, eligibility: 'unknown', priority: 10, enabled: true, revision: 1 } }
 function newTarget(endpoint: UnifiedGatewayEndpoint = 'chat_completions'): UnifiedGatewayRouteTarget { return { id: `target_${crypto.randomUUID?.() ?? Date.now()}`, provider_identity: '', upstream_model: '', endpoint, priority: 10, bindings: [newBinding()] } }
-function newLane(endpoint: UnifiedGatewayEndpoint = 'chat_completions'): UnifiedGatewayBillingLane { return { id: `lane_${crypto.randomUUID?.() ?? Date.now()}`, code: '', name: '', selection_strategy: 'fixed_priority', profile: { id: `profile_${crypto.randomUUID?.() ?? Date.now()}`, version: '1', pricing_model: 'provider_metered', billing_mode: 'token', rate_mode: 'manual_only', rate_basis: 'token', pricing_schema_id: 'token_v1', currency: 'USD', base_price_semantics: 'provider_base', provider_base_unit_price: '0.000010000000', manual_base_unit_price: null, manual_upstream_multiplier: '1.000000', user_markup_multiplier: '1.200000', final_user_unit_price: null, fixed_fee: '0', minimum_charge: '0', rounding_mode: 'half_up', precision: 8, fallback_reason: 'manual_only', manual_pricing_rules: null, charge_trigger: 'success_delivery', failure_charge: 'zero' }, targets: [newTarget(endpoint)] } }
+function newLane(endpoint: UnifiedGatewayEndpoint = 'chat_completions'): UnifiedGatewayBillingLane { return { id: `lane_${crypto.randomUUID?.() ?? Date.now()}`, code: '', name: '', selection_strategy: 'fixed_priority', profile: { id: `profile_${crypto.randomUUID?.() ?? Date.now()}`, version: '1', pricing_model: 'provider_metered', billing_mode: 'token', rate_mode: 'manual_only', rate_basis: 'token', pricing_schema_id: 'token_v1', currency: 'USD', base_price_semantics: 'provider_base', provider_base_unit_price: null, manual_base_unit_price: null, manual_upstream_multiplier: null, user_markup_multiplier: null, final_user_unit_price: null, fixed_fee: '0', minimum_charge: '0', rounding_mode: 'half_up', precision: 8, fallback_reason: null, manual_pricing_rules: null, charge_trigger: 'success_delivery', failure_charge: 'zero' }, targets: [newTarget(endpoint)] } }
 function emptyDocument(): UnifiedGatewayConfig { return { access_group_id: '', public_model: '', endpoint: 'chat_completions', lanes: [newLane()] } }
 const document = reactive<UnifiedGatewayConfig>(emptyDocument())
-const gateMessage = computed(() => metaLoadFailed.value || !meta.value ? t('admin.unifiedGateway.metaUnavailable') : !meta.value.admin_ui_enabled ? t('admin.unifiedGateway.uiDisabled') : !meta.value.migration_ready ? t('admin.unifiedGateway.migrationNotReady') : t('admin.unifiedGateway.capabilityUnavailable'))
+const managementAvailable = computed(() => meta.value?.admin_ui_enabled === true && meta.value?.migration_ready === true && meta.value?.capabilities?.read === true)
+const writeCapability = computed<boolean | null>(() => {
+  const capabilities = meta.value?.capabilities
+  if (!capabilities) return null
+  if (typeof capabilities.write === 'boolean') return capabilities.write
+  if (typeof capabilities.draft === 'boolean' || typeof capabilities.publish === 'boolean') return capabilities.draft === true && capabilities.publish === true
+  return null
+})
+const canWrite = computed(() => managementAvailable.value && writeCapability.value === true)
+const canProbe = computed(() => canWrite.value && meta.value?.capabilities?.probe === true)
+const readOnly = computed(() => managementAvailable.value && !canWrite.value)
+const currentRuntimeEffective = computed<boolean | null>(() => {
+  if (document.runtime_effective !== undefined) return document.runtime_effective
+  const selected = configs.value.find(item => item.id === selectedConfigId.value)
+  if (selected?.runtime_effective !== undefined) return selected.runtime_effective
+  if (configs.value.length === 1 && configs.value[0].runtime_effective !== undefined) return configs.value[0].runtime_effective
+  return meta.value?.runtime_effective ?? null
+})
+const managementStatusLabel = computed(() => !managementAvailable.value ? t('admin.unifiedGateway.statusManagementUnavailable') : readOnly.value ? t('admin.unifiedGateway.statusReadOnly') : t('admin.unifiedGateway.statusManagementAvailable'))
+const managementStatusClass = computed(() => !managementAvailable.value ? 'text-red-600' : readOnly.value ? 'text-amber-600' : 'text-green-600')
+const gateMessage = computed(() => metaLoadFailed.value || !meta.value ? t('admin.unifiedGateway.metaUnavailable') : !meta.value.admin_ui_enabled ? t('admin.unifiedGateway.uiDisabled') : !meta.value.migration_ready ? t('admin.unifiedGateway.migrationNotReady') : meta.value.capabilities?.read !== true ? t('admin.unifiedGateway.capabilityUnavailable') : !canWrite.value ? t('admin.unifiedGateway.statusReadOnly') : meta.value.runtime_enabled ? t('admin.unifiedGateway.statusManagementAvailable') : t('admin.unifiedGateway.runtimeDisabled'))
+const runtimeStatusMessage = computed(() => meta.value?.runtime_enabled === true ? t('admin.unifiedGateway.runtimeEnabled') : meta.value?.runtime_enabled === false ? t('admin.unifiedGateway.runtimeDisabled') : t('admin.unifiedGateway.runtimeUnknown'))
+
+function booleanStatus(value: boolean | null | undefined) { return value === true ? t('admin.unifiedGateway.statusEnabled') : value === false ? t('admin.unifiedGateway.statusDisabled') : t('admin.unifiedGateway.statusUnknown') }
+function readinessStatus(value: boolean | null | undefined) { return value === true ? t('admin.unifiedGateway.statusReady') : value === false ? t('admin.unifiedGateway.statusNotReady') : t('admin.unifiedGateway.statusUnknown') }
+function capabilityStatus(value: boolean | null | undefined) { return value === true ? t('admin.unifiedGateway.statusAvailable') : value === false ? t('admin.unifiedGateway.statusUnavailable') : t('admin.unifiedGateway.statusUnknown') }
+function runtimeEffectiveLabel(value: boolean | null | undefined) { return value === true ? t('admin.unifiedGateway.runtimeEffectiveEnabled') : value === false ? t('admin.unifiedGateway.runtimeEffectiveDisabled') : t('admin.unifiedGateway.runtimeEffectiveUnknown') }
 
 function resetDocument() { Object.assign(document, emptyDocument()); draftId.value = ''; draftRevision.value = 0; configRevision.value = 0; validation.value = null; preview.value = null }
 function addLane() { document.lanes.push(newLane(document.endpoint)) }
@@ -231,7 +322,7 @@ function syncPricingMode(lane: UnifiedGatewayBillingLane) {
     profile.manual_base_unit_price = null
     profile.manual_upstream_multiplier = null
     profile.user_markup_multiplier = null
-    if (!profile.manual_pricing_rules) profile.manual_pricing_rules = { formula_id: 'flat_unit_price', unit: manualRuleUnitFor(profile.billing_mode), unit_price: '0.01000000' }
+    if (!profile.manual_pricing_rules) profile.manual_pricing_rules = { formula_id: 'flat_unit_price', unit: manualRuleUnitFor(profile.billing_mode), unit_price: '' }
     profile.manual_pricing_rules.unit = manualRuleUnitFor(profile.billing_mode) as 'request' | 'image' | 'video_task'
   } else {
     profile.manual_pricing_rules = null
@@ -240,12 +331,10 @@ function syncPricingMode(lane: UnifiedGatewayBillingLane) {
       profile.manual_base_unit_price = null
       profile.manual_upstream_multiplier = null
       profile.user_markup_multiplier = null
-      if (!profile.final_user_unit_price) profile.final_user_unit_price = '0.00100000'
     } else {
       profile.final_user_unit_price = null
-      if (!profile.provider_base_unit_price && !profile.manual_base_unit_price) profile.provider_base_unit_price = '0.000010000000'
-      if (!profile.manual_upstream_multiplier) profile.manual_upstream_multiplier = '1.000000'
-      if (!profile.user_markup_multiplier) profile.user_markup_multiplier = '1.200000'
+      // Leave pricing inputs empty until an administrator explicitly enters or
+      // imports a profile. An unconfigured profile must fail closed server-side.
     }
   }
 }
@@ -275,21 +364,22 @@ watch(() => document.lanes.map(lane => lane.profile.billing_mode), () => {
 })
 watch(() => document.lanes, syncPreviewSelection, { deep: true, immediate: true })
 
-async function loadPage() { loading.value = true; metaLoadFailed.value = false; try { meta.value = await adminAPI.unifiedGateway.getMeta(); if (meta.value.admin_ui_enabled && meta.value.migration_ready && meta.value.capabilities?.read === true) { options.value = await adminAPI.unifiedGateway.getOptions(); const page = await adminAPI.unifiedGateway.listConfigs(''); configs.value = page.items } else { options.value = null; configs.value = [] } } catch (error: any) { meta.value = null; options.value = null; configs.value = []; metaLoadFailed.value = true; appStore.showError(error?.message || t('admin.unifiedGateway.loadFailed')) } finally { loading.value = false } }
-async function saveDraft() { saving.value = true; try { if (!draftId.value) { const draft = await adminAPI.unifiedGateway.createDraft(JSON.parse(JSON.stringify(document))); draftId.value = draft.id; draftRevision.value = draft.revision; configRevision.value = draft.document.revision ?? 0; Object.assign(document, draft.document); } else { const draft = await adminAPI.unifiedGateway.updateDraft(draftId.value, JSON.parse(JSON.stringify(document)), draftRevision.value); draftRevision.value = draft.revision; Object.assign(document, draft.document) } appStore.showSuccess(t('admin.unifiedGateway.saved')) } catch (error: any) { appStore.showError(error?.message || t('admin.unifiedGateway.saveFailed')) } finally { saving.value = false } }
-async function validateCurrent() { saving.value = true; try { if (!draftId.value) { await saveDraft(); } validation.value = await adminAPI.unifiedGateway.validateDraft(draftId.value, JSON.parse(JSON.stringify(document)), draftRevision.value) } catch (error: any) { appStore.showError(error?.message || t('admin.unifiedGateway.validateFailed')) } finally { saving.value = false } }
-async function previewCurrent() { saving.value = true; try { if (!draftId.value) await saveDraft(); syncPreviewSelection(); const lane = previewLane.value; const target = previewTarget.value; const binding = previewBindingOptions.value.find(item => item.id === previewBindingId.value) ?? previewBindingOptions.value[0]; if (!lane || !target || !binding) throw new Error(t('admin.unifiedGateway.previewSelectionRequired')); preview.value = await adminAPI.unifiedGateway.previewDraft(draftId.value, { lane_id: lane.id, target_id: target.id, binding_id: binding.id, input_tokens: previewInput.value, output_tokens: previewOutput.value, delivery_state: previewDeliveryState.value }, JSON.parse(JSON.stringify(document))) } catch (error: any) { appStore.showError(error?.message || t('admin.unifiedGateway.previewFailed')) } finally { saving.value = false } }
+async function loadModelCandidates() { if (!managementAvailable.value) return; try { const result = await adminAPI.unifiedGateway.listModelCandidates(); modelCandidates.value = result.items } catch (error: any) { appStore.showError(error?.message || t('admin.unifiedGateway.loadFailed')) } }
+async function loadPage() { loading.value = true; metaLoadFailed.value = false; try { meta.value = await adminAPI.unifiedGateway.getMeta(); if (managementAvailable.value) { options.value = await adminAPI.unifiedGateway.getOptions(); const page = await adminAPI.unifiedGateway.listConfigs(''); configs.value = page.items; await loadModelCandidates() } else { options.value = null; configs.value = []; modelCandidates.value = [] } } catch (error: any) { meta.value = null; options.value = null; configs.value = []; modelCandidates.value = []; metaLoadFailed.value = true; appStore.showError(error?.message || t('admin.unifiedGateway.loadFailed')) } finally { loading.value = false } }
+async function saveDraft() { if (!canWrite.value) return; saving.value = true; try { if (!draftId.value) { const draft = await adminAPI.unifiedGateway.createDraft(JSON.parse(JSON.stringify(document))); draftId.value = draft.id; draftRevision.value = draft.revision; configRevision.value = draft.document.revision ?? 0; Object.assign(document, draft.document); } else { const draft = await adminAPI.unifiedGateway.updateDraft(draftId.value, JSON.parse(JSON.stringify(document)), draftRevision.value); draftRevision.value = draft.revision; Object.assign(document, draft.document) } appStore.showSuccess(t('admin.unifiedGateway.saved')) } catch (error: any) { appStore.showError(error?.message || t('admin.unifiedGateway.saveFailed')) } finally { saving.value = false } }
+async function validateCurrent() { if (!draftId.value && !canWrite.value) return; saving.value = true; try { if (!draftId.value) { await saveDraft(); } validation.value = await adminAPI.unifiedGateway.validateDraft(draftId.value, JSON.parse(JSON.stringify(document)), draftRevision.value) } catch (error: any) { appStore.showError(error?.message || t('admin.unifiedGateway.validateFailed')) } finally { saving.value = false } }
+async function previewCurrent() { if (!draftId.value && !canWrite.value) return; saving.value = true; try { if (!draftId.value) await saveDraft(); syncPreviewSelection(); const lane = previewLane.value; const target = previewTarget.value; const binding = previewBindingOptions.value.find(item => item.id === previewBindingId.value) ?? previewBindingOptions.value[0]; if (!lane || !target || !binding) throw new Error(t('admin.unifiedGateway.previewSelectionRequired')); preview.value = await adminAPI.unifiedGateway.previewDraft(draftId.value, { lane_id: lane.id, target_id: target.id, binding_id: binding.id, input_tokens: previewInput.value, output_tokens: previewOutput.value, delivery_state: previewDeliveryState.value }, JSON.parse(JSON.stringify(document))) } catch (error: any) { appStore.showError(error?.message || t('admin.unifiedGateway.previewFailed')) } finally { saving.value = false } }
 function operationKey(prefix: string) { if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return `${prefix}-${crypto.randomUUID()}`; return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}` }
 function reportSensitiveActionError(error: unknown) { if (isStepUpCancelled(error)) return; if (isStepUpBlocked(error)) { appStore.showError(stepUpBlockReason(error) === 'STEP_UP_ADMIN_API_KEY_FORBIDDEN' ? t('admin.unifiedGateway.stepUpApiKeyForbidden') : t('admin.unifiedGateway.stepUpUnavailable')); return } appStore.showError((error as any)?.message || t('admin.unifiedGateway.publishFailed')) }
-async function publishCurrent() { saving.value = true; const key = operationKey('unified-publish'); try { if (!draftId.value) await saveDraft(); if (!validation.value?.validation_token) validation.value = await adminAPI.unifiedGateway.validateDraft(draftId.value, JSON.parse(JSON.stringify(document)), draftRevision.value); if (!validation.value?.validation_token) throw new Error(t('admin.unifiedGateway.validationRequired')); const result = await gatewayStepUp.run(() => adminAPI.unifiedGateway.publishDraft(draftId.value, configRevision.value, validation.value!.validation_token!, 'admin publish', key)); appStore.showSuccess(t('admin.unifiedGateway.published')); configs.value = [result, ...configs.value.filter(item => item.id !== result.id)]; Object.assign(document, result); configRevision.value = result.revision ?? configRevision.value; validation.value = null } catch (error: unknown) { reportSensitiveActionError(error) } finally { saving.value = false } }
+async function publishCurrent() { if (!canWrite.value) return; saving.value = true; const key = operationKey('unified-publish'); try { if (!draftId.value) await saveDraft(); if (!validation.value?.validation_token) validation.value = await adminAPI.unifiedGateway.validateDraft(draftId.value, JSON.parse(JSON.stringify(document)), draftRevision.value); if (!validation.value?.validation_token) throw new Error(t('admin.unifiedGateway.validationRequired')); const result = await gatewayStepUp.run(() => adminAPI.unifiedGateway.publishDraft(draftId.value, configRevision.value, validation.value!.validation_token!, 'admin publish', key)); appStore.showSuccess(t('admin.unifiedGateway.published')); configs.value = [result, ...configs.value.filter(item => item.id !== result.id)]; Object.assign(document, result); configRevision.value = result.revision ?? configRevision.value; validation.value = null } catch (error: unknown) { reportSensitiveActionError(error) } finally { saving.value = false } }
 async function loadRevisionAndSnapshots(item: UnifiedGatewayConfig) { if (!item.id) return; revisions.value = await adminAPI.unifiedGateway.listRevisions(item.id); const page = await adminAPI.unifiedGateway.listSnapshots({ access_group_id: item.access_group_id, public_model: item.public_model, page: 1, page_size: 10 }); snapshots.value = page.items }
-async function editPublished(item: UnifiedGatewayConfig) { if (!item.id) return; saving.value = true; try { const current = await adminAPI.unifiedGateway.getConfig(item.id); const draft = await adminAPI.unifiedGateway.createDraftFromConfig(item.id); draftId.value = draft.id; draftRevision.value = draft.revision; configRevision.value = current.revision ?? 0; selectedConfigId.value = item.id; await loadRevisionAndSnapshots(item); Object.assign(document, draft.document); validation.value = null; preview.value = null; appStore.showSuccess(t('admin.unifiedGateway.draftOpened')) } catch (error: any) { appStore.showError(error?.message || t('admin.unifiedGateway.loadFailed')) } finally { saving.value = false } }
+async function editPublished(item: UnifiedGatewayConfig) { if (!canWrite.value || !item.id) return; saving.value = true; try { const current = await adminAPI.unifiedGateway.getConfig(item.id); const draft = await adminAPI.unifiedGateway.createDraftFromConfig(item.id); draftId.value = draft.id; draftRevision.value = draft.revision; configRevision.value = current.revision ?? 0; selectedConfigId.value = item.id; await loadRevisionAndSnapshots(item); Object.assign(document, draft.document); validation.value = null; preview.value = null; appStore.showSuccess(t('admin.unifiedGateway.draftOpened')) } catch (error: any) { appStore.showError(error?.message || t('admin.unifiedGateway.loadFailed')) } finally { saving.value = false } }
 async function showRevisions(item: UnifiedGatewayConfig) { if (!item.id) return; selectedConfigId.value = item.id; try { await loadRevisionAndSnapshots(item) } catch (error: any) { appStore.showError(error?.message || t('admin.unifiedGateway.loadFailed')) } }
-async function disablePublished(item: UnifiedGatewayConfig) { if (!item.id || item.revision === undefined) return; saving.value = true; const key = operationKey('unified-disable'); try { const result = await gatewayStepUp.run(() => adminAPI.unifiedGateway.disableConfig(item.id!, item.revision!, 'admin disable', key)); configs.value = configs.value.map(config => config.id === result.id ? result : config); appStore.showSuccess(t('admin.unifiedGateway.disabled')) } catch (error: unknown) { reportSensitiveActionError(error) } finally { saving.value = false } }
-async function restorePublished(item: UnifiedGatewayConfig, sourceRevision?: number) { if (!item.id || item.revision === undefined) return; const source = sourceRevision ?? revisions.value.find(revision => revision.lifecycle === 'published')?.revision; if (!source) return; saving.value = true; const key = operationKey('unified-restore'); try { const result = await gatewayStepUp.run(() => adminAPI.unifiedGateway.restoreConfig(item.id!, source, item.revision!, 'admin restore', key)); configs.value = configs.value.map(config => config.id === result.id ? result : config); appStore.showSuccess(t('admin.unifiedGateway.restored')) } catch (error: unknown) { reportSensitiveActionError(error) } finally { saving.value = false } }
-async function probeBinding(binding: UnifiedGatewayAccountBinding) { if (!binding.id) return; saving.value = true; const key = operationKey('unified-probe'); try { const result = await gatewayStepUp.run(() => adminAPI.unifiedGateway.probeBinding(binding.id, key)); probeResults.value[binding.id] = String(result.status || result.reason || 'unsupported') } catch (error: unknown) { reportSensitiveActionError(error) } finally { saving.value = false } }
+async function disablePublished(item: UnifiedGatewayConfig) { if (!canWrite.value || !item.id || item.revision === undefined) return; saving.value = true; const key = operationKey('unified-disable'); try { const result = await gatewayStepUp.run(() => adminAPI.unifiedGateway.disableConfig(item.id!, item.revision!, 'admin disable', key)); configs.value = configs.value.map(config => config.id === result.id ? result : config); appStore.showSuccess(t('admin.unifiedGateway.disabled')) } catch (error: unknown) { reportSensitiveActionError(error) } finally { saving.value = false } }
+async function restorePublished(item: UnifiedGatewayConfig, sourceRevision?: number) { if (!canWrite.value || !item.id || item.revision === undefined) return; const source = sourceRevision ?? revisions.value.find(revision => revision.lifecycle === 'published')?.revision; if (!source) return; saving.value = true; const key = operationKey('unified-restore'); try { const result = await gatewayStepUp.run(() => adminAPI.unifiedGateway.restoreConfig(item.id!, source, item.revision!, 'admin restore', key)); configs.value = configs.value.map(config => config.id === result.id ? result : config); appStore.showSuccess(t('admin.unifiedGateway.restored')) } catch (error: unknown) { reportSensitiveActionError(error) } finally { saving.value = false } }
+async function probeBinding(binding: UnifiedGatewayAccountBinding) { if (!canProbe.value || !binding.id || !binding.account_id) return; saving.value = true; const key = operationKey('unified-probe'); try { const result = await gatewayStepUp.run(() => adminAPI.unifiedGateway.probeBinding(binding.id, key)); probeResults.value[binding.id] = String(result.status || result.reason || 'unsupported') } catch (error: unknown) { reportSensitiveActionError(error) } finally { saving.value = false } }
 async function previewPricingImport(lane: UnifiedGatewayBillingLane) { if (!draftId.value || !lane.pricing_source_group_id) return; saving.value = true; try { const result = await adminAPI.unifiedGateway.pricingImportPreview(draftId.value, lane.id, lane.pricing_source_group_id, JSON.parse(JSON.stringify(document))); pricingImportPreviews.value[lane.id] = result } catch (error: any) { appStore.showError(error?.message || t('admin.unifiedGateway.pricingImportFailed')) } finally { saving.value = false } }
-async function applyPricingImport(lane: UnifiedGatewayBillingLane) { const sourceGroupId = lane.pricing_source_group_id; const previewResult = pricingImportPreviews.value[lane.id]; if (!draftId.value || !sourceGroupId || !previewResult) return; saving.value = true; const key = operationKey('unified-pricing-import'); try { const result = await adminAPI.unifiedGateway.pricingImportApply(draftId.value, lane.id, sourceGroupId, draftRevision.value, previewResult.import_digest, key); if (result.draft) { draftRevision.value = result.draft.revision; Object.assign(document, result.draft.document) } pricingImports.value[lane.id] = result.source_revision; delete pricingImportPreviews.value[lane.id]; appStore.showSuccess(t('admin.unifiedGateway.pricingImported')) } catch (error: any) { appStore.showError(error?.message || t('admin.unifiedGateway.pricingImportFailed')) } finally { saving.value = false } }
+async function applyPricingImport(lane: UnifiedGatewayBillingLane) { const sourceGroupId = lane.pricing_source_group_id; const previewResult = pricingImportPreviews.value[lane.id]; if (!canWrite.value || !draftId.value || !sourceGroupId || !previewResult) return; saving.value = true; const key = operationKey('unified-pricing-import'); try { const result = await adminAPI.unifiedGateway.pricingImportApply(draftId.value, lane.id, sourceGroupId, draftRevision.value, previewResult.import_digest, key); if (result.draft) { draftRevision.value = result.draft.revision; Object.assign(document, result.draft.document) } pricingImports.value[lane.id] = result.source_revision; delete pricingImportPreviews.value[lane.id]; appStore.showSuccess(t('admin.unifiedGateway.pricingImported')) } catch (error: any) { appStore.showError(error?.message || t('admin.unifiedGateway.pricingImportFailed')) } finally { saving.value = false } }
 onMounted(loadPage)
 </script>
 

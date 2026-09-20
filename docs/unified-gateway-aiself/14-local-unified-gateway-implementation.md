@@ -4,6 +4,8 @@
 适用环境：aiself 候选代码树 `upgrade-worktree/merged-dryrun/backend`  
 本文件记录本轮“把剩余前置闭环落成代码，并在本地创建统一 API 模拟测试”的结果。
 
+> 当前状态说明：本文是 Revision 5 的历史阶段记录，保留当时的边界和证据，不再作为当前实现状态的唯一来源。Revision 6 已在同一候选树补齐隔离运行时、真实 provider 适配接线、Grok 异步快照闭环和前端管理绑定；当前映射、测试证据与仍需生产放行的条件以 [README](./README.md) 和 [16-runtime-implementation-and-final-audit.md](./16-runtime-implementation-and-final-audit.md) 为准。
+
 ## 1. 本轮交付边界
 
 本轮已经落地一个与旧网关隔离的统一网关内核。它不是对旧 `/v1` 路由的替换，也没有注册到线上生产 Router；这样可以在验证价格、路由和结算语义时保持旧链路零干扰。

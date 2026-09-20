@@ -189,7 +189,7 @@ func (r *unifiedAdminMemoryRepo) PutIdempotency(_ context.Context, item *Unified
 type unifiedAdminAccountReader struct{}
 
 func (unifiedAdminAccountReader) GetByIDs(context.Context, []int64) ([]*Account, error) {
-	return []*Account{{ID: 1, Name: "Plus account", Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true}}, nil
+	return []*Account{{ID: 1, Name: "Plus account", Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true}}, nil
 }
 func (unifiedAdminAccountReader) List(context.Context, pagination.PaginationParams) ([]Account, *pagination.PaginationResult, error) {
 	return nil, &pagination.PaginationResult{}, nil
@@ -199,6 +199,10 @@ type unifiedAdminGroupReader struct{}
 
 func (unifiedAdminGroupReader) ListActive(context.Context) ([]Group, error) {
 	return []Group{{ID: 7, Name: "ChatGPT", Platform: PlatformOpenAI, Status: StatusActive, RateMultiplier: 1}}, nil
+}
+
+func (unifiedAdminGroupReader) GetAccountIDsByGroupIDs(context.Context, []int64) ([]int64, error) {
+	return []int64{1}, nil
 }
 
 type unifiedAdminScopeReader struct{ user *User }
@@ -214,6 +218,7 @@ func (r *unifiedAdminScopeReader) GetByID(context.Context, int64) (*User, error)
 func newUnifiedAdminServiceForTest(repo *unifiedAdminMemoryRepo) *UnifiedGatewayAdminService {
 	cfg := &config.Config{}
 	cfg.Gateway.UnifiedGatewayAdminUIEnabled = true
+	cfg.Gateway.UnifiedGatewayAccessGroupID = 7
 	return NewUnifiedGatewayAdminService(repo, unifiedAdminGroupReader{}, unifiedAdminAccountReader{}, cfg)
 }
 
@@ -245,7 +250,24 @@ func TestUnifiedGatewayAdminMetaFailsClosed(t *testing.T) {
 	service := newUnifiedAdminServiceForTest(repo)
 	meta := service.Meta(context.Background())
 	require.False(t, meta.MigrationReady)
+	require.False(t, meta.RuntimeEffective)
 	require.False(t, meta.Capabilities["publish"])
+}
+
+func TestUnifiedGatewayAdminMetaReportsEffectiveRuntimeOnlyWhenReady(t *testing.T) {
+	repo := newUnifiedAdminMemoryRepo()
+	service := newUnifiedAdminServiceForTest(repo)
+	service.cfg.Gateway.UnifiedGatewayRuntimeEnabled = true
+
+	meta := service.Meta(context.Background())
+	require.True(t, meta.MigrationReady)
+	require.True(t, meta.RuntimeEnabled)
+	require.True(t, meta.RuntimeEffective)
+
+	repo.ready = false
+	meta = service.Meta(context.Background())
+	require.False(t, meta.MigrationReady)
+	require.False(t, meta.RuntimeEffective)
 }
 
 func TestUnifiedGatewayAdminCreateIsIdempotentBeforeGeneratedIDs(t *testing.T) {
@@ -396,6 +418,7 @@ func TestUnifiedGatewayAdminIdempotentReplayRechecksCurrentGroupScope(t *testing
 	scope := &unifiedAdminScopeReader{user: &User{ID: 9, Role: RoleAdmin, AllowedGroups: []int64{7}}}
 	cfg := &config.Config{}
 	cfg.Gateway.UnifiedGatewayAdminUIEnabled = true
+	cfg.Gateway.UnifiedGatewayAccessGroupID = 7
 	service := NewUnifiedGatewayAdminService(repo, unifiedAdminGroupReader{}, unifiedAdminAccountReader{}, cfg, scope)
 	ctx := WithUnifiedGatewayAdminActor(context.Background(), "9")
 

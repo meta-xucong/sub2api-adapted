@@ -26,6 +26,58 @@ func ProvideGrokOAuthService(proxyRepo ProxyRepository, oauthClient GrokOAuthCli
 	return svc
 }
 
+// ProvideUnifiedGatewayUpstreamExecutor wires the isolated runtime to the
+// existing account transport and the already-audited Grok media service. It
+// returns the narrow interface consumed by the runtime so the legacy /v1
+// handlers do not gain a dependency on unified routing.
+func ProvideUnifiedGatewayUpstreamExecutor(
+	accountRepo AccountRepository,
+	httpUpstream HTTPUpstream,
+	openAIGateway *OpenAIGatewayService,
+	anthropicGateway *GatewayService,
+	cfg *config.Config,
+) *HTTPUnifiedGatewayUpstreamExecutor {
+	executor := NewHTTPUnifiedGatewayUpstreamExecutor(accountRepo, httpUpstream, openAIGateway, cfg)
+	executor.SetAnthropicGatewayService(anthropicGateway)
+	executor.SetGrokMediaAdapter(NewOpenAIGatewayUnifiedGrokMediaAdapter(openAIGateway))
+	return executor
+}
+
+// ProvideUnifiedGatewayReconciler keeps the durable settlement repair path
+// optional for legacy/in-memory tests while wiring the production SQL stores
+// into the isolated runtime.
+func ProvideUnifiedGatewayReconciler(
+	snapshots UnifiedGatewayPriceSnapshotStore,
+	ledger UnifiedGatewayChargeLedger,
+) *UnifiedGatewayReconciler {
+	return NewUnifiedGatewayReconciler(snapshots, ledger, UnifiedGatewayReconcilerOptions{})
+}
+
+func ProvideUnifiedGateway(
+	catalog UnifiedGatewayRouteCatalog,
+	snapshots UnifiedGatewayPriceSnapshotStore,
+	ledger UnifiedGatewayChargeLedger,
+	upstream UnifiedGatewayUpstreamExecutor,
+	accounts AccountRepository,
+) *UnifiedGateway {
+	gateway := NewUnifiedGateway(catalog, snapshots, ledger, upstream)
+	gateway.SetAccountReader(accounts)
+	return gateway
+}
+
+// ProvideUnifiedGatewayRecoveryRuntime starts only when the unified runtime
+// gate is enabled.  Its Stop method is registered in the application cleanup
+// path so it cannot outlive the database connection.
+func ProvideUnifiedGatewayRecoveryRuntime(
+	reconciler *UnifiedGatewayReconciler,
+	cfg *config.Config,
+	adminRepo UnifiedGatewayAdminRepository,
+) *UnifiedGatewayRecoveryRuntime {
+	runtime := NewUnifiedGatewayRecoveryRuntime(reconciler, cfg, adminRepo)
+	runtime.Start()
+	return runtime
+}
+
 // BuildInfo contains build information
 type BuildInfo struct {
 	Version   string
@@ -890,6 +942,11 @@ var ProviderSet = wire.NewSet(
 	NewAnnouncementService,
 	NewAdminService,
 	NewGatewayService,
+	ProvideUnifiedGateway,
+	NewUnifiedGatewayRuntimeService,
+	ProvideUnifiedGatewayReconciler,
+	ProvideUnifiedGatewayRecoveryRuntime,
+	ProvideUnifiedGatewayUpstreamExecutor,
 	ProvideOpenAIGatewayService,
 	ProvideSmartRouterCalibrationService,
 	ProvideImageStorageSettingService,

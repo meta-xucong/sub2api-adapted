@@ -187,3 +187,45 @@ Revision 3 由 `Epicurus`（agent `01a08e44-41fa-71c3-96a4-d81dbd0070bb`）独�
 - race 测试：当前环境没有可用 C 编译器，`-race` 无法执行；Docker daemon 也不可用，未伪造 PostgreSQL 集成通过证据。
 - 前端 `pnpm typecheck`、`pnpm lint:check`、定向 admin API 测试（1 文件/6 tests）、`pnpm test:run`（255 文件/1863 tests）和 `pnpm build`：均通过；构建仅有既有 chunk/Browserslist 警告。
 - 后端独立终审：`Linnaeus`，`PASS_WITH_CONDITIONS`；前端独立终审：`Newton`，`PASS_WITH_CONDITIONS`。条件仅为 PostgreSQL migration fresh/repeat/conflict、真实 runtime/provider/settlement/Grok 恢复性验证和 race 环境证据。
+
+## 14. Yetoken 本地测试夹具（2026-09-19）
+
+用户补充：aiself VPS 已加入 YeToken 账号，用于验证“一个统一 API 暴露多类模型”的最小实现。主控已通过只读 SSH/数据库探测确认该 VPS 上存在以下脱敏元数据：OpenAI 兼容的 YeToken 账号包含 GPT 文本/推理、GPT Image 以及国模文本候选；可调度的账号 ID 为 `105/106/108/109/120/121`，ID `107` 当前为 `error + unschedulable`，不得进入测试候选池。账号分组关系为 `chatgpt`（ID `2`）和 `cn-llm-yetoken`（ID `13`）。
+
+本夹具只允许用于本地/隔离环境测试：
+
+- 不把 `credentials`、API key、完整 `model_mapping` 值或任何明文密钥写入仓库、文档、日志或 GitHub；
+- 本地只保存脱敏的账号 ID、状态、平台、调度资格和模型名证据，真实凭据如需导入必须进入仓库外的临时隔离介质，并在测试后清理；
+- 先用模型目录/资格探测验证覆盖范围，再做最小代表性真实请求；图像、视频和高成本模型不得无上限批量调用；
+- 测试证据必须同时证明：同一统一 API 可返回 GPT、Image、DeepSeek、Kimi、豆包/其他国模候选；不可调度账号被排除；请求失败不扣费；旧 `/v1` 不受影响。
+
+该夹具不改变当前实施边界，也不构成线上部署授权。实现阶段完成后，主控必须将 yetoken 测试结果记录到独立证据文件并由只读审计代理复核。
+
+## 13. 内部最小版本范围冻结（2026-09-19）
+
+用户进一步明确：本项目当前只服务内部用户，不需要用户选择 provider、账号、Billing Lane 或价格；管理员统一配置一个 Unified Access Group，用户只拿该 Group 的 API key。Wokey/KIE 仅作统一入口、模型目录和异步媒体任务的参考，不要求复制其 Provider Node、公开模型市场、报价平台或复杂调度系统。
+
+本阶段唯一新增依据为 [17-minimal-unified-group-development-plan.md](./17-minimal-unified-group-development-plan.md)，其优先级高于早期完整平台路线。它把下一阶段限制为：
+
+- 复用现有统一 runtime、provider adapter、route/lane/account binding、价格 snapshot、成功收费/失败释放和管理页面；
+- 补齐一个正式 Unified Access Group/API key 接线；
+- 补齐从当前可执行来源生成并经管理员确认的统一模型目录；
+- 只使用管理员固定优先级调度；
+- 把管理界面收敛为管理员维护模型、线路、账号、优先级和价格；
+- 完成 staging、旧 `/v1` 隔离、真实 provider 和账务证据后再考虑 canary。
+
+明确不做：用户自选 provider/account、用户级价格、Provider Node、多节点控制平面、weighted/cheapest/capacity-aware 调度、外部全自动模型发现、公开 quote/pricing、完整 KIE 任务平台和与目标无关的重构。
+
+本阶段文档状态：`DOCS_SCOPE_FROZEN / IMPLEMENTATION_COMPLETED_LOCALLY / EXISTING_CANDIDATE_PRESENT / PRODUCTION_GATE_DISABLED`。代码仅落在候选工作区，数据库、线上配置、GitHub 和真实付费链路均未因本阶段发生改变；独立审计结论与本地测试证据见第 19 章。此前的 `NEXT_IMPLEMENTATION_NOT_STARTED` 仅是实现前快照，不再代表当前状态。
+
+## 15. 最小统一组实现与 Yetoken 本地验收（2026-09-19）
+
+按第 17 章开发文档落地了最小范围实现，候选工作区仍为 `upgrade-worktree/merged-dryrun`，官方基线、VPS、GitHub 和生产 gate 均未改动。完成内容包括：
+
+- 配置并强制唯一 designated Unified Access Group，admin/superadmin 账号归属和 runtime 入口均 fail-closed；
+- 从 designated group 账号 `model_mapping` 生成脱敏候选预览，校验 provider/endpoint、状态、schedulable 和 capability；
+- 前端加入候选模型预览，并移除新建 lane 的隐式价格/倍率默认值；
+- Yetoken 脱敏夹具覆盖 GPT、Image、DeepSeek、GLM、Kimi、MiniMax、Qwen、HY 及不可调度账号排除，同时增加敏感字段断言；
+- 注册配置默认键，保证环境变量部署不会静默丢失新字段。
+
+最终验证：后端 `go test ./... -count=1`、统一网关定向测试、配置环境可达性测试均通过；前端 `pnpm typecheck`、`pnpm lint:check` 和统一网关 14 项 Vitest 均通过。独立只读复核最终为 `MUST_FIX: 无`，但仍保留 PostgreSQL fresh/repeat/conflict、真实 provider staging 和部署前验收作为生产门槛。详见 [19-yetoken-local-test-evidence.md](./19-yetoken-local-test-evidence.md)。
