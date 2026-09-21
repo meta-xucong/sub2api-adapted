@@ -141,14 +141,17 @@ describe('admin UnifiedGatewayView availability state', () => {
     expect(wrapper.get('[data-testid="status-write"]').text()).toBe('admin.unifiedGateway.statusAvailable')
     expect(wrapper.get('[data-testid="gateway-editor"]').exists()).toBe(true)
     expect(wrapper.get('fieldset').attributes('disabled')).toBeUndefined()
-    expect(wrapper.get('[data-testid="gateway-endpoint"]').findAll('option').map(option => option.element.value)).toContain('responses')
+    expect(wrapper.get('[data-testid="gateway-endpoint"]').text()).toBe('admin.unifiedGateway.endpointChatCompletions')
+    expect(wrapper.get('[data-testid="status-last-checked"]').text()).toBe('2026-09-18T00:00:00Z')
+    expect(wrapper.get('[data-testid="gateway-api-usage"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="gateway-model-list-path"]').text()).toBe('/models')
     expect(wrapper.text()).toContain('admin.unifiedGateway.statusRuntimeEffective')
     expect(wrapper.text()).toContain('admin.unifiedGateway.runtimeEffectiveDisabled')
     expect(wrapper.text()).toContain('admin.unifiedGateway.runtimeDisabled')
     expect(wrapper.text()).not.toContain('admin.unifiedGateway.runtimeOff')
   })
 
-  it('does not create an implicit price profile for a new lane', async () => {
+  it('keeps all unconfirmed price inputs explicit', async () => {
     const wrapper = mountView()
     await flushPromises()
 
@@ -216,5 +219,133 @@ describe('admin UnifiedGatewayView availability state', () => {
     expect(wrapper.find('[data-testid="gateway-probe-unsupported"]').exists()).toBe(true)
     expect(wrapper.get('[data-testid="status-probe"]').text()).toBe('admin.unifiedGateway.statusUnavailable')
     expect(probeBinding).not.toHaveBeenCalled()
+  })
+
+  it('groups candidate routes and prefills a simple configuration from an eligible route', async () => {
+    getOptions.mockResolvedValue({
+      items: {
+        access_groups: [{ id: 'group_1', name: 'Unified API' }],
+        pricing_source_groups: [],
+        accounts: [],
+      },
+      total: 1,
+      page: 1,
+      page_size: 100,
+    })
+    listModelCandidates.mockResolvedValue({
+      items: [
+        {
+          public_model: 'deepseek-v4',
+          upstream_model: 'deepseek-v4-flash',
+          provider_identity: 'openai-compatible',
+          endpoint: 'chat_completions',
+          account_id: 'account_1',
+          account_name: 'YeToken',
+          account_status: 'active',
+          schedulable: true,
+          runtime_eligible: true,
+        },
+        {
+          public_model: 'deepseek-v4',
+          upstream_model: 'deepseek-v4-flash',
+          provider_identity: 'anthropic-api-key',
+          endpoint: 'chat_completions',
+          account_id: 'account_2',
+          account_name: 'Claude route',
+          account_status: 'inactive',
+          schedulable: false,
+          runtime_eligible: false,
+          blockers: [{ code: 'account_inactive', message: 'inactive' }],
+        },
+      ],
+    })
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.findAll('[data-testid="gateway-configure-model"]')).toHaveLength(1)
+    expect(wrapper.findAll('tr')).toHaveLength(3)
+    expect(wrapper.get('[data-testid="gateway-advanced-editor"]').attributes('style')).toContain('display: none')
+
+    await wrapper.get('[data-testid="gateway-configure-model"]').trigger('click')
+
+    expect(wrapper.get('[data-testid="gateway-unified-group"]').text()).toBe('Unified API')
+    expect(wrapper.get('[data-testid="gateway-selected-model"]').text()).toBe('deepseek-v4')
+    expect(wrapper.get('[data-testid="gateway-basic-pricing"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="gateway-advanced-editor"]').attributes('style')).toContain('display: none')
+  })
+
+  it('keeps simple pricing modes aligned with the selected billing unit', async () => {
+    getOptions.mockResolvedValue({
+      items: {
+        access_groups: [{ id: 'group_1', name: 'Unified API' }],
+        pricing_source_groups: [],
+        accounts: [],
+      },
+      total: 1,
+      page: 1,
+      page_size: 100,
+    })
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.get('[data-testid="gateway-advanced-toggle"]').trigger('click')
+    await wrapper.get('[data-testid="gateway-advanced-billing-mode"]').setValue('image')
+    await wrapper.get('[data-testid="gateway-basic-pricing-method"]').setValue('flat_unit_price')
+
+    expect(wrapper.find('[data-testid="gateway-basic-flat-price"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="gateway-basic-final-price"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="gateway-advanced-editor"]').attributes('style') || '').not.toContain('display: none')
+  })
+
+  it('automatically adds eligible routes as primary and backup lanes', async () => {
+    getOptions.mockResolvedValue({
+      items: {
+        access_groups: [{ id: 'group_1', name: 'Unified API' }],
+        pricing_source_groups: [],
+        accounts: [],
+      },
+      total: 1,
+      page: 1,
+      page_size: 100,
+    })
+    listModelCandidates.mockResolvedValue({
+      items: [
+        {
+          public_model: 'gpt-6-astra',
+          upstream_model: 'gpt-6-astra',
+          provider_identity: 'openai-chatgpt',
+          endpoint: 'responses',
+          account_id: 'account_1',
+          account_name: 'OpenAI Pro',
+          account_status: 'active',
+          schedulable: true,
+          runtime_eligible: true,
+        },
+        {
+          public_model: 'gpt-6-astra',
+          upstream_model: 'gpt-6-astra',
+          provider_identity: 'openai-compatible',
+          endpoint: 'responses',
+          account_id: 'account_2',
+          account_name: 'Fallback route',
+          account_status: 'active',
+          schedulable: true,
+          runtime_eligible: true,
+        },
+      ],
+    })
+
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.get('[data-testid="gateway-configure-model"]').trigger('click')
+
+    expect(wrapper.get('[data-testid="gateway-selected-route"]').text()).toContain('openai-chatgpt')
+    expect(wrapper.get('[data-testid="gateway-backup-route-hint"]').exists()).toBe(true)
+    expect(wrapper.findAll('[data-testid^="gateway-basic-lane-"]')).toHaveLength(2)
+    expect(wrapper.get('[data-testid="gateway-basic-provider-base-1"]').element.value).toBe('')
+    await wrapper.get('[data-testid="gateway-advanced-toggle"]').trigger('click')
+    expect(wrapper.findAll('[data-testid="gateway-advanced-billing-mode"]')).toHaveLength(2)
   })
 })

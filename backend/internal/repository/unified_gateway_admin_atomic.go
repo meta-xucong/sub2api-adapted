@@ -2,7 +2,9 @@ package repository
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,7 +23,10 @@ func (r *unifiedGatewayAdminRepository) beginAtomicIdempotency(ctx context.Conte
 	if record == nil || strings.TrimSpace(record.Key) == "" || strings.TrimSpace(record.RequestDigest) == "" {
 		return false, nil, service.ErrUnifiedGatewayAdminInvalidRequest
 	}
-	lockKey := strings.Join([]string{record.ActorID, record.Operation, record.ResourceID, record.Key}, "\x00")
+	// PostgreSQL text parameters cannot contain NUL bytes. Keep the original
+	// field boundaries when hashing, but pass only printable ASCII to
+	// hashtextextended so the advisory lock works through database/sql.
+	lockKey := unifiedGatewayAdvisoryLockKey(record.ActorID, record.Operation, record.ResourceID, record.Key)
 	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, lockKey); err != nil {
 		return false, nil, err
 	}
@@ -41,6 +46,12 @@ func (r *unifiedGatewayAdminRepository) beginAtomicIdempotency(ctx context.Conte
 		return false, nil, fmt.Errorf("unified gateway idempotency response is empty")
 	}
 	return true, response, nil
+}
+
+func unifiedGatewayAdvisoryLockKey(actorID, operation, resourceID, idempotencyKey string) string {
+	lockInput := strings.Join([]string{actorID, operation, resourceID, idempotencyKey}, "\x00")
+	lockDigest := sha256.Sum256([]byte(lockInput))
+	return "sha256:" + hex.EncodeToString(lockDigest[:])
 }
 
 func (r *unifiedGatewayAdminRepository) ProbeBindingAtomic(ctx context.Context, actorID, bindingID string, accessGroupIDs []int64, result map[string]any, record *service.UnifiedGatewayIdempotencyRecord) (map[string]any, bool, error) {

@@ -260,9 +260,14 @@ type UnifiedGatewayPreviewResult struct {
 	QuoteID              string            `json:"quote_id"`
 	Persisted            bool              `json:"persisted"`
 	SelectionStatus      string            `json:"selection_status"`
+	ProviderIdentity     string            `json:"provider_identity"`
+	UpstreamModel        string            `json:"upstream_model"`
+	AccountDisplayName   string            `json:"account_display_name"`
 	BillingMode          string            `json:"billing_mode"`
+	BillingUnit          string            `json:"billing_unit"`
 	RateMode             string            `json:"rate_mode"`
 	ResolvedRateSource   string            `json:"resolved_rate_source"`
+	PriceSourceRevision  string            `json:"price_source_revision,omitempty"`
 	ProbeStatus          string            `json:"probe_status,omitempty"`
 	UpstreamDeclaredRate *string           `json:"upstream_declared_rate,omitempty"`
 	ManualUpstreamRate   *string           `json:"manual_upstream_multiplier,omitempty"`
@@ -270,6 +275,9 @@ type UnifiedGatewayPreviewResult struct {
 	EffectiveMultiplier  *string           `json:"effective_multiplier,omitempty"`
 	BillableUnits        map[string]string `json:"billable_units"`
 	EstimatedCharge      string            `json:"estimated_charge"`
+	ProviderUnitPrice    string            `json:"provider_unit_price"`
+	UserUnitPrice        string            `json:"user_unit_price"`
+	FailureChargeAmount  string            `json:"failure_charge_amount"`
 	Currency             string            `json:"currency"`
 	RoundingMode         string            `json:"rounding_mode"`
 	Precision            int               `json:"precision"`
@@ -1427,7 +1435,7 @@ func (s *UnifiedGatewayAdminService) Preview(ctx context.Context, document Unifi
 	if !validation.Valid {
 		return nil, adminError(http.StatusUnprocessableEntity, "UNIFIED_GATEWAY_VALIDATION_FAILED", "configuration is not ready for preview", map[string]string{"blocker_count": strconv.Itoa(len(validation.Blockers))}, ErrUnifiedGatewayAdminValidation)
 	}
-	lane, _, binding, err := locateUnifiedGatewayBinding(document, request.LaneID, request.TargetID, request.BindingID)
+	lane, target, binding, err := locateUnifiedGatewayBinding(document, request.LaneID, request.TargetID, request.BindingID)
 	if err != nil {
 		return nil, err
 	}
@@ -1519,6 +1527,9 @@ func (s *UnifiedGatewayAdminService) Preview(ctx context.Context, document Unifi
 	}
 	charge = charge.Round(int32(precision))
 	digest := canonicalDigest(map[string]any{"document": document, "request": request})
+	accountDisplayName := strings.TrimSpace(binding.DisplayName)
+	billingUnit := previewBillingUnit(profile.BillingMode)
+	priceSourceRevision := strings.TrimSpace(lane.PricingSourceRevision)
 	declared := (*string)(nil)
 	if probeMultiplier != nil {
 		v := probeMultiplier.StringFixed(6)
@@ -1536,7 +1547,22 @@ func (s *UnifiedGatewayAdminService) Preview(ctx context.Context, document Unifi
 	}
 	effectiveValue := effectiveMultiplier.StringFixed(6)
 	fallback := profile.FallbackReason
-	return &UnifiedGatewayPreviewResult{Valid: true, PreviewDigest: "sha256:" + digest, QuoteID: opaqueID("quote"), Persisted: false, SelectionStatus: "ready", BillingMode: profile.BillingMode, RateMode: profile.RateMode, ResolvedRateSource: rateSource, ProbeStatus: probeStatus, UpstreamDeclaredRate: declared, ManualUpstreamRate: manualValue, UserMarkupMultiplier: markupValue, EffectiveMultiplier: &effectiveValue, BillableUnits: unitsMap, EstimatedCharge: charge.StringFixed(int32(precision)), Currency: profile.Currency, RoundingMode: profile.RoundingMode, Precision: precision, FallbackReason: fallback, PolicyVersion: profile.Version, ProfileID: profile.ID, ProbeSnapshotRef: probeRef, ChargeTrigger: profile.ChargeTrigger, FailureCharge: profile.FailureCharge}, nil
+	return &UnifiedGatewayPreviewResult{Valid: true, PreviewDigest: "sha256:" + digest, QuoteID: opaqueID("quote"), Persisted: false, SelectionStatus: "ready", ProviderIdentity: target.ProviderIdentity, UpstreamModel: target.UpstreamModel, AccountDisplayName: accountDisplayName, BillingMode: profile.BillingMode, BillingUnit: billingUnit, RateMode: profile.RateMode, ResolvedRateSource: rateSource, PriceSourceRevision: priceSourceRevision, ProbeStatus: probeStatus, UpstreamDeclaredRate: declared, ManualUpstreamRate: manualValue, UserMarkupMultiplier: markupValue, EffectiveMultiplier: &effectiveValue, BillableUnits: unitsMap, EstimatedCharge: charge.StringFixed(int32(precision)), ProviderUnitPrice: providerUnit.StringFixed(int32(precision)), UserUnitPrice: userUnit.StringFixed(int32(precision)), FailureChargeAmount: decimal.Zero.StringFixed(int32(precision)), Currency: profile.Currency, RoundingMode: profile.RoundingMode, Precision: precision, FallbackReason: fallback, PolicyVersion: profile.Version, ProfileID: profile.ID, ProbeSnapshotRef: probeRef, ChargeTrigger: profile.ChargeTrigger, FailureCharge: profile.FailureCharge}, nil
+}
+
+func previewBillingUnit(mode string) string {
+	switch mode {
+	case "token":
+		return "token"
+	case "per_request":
+		return "request"
+	case "image":
+		return "image"
+	case "video":
+		return "video_task"
+	default:
+		return mode
+	}
 }
 
 func (s *UnifiedGatewayAdminService) PricingImportPreview(ctx context.Context, document UnifiedGatewayConfig, request UnifiedGatewayPricingImportRequest) (*UnifiedGatewayPricingImportResult, error) {

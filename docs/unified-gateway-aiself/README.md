@@ -29,10 +29,12 @@
 19. [18-minimal-unified-group-audit.md](./18-minimal-unified-group-audit.md)：对本次最小化范围、现有能力复用、必要缺口、禁止过度开发和验收门槛的独立审计结论。
 20. [20-aiself-local-snapshot-and-claude-probe-20260919.md](./20-aiself-local-snapshot-and-claude-probe-20260919.md)：aiself 最新完整本地快照、Claude 分组探测、OpenAI↔Anthropic 适配结论和本地验证证据。
 21. [21-local-unified-api-key-and-live-probe-20260919.md](./21-local-unified-api-key-and-live-probe-20260919.md)：本地统一测试用户/API Key、全量模型路由物化、Provider 代表链路探测、价格与隔离审计记录。
+22. [22-p0-commercial-readiness-development-plan.md](./22-p0-commercial-readiness-development-plan.md)：只做前三条 P0 的商业化收口开发方案，冻结模型目录、管理员极简配置、计费可解释性和非干扰边界。
+23. [23-p0-commercial-readiness-audit-checklist.md](./23-p0-commercial-readiness-audit-checklist.md)：P0 独立审计清单、端到端矩阵、非干扰回归和最终放行模板。
 
 模板位于 [templates](./templates/)：能力清单、Billing Lane 目录、路由目录、价格 profile、上游倍率策略矩阵、回滚清单、冒烟报告和 secret 检查清单。模板不含任何真实凭据。
 
-> 当前阶段优先级：第 17、18 章是内部统一 API 下一阶段的范围冻结和审计依据；第 01–16 章中的完整 Wokey/KIE 平台能力属于历史设计或未来路线，除非第 17 章明确保留，否则不得在本阶段实现。
+> 当前阶段优先级：第 22、23 章是“只做 P0-A/B/C”的下一阶段唯一实施与审计依据；P0-D/E/F（Key 安全运营、健康告警、备份回滚/商业安全）明确暂缓；第 17、18 章是内部统一 API 的上一阶段范围和审计依据；第 01–16 章中的完整 Wokey/KIE 平台能力属于历史设计或未来路线，除非第 22 章明确保留，否则不得在本阶段实现。
 
 ## 证据标记
 
@@ -58,4 +60,4 @@
 - 数据库/线上变更：未发生。
 - GitHub 发布：本阶段不执行。
 - 本轮已把隔离 runtime、durable snapshot/ledger/recovery 代码、OpenAI/CN/Ark/Grok/Gemini/Antigravity 适配和能力校验接入候选 server graph；真实 provider、PostgreSQL 事务和 Grok 生产恢复仍未放行，统一入口保持关闭。
-- 前端全量 256 个测试文件/1870 个测试、typecheck、production build，以及后端 service/repository/handler/routes/cmd-server 回归均已通过；独立复核已通过代码级检查，staging/生产证据仍是放行条件。
+- 本轮 v1.1 前端全量 257 个测试文件/1883 个测试、typecheck、production build，以及后端统一网关 service/handler/routes 回归均已通过；本地代码审计通过，真实 provider、staging/生产证据仍是放行条件。

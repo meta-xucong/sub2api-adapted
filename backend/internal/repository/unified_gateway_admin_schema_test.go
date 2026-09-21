@@ -2,6 +2,7 @@ package repository
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -39,6 +40,26 @@ func TestMaterializedUnifiedRateRulePreservesAdminPricingShape(t *testing.T) {
 	require.Equal(t, 0.01, *rule.ProviderBaseUnitPrice)
 	require.Equal(t, 1.25, *rule.ManualUpstreamMultiplier)
 	require.Equal(t, 0.05, *rule.MinimumCharge)
+}
+
+func TestUnifiedGatewayAdvisoryLockKeyIsPrintableAndDeterministic(t *testing.T) {
+	first := unifiedGatewayAdvisoryLockKey("1", "draft.create", "", "debug-key")
+	second := unifiedGatewayAdvisoryLockKey("1", "draft.create", "", "debug-key")
+	other := unifiedGatewayAdvisoryLockKey("1", "draft.create", "", "other-key")
+
+	require.Equal(t, first, second)
+	require.NotEqual(t, first, other)
+	require.NotContains(t, first, "\x00")
+	require.True(t, strings.HasPrefix(first, "sha256:"))
+}
+
+func TestFallbackReasonFitsRuntimeCatalogColumn(t *testing.T) {
+	longReason := strings.Repeat("上游价格需要人工确认；", 20)
+	got := fallbackReason(&longReason)
+
+	require.Len(t, []rune(got), 128)
+	require.Equal(t, []rune(longReason)[:128], []rune(got))
+	require.Equal(t, "", fallbackReason(nil))
 }
 
 func stringPointer(value string) *string { return &value }

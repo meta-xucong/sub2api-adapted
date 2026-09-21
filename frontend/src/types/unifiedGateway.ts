@@ -161,9 +161,14 @@ export interface UnifiedGatewayPreviewResult {
   quote_id: string
   persisted: boolean
   selection_status: string
+  provider_identity: string
+  upstream_model: string
+  account_display_name: string
   billing_mode: string
+  billing_unit: string
   rate_mode: string
   resolved_rate_source: string
+  price_source_revision?: string
   probe_status?: string
   upstream_declared_rate?: string
   manual_upstream_multiplier?: string
@@ -171,6 +176,9 @@ export interface UnifiedGatewayPreviewResult {
   effective_multiplier?: string
   billable_units: Record<string, string>
   estimated_charge: string
+  provider_unit_price: string
+  user_unit_price: string
+  failure_charge_amount: string
   currency: string
   rounding_mode: string
   precision: number

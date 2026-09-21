@@ -11,9 +11,13 @@ import (
 
 type unifiedGatewayCapabilityAccountReader struct {
 	account *Account
+	err     error
 }
 
 func (r unifiedGatewayCapabilityAccountReader) GetByID(context.Context, int64) (*Account, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
 	return r.account, nil
 }
 
@@ -48,6 +52,18 @@ func TestUnifiedGatewayRuntimeCapabilityGuardAllowsDeclaredCombination(t *testin
 		Binding: UnifiedGatewayAccountBinding{AccountID: 1},
 	})
 	require.NoError(t, err)
+}
+
+func TestUnifiedGatewayRuntimeCapabilityGuardTreatsMissingAccountAsIneligible(t *testing.T) {
+	gateway := &UnifiedGateway{}
+	gateway.SetAccountReader(unifiedGatewayCapabilityAccountReader{err: ErrAccountNotFound})
+
+	err := gateway.validateSelectionCapability(context.Background(), UnifiedGatewayRouteSelection{
+		Target:  UnifiedGatewayRouteTarget{ProviderIdentity: UnifiedGatewayProviderOpenAIAPIKey, Endpoint: UnifiedGatewayEndpointChatCompletions},
+		Binding: UnifiedGatewayAccountBinding{AccountID: 404},
+	})
+
+	require.ErrorIs(t, err, ErrUnifiedGatewayNoEligibleAccount)
 }
 
 func TestUnifiedGatewayRuntimeRequiresAccountReader(t *testing.T) {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"net/http"
 	"sort"
@@ -714,6 +715,16 @@ func (g *UnifiedGateway) validateSelectionCapability(ctx context.Context, select
 	}
 	account, err := g.accountReader.GetByID(ctx, selection.Binding.AccountID)
 	if err != nil {
+		if errors.Is(err, ErrAccountNotFound) {
+			return ErrUnifiedGatewayNoEligibleAccount
+		}
+		slog.Warn("unified gateway account capability lookup failed",
+			"account_id", selection.Binding.AccountID,
+			"route_target_id", selection.Target.ID,
+			"provider_identity", selection.ProviderIdentity(),
+			"endpoint", selection.Endpoint(),
+			"error", err,
+		)
 		return err
 	}
 	if account == nil {
@@ -1033,6 +1044,14 @@ func (g *UnifiedGateway) ListModels(ctx context.Context, accessGroupID int64) ([
 			if errors.Is(err, ErrUnifiedGatewayNoEligibleAccount) || errors.Is(err, ErrUnifiedGatewayRuntimeUnsupported) {
 				continue
 			}
+			slog.Warn("unified gateway model listing skipped due to capability lookup error",
+				"account_id", selection.Binding.AccountID,
+				"route_target_id", selection.Target.ID,
+				"public_model", selection.Target.PublicModel,
+				"provider_identity", selection.ProviderIdentity(),
+				"endpoint", selection.Endpoint(),
+				"error", err,
+			)
 			return nil, err
 		}
 		_, err := ResolveUnifiedRoutePrice(UnifiedRoutePricingInput{

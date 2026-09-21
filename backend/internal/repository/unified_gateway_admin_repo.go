@@ -844,7 +844,15 @@ func fallbackReason(value *string) string {
 	if value == nil {
 		return ""
 	}
-	return strings.TrimSpace(*value)
+	trimmed := strings.TrimSpace(*value)
+	// unified_route_targets.fallback_reason is VARCHAR(128). Keep the full
+	// operator explanation in the aggregate document, but bound the runtime
+	// catalog projection so publishing cannot fail on a long diagnostic note.
+	runes := []rune(trimmed)
+	if len(runes) > 128 {
+		return string(runes[:128])
+	}
+	return trimmed
 }
 func probeStatus(value *service.UnifiedGatewayAdminProbe) string {
 	if value == nil {
