@@ -189,12 +189,12 @@ func TestAccountAllowsOpenAICompact(t *testing.T) {
 			want: true,
 		},
 		{
-			name: "failed probe remains allowed for calibration",
+			name: "unsupported openai account is rejected",
 			account: &Account{
 				Platform: PlatformOpenAI,
 				Extra:    map[string]any{"openai_compact_supported": false},
 			},
-			want: true,
+			want: false,
 		},
 		{
 			name: "force on is allowed",

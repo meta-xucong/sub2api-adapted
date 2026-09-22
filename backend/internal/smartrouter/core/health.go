@@ -367,12 +367,9 @@ func (t *HealthTracker) Observe(result RouteResult) HealthSnapshot {
 			}
 		}
 	} else if result.Capability == CapabilityResponsesCompact && class == FailureConcurrencyLimited {
-		// Compact requests are especially sensitive to a saturated upstream
-		// account, but a busy response is not evidence that the lane is broken.
-		// Apply the normal short exponential cooldown and a single temporary
-		// priority penalty; do not quarantine until calibration or allocate a
-		// recovery slot.  A later success clears the cooldown and gradually
-		// removes the penalty through the existing recovery path.
+		// Compact requests are sensitive to a saturated upstream account, but a
+		// busy response is not evidence that the lane is broken. Apply a normal
+		// short cooldown and a small priority penalty; do not quarantine it.
 		state.ConsecutiveFailures++
 		state.ConsecutiveSuccesses = 0
 		state.HealthScore = maxFloat(0.05, state.HealthScore*0.85)

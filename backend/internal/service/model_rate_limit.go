@@ -6,13 +6,13 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
-	"github.com/tidwall/gjson"
 )
 
 const (
 	modelRateLimitsKey                 = "model_rate_limits"
 	antigravityGeminiModelRateLimitKey = "antigravity:gemini"
 	openAIImageGenerationRateLimitKey  = "openai:image_generation"
+	openAICodexSparkRateLimitReason    = "openai_codex_spark_rate_limit"
 	// anthropicFableRateLimitKey 是 Anthropic 7d_oi（Fable 专属 7d 窗口）限流的
 	// 家族级 scope：命中后所有 Fable 变体（含 [1m] 等后缀）都不再调度到该账号。
 	anthropicFableRateLimitKey = "claude-fable-5"
@@ -121,21 +121,6 @@ func OpenAIImageGenerationIntentFromContext(ctx context.Context) bool {
 	return ok && enabled
 }
 
-func WithOpenAIResponsesIntent(ctx context.Context) context.Context {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	return context.WithValue(ctx, ctxkey.OpenAIResponsesIntent, true)
-}
-
-func OpenAIResponsesIntentFromContext(ctx context.Context) bool {
-	if ctx == nil {
-		return false
-	}
-	enabled, ok := ctx.Value(ctxkey.OpenAIResponsesIntent).(bool)
-	return ok && enabled
-}
-
 // WithOpenAIImagesEndpoint 标记请求从 /v1/images/* 专用生图端点入站。
 func WithOpenAIImagesEndpoint(ctx context.Context) context.Context {
 	if ctx == nil {
@@ -151,29 +136,6 @@ func OpenAIImagesEndpointFromContext(ctx context.Context) bool {
 	}
 	enabled, ok := ctx.Value(ctxkey.OpenAIImagesEndpoint).(bool)
 	return ok && enabled
-}
-
-func WithOpenAIFastIntent(ctx context.Context) context.Context {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	return context.WithValue(ctx, ctxkey.OpenAIFastIntent, true)
-}
-
-func OpenAIFastIntentFromContext(ctx context.Context) bool {
-	if ctx == nil {
-		return false
-	}
-	enabled, ok := ctx.Value(ctxkey.OpenAIFastIntent).(bool)
-	return ok && enabled
-}
-
-func OpenAIFastIntentFromBody(body []byte) bool {
-	if len(body) == 0 {
-		return false
-	}
-	tier := normalizedOpenAIServiceTierValue(gjson.GetBytes(body, "service_tier").String())
-	return tier == OpenAIFastTierPriority
 }
 
 func resolveFinalAntigravityModelKey(ctx context.Context, account *Account, requestedModel string) string {
@@ -225,4 +187,26 @@ func (a *Account) modelRateLimitResetAt(scope string) *time.Time {
 		return nil
 	}
 	return &resetAt
+}
+
+func setAccountModelRateLimitSnapshot(account *Account, scope string, resetAt time.Time, reason string, now time.Time) {
+	if account == nil || strings.TrimSpace(scope) == "" {
+		return
+	}
+	if account.Extra == nil {
+		account.Extra = make(map[string]any)
+	}
+	limits, ok := account.Extra[modelRateLimitsKey].(map[string]any)
+	if !ok {
+		limits = make(map[string]any)
+		account.Extra[modelRateLimitsKey] = limits
+	}
+	payload := map[string]any{
+		"rate_limited_at":     now.UTC().Format(time.RFC3339),
+		"rate_limit_reset_at": resetAt.UTC().Format(time.RFC3339),
+	}
+	if reason = strings.TrimSpace(reason); reason != "" {
+		payload["reason"] = reason
+	}
+	limits[scope] = payload
 }

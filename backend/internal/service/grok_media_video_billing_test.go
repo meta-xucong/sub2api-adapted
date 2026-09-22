@@ -54,25 +54,30 @@ func TestIsGrokVideoStatusBillable(t *testing.T) {
 	require.False(t, IsGrokVideoStatusBillable([]byte(`{"status":"completed","video":{"url":"https://vidgen.x.ai/x.mp4"}}`)))
 }
 
-func TestNormalizeWokeyVideoStatusForBilling(t *testing.T) {
+func TestNormalizeWokeyVideoStatusForBillingAcceptsCurrentContentURL(t *testing.T) {
 	t.Parallel()
 
-	completed := []byte(`{"id":"wokey-video-1","status":"completed","model":"grok-imagine-video-1.5","seconds":"6","video_url":"https://cdn.example/video.mp4"}`)
-	normalized := normalizeWokeyVideoStatusForBilling(completed)
-	require.Equal(t, "done", gjson.GetBytes(normalized, "status").String())
-	require.Equal(t, "https://cdn.example/video.mp4", gjson.GetBytes(normalized, "video.url").String())
-	require.Equal(t, 1, ExtractGrokVideoBillingFromStatusBody(normalized, nil, "wokey-video-1").VideoCount)
+	body := []byte(`{
+		"id":"video-1",
+		"status":"completed",
+		"model":"grok-imagine-video-1.5",
+		"duration_seconds":6,
+		"resolution":"480p",
+		"content_url":"/v1/videos/video-1/content",
+		"content_status":"available"
+	}`)
 
-	// Wokey processing and failure responses remain non-billable.
-	for _, body := range []string{
-		`{"status":"processing","video_url":"https://cdn.example/video.mp4"}`,
-		`{"status":"failed","video_url":"https://cdn.example/video.mp4"}`,
-		`{"status":"completed"}`,
-	} {
-		got := normalizeWokeyVideoStatusForBilling([]byte(body))
-		require.Equal(t, body, string(got))
-		require.Nil(t, ExtractGrokVideoBillingFromStatusBody(got, nil, "wokey-video-1"))
-	}
+	normalized := normalizeWokeyVideoStatusForBilling(body)
+	require.Equal(t, "done", gjson.GetBytes(normalized, "status").String())
+	require.Equal(t, "/v1/videos/video-1/content", gjson.GetBytes(normalized, "video.url").String())
+	require.Equal(t, int64(6), gjson.GetBytes(normalized, "video.duration").Int())
+	require.True(t, IsGrokVideoStatusBillable(normalized))
+
+	billed := ExtractGrokVideoBillingFromStatusBody(normalized, nil, "video-1")
+	require.NotNil(t, billed)
+	require.Equal(t, 1, billed.VideoCount)
+	require.Equal(t, "grok-imagine-video-1.5", billed.Model)
+	require.Equal(t, 6, billed.VideoDurationSeconds)
 }
 
 func TestExtractGrokVideoBillingFromStatusBodyPrefersUpstreamParams(t *testing.T) {

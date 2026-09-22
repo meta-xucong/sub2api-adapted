@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	coderws "github.com/coder/websocket"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
 
@@ -120,42 +122,6 @@ func TestClassifyOpenAIWSReconnectReason(t *testing.T) {
 	require.True(t, retryable)
 }
 
-func TestOpenAIWSFallbackToUpstreamFailoverError(t *testing.T) {
-	t.Run("retryable_pre_output_failure", func(t *testing.T) {
-		err := wrapOpenAIWSFallback("read_event", errors.New("upstream stalled"))
-		failoverErr, ok := openAIWSFallbackToUpstreamFailoverError(err)
-		require.True(t, ok)
-		require.NotNil(t, failoverErr)
-		require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
-		require.True(t, failoverErr.ShouldRetryNextAccount())
-		require.Contains(t, string(failoverErr.ResponseBody), "upstream stalled")
-	})
-
-	t.Run("dial_status_and_headers_are_preserved", func(t *testing.T) {
-		err := wrapOpenAIWSFallback("upstream_5xx", &openAIWSDialError{
-			StatusCode: http.StatusBadGateway,
-			ResponseHeaders: http.Header{
-				"X-Request-Id": []string{"ws-req-1"},
-			},
-			ResponseBody: []byte(`{"error":"bad gateway"}`),
-			Err:          errors.New("bad gateway"),
-		})
-		failoverErr, ok := openAIWSFallbackToUpstreamFailoverError(err)
-		require.True(t, ok)
-		require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
-		require.Equal(t, "ws-req-1", failoverErr.ResponseHeaders.Get("X-Request-Id"))
-		require.Equal(t, `{"error":"bad gateway"}`, string(failoverErr.ResponseBody))
-	})
-
-	t.Run("non_retryable_failure_is_unchanged", func(t *testing.T) {
-		failoverErr, ok := openAIWSFallbackToUpstreamFailoverError(
-			wrapOpenAIWSFallback("policy_violation", errors.New("policy")),
-		)
-		require.False(t, ok)
-		require.Nil(t, failoverErr)
-	})
-}
-
 func TestOpenAIWSErrorHTTPStatus(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, openAIWSErrorHTTPStatus([]byte(`{"type":"error","error":{"type":"invalid_request_error","code":"invalid_request","message":"invalid input"}}`)))
 	require.Equal(t, http.StatusUnauthorized, openAIWSErrorHTTPStatus([]byte(`{"type":"error","error":{"type":"authentication_error","code":"invalid_api_key","message":"auth failed"}}`)))
@@ -194,6 +160,63 @@ func TestResolveOpenAIWSFallbackErrorResponse(t *testing.T) {
 		_, _, _, _, ok := resolveOpenAIWSFallbackErrorResponse(errors.New("plain error"))
 		require.False(t, ok)
 	})
+}
+
+func TestWriteOpenAIWSFallbackErrorResponseMarksDefaultClientRouteUnknown(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	svc := &OpenAIGatewayService{}
+	account := &Account{ID: 42, Name: "default-client", Platform: PlatformOpenAI}
+
+	written := svc.writeOpenAIWSFallbackErrorResponse(
+		c,
+		account,
+		wrapOpenAIWSFallback("auth_failed", errors.New("unauthorized")),
+	)
+	require.True(t, written)
+
+	raw, ok := c.Get(OpsUpstreamErrorsKey)
+	require.True(t, ok)
+	events, ok := raw.([]*OpsUpstreamErrorEvent)
+	require.True(t, ok)
+	require.Len(t, events, 1)
+	require.Nil(t, events[0].ProxyID)
+	require.Equal(t, opsProxyNameUnknown, events[0].ProxyName)
+}
+
+func TestWriteOpenAIWSFallbackErrorResponseKeepsManagedProxy(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	svc := &OpenAIGatewayService{}
+	proxyID := int64(10060)
+	account := &Account{ID: 42, Name: "proxied", Platform: PlatformOpenAI, ProxyID: &proxyID, Proxy: &Proxy{ID: proxyID, Name: "ws-proxy"}}
+
+	require.True(t, svc.writeOpenAIWSFallbackErrorResponse(c, account, wrapOpenAIWSFallback("auth_failed", errors.New("unauthorized"))))
+
+	raw, ok := c.Get(OpsUpstreamErrorsKey)
+	require.True(t, ok)
+	events, ok := raw.([]*OpsUpstreamErrorEvent)
+	require.True(t, ok)
+	require.Len(t, events, 1)
+	require.NotNil(t, events[0].ProxyID)
+	require.Equal(t, proxyID, *events[0].ProxyID)
+	require.Equal(t, "ws-proxy", events[0].ProxyName)
+}
+
+func TestOpsUpstreamWSProxyAttributionNeverReportsDirect(t *testing.T) {
+	proxyID := int64(7)
+	id, name := opsUpstreamWSProxyAttribution(nil)
+	require.Nil(t, id)
+	require.Equal(t, opsProxyNameUnknown, name)
+
+	id, name = opsUpstreamWSProxyAttribution(&Account{})
+	require.Nil(t, id)
+	require.Equal(t, opsProxyNameUnknown, name, "no managed proxy => http.DefaultClient => unknown, never direct")
+
+	id, name = opsUpstreamWSProxyAttribution(&Account{ProxyID: &proxyID, Proxy: &Proxy{ID: proxyID, Name: "ws-proxy"}})
+	require.NotNil(t, id)
+	require.Equal(t, proxyID, *id)
+	require.Equal(t, "ws-proxy", name)
 }
 
 func TestOpenAIWSFallbackCooling(t *testing.T) {

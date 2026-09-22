@@ -52,15 +52,17 @@ func (h *GatewayHandler) GeminiV1BetaListModels(c *gin.Context) {
 		return
 	}
 
+	if models, ok := customGeminiModelsList(apiKey.Group); ok {
+		c.JSON(http.StatusOK, models)
+		return
+	}
+
 	account, err := h.geminiCompatService.SelectAccountForAIStudioEndpoints(c.Request.Context(), apiKey.GroupID)
 	if err != nil {
 		// 没有 gemini 账户，检查是否有 antigravity 账户可用
 		hasAntigravity, _ := h.geminiCompatService.HasAntigravityAccounts(c.Request.Context(), apiKey.GroupID)
 		if hasAntigravity {
 			// antigravity 账户使用静态模型列表
-			if writeGeminiCustomModelsList(c, apiKey.Group, nil) {
-				return
-			}
 			c.JSON(http.StatusOK, gemini.FallbackModelsList())
 			return
 		}
@@ -75,18 +77,21 @@ func (h *GatewayHandler) GeminiV1BetaListModels(c *gin.Context) {
 		return
 	}
 	if shouldFallbackGeminiModels(res) {
-		if writeGeminiCustomModelsList(c, apiKey.Group, nil) {
-			return
-		}
 		c.JSON(http.StatusOK, gemini.FallbackModelsList())
 		return
 	}
-	if res != nil && res.StatusCode >= http.StatusOK && res.StatusCode < http.StatusMultipleChoices {
-		if writeGeminiCustomModelsList(c, apiKey.Group, res.Body) {
-			return
-		}
-	}
 	writeUpstreamResponse(c, res)
+}
+
+func customGeminiModelsList(group *service.Group) (gemini.ModelsListResponse, bool) {
+	if group == nil || !group.CustomModelsListEnabled() {
+		return gemini.ModelsListResponse{}, false
+	}
+	models := make([]gemini.Model, 0, len(group.ModelsListConfig.Models))
+	for _, modelID := range group.ModelsListConfig.Models {
+		models = append(models, gemini.FallbackModel(modelID))
+	}
+	return gemini.ModelsListResponse{Models: models}, true
 }
 
 // GeminiV1BetaGetModel proxies:
@@ -580,26 +585,25 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 		forceCacheBilling := fs.ForceCacheBilling
 		quotaPlatform := service.QuotaPlatform(c.Request.Context(), apiKey)
 		sessionID := service.ExtractClientSessionID(c)
+		// 长上下文阶梯由目录数据驱动，统一在计费路径内生效，入口无需声明。
 		h.submitUsageRecordTask(c.Request.Context(), func(ctx context.Context) {
-			if err := h.gatewayService.RecordUsageWithLongContext(ctx, &service.RecordUsageLongContextInput{
-				Result:                result,
-				QuotaPlatform:         quotaPlatform,
-				APIKey:                apiKey,
-				User:                  apiKey.User,
-				Account:               account,
-				Subscription:          subscription,
-				PricingAt:             pricingAt,
-				InboundEndpoint:       inboundEndpoint,
-				UpstreamEndpoint:      upstreamEndpoint,
-				UserAgent:             userAgent,
-				IPAddress:             clientIP,
-				RequestPayloadHash:    requestPayloadHash,
-				LongContextThreshold:  200000, // Gemini 200K 阈值
-				LongContextMultiplier: 2.0,    // 超出部分双倍计费
-				ForceCacheBilling:     forceCacheBilling,
-				APIKeyService:         h.apiKeyService,
-				SessionID:             sessionID,
-				ChannelUsageFields:    clientRequestedUsageFields(c, channelMapping, reqModel, result.UpstreamModel),
+			if err := h.gatewayService.RecordUsage(ctx, &service.RecordUsageInput{
+				Result:             result,
+				QuotaPlatform:      quotaPlatform,
+				APIKey:             apiKey,
+				User:               apiKey.User,
+				Account:            account,
+				Subscription:       subscription,
+				PricingAt:          pricingAt,
+				InboundEndpoint:    inboundEndpoint,
+				UpstreamEndpoint:   upstreamEndpoint,
+				UserAgent:          userAgent,
+				IPAddress:          clientIP,
+				RequestPayloadHash: requestPayloadHash,
+				ForceCacheBilling:  forceCacheBilling,
+				APIKeyService:      h.apiKeyService,
+				SessionID:          sessionID,
+				ChannelUsageFields: clientRequestedUsageFields(c, channelMapping, reqModel, result.UpstreamModel),
 			}); err != nil {
 				logger.L().With(
 					zap.String("component", "handler.gemini_v1beta.models"),
@@ -730,66 +734,6 @@ func writeUpstreamResponse(c *gin.Context, res *service.UpstreamHTTPResult) {
 		contentType = "application/json"
 	}
 	c.Data(res.StatusCode, contentType, res.Body)
-}
-
-func writeGeminiCustomModelsList(c *gin.Context, group *service.Group, upstreamBody []byte) bool {
-	if group == nil || !group.CustomModelsListEnabled() {
-		return false
-	}
-	availableModels := geminiModelIDsFromModelsListBody(upstreamBody)
-	filtered := filterModelsByCustomList(availableModels, group.ModelsListConfig.Models, group.ModelsListConfig.Models)
-	models := make([]gemini.Model, 0, len(filtered))
-	for _, modelID := range filtered {
-		modelID = strings.TrimPrefix(strings.TrimSpace(modelID), "models/")
-		if modelID == "" {
-			continue
-		}
-		models = append(models, gemini.Model{
-			Name:                       "models/" + modelID,
-			SupportedGenerationMethods: []string{"generateContent", "streamGenerateContent"},
-		})
-	}
-	c.JSON(http.StatusOK, gemini.ModelsListResponse{Models: models})
-	return true
-}
-
-func geminiModelIDsFromModelsListBody(body []byte) []string {
-	if len(body) == 0 {
-		return nil
-	}
-	var payload struct {
-		Models []struct {
-			Name string `json:"name"`
-		} `json:"models"`
-	}
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return nil
-	}
-	ids := make([]string, 0, len(payload.Models))
-	for _, model := range payload.Models {
-		id := strings.TrimPrefix(strings.TrimSpace(model.Name), "models/")
-		if id != "" {
-			ids = append(ids, id)
-		}
-	}
-	return ids
-}
-
-func geminiCustomModelsListAllows(group *service.Group, modelName string) bool {
-	if group == nil || !group.CustomModelsListEnabled() {
-		return true
-	}
-	modelName = strings.TrimPrefix(strings.TrimSpace(modelName), "models/")
-	if modelName == "" {
-		return false
-	}
-	for _, model := range group.ModelsListConfig.Models {
-		model = strings.TrimPrefix(strings.TrimSpace(model), "models/")
-		if model == modelName || (strings.HasSuffix(model, "*") && strings.HasPrefix(modelName, strings.TrimSuffix(model, "*"))) {
-			return true
-		}
-	}
-	return false
 }
 
 func shouldFallbackGeminiModels(res *service.UpstreamHTTPResult) bool {

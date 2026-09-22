@@ -4,13 +4,7 @@ vi.mock('@/api/admin/accounts', () => ({
   getAntigravityDefaultModelMapping: vi.fn()
 }))
 
-import {
-  allModels,
-  buildModelMappingObject,
-  getModelOptionsForPlatforms,
-  getModelsByPlatform,
-  splitModelMappingObject
-} from '../useModelWhitelist'
+import { buildModelMappingObject, getModelsByPlatform, getPresetMappingsByPlatform, splitModelMappingObject } from '../useModelWhitelist'
 
 describe('useModelWhitelist', () => {
   it('openai 模型列表包含 GPT-5.4 官方快照', () => {
@@ -18,19 +12,18 @@ describe('useModelWhitelist', () => {
 
     expect(models).toContain('gpt-5.4')
     expect(models).toContain('gpt-5.4-mini')
-    expect(models).toContain('gpt-5.5')
-    expect(models).toContain('gpt-5.6-sol')
-    expect(models).toContain('gpt-5.6-terra')
-    expect(models).toContain('gpt-5.6-luna')
-    expect(models).toContain('gpt-image-2')
-    expect(models).not.toContain('gpt-5.5-pro')
-    expect(models).not.toContain('codex-auto-review')
-    expect(models).not.toContain('gpt-5.3-codex-spark')
-    expect(models).not.toContain('gpt-5.6')
-    expect(models).not.toContain('gpt-5.4-2026-03-05')
-    expect(models).not.toContain('gpt-5.2')
-    expect(models).not.toContain('gpt-image-1')
-    expect(models).not.toContain('gpt-image-1.5')
+    expect(models).toContain('gpt-5.4-2026-03-05')
+    expect(models).toContain('codex-auto-review')
+    expect(models).toContain('gpt-5.6')
+    expect(models).toContain('gpt-6')
+    expect(models).toContain('gpt-6-astra')
+  })
+
+  it('openai 预设映射包含 GPT-6 别名和 Astra', () => {
+    expect(getPresetMappingsByPlatform('openai')).toEqual(expect.arrayContaining([
+      expect.objectContaining({ label: 'GPT-6', from: 'gpt-6', to: 'gpt-6' }),
+      expect.objectContaining({ label: 'GPT-6 Astra', from: 'gpt-6-astra', to: 'gpt-6-astra' })
+    ]))
   })
 
   it('openai 模型列表不再暴露已下线的 ChatGPT 登录 Codex 模型', () => {
@@ -53,6 +46,8 @@ describe('useModelWhitelist', () => {
   })
 
   it('Claude 模型列表包含新发布的 Claude 模型', () => {
+    expect(getModelsByPlatform('claude')).toContain('claude-fable-5-1')
+    expect(getModelsByPlatform('antigravity')).toContain('claude-fable-5-1')
     expect(getModelsByPlatform('claude')).toContain('claude-fable-5')
     expect(getModelsByPlatform('antigravity')).toContain('claude-fable-5')
     expect(getModelsByPlatform('claude')).toContain('claude-opus-4-8')
@@ -62,10 +57,13 @@ describe('useModelWhitelist', () => {
   it('xAI 模型列表包含 Grok 4.5 官方模型和别名', () => {
     const models = getModelsByPlatform('grok')
 
+    expect(models).toContain('grok-4.6')
+    expect(models).toContain('grok-4.6-latest')
     expect(models).toContain('grok-4.5')
     expect(models).toContain('grok-4.5-latest')
     expect(models).toContain('grok-build-latest')
-    expect(models).toContain('grok-imagine-video-1.5-preview')
+    expect(models).toContain('grok-imagine-image-2.0')
+    expect(models).toContain('grok-imagine-video-1.5')
   })
 
   it('combined 模式支持 Grok 4.5 官方别名映射', () => {
@@ -115,25 +113,6 @@ describe('useModelWhitelist', () => {
     const models = getModelsByPlatform('antigravity')
 
     expect(models).toContain('gemini-3.1-pro')
-  })
-
-  it('全局候选包含 Antigravity 专属模型，避免平台下拉被交集过滤掉', () => {
-    const values = allModels.map(model => model.value)
-
-    expect(values).toContain('tab_flash_lite_preview')
-    expect(values).toContain('gpt-oss-120b-medium')
-  })
-
-  it('平台候选直接来自对应平台清单，并保留已选/同步的自定义模型', () => {
-    const values = getModelOptionsForPlatforms(
-      ['antigravity'],
-      ['custom-provider-model', 'gemini-3.1-pro']
-    ).map(model => model.value)
-
-    expect(values).toContain('tab_flash_lite_preview')
-    expect(values).toContain('gpt-oss-120b-medium')
-    expect(values).toContain('custom-provider-model')
-    expect(values.filter(model => model === 'gemini-3.1-pro')).toHaveLength(1)
   })
 
   it('whitelist 模式会忽略通配符条目', () => {

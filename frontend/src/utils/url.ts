@@ -42,28 +42,27 @@ export function sanitizeUrl(value: string, options: SanitizeOptions = {}): strin
   }
 }
 
-/**
- * Resolve the client-facing OpenAI-compatible API base URL.
- *
- * The persisted site setting is an origin, while OpenAI-compatible clients
- * call the public gateway under `/v1`. Existing protocol paths are preserved
- * so custom endpoints are never guessed or rewritten.
- */
+// OpenAI-compatible providers conventionally expose their API below /v1.
+// Keep custom paths intact because relays may use a provider-specific prefix.
 export function ensureOpenAIBaseUrl(value: string): string {
-  const trimmed = value.trim().replace(/\/+$/, '')
-  if (!trimmed) return ''
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return ''
+  }
+
+  if (trimmed.startsWith('/') && !trimmed.startsWith('//')) {
+    return trimmed
+  }
 
   try {
     const parsed = new URL(trimmed)
-    const path = parsed.pathname.replace(/\/+$/, '')
-    if (path && path !== '/') {
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
       return trimmed
     }
-
-    parsed.pathname = '/v1'
-    return parsed.toString().replace(/\/+$/, '')
+    const pathname = parsed.pathname.replace(/\/+$/, '')
+    parsed.pathname = pathname === '' ? '/v1' : pathname
+    return parsed.toString()
   } catch {
-    // Keep relative or otherwise explicit custom paths unchanged.
     return trimmed
   }
 }

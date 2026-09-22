@@ -50,28 +50,6 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
-    path: '/veyra-launch',
-    name: 'VeyraLaunch',
-    component: () => import('@/views/auth/VeyraLaunchView.vue'),
-    meta: {
-      requiresAuth: false,
-      title: 'Opening Alchemy'
-    }
-  },
-  {
-    // The backend portal normally owns this path. Keep an SPA fallback so a
-    // stale cached shell can never turn an Alchemy login return into a 404.
-    path: '/_veyra/return',
-    redirect: (to) => ({
-      path: '/veyra-launch',
-      query: { target: to.query.target === 'alchemy-mobile' ? 'alchemy-mobile' : 'alchemy' }
-    }),
-    meta: {
-      requiresAuth: false,
-      title: 'Opening Alchemy'
-    }
-  },
-  {
     path: '/register',
     name: 'Register',
     component: () => import('@/views/auth/RegisterView.vue'),
@@ -484,6 +462,18 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/admin/unified-gateway',
+    name: 'AdminUnifiedGateway',
+    component: () => import('@/views/admin/UnifiedGatewayView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Unified Gateway',
+      titleKey: 'admin.unifiedGateway.title',
+      descriptionKey: 'admin.unifiedGateway.description'
+    }
+  },
+  {
     path: '/admin/channels',
     redirect: '/admin/channels/pricing'
   },
@@ -544,6 +534,18 @@ const routes: RouteRecordRaw[] = [
       title: 'Account Management',
       titleKey: 'admin.accounts.title',
       descriptionKey: 'admin.accounts.description'
+    }
+  },
+  {
+    path: '/admin/plugins',
+    name: 'AdminPlugins',
+    component: () => import('@/views/admin/PluginsView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Plugin Management',
+      titleKey: 'admin.plugins.title',
+      descriptionKey: 'admin.plugins.description'
     }
   },
   {
@@ -829,13 +831,6 @@ router.beforeEach(async (to, _from, next) => {
   if (!requiresAuth) {
     // If already authenticated and trying to access login/register, redirect to appropriate dashboard
     if (authStore.isAuthenticated && (to.path === '/login' || to.path === '/register')) {
-      const redirect = typeof to.query.redirect === 'string' ? to.query.redirect : ''
-      if (to.path === '/login' && (redirect.startsWith('/_veyra/return') || redirect.startsWith('/veyra-launch'))) {
-        const launchTarget = redirect.includes('target=alchemy-mobile') ? 'alchemy-mobile' : 'alchemy'
-        window.location.assign(`/veyra-launch?target=${launchTarget}`)
-        next(false)
-        return
-      }
       // In backend mode, non-admin users should NOT be redirected away from login
       // (they are blocked from all protected routes, so redirecting would cause a loop)
       if (appStore.backendModeEnabled && !authStore.isAdmin) {

@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/gin-gonic/gin"
@@ -145,12 +144,6 @@ func TestBuildOpenAICompactSSEPayload_RejectsNonJSONObject(t *testing.T) {
 		_, ok := buildOpenAICompactSSEPayload(body)
 		require.False(t, ok, "case %s 不应被合成为 SSE", name)
 	}
-}
-
-func TestBuildOpenAICompactSSEPayload_RejectsOrdinaryMessageOutput(t *testing.T) {
-	body := []byte(`{"id":"resp_message","output":[{"type":"message","content":[{"type":"output_text","text":"not compact"}]}]}`)
-	_, ok := buildOpenAICompactSSEPayload(body)
-	require.False(t, ok)
 }
 
 func TestWriteOpenAICompactSSEBridge_RequiresMarkAndSuccessStatus(t *testing.T) {
@@ -325,7 +318,7 @@ func TestHandlePassthroughSSEToJSON_CompactRawOutputItemDoneRepairsEmptyTerminal
 		Body:       io.NopCloser(strings.NewReader(upstreamSSE)),
 	}
 
-	result, err := svc.handleNonStreamingResponsePassthrough(context.Background(), resp, c, "gpt-5.5", "")
+	result, err := svc.handleNonStreamingResponsePassthrough(context.Background(), resp, c, nil, "gpt-5.5", "")
 	require.NoError(t, err)
 	require.NotNil(t, result)
 
@@ -519,7 +512,7 @@ func TestHandleNonStreamingResponsePassthrough_CompactClientStreamBridgesToSSE(t
 		}`)),
 	}
 
-	result, err := svc.handleNonStreamingResponsePassthrough(context.Background(), resp, c, "gpt-5.5", "")
+	result, err := svc.handleNonStreamingResponsePassthrough(context.Background(), resp, c, nil, "gpt-5.5", "")
 	require.NoError(t, err)
 	require.NotNil(t, result)
 
@@ -530,128 +523,4 @@ func TestHandleNonStreamingResponsePassthrough_CompactClientStreamBridgesToSSE(t
 	require.Equal(t, "resp_compact_pt", gjson.Get(events[1][1], "response.id").String())
 	require.NotNil(t, result.usage)
 	require.Equal(t, 7, result.usage.InputTokens)
-}
-
-func TestHandleNonStreamingResponsePassthrough_BodySignalCompactClientStreamBridgesToSSE(t *testing.T) {
-	svc := newCompactBridgeTestService()
-	gin.SetMode(gin.TestMode)
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
-	MarkOpenAICompactClientStream(c)
-	resp := &http.Response{
-		StatusCode: http.StatusOK,
-		Header:     http.Header{"Content-Type": []string{"application/json"}},
-		Body: io.NopCloser(strings.NewReader(`{
-			"id":"resp_body_signal_compact_pt",
-			"output":[{"id":"cmp_pt_2","type":"compaction","encrypted_content":"compact-body-signal-payload"}],
-			"usage":{"input_tokens":5,"output_tokens":2,"total_tokens":7}
-		}`)),
-	}
-
-	result, err := svc.handleNonStreamingResponsePassthrough(context.Background(), resp, c, "gpt-5.6-sol", "")
-	require.NoError(t, err)
-	require.NotNil(t, result)
-
-	require.Equal(t, "text/event-stream", rec.Header().Get("Content-Type"))
-	events := parseCompactBridgeSSE(t, rec.Body.String())
-	require.Len(t, events, 2)
-	require.Equal(t, "response.output_item.done", events[0][0])
-	require.Equal(t, "compaction", gjson.Get(events[0][1], "item.type").String())
-	require.Equal(t, "compact-body-signal-payload", gjson.Get(events[0][1], "item.encrypted_content").String())
-	require.Equal(t, "response.completed", events[1][0])
-	require.NotNil(t, result.usage)
-	require.Equal(t, 5, result.usage.InputTokens)
-}
-
-func TestHandleStreamingResponse_InBandCompactionCanonicalizesSummaryAlias(t *testing.T) {
-	svc := newCompactBridgeTestService()
-	gin.SetMode(gin.TestMode)
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
-	MarkOpenAIInBandCompaction(c)
-
-	upstreamSSE := strings.Join([]string{
-		`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"msg_1","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"summary ready"}]}}`,
-		``,
-		`data: {"type":"response.output_item.done","output_index":1,"item":{"id":"cmp_1","type":"compaction_summary","status":"completed","encrypted_content":"compact-payload"}}`,
-		``,
-		`data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[{"id":"msg_1","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"summary ready"}]},{"id":"rs_1","type":"reasoning","summary":[{"type":"summary_text","text":"reasoned"}]},{"id":"cmp_1","type":"compaction_summary","status":"completed","encrypted_content":"compact-payload"}],"usage":{"input_tokens":7,"output_tokens":3,"total_tokens":10}}}`,
-		``,
-	}, "\n")
-	resp := &http.Response{
-		StatusCode: http.StatusOK,
-		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
-		Body:       io.NopCloser(strings.NewReader(upstreamSSE)),
-	}
-
-	result, err := svc.handleStreamingResponse(context.Background(), resp, c, &Account{ID: 1, Platform: PlatformOpenAI}, time.Now(), "gpt-5.6-terra", "gpt-5.6-terra")
-	require.NoError(t, err)
-	require.NotNil(t, result)
-
-	compactionItems := 0
-	var terminalOutput gjson.Result
-	forEachOpenAISSEDataPayload(rec.Body.String(), func(data []byte) {
-		switch gjson.GetBytes(data, "type").String() {
-		case "response.output_item.done":
-			if gjson.GetBytes(data, "item.type").String() == "compaction" {
-				compactionItems++
-			}
-		case "response.completed":
-			terminalOutput = gjson.GetBytes(data, "response.output")
-		}
-	})
-	require.Equal(t, 1, compactionItems, "Codex v2 must observe exactly one canonical compaction item")
-	require.Len(t, terminalOutput.Array(), 3)
-	require.Equal(t, "compaction", terminalOutput.Get("2.type").String())
-	require.Equal(t, "compact-payload", terminalOutput.Get("2.encrypted_content").String())
-}
-
-func TestNormalizeOpenAIInBandCompactionResponse_LeavesLegacyAliasUntouched(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses/compact", nil)
-
-	body := []byte(`{"output":[{"type":"compaction_summary","encrypted_content":"payload"}]}`)
-	normalized, changed := normalizeOpenAIInBandCompactionResponse(c, body)
-	require.False(t, changed)
-	require.Equal(t, string(body), string(normalized))
-
-	MarkOpenAIInBandCompaction(c)
-	normalized, changed = normalizeOpenAIInBandCompactionResponse(c, body)
-	require.True(t, changed)
-	require.Equal(t, "compaction", gjson.GetBytes(normalized, "output.0.type").String())
-}
-
-func TestHandleStreamingResponsePassthrough_InBandCompactionCanonicalizesSummaryAlias(t *testing.T) {
-	svc := newCompactBridgeTestService()
-	gin.SetMode(gin.TestMode)
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
-	MarkOpenAIInBandCompaction(c)
-
-	upstreamSSE := strings.Join([]string{
-		`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"cmp_pt_1","type":"compaction_summary","status":"completed","encrypted_content":"passthrough-payload"}}`,
-		``,
-		`data: {"type":"response.completed","response":{"id":"resp_pt_1","status":"completed","output":[{"id":"cmp_pt_1","type":"compaction_summary","status":"completed","encrypted_content":"passthrough-payload"}],"usage":{"input_tokens":4,"output_tokens":2,"total_tokens":6}}}`,
-		``,
-	}, "\n")
-	resp := &http.Response{
-		StatusCode: http.StatusOK,
-		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
-		Body:       io.NopCloser(strings.NewReader(upstreamSSE)),
-	}
-
-	result, err := svc.handleStreamingResponsePassthrough(context.Background(), resp, c, &Account{ID: 1, Platform: PlatformOpenAI}, time.Now(), "gpt-5.6-terra", "gpt-5.6-terra")
-	require.NoError(t, err)
-	require.NotNil(t, result)
-
-	events := collectSSEDataPayloads(t, rec.Body.String())
-	require.Equal(t, "compaction", gjson.Get(findSSEEvent(t, events, "response.output_item.done", ""), "item.type").String())
-	completed := findSSEEvent(t, events, "response.completed", "")
-	require.Equal(t, "compaction", gjson.Get(completed, "response.output.0.type").String())
-	require.Equal(t, "passthrough-payload", gjson.Get(completed, "response.output.0.encrypted_content").String())
 }

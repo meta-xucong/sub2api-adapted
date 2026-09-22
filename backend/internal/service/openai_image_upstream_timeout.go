@@ -183,7 +183,7 @@ func detachOpenAIImageUpstreamContext(ctx context.Context) (context.Context, con
 
 // isOpenAIImageAttemptTimeout reports a timeout owned by the current upstream
 // attempt, as opposed to the caller cancelling the request or the request-wide
-// image budget expiring.  Only the former is safe to replay on another lane:
+// image budget expiring. Only the former is safe to replay on another lane:
 // the handler still has time left in the same request and no semantic image
 // bytes have necessarily reached the client yet.
 func isOpenAIImageAttemptTimeout(err error, attemptCtx context.Context, requestCtx context.Context) bool {
@@ -198,7 +198,7 @@ func isOpenAIImageAttemptTimeout(err error, attemptCtx context.Context, requestC
 
 // newOpenAIImageAttemptTimeoutFailover keeps the public error contract stable
 // (502/upstream_error) while attaching an internal reason for Smart Router
-// health classification.  Response headers are copied for request tracing;
+// health classification. Response headers are copied for request tracing;
 // no upstream body or credentials are exposed.
 func newOpenAIImageAttemptTimeoutFailover(resp *http.Response) *UpstreamFailoverError {
 	var headers http.Header

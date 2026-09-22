@@ -85,3 +85,33 @@ func isKnownKIEJobsBaseURL(rawBaseURL string) bool {
 func (a *Account) UsesWokeyVideoMultipart() bool {
 	return a != nil && a.GrokVideoTransport() == GrokVideoTransportWokeyMultipart
 }
+
+// UsesGrokVideosCreatePath reports an explicit OpenAI-compatible /videos
+// creation path for legacy relays that do not expose /videos/generations.
+func (a *Account) UsesGrokVideosCreatePath() bool {
+	if a == nil || !a.IsGrok() {
+		return false
+	}
+	path := strings.Trim(strings.TrimSpace(a.GetCredential("grok_video_create_path")), "/")
+	return strings.EqualFold(path, "videos")
+}
+
+// UsesKIEJobsVideoAPI reports whether this account resolves to KIE's native
+// asynchronous jobs API.
+func (a *Account) UsesKIEJobsVideoAPI() bool {
+	return a != nil && a.GrokVideoTransport() == GrokVideoTransportKIEJobs
+}
+
+// SupportsGrokMediaEndpoint keeps a KIE account away from xAI endpoints that
+// the native KIE transport does not implement.
+func (a *Account) SupportsGrokMediaEndpoint(endpoint GrokMediaEndpoint) bool {
+	if !a.UsesKIEJobsVideoAPI() {
+		return true
+	}
+	switch endpoint {
+	case GrokMediaEndpointVideosGenerations, GrokMediaEndpointVideoStatus, GrokMediaEndpointVideoContent:
+		return true
+	default:
+		return false
+	}
+}

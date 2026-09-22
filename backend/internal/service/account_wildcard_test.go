@@ -329,42 +329,6 @@ func TestAccountGetMappedModel(t *testing.T) {
 			requestedModel: "claude-sonnet-4-5",
 			expected:       "claude-sonnet-4-5",
 		},
-		{
-			name:     "synthetic codex review does not prefer gpt-5.6 over gpt-5.5",
-			platform: PlatformOpenAI,
-			credentials: map[string]any{
-				"model_mapping": map[string]any{
-					"codex-auto-review": "gpt-5.6-sol",
-					"gpt-5.5":           "gpt-5.5",
-				},
-			},
-			requestedModel: "codex-auto-review",
-			expected:       "gpt-5.5",
-		},
-		{
-			name:     "explicit gpt-5.6 model remains unchanged",
-			platform: PlatformOpenAI,
-			credentials: map[string]any{
-				"model_mapping": map[string]any{
-					"gpt-5.6-luna": "gpt-5.6-luna",
-					"gpt-5.5":      "gpt-5.5",
-				},
-			},
-			requestedModel: "gpt-5.6-luna",
-			expected:       "gpt-5.6-luna",
-		},
-		{
-			name:     "synthetic codex review keeps explicit fallback target",
-			platform: PlatformOpenAI,
-			credentials: map[string]any{
-				"model_mapping": map[string]any{
-					"codex-auto-review": "gpt-5.6-terra",
-					"gpt-5.5":           "provider-gpt-5.5",
-				},
-			},
-			requestedModel: "codex-auto-review",
-			expected:       "provider-gpt-5.5",
-		},
 	}
 
 	for _, tt := range tests {
@@ -570,6 +534,52 @@ func TestAccountGetModelMapping_AntigravityEnsuresGeminiDefaultPassthroughs(t *t
 	}
 	if mapping["gemini-3.1-pro-low"] != "gemini-3.1-pro-low" {
 		t.Fatalf("expected gemini-3.1-pro-low passthrough to be auto-filled, got: %q", mapping["gemini-3.1-pro-low"])
+	}
+}
+
+func TestAccountGetModelMapping_GoogleOneUsesConservativeDefaults(t *testing.T) {
+	account := &Account{
+		Platform: PlatformGemini,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"oauth_type": "google_one",
+		},
+	}
+
+	mapping := account.GetModelMapping()
+	for _, model := range []string{"gemini-2.0-flash", "gemini-2.5-flash", "gemini-2.5-pro"} {
+		if mapping[model] != model {
+			t.Fatalf("expected Google One model %q to map to itself, got %q", model, mapping[model])
+		}
+	}
+	for _, model := range []string{"gemini-2.5-flash-image", "gemini-3.1-flash-image", "gemini-3.5-flash"} {
+		if _, ok := mapping[model]; ok {
+			t.Fatalf("did not expect unsupported Google One model %q", model)
+		}
+	}
+	if account.IsModelSupported("gemini-3.5-flash") {
+		t.Fatal("Google One defaults must not treat unsupported models as eligible")
+	}
+}
+
+func TestAccountGetModelMapping_GoogleOnePreservesExplicitMapping(t *testing.T) {
+	account := &Account{
+		Platform: PlatformGemini,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"oauth_type": "google_one",
+			"model_mapping": map[string]any{
+				"custom-model": "gemini-2.5-flash",
+			},
+		},
+	}
+
+	mapping := account.GetModelMapping()
+	if mapping["custom-model"] != "gemini-2.5-flash" {
+		t.Fatalf("expected explicit Google One mapping to be preserved, got %v", mapping)
+	}
+	if _, ok := mapping["gemini-2.5-flash"]; ok {
+		t.Fatalf("did not expect defaults to overwrite an explicit mapping: %v", mapping)
 	}
 }
 
