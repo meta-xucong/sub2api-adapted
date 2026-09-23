@@ -69,18 +69,27 @@
           <p class="mt-2 text-sm text-amber-700 dark:text-amber-300">{{ gateMessage }}</p>
         </div>
 
-        <section v-if="managementAvailable" data-testid="gateway-model-candidates" class="card space-y-3 p-5">
-          <div class="flex flex-wrap items-center justify-between gap-3">
+        <details v-if="managementAvailable" data-testid="gateway-model-candidates" class="card group p-5">
+          <summary class="flex cursor-pointer list-none flex-wrap items-center justify-between gap-3">
             <div class="min-w-0">
               <h2 class="text-lg font-semibold text-gray-900 dark:text-white">{{ t('admin.unifiedGateway.modelCandidates') }}</h2>
-              <p class="text-xs text-gray-500">{{ t('admin.unifiedGateway.modelCandidatesHint') }} · {{ modelCandidateGroups.length }} {{ t('admin.unifiedGateway.modelGroupCount') }}</p>
+              <p class="text-xs text-gray-500">{{ t('admin.unifiedGateway.modelCandidatesHint') }} · {{ modelCandidateGroups.length }} {{ t('admin.unifiedGateway.modelGroupCount') }} · {{ needsActionModelCount }} {{ t('admin.unifiedGateway.pendingModels') }}</p>
             </div>
+            <div class="flex items-center gap-2">
+              <button data-testid="gateway-configure-all-models" type="button" class="btn btn-primary text-xs" :disabled="saving || bulkConfiguring || !canWrite || !needsActionModelCount" @click.prevent="configureAllModels">{{ bulkConfiguring ? t('admin.unifiedGateway.configuringAll') : t('admin.unifiedGateway.configureAllModels') }}</button>
+              <span class="text-xs text-gray-500 group-open:hidden">{{ t('admin.unifiedGateway.expandCandidates') }}</span>
+            </div>
+          </summary>
+          <div class="mt-4 space-y-3">
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <p class="text-xs text-gray-500">{{ t('admin.unifiedGateway.candidatePanelHint') }}</p>
             <div class="flex flex-wrap items-center gap-2">
               <label class="sr-only" for="gateway-model-search">{{ t('admin.unifiedGateway.searchModels') }}</label>
               <input id="gateway-model-search" data-testid="gateway-model-search" v-model.trim="candidateSearch" class="input min-w-[220px] text-sm" :placeholder="t('admin.unifiedGateway.searchModels')" />
-              <button class="btn btn-secondary text-xs" :disabled="saving || loading" @click="loadModelCandidates">{{ t('admin.unifiedGateway.refreshCandidates') }}</button>
+              <button class="btn btn-secondary text-xs" :disabled="saving || loading || bulkConfiguring" @click="loadModelCandidates">{{ t('admin.unifiedGateway.refreshCandidates') }}</button>
             </div>
           </div>
+          <p v-if="bulkSummary" data-testid="gateway-bulk-summary" class="rounded-lg bg-teal-50 p-3 text-sm text-teal-800 dark:bg-teal-950/30 dark:text-teal-200">{{ bulkSummary }}</p>
           <div v-if="modelCandidateGroups.length === 0" class="text-sm text-gray-500">{{ t('admin.unifiedGateway.noModelCandidates') }}</div>
           <div v-else-if="filteredModelCandidateGroups.length === 0" data-testid="gateway-no-matching-candidates" class="text-sm text-gray-500">{{ t('admin.unifiedGateway.noMatchingCandidates') }}</div>
           <div v-else class="overflow-x-auto">
@@ -95,7 +104,7 @@
                     <td class="px-2 py-2"><span :class="group.eligible_count ? 'text-green-600' : 'text-amber-600'">{{ group.eligible_count }}/{{ group.candidates.length }} {{ t('admin.unifiedGateway.eligible') }}</span></td>
                     <td class="px-2 py-2">{{ billingModeLabel(billingModeForEndpoint(group.endpoint)) }}</td>
                     <td class="px-2 py-2"><span :class="groupStatusClass(group)">{{ groupStatusLabel(group) }}</span></td>
-                    <td class="px-2 py-2"><button data-testid="gateway-configure-model" class="btn btn-secondary text-xs" :disabled="saving || !canWrite || !group.eligible_count" @click="useFirstCandidate(group)">{{ t('admin.unifiedGateway.configureModel') }}</button></td>
+                    <td class="px-2 py-2"><button data-testid="gateway-configure-model" class="btn btn-secondary text-xs" :disabled="saving || bulkConfiguring || !canWrite || !group.eligible_count" @click="useFirstCandidate(group)">{{ t('admin.unifiedGateway.configureModel') }}</button></td>
                   </tr>
                   <tr class="border-t border-gray-50 dark:border-gray-800">
                     <td colspan="7" class="px-2 py-2">
@@ -104,7 +113,7 @@
                         <div class="mt-2 space-y-2">
                           <div v-for="candidate in group.candidates" :key="`${candidate.public_model}-${candidate.provider_identity}-${candidate.account_id}-${candidate.endpoint}`" class="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-gray-50 p-2 dark:bg-gray-800/60">
                             <div><span class="font-medium">{{ candidate.account_name }}</span><span class="ml-2 text-gray-500">{{ candidate.provider_identity }} · {{ candidate.upstream_model }}</span><span class="ml-2" :class="candidate.runtime_eligible ? 'text-green-600' : 'text-amber-600'">{{ candidate.runtime_eligible ? t('admin.unifiedGateway.eligible') : (candidate.blockers?.map(item => item.code).join(', ') || t('admin.unifiedGateway.blocked')) }}</span></div>
-                            <button data-testid="gateway-use-candidate" class="btn btn-secondary text-xs" :disabled="saving || !canWrite || !candidate.runtime_eligible" @click="useCandidate(candidate)">{{ t('admin.unifiedGateway.useThisRoute') }}</button>
+                            <button data-testid="gateway-use-candidate" class="btn btn-secondary text-xs" :disabled="saving || bulkConfiguring || !canWrite || !candidate.runtime_eligible" @click="useCandidate(candidate)">{{ t('admin.unifiedGateway.useThisRoute') }}</button>
                           </div>
                         </div>
                       </details>
@@ -114,7 +123,8 @@
               </tbody>
             </table>
           </div>
-        </section>
+          </div>
+        </details>
 
         <section v-if="managementAvailable" data-testid="gateway-api-usage" class="card space-y-3 border-teal-100 p-5 dark:border-teal-900">
           <div>
@@ -175,53 +185,29 @@
             </div>
 
             <section v-if="document.lanes.length" data-testid="gateway-basic-pricing" class="space-y-4 rounded-xl border border-teal-100 bg-teal-50/50 p-4 dark:border-teal-900 dark:bg-teal-950/20">
-              <div>
+              <div class="flex flex-wrap items-start justify-between gap-4">
+                <div>
                 <h3 class="font-medium text-gray-900 dark:text-white">{{ t('admin.unifiedGateway.basicPricingTitle') }}</h3>
                 <p class="mt-1 text-xs text-gray-600 dark:text-gray-300">{{ t('admin.unifiedGateway.basicPricingHint') }}</p>
+                </div>
+                <label class="field-label min-w-[220px]">{{ t('admin.unifiedGateway.unifiedMarkup') }}
+                  <input data-testid="gateway-unified-markup" v-model.trim="unifiedMarkupMultiplier" class="input mt-1" inputmode="decimal" @input="applyUnifiedMarkup" />
+                </label>
               </div>
               <div v-for="(lane, laneIndex) in document.lanes" :key="lane.id" :data-testid="`gateway-basic-lane-${laneIndex}`" class="space-y-3 rounded-lg border border-white/80 bg-white/70 p-3 dark:border-gray-700 dark:bg-gray-900/30">
                 <div class="flex flex-wrap items-start justify-between gap-2">
                   <div>
                     <strong class="text-sm text-gray-900 dark:text-gray-100">{{ laneIndex === 0 ? t('admin.unifiedGateway.primaryRouteName') : t('admin.unifiedGateway.backupRouteName') }} · {{ laneRouteSummary(lane) }}</strong>
-                    <p class="mt-1 text-xs text-gray-500">{{ t('admin.unifiedGateway.independentLanePricingHint') }}</p>
+                    <p class="mt-1 text-xs text-gray-500">{{ t('admin.unifiedGateway.providerPriceHint') }}</p>
                   </div>
                   <span class="rounded-full bg-gray-100 px-2 py-1 text-xs text-gray-600 dark:bg-gray-800 dark:text-gray-300">{{ billingModeLabel(lane.profile.billing_mode) }}</span>
                 </div>
-                <div class="grid gap-3 md:grid-cols-2">
+                <div class="grid gap-3 md:grid-cols-3">
                   <div class="field-label"><span>{{ t('admin.unifiedGateway.billingMode') }}</span><strong :data-testid="simpleTestId('gateway-basic-billing-mode', laneIndex)" class="mt-1 block rounded-md bg-gray-50 px-3 py-2 text-sm text-gray-900 dark:bg-gray-800 dark:text-gray-100">{{ billingModeLabel(lane.profile.billing_mode) }}</strong></div>
-                  <label class="field-label">{{ t('admin.unifiedGateway.simplePricingMethod') }}
-                    <select :data-testid="simpleTestId('gateway-basic-pricing-method', laneIndex)" :value="simplePricingMethodFor(lane)" class="input mt-1" @change="setSimplePricingMethod(lane, $event)">
-                      <option value="provider_metered">{{ t('admin.unifiedGateway.simplePricingProviderMetered') }}</option>
-                      <option value="final_user_price">{{ t('admin.unifiedGateway.simplePricingFinalPrice') }}</option>
-                      <option v-if="lane.profile.billing_mode !== 'token'" value="flat_unit_price">{{ t('admin.unifiedGateway.simplePricingFlat') }}</option>
-                    </select>
-                  </label>
+                  <div class="field-label"><span>{{ t('admin.unifiedGateway.providerPriceSource') }}</span><strong class="mt-1 block rounded-md bg-gray-50 px-3 py-2 text-sm text-gray-900 dark:bg-gray-800 dark:text-gray-100">{{ lane.profile.provider_base_unit_price ? t('admin.unifiedGateway.providerPriceLoaded') : t('admin.unifiedGateway.providerPricePending') }}</strong></div>
+                  <div class="field-label"><span>{{ t('admin.unifiedGateway.effectiveMarkup') }}</span><strong class="mt-1 block rounded-md bg-gray-50 px-3 py-2 text-sm text-gray-900 dark:bg-gray-800 dark:text-gray-100">{{ lane.profile.user_markup_multiplier || unifiedMarkupMultiplier }}×</strong></div>
                 </div>
-                <div v-if="simplePricingMethodFor(lane) === 'provider_metered'" class="grid gap-3 md:grid-cols-3">
-                  <label class="field-label">{{ t('admin.unifiedGateway.simpleProviderBasePrice') }}
-                    <input :data-testid="simpleTestId('gateway-basic-provider-base', laneIndex)" v-model.trim="lane.profile.manual_base_unit_price" class="input mt-1" placeholder="0.000010000000" />
-                  </label>
-                  <label class="field-label">{{ t('admin.unifiedGateway.simpleUpstreamMultiplier') }}
-                    <input :data-testid="simpleTestId('gateway-basic-upstream-multiplier', laneIndex)" v-model.trim="lane.profile.manual_upstream_multiplier" class="input mt-1" placeholder="1.000000" />
-                  </label>
-                  <label class="field-label">{{ t('admin.unifiedGateway.simpleUserMarkup') }}
-                    <input :data-testid="simpleTestId('gateway-basic-user-markup', laneIndex)" v-model.trim="lane.profile.user_markup_multiplier" class="input mt-1" placeholder="1.200000" />
-                  </label>
-                  <p class="md:col-span-3 text-xs text-gray-600 dark:text-gray-300">{{ t('admin.unifiedGateway.simpleProviderMeteredHint') }}</p>
-                </div>
-                <div v-else-if="simplePricingMethodFor(lane) === 'final_user_price'">
-                  <label class="field-label">{{ t('admin.unifiedGateway.simpleFinalUserPrice') }}
-                    <input :data-testid="simpleTestId('gateway-basic-final-price', laneIndex)" v-model.trim="lane.profile.final_user_unit_price" class="input mt-1 max-w-md" placeholder="0.00100000" />
-                  </label>
-                  <p class="mt-1 text-xs text-gray-600 dark:text-gray-300">{{ t('admin.unifiedGateway.simpleFinalPriceHint') }}</p>
-                </div>
-                <div v-else class="grid gap-3 md:grid-cols-2">
-                  <label class="field-label">{{ t('admin.unifiedGateway.simpleFlatUnitPrice') }}
-                    <input :data-testid="simpleTestId('gateway-basic-flat-price', laneIndex)" :value="simpleFlatUnitPriceFor(lane)" @input="setSimpleFlatUnitPrice(lane, $event)" class="input mt-1 max-w-md" placeholder="0.01000000" />
-                  </label>
-                  <p class="self-end text-xs text-gray-600 dark:text-gray-300">{{ t('admin.unifiedGateway.simpleFlatPriceHint') }}</p>
-                </div>
-                <p v-if="laneIndex === 0" class="text-xs text-amber-700 dark:text-amber-300">{{ t('admin.unifiedGateway.simplePricingReasonHint') }}</p>
+                <p class="text-xs text-gray-600 dark:text-gray-300">{{ t('admin.unifiedGateway.providerPriceFormula') }}</p>
               </div>
             </section>
 
@@ -360,7 +346,7 @@
             <details class="card p-5">
               <summary class="cursor-pointer text-lg font-semibold">{{ t('admin.unifiedGateway.publishedConfigs') }}</summary>
               <div v-if="configs.length === 0" class="mt-3 text-sm text-gray-500">{{ t('admin.unifiedGateway.noConfigs') }}</div>
-              <div v-for="item in configs" :key="item.id" class="mt-3 rounded-lg border border-gray-100 p-3 text-sm dark:border-gray-700"><div class="flex justify-between gap-2"><button class="truncate text-left font-semibold text-teal-700" :disabled="saving || !canWrite" @click="editPublished(item)">{{ item.public_model }}</button><span :class="item.readiness === 'ready' ? 'text-green-600' : 'text-amber-600'">{{ item.readiness }}</span></div><div class="mt-1 text-xs text-gray-500">{{ item.endpoint }} · {{ item.lifecycle }} · rev {{ item.revision }} · {{ t('admin.unifiedGateway.statusRuntimeEffective') }}: {{ runtimeEffectiveLabel(item.runtime_effective) }}</div><div class="mt-3 flex flex-wrap gap-2"><button class="btn btn-secondary text-xs" :disabled="saving || !canWrite" @click="editPublished(item)">{{ t('admin.unifiedGateway.editDraft') }}</button><button v-if="item.lifecycle === 'published'" class="btn btn-secondary text-xs" :disabled="saving || !canWrite" @click="disablePublished(item)">{{ t('admin.unifiedGateway.disableAction') }}</button><button v-if="item.lifecycle === 'disabled'" class="btn btn-secondary text-xs" :disabled="saving || !canWrite" @click="restorePublished(item)">{{ t('admin.unifiedGateway.restoreAction') }}</button><button class="btn btn-secondary text-xs" :disabled="saving" @click="showRevisions(item)">{{ t('admin.unifiedGateway.revisionsAction') }}</button></div><div v-if="selectedConfigId === item.id && revisions.length" class="mt-3 rounded bg-gray-50 p-2 text-xs dark:bg-gray-800/60"><div v-for="revision in revisions" :key="revision.revision" class="flex items-center justify-between gap-2 py-1"><span>rev {{ revision.revision }} · {{ revision.lifecycle }} · {{ revision.reason || '-' }}</span><button v-if="item.lifecycle === 'disabled' && revision.lifecycle === 'published'" class="text-teal-700" :disabled="!canWrite" @click="restorePublished(item, revision.revision)">{{ t('admin.unifiedGateway.restoreAction') }}</button></div><div class="mt-3 border-t border-gray-200 pt-2 dark:border-gray-700"><div class="font-medium">{{ t('admin.unifiedGateway.snapshots') }}</div><div v-if="snapshots.length === 0" class="mt-1 text-gray-500">{{ t('admin.unifiedGateway.noSnapshots') }}</div><div v-for="snapshot in snapshots" :key="snapshot.id" class="mt-1 text-gray-500">{{ snapshot.status }} · {{ snapshot.provider_identity }} · {{ snapshot.user_charge }} {{ snapshot.currency }}</div></div></div></div>
+              <div v-for="item in configs" :key="item.id" class="mt-3 rounded-lg border border-gray-100 p-3 text-sm dark:border-gray-700"><div class="flex justify-between gap-2"><button class="truncate text-left font-semibold text-teal-700" :disabled="saving || !canWrite" @click="editPublished(item)">{{ item.public_model }}</button><span :class="item.readiness === 'ready' ? 'text-green-600' : 'text-amber-600'">{{ item.lifecycle === 'published' ? t('admin.unifiedGateway.enabled') : t('admin.unifiedGateway.disabledLabel') }}</span></div><div class="mt-1 text-xs text-gray-500">{{ endpointLabel(item.endpoint) }} · {{ t('admin.unifiedGateway.configuredSummary', { lanes: item.lanes.length, markup: item.lanes[0]?.profile.user_markup_multiplier || '1.000000' }) }}</div><div class="mt-3 flex flex-wrap gap-2"><button class="btn btn-secondary text-xs" :disabled="saving || !canWrite" @click="editPublished(item)">{{ t('admin.unifiedGateway.editDraft') }}</button><button v-if="item.lifecycle === 'published'" class="btn btn-secondary text-xs" :disabled="saving || !canWrite" @click="disablePublished(item)">{{ t('admin.unifiedGateway.disableAction') }}</button><button v-if="item.lifecycle === 'disabled'" class="btn btn-secondary text-xs" :disabled="saving || !canWrite" @click="restorePublished(item)">{{ t('admin.unifiedGateway.restoreAction') }}</button><button class="btn btn-secondary text-xs" :disabled="saving" @click="showRevisions(item)">{{ t('admin.unifiedGateway.showTechnicalDetails') }}</button></div><details v-if="selectedConfigId === item.id && revisions.length" class="mt-3 rounded bg-gray-50 p-2 text-xs dark:bg-gray-800/60"><summary class="cursor-pointer font-medium">{{ t('admin.unifiedGateway.versionDetails') }}</summary><div v-for="revision in revisions" :key="revision.revision" class="flex items-center justify-between gap-2 py-1"><span>{{ t('admin.unifiedGateway.versionNumber', { number: revision.revision }) }} · {{ revision.lifecycle }} · {{ revision.reason || '-' }}</span><button v-if="item.lifecycle === 'disabled' && revision.lifecycle === 'published'" class="text-teal-700" :disabled="!canWrite" @click="restorePublished(item, revision.revision)">{{ t('admin.unifiedGateway.restoreAction') }}</button></div><div class="mt-3 border-t border-gray-200 pt-2 dark:border-gray-700"><div class="font-medium">{{ t('admin.unifiedGateway.snapshots') }}</div><div v-if="snapshots.length === 0" class="mt-1 text-gray-500">{{ t('admin.unifiedGateway.noSnapshots') }}</div><div v-for="snapshot in snapshots" :key="snapshot.id" class="mt-1 text-gray-500">{{ snapshot.status }} · {{ snapshot.provider_identity }} · {{ snapshot.user_charge }} {{ snapshot.currency }}</div></div></details></div>
             </details>
           </aside>
         </div>
@@ -408,6 +394,9 @@ const probeResults = ref<Record<string, string>>({})
 const pricingImports = ref<Record<string, string>>({})
 const pricingImportPreviews = ref<Record<string, UnifiedGatewayPricingImportResult>>({})
 const advancedEditorOpen = ref(false)
+const unifiedMarkupMultiplier = ref('1.000000')
+const bulkConfiguring = ref(false)
+const bulkSummary = ref('')
 const gatewayStepUp = useStepUp()
 
 interface UnifiedGatewayCandidateGroup {
@@ -418,13 +407,11 @@ interface UnifiedGatewayCandidateGroup {
   eligible_count: number
 }
 
-type UnifiedGatewaySimplePricingMethod = 'provider_metered' | 'final_user_price' | 'flat_unit_price'
-
 function newBinding(): UnifiedGatewayAccountBinding { return { id: `binding_${crypto.randomUUID?.() ?? Date.now()}`, account_id: '', endpoint: '', schedulable: true, eligibility: 'unknown', priority: 10, enabled: true, revision: 1 } }
 function newTarget(endpoint: UnifiedGatewayEndpoint = 'chat_completions'): UnifiedGatewayRouteTarget { return { id: `target_${crypto.randomUUID?.() ?? Date.now()}`, provider_identity: '', upstream_model: '', endpoint, priority: 10, bindings: [newBinding()] } }
 function newLane(endpoint: UnifiedGatewayEndpoint = 'chat_completions'): UnifiedGatewayBillingLane {
   const billingMode = billingModeForEndpoint(endpoint)
-  return { id: `lane_${crypto.randomUUID?.() ?? Date.now()}`, code: '', name: '', selection_strategy: 'fixed_priority', profile: { id: `profile_${crypto.randomUUID?.() ?? Date.now()}`, version: '1', pricing_model: pricingModelForBillingMode(billingMode), billing_mode: billingMode, rate_mode: 'manual_only', rate_basis: billingMode, pricing_schema_id: schemasFor(billingMode)[0], currency: 'USD', base_price_semantics: 'provider_base', provider_base_unit_price: null, manual_base_unit_price: null, manual_upstream_multiplier: null, user_markup_multiplier: null, final_user_unit_price: null, fixed_fee: '0', minimum_charge: '0', rounding_mode: 'half_up', precision: 8, fallback_reason: defaultPricingReason(), manual_pricing_rules: null, charge_trigger: 'success_delivery', failure_charge: 'zero' }, targets: [newTarget(endpoint)] }
+  return { id: `lane_${crypto.randomUUID?.() ?? Date.now()}`, code: '', name: '', selection_strategy: 'fixed_priority', profile: { id: `profile_${crypto.randomUUID?.() ?? Date.now()}`, version: '1', pricing_model: pricingModelForBillingMode(billingMode), billing_mode: billingMode, rate_mode: 'manual_only', rate_basis: billingMode, pricing_schema_id: schemasFor(billingMode)[0], currency: 'USD', base_price_semantics: 'provider_base', provider_base_unit_price: null, manual_base_unit_price: null, manual_upstream_multiplier: null, user_markup_multiplier: '1.000000', final_user_unit_price: null, fixed_fee: '0', minimum_charge: '0', rounding_mode: 'half_up', precision: 8, fallback_reason: defaultPricingReason(), manual_pricing_rules: null, charge_trigger: 'success_delivery', failure_charge: 'zero' }, targets: [newTarget(endpoint)] }
 }
 function emptyDocument(): UnifiedGatewayConfig { return { access_group_id: '', public_model: '', endpoint: 'chat_completions', lanes: [newLane()] } }
 const document = reactive<UnifiedGatewayConfig>(emptyDocument())
@@ -565,6 +552,8 @@ function resetDocument() {
   revisions.value = []
   snapshots.value = []
   advancedEditorOpen.value = false
+  unifiedMarkupMultiplier.value = '1.000000'
+  bulkSummary.value = ''
 }
 function addLane() { document.lanes.push(newLane(document.endpoint)) }
 function removeLane(index: number) { document.lanes.splice(index, 1) }
@@ -582,48 +571,16 @@ function updateSimpleBillingMode(lane: UnifiedGatewayBillingLane, mode: string) 
   syncPricingMode(lane)
   ensurePricingReason(lane)
 }
-function applySimplePricingMethod(lane: UnifiedGatewayBillingLane, method: UnifiedGatewaySimplePricingMethod) {
-  const normalized = method === 'flat_unit_price' && lane.profile.billing_mode === 'token' ? 'final_user_price' : method
-  lane.profile.rate_mode = 'manual_only'
-  lane.profile.rate_basis = rateBasisForBillingMode(lane.profile.billing_mode)
-  if (normalized === 'flat_unit_price') {
-    lane.profile.pricing_schema_id = 'flat_unit_price_v1'
-    lane.profile.base_price_semantics = 'final_user_price'
-    lane.profile.provider_base_unit_price = null
-    lane.profile.manual_base_unit_price = null
-    lane.profile.manual_upstream_multiplier = null
-    lane.profile.user_markup_multiplier = null
-    lane.profile.final_user_unit_price = null
-  } else if (normalized === 'final_user_price') {
-    lane.profile.pricing_schema_id = schemasFor(lane.profile.billing_mode)[0]
-    lane.profile.base_price_semantics = 'final_user_price'
-    lane.profile.provider_base_unit_price = null
-    lane.profile.manual_base_unit_price = null
-    lane.profile.manual_upstream_multiplier = null
-    lane.profile.user_markup_multiplier = null
-    lane.profile.manual_pricing_rules = null
-  } else {
-    lane.profile.pricing_schema_id = schemasFor(lane.profile.billing_mode)[0]
-    lane.profile.base_price_semantics = 'provider_base'
-    lane.profile.final_user_unit_price = null
-    lane.profile.manual_pricing_rules = null
+function applyUnifiedMarkup() {
+  const value = unifiedMarkupMultiplier.value.trim() || '1.000000'
+  for (const lane of document.lanes) {
+    if (lane.profile.base_price_semantics === 'provider_base' && !lane.profile.manual_pricing_rules) lane.profile.user_markup_multiplier = value
   }
-  syncPricingMode(lane)
-  ensurePricingReason(lane)
 }
-function simplePricingMethodFor(lane: UnifiedGatewayBillingLane): UnifiedGatewaySimplePricingMethod {
-  if (lane.profile.pricing_schema_id === 'flat_unit_price_v1') return 'flat_unit_price'
-  if (lane.profile.base_price_semantics === 'final_user_price') return 'final_user_price'
-  return 'provider_metered'
-}
-function setSimplePricingMethod(lane: UnifiedGatewayBillingLane, event: Event) {
-  const value = (event.target as HTMLSelectElement | null)?.value
-  if (value === 'provider_metered' || value === 'final_user_price' || value === 'flat_unit_price') applySimplePricingMethod(lane, value)
-}
-function simpleFlatUnitPriceFor(lane: UnifiedGatewayBillingLane) { return lane.profile.manual_pricing_rules?.unit_price ?? '' }
-function setSimpleFlatUnitPrice(lane: UnifiedGatewayBillingLane, event: Event) {
-  if (!lane.profile.manual_pricing_rules) applySimplePricingMethod(lane, 'flat_unit_price')
-  if (lane.profile.manual_pricing_rules) lane.profile.manual_pricing_rules.unit_price = (event.target as HTMLInputElement | null)?.value ?? ''
+function syncUnifiedMarkupFromDocument() {
+  const value = document.lanes.map(lane => lane.profile.user_markup_multiplier).find(item => item && item.trim())
+  unifiedMarkupMultiplier.value = value || '1.000000'
+  applyUnifiedMarkup()
 }
 function simpleTestId(prefix: string, laneIndex: number) { return laneIndex === 0 ? prefix : `${prefix}-${laneIndex}` }
 function laneRouteSummary(lane: UnifiedGatewayBillingLane) {
@@ -638,14 +595,16 @@ function useCandidate(candidate: UnifiedGatewayModelCandidate) {
   const sameModelCandidates = modelCandidates.value.filter(item => item.public_model === candidate.public_model && item.endpoint === candidate.endpoint)
   useCandidates([candidate, ...sameModelCandidates.filter(item => item !== candidate)])
 }
-function useCandidates(candidates: UnifiedGatewayModelCandidate[]) {
+function buildDocumentFromCandidates(candidates: UnifiedGatewayModelCandidate[]): UnifiedGatewayConfig | null {
   const eligibleCandidates = candidates.filter(candidate => candidate.runtime_eligible)
-  if (!canWrite.value || !eligibleCandidates.length) return
-  resetDocument()
+  if (!eligibleCandidates.length) return null
+  const next = emptyDocument()
+  const defaultGroup = options.value?.items.access_groups.length === 1 ? options.value.items.access_groups[0] : undefined
+  if (defaultGroup) next.access_group_id = defaultGroup.id
   const first = eligibleCandidates[0]
-  document.public_model = first.public_model
-  document.endpoint = first.endpoint
-  document.lanes.splice(0, document.lanes.length)
+  next.public_model = first.public_model
+  next.endpoint = first.endpoint
+  next.lanes.splice(0, next.lanes.length)
   for (const [index, candidate] of eligibleCandidates.entries()) {
     const lane = newLane(candidate.endpoint)
     const priority = (index + 1) * 10
@@ -662,8 +621,17 @@ function useCandidates(candidates: UnifiedGatewayModelCandidate[]) {
     binding.priority = priority
     binding.schedulable = candidate.schedulable
     binding.eligibility = 'eligible'
-    document.lanes.push(lane)
+    next.lanes.push(lane)
   }
+  return next
+}
+function useCandidates(candidates: UnifiedGatewayModelCandidate[]) {
+  if (!canWrite.value) return
+  const next = buildDocumentFromCandidates(candidates)
+  if (!next) return
+  resetDocument()
+  Object.assign(document, next)
+  applyUnifiedMarkup()
   advancedEditorOpen.value = false
   syncPreviewSelection()
 }
@@ -726,14 +694,54 @@ watch(() => document.lanes, syncPreviewSelection, { deep: true, immediate: true 
 
 async function loadModelCandidates() { if (!managementAvailable.value) return; try { const result = await adminAPI.unifiedGateway.listModelCandidates(); modelCandidates.value = result.items } catch (error: any) { appStore.showError(error?.message || t('admin.unifiedGateway.loadFailed')) } }
 async function loadPage() { loading.value = true; metaLoadFailed.value = false; try { meta.value = await adminAPI.unifiedGateway.getMeta(); if (managementAvailable.value) { options.value = await adminAPI.unifiedGateway.getOptions(); const page = await adminAPI.unifiedGateway.listConfigs(''); configs.value = page.items; await loadModelCandidates() } else { options.value = null; configs.value = []; modelCandidates.value = [] } } catch (error: any) { meta.value = null; options.value = null; configs.value = []; modelCandidates.value = []; metaLoadFailed.value = true; appStore.showError(error?.message || t('admin.unifiedGateway.loadFailed')) } finally { loading.value = false } }
-async function saveDraft(): Promise<boolean> { if (!canWrite.value) return false; saving.value = true; try { if (!draftId.value) { const draft = await adminAPI.unifiedGateway.createDraft(JSON.parse(JSON.stringify(document))); draftId.value = draft.id; draftRevision.value = draft.revision; configRevision.value = draft.document.revision ?? 0; Object.assign(document, draft.document); } else { const draft = await adminAPI.unifiedGateway.updateDraft(draftId.value, JSON.parse(JSON.stringify(document)), draftRevision.value); draftRevision.value = draft.revision; Object.assign(document, draft.document) } validation.value = null; preview.value = null; appStore.showSuccess(t('admin.unifiedGateway.saved')); return true } catch (error: any) { appStore.showError(error?.message || t('admin.unifiedGateway.saveFailed')); return false } finally { saving.value = false } }
+async function configureAllModels() {
+  if (!canWrite.value || bulkConfiguring.value) return
+  const pending = modelCandidateGroups.value.filter(group => group.eligible_count > 0 && !publishedModelKeys.value.has(group.key))
+  if (!pending.length) return
+  if (typeof window !== 'undefined' && !window.confirm(t('admin.unifiedGateway.configureAllConfirm', { count: pending.length }))) return
+  bulkConfiguring.value = true
+  bulkSummary.value = t('admin.unifiedGateway.configuringProgress', { done: 0, total: pending.length })
+  let published = 0
+  let blocked = 0
+  let cancelled = false
+  try {
+    for (const [index, group] of pending.entries()) {
+      bulkSummary.value = t('admin.unifiedGateway.configuringProgress', { done: index, total: pending.length })
+      const next = buildDocumentFromCandidates(group.candidates)
+      if (!next) { blocked += 1; continue }
+      try {
+        const draft = await adminAPI.unifiedGateway.createDraft(next)
+        const checked = await adminAPI.unifiedGateway.validateDraft(draft.id, undefined, draft.revision)
+        if (!checked.valid || !checked.validation_token) { blocked += 1; continue }
+        const result = await gatewayStepUp.run(() => adminAPI.unifiedGateway.publishDraft(draft.id, draft.document.revision ?? 0, checked.validation_token!, 'configure all available models'))
+        configs.value = [result, ...configs.value.filter(item => item.id !== result.id)]
+        published += 1
+      } catch (error: unknown) {
+        if (isStepUpCancelled(error)) { cancelled = true; break }
+        blocked += 1
+      }
+    }
+    await loadModelCandidates()
+    const page = await adminAPI.unifiedGateway.listConfigs('')
+    configs.value = page.items
+    bulkSummary.value = t('admin.unifiedGateway.configuringDone', { published, blocked, total: pending.length })
+    if (!cancelled && published > 0) appStore.showSuccess(t('admin.unifiedGateway.bulkPublished', { count: published }))
+  } catch (error: any) {
+    bulkSummary.value = ''
+    appStore.showError(error?.message || t('admin.unifiedGateway.publishFailed'))
+  } finally {
+    bulkConfiguring.value = false
+    if (cancelled) appStore.showError(t('admin.unifiedGateway.stepUpUnavailable'))
+  }
+}
+async function saveDraft(): Promise<boolean> { if (!canWrite.value) return false; saving.value = true; try { if (!draftId.value) { const draft = await adminAPI.unifiedGateway.createDraft(JSON.parse(JSON.stringify(document))); draftId.value = draft.id; draftRevision.value = draft.revision; configRevision.value = draft.document.revision ?? 0; Object.assign(document, draft.document); } else { const draft = await adminAPI.unifiedGateway.updateDraft(draftId.value, JSON.parse(JSON.stringify(document)), draftRevision.value); draftRevision.value = draft.revision; Object.assign(document, draft.document) } syncUnifiedMarkupFromDocument(); validation.value = null; preview.value = null; appStore.showSuccess(t('admin.unifiedGateway.saved')); return true } catch (error: any) { appStore.showError(error?.message || t('admin.unifiedGateway.saveFailed')); return false } finally { saving.value = false } }
 async function validateCurrent() { if (!canWrite.value) return; saving.value = true; try { if (!(await saveDraft())) return; validation.value = await adminAPI.unifiedGateway.validateDraft(draftId.value, JSON.parse(JSON.stringify(document)), draftRevision.value) } catch (error: any) { appStore.showError(error?.message || t('admin.unifiedGateway.validateFailed')) } finally { saving.value = false } }
 async function previewCurrent() { if (!canWrite.value) return; saving.value = true; try { if (!(await saveDraft())) return; syncPreviewSelection(); const lane = previewLane.value; const target = previewTarget.value; const binding = previewBindingOptions.value.find(item => item.id === previewBindingId.value) ?? previewBindingOptions.value[0]; if (!lane || !target || !binding) throw new Error(t('admin.unifiedGateway.previewSelectionRequired')); const request = lane.profile.billing_mode === 'token' ? { lane_id: lane.id, target_id: target.id, binding_id: binding.id, input_tokens: previewInput.value, output_tokens: previewOutput.value, delivery_state: previewDeliveryState.value } : { lane_id: lane.id, target_id: target.id, binding_id: binding.id, units: '1', delivery_state: previewDeliveryState.value }; preview.value = await adminAPI.unifiedGateway.previewDraft(draftId.value, request, JSON.parse(JSON.stringify(document))) } catch (error: any) { appStore.showError(error?.message || t('admin.unifiedGateway.previewFailed')) } finally { saving.value = false } }
 function operationKey(prefix: string) { if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return `${prefix}-${crypto.randomUUID()}`; return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}` }
 function reportSensitiveActionError(error: unknown) { if (isStepUpCancelled(error)) return; if (isStepUpBlocked(error)) { appStore.showError(stepUpBlockReason(error) === 'STEP_UP_ADMIN_API_KEY_FORBIDDEN' ? t('admin.unifiedGateway.stepUpApiKeyForbidden') : t('admin.unifiedGateway.stepUpUnavailable')); return } appStore.showError((error as any)?.message || t('admin.unifiedGateway.publishFailed')) }
 async function publishCurrent() { if (!canWrite.value) return; saving.value = true; const key = operationKey('unified-publish'); try { if (!(await saveDraft())) return; validation.value = await adminAPI.unifiedGateway.validateDraft(draftId.value, JSON.parse(JSON.stringify(document)), draftRevision.value); if (!validation.value?.validation_token) throw new Error(t('admin.unifiedGateway.validationRequired')); const result = await gatewayStepUp.run(() => adminAPI.unifiedGateway.publishDraft(draftId.value, configRevision.value, validation.value!.validation_token!, 'admin publish', key)); appStore.showSuccess(t('admin.unifiedGateway.published')); configs.value = [result, ...configs.value.filter(item => item.id !== result.id)]; Object.assign(document, result); configRevision.value = result.revision ?? configRevision.value; validation.value = null; preview.value = null } catch (error: unknown) { reportSensitiveActionError(error) } finally { saving.value = false } }
 async function loadRevisionAndSnapshots(item: UnifiedGatewayConfig) { if (!item.id) return; revisions.value = await adminAPI.unifiedGateway.listRevisions(item.id); const page = await adminAPI.unifiedGateway.listSnapshots({ access_group_id: item.access_group_id, public_model: item.public_model, page: 1, page_size: 10 }); snapshots.value = page.items }
-async function editPublished(item: UnifiedGatewayConfig) { if (!canWrite.value || !item.id) return; saving.value = true; try { const current = await adminAPI.unifiedGateway.getConfig(item.id); const draft = await adminAPI.unifiedGateway.createDraftFromConfig(item.id); draftId.value = draft.id; draftRevision.value = draft.revision; configRevision.value = current.revision ?? 0; selectedConfigId.value = item.id; await loadRevisionAndSnapshots(item); Object.assign(document, draft.document); validation.value = null; preview.value = null; advancedEditorOpen.value = false; appStore.showSuccess(t('admin.unifiedGateway.draftOpened')) } catch (error: any) { appStore.showError(error?.message || t('admin.unifiedGateway.loadFailed')) } finally { saving.value = false } }
+async function editPublished(item: UnifiedGatewayConfig) { if (!canWrite.value || !item.id) return; saving.value = true; try { const current = await adminAPI.unifiedGateway.getConfig(item.id); const draft = await adminAPI.unifiedGateway.createDraftFromConfig(item.id); draftId.value = draft.id; draftRevision.value = draft.revision; configRevision.value = current.revision ?? 0; selectedConfigId.value = item.id; await loadRevisionAndSnapshots(item); Object.assign(document, draft.document); syncUnifiedMarkupFromDocument(); validation.value = null; preview.value = null; advancedEditorOpen.value = false; appStore.showSuccess(t('admin.unifiedGateway.draftOpened')) } catch (error: any) { appStore.showError(error?.message || t('admin.unifiedGateway.loadFailed')) } finally { saving.value = false } }
 async function showRevisions(item: UnifiedGatewayConfig) { if (!item.id) return; selectedConfigId.value = item.id; try { await loadRevisionAndSnapshots(item) } catch (error: any) { appStore.showError(error?.message || t('admin.unifiedGateway.loadFailed')) } }
 async function disablePublished(item: UnifiedGatewayConfig) { if (!canWrite.value || !item.id || item.revision === undefined) return; saving.value = true; const key = operationKey('unified-disable'); try { const result = await gatewayStepUp.run(() => adminAPI.unifiedGateway.disableConfig(item.id!, item.revision!, 'admin disable', key)); configs.value = configs.value.map(config => config.id === result.id ? result : config); appStore.showSuccess(t('admin.unifiedGateway.disabled')) } catch (error: unknown) { reportSensitiveActionError(error) } finally { saving.value = false } }
 async function restorePublished(item: UnifiedGatewayConfig, sourceRevision?: number) { if (!canWrite.value || !item.id || item.revision === undefined) return; const source = sourceRevision ?? revisions.value.find(revision => revision.lifecycle === 'published')?.revision; if (!source) return; saving.value = true; const key = operationKey('unified-restore'); try { const result = await gatewayStepUp.run(() => adminAPI.unifiedGateway.restoreConfig(item.id!, source, item.revision!, 'admin restore', key)); configs.value = configs.value.map(config => config.id === result.id ? result : config); appStore.showSuccess(t('admin.unifiedGateway.restored')) } catch (error: unknown) { reportSensitiveActionError(error) } finally { saving.value = false } }

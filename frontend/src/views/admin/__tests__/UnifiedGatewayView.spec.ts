@@ -151,13 +151,13 @@ describe('admin UnifiedGatewayView availability state', () => {
     expect(wrapper.text()).not.toContain('admin.unifiedGateway.runtimeOff')
   })
 
-  it('keeps all unconfirmed price inputs explicit', async () => {
+  it('uses the provider price and a single shared multiplier', async () => {
     const wrapper = mountView()
     await flushPromises()
 
-    expect(wrapper.findAll('input[placeholder="0.000010000000"]').every(input => input.element.value === '')).toBe(true)
-    expect(wrapper.get('input[placeholder="1.000000"]').element.value).toBe('')
-    expect(wrapper.get('input[placeholder="1.200000"]').element.value).toBe('')
+    expect(wrapper.get('[data-testid="gateway-unified-markup"]').element.value).toBe('1.000000')
+    expect(wrapper.find('[data-testid="gateway-basic-provider-base"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="gateway-basic-pricing-method"]').exists()).toBe(false)
   })
 
   it('fails closed when the migration is not ready', async () => {
@@ -275,7 +275,7 @@ describe('admin UnifiedGatewayView availability state', () => {
     expect(wrapper.get('[data-testid="gateway-advanced-editor"]').attributes('style')).toContain('display: none')
   })
 
-  it('keeps simple pricing modes aligned with the selected billing unit', async () => {
+  it('applies the shared multiplier without exposing per-provider price fields', async () => {
     getOptions.mockResolvedValue({
       items: {
         access_groups: [{ id: 'group_1', name: 'Unified API' }],
@@ -292,10 +292,10 @@ describe('admin UnifiedGatewayView availability state', () => {
 
     await wrapper.get('[data-testid="gateway-advanced-toggle"]').trigger('click')
     await wrapper.get('[data-testid="gateway-advanced-billing-mode"]').setValue('image')
-    await wrapper.get('[data-testid="gateway-basic-pricing-method"]').setValue('flat_unit_price')
+    await wrapper.get('[data-testid="gateway-unified-markup"]').setValue('1.250000')
 
-    expect(wrapper.find('[data-testid="gateway-basic-flat-price"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="gateway-basic-final-price"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="gateway-basic-pricing-method"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="gateway-unified-markup"]').element.value).toBe('1.250000')
     expect(wrapper.get('[data-testid="gateway-advanced-editor"]').attributes('style') || '').not.toContain('display: none')
   })
 
@@ -344,7 +344,7 @@ describe('admin UnifiedGatewayView availability state', () => {
     expect(wrapper.get('[data-testid="gateway-selected-route"]').text()).toContain('openai-chatgpt')
     expect(wrapper.get('[data-testid="gateway-backup-route-hint"]').exists()).toBe(true)
     expect(wrapper.findAll('[data-testid^="gateway-basic-lane-"]')).toHaveLength(2)
-    expect(wrapper.get('[data-testid="gateway-basic-provider-base-1"]').element.value).toBe('')
+    expect(wrapper.get('[data-testid="gateway-unified-markup"]').element.value).toBe('1.000000')
     await wrapper.get('[data-testid="gateway-advanced-toggle"]').trigger('click')
     expect(wrapper.findAll('[data-testid="gateway-advanced-billing-mode"]')).toHaveLength(2)
   })

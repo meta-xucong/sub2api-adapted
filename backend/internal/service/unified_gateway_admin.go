@@ -705,6 +705,9 @@ func (s *UnifiedGatewayAdminService) CreateDraft(ctx context.Context, actorID, k
 	// produce a different digest on every attempt.
 	idempotencyPayload := document
 	document = normalizeUnifiedGatewayDocument(document)
+	if err := s.applyProviderPricingDefaults(ctx, &document); err != nil {
+		return nil, err
+	}
 	if document.ID == "" {
 		document.ID = opaqueID("mc")
 	}
@@ -836,6 +839,9 @@ func (s *UnifiedGatewayAdminService) UpdateDraft(ctx context.Context, actorID, k
 	}
 	if document.AccessGroupID != current.Document.AccessGroupID {
 		return nil, adminError(http.StatusNotFound, "UNIFIED_GATEWAY_SCOPE_DENIED", "draft access group cannot be changed", nil, ErrUnifiedGatewayAdminNotFound)
+	}
+	if err := s.applyProviderPricingDefaults(ctx, &document); err != nil {
+		return nil, err
 	}
 	replay, err := s.findIdempotent(ctx, actorID, "draft.update", id, key, document)
 	if err != nil {
@@ -1326,6 +1332,9 @@ func unifiedGatewayCandidateEndpoint(account *Account, publicModel string) strin
 	model := strings.ToLower(strings.TrimSpace(publicModel))
 	if strings.HasPrefix(model, "gpt-image-") || strings.HasPrefix(model, "image-") {
 		return UnifiedGatewayEndpointImages
+	}
+	if strings.HasPrefix(model, "grok-imagine-video") || strings.HasPrefix(model, "grok-video") || (account != nil && account.Platform == PlatformGrok && strings.Contains(model, "video")) {
+		return UnifiedGatewayEndpointVideos
 	}
 	if account != nil && account.GetAPIProtocol() == APIProtocolResponses {
 		return UnifiedGatewayEndpointResponses
@@ -2049,8 +2058,8 @@ func validatePricingProfile(blockers, warnings *[]UnifiedGatewayIssue, profile U
 		if profile.UserMarkupMultiplier == nil {
 			add("markup_required", "provider_base requires user_markup_multiplier", ".user_markup_multiplier")
 		}
-		if profile.RateMode == "manual_only" && profile.ManualBaseUnitPrice == nil && profile.ManualUpstreamMultiplier == nil && profile.ManualPricingRules == nil {
-			add("manual_fallback_required", "manual_only requires a manual base, multiplier or whitelisted rule", ".")
+		if profile.RateMode == "manual_only" && profile.ProviderBaseUnitPrice == nil && profile.ManualBaseUnitPrice == nil && profile.ManualUpstreamMultiplier == nil && profile.ManualPricingRules == nil {
+			add("manual_fallback_required", "manual_only requires a provider base, manual base, multiplier or whitelisted rule", ".")
 		}
 	}
 }
@@ -2185,6 +2194,127 @@ func validationToken(document UnifiedGatewayConfig) string {
 	return "sha256:" + canonicalDigest(document)
 }
 func opaqueIDFromBigint(prefix string, id int64) string { return opaqueNumericID(prefix, id) }
+
+// applyProviderPricingDefaults makes the simple unified-gateway flow use the
+// prices already stored on the selected access group.  It intentionally only
+// fills empty provider-base profiles: an explicit operator choice remains
+// authoritative.  The user-facing multiplier is the only adjustable value
+// and defaults to 1.0 (the stored provider price).
+func (s *UnifiedGatewayAdminService) applyProviderPricingDefaults(ctx context.Context, document *UnifiedGatewayConfig) error {
+	if s == nil || document == nil || s.groups == nil || strings.TrimSpace(document.AccessGroupID) == "" {
+		return nil
+	}
+	groupID, err := parseAccessGroupID(document.AccessGroupID)
+	if err != nil {
+		return nil
+	}
+	groups, err := s.groups.ListActive(ctx)
+	if err != nil {
+		return err
+	}
+	var source *Group
+	for i := range groups {
+		if groups[i].ID == groupID {
+			source = &groups[i]
+			break
+		}
+	}
+	if source == nil {
+		return nil
+	}
+	sourceID := opaqueNumericID("ag", source.ID)
+	for i := range document.Lanes {
+		lane := &document.Lanes[i]
+		profile := &lane.Profile
+		if profile.UserMarkupMultiplier == nil {
+			value := "1.000000"
+			profile.UserMarkupMultiplier = &value
+		}
+		if profile.BasePriceSemantics != "provider_base" || profile.ProviderBaseUnitPrice != nil || profile.ManualBaseUnitPrice != nil || profile.FinalUserUnitPrice != nil || profile.ManualPricingRules != nil {
+			continue
+		}
+		model := ""
+		if len(lane.Targets) > 0 {
+			model = lane.Targets[0].UpstreamModel
+		}
+		price := unifiedGatewayStoredProviderUnitPrice(source, profile.BillingMode, model)
+		if price == nil {
+			continue
+		}
+		value := decimal.NewFromFloat(*price).StringFixed(12)
+		profile.ProviderBaseUnitPrice = &value
+		profile.RateMode = "manual_only"
+		profile.RateBasis = profile.BillingMode
+		reason := "provider price loaded from the unified access group"
+		profile.FallbackReason = &reason
+		lane.PricingSourceGroupID = sourceID
+		lane.PricingSourceRevision = "sha256:" + canonicalDigest(map[string]any{
+			"group_id":     source.ID,
+			"model":        model,
+			"billing_mode": profile.BillingMode,
+			"price":        value,
+		})
+	}
+	return nil
+}
+
+func unifiedGatewayStoredProviderUnitPrice(group *Group, billingMode, model string) *float64 {
+	if group == nil {
+		return nil
+	}
+	wanted := strings.ToLower(strings.TrimSpace(model))
+	for i := range group.ModelPricing {
+		pricing := &group.ModelPricing[i]
+		if pricing.BillingMode != "" && string(pricing.BillingMode) != billingMode {
+			continue
+		}
+		matched := false
+		for _, pattern := range pricing.Models {
+			pattern = strings.ToLower(strings.TrimSpace(pattern))
+			if pattern == wanted || (strings.HasSuffix(pattern, "*") && strings.HasPrefix(wanted, strings.TrimSuffix(pattern, "*"))) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			continue
+		}
+		switch billingMode {
+		case "token":
+			if pricing.InputPrice != nil {
+				return pricing.InputPrice
+			}
+			for _, interval := range pricing.Intervals {
+				if interval.InputPrice != nil {
+					return interval.InputPrice
+				}
+			}
+		case "per_request":
+			if pricing.PerRequestPrice != nil {
+				return pricing.PerRequestPrice
+			}
+			for _, interval := range pricing.Intervals {
+				if interval.PerRequestPrice != nil {
+					return interval.PerRequestPrice
+				}
+			}
+		case "image":
+			if pricing.PerRequestPrice != nil {
+				return pricing.PerRequestPrice
+			}
+			if pricing.ImageOutputPrice != nil {
+				return pricing.ImageOutputPrice
+			}
+		}
+	}
+	switch billingMode {
+	case "image":
+		return group.GetImagePrice("2K")
+	case "video":
+		return group.GetVideoPriceForModel(model, "720p")
+	}
+	return nil
+}
 
 func normalizeUnifiedGatewayDocument(document UnifiedGatewayConfig) UnifiedGatewayConfig {
 	if document.Lifecycle == "" {
