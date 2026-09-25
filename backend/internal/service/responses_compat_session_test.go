@@ -21,6 +21,22 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestCloneResponsesCompatRequest_CopiesRawInputBeforeProtocolAdaptation(t *testing.T) {
+	original := apicompat.ResponsesRequest{
+		Input:      json.RawMessage(`[{"type":"message","role":"user","content":"保留历史"}]`),
+		ToolChoice: json.RawMessage(`"auto"`),
+		Include:    []string{"reasoning.encrypted_content"},
+	}
+	clone := cloneResponsesCompatRequest(original)
+	clone.Input = append(clone.Input[:0], []byte(`"adapted"`)...)
+	clone.ToolChoice = append(clone.ToolChoice[:0], []byte(`"required"`)...)
+	clone.Include[0] = "mutated"
+
+	require.JSONEq(t, `[{"type":"message","role":"user","content":"保留历史"}]`, string(original.Input))
+	require.JSONEq(t, `"auto"`, string(original.ToolChoice))
+	require.Equal(t, "reasoning.encrypted_content", original.Include[0])
+}
+
 func TestResponsesCompatSession_ReplaysOutputAndDeduplicatesToolResult(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

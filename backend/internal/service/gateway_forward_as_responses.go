@@ -63,7 +63,7 @@ func (s *GatewayService) ForwardAsResponses(
 			return nil, err
 		}
 	}
-	canonicalResponsesReq := responsesReq
+	canonicalResponsesReq := cloneResponsesCompatRequest(responsesReq)
 	canonicalBody, err := json.Marshal(&canonicalResponsesReq)
 	if err != nil {
 		return nil, fmt.Errorf("marshal canonical Responses request: %w", err)

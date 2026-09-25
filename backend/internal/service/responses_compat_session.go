@@ -50,6 +50,20 @@ type responsesCompatLocalBinding struct {
 	ExpiresAt time.Time
 }
 
+// cloneResponsesCompatRequest snapshots raw request fields before a protocol
+// adapter unmarshals another representation into the same request struct.
+// json.RawMessage.UnmarshalJSON may reuse its existing backing array; a
+// shallow request copy would therefore let Responses→Anthropic adaptation
+// corrupt the canonical history used by previous_response_id replay.
+func cloneResponsesCompatRequest(req apicompat.ResponsesRequest) apicompat.ResponsesRequest {
+	clone := req
+	clone.Input = append(json.RawMessage(nil), req.Input...)
+	clone.ToolChoice = append(json.RawMessage(nil), req.ToolChoice...)
+	clone.Include = append([]string(nil), req.Include...)
+	clone.Tools = append([]apicompat.ResponsesTool(nil), req.Tools...)
+	return clone
+}
+
 func responsesCompatSessionScope(c *gin.Context) string {
 	return fmt.Sprintf("group:%d:key:%d", getOpenAIGroupIDFromContext(c), getAPIKeyIDFromContext(c))
 }
