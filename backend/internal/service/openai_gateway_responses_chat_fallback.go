@@ -31,6 +31,20 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 		writeOpenAIResponsesFallbackError(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
 		return nil, fmt.Errorf("parse responses request: %w", err)
 	}
+	if strings.TrimSpace(responsesReq.PreviousResponseID) != "" {
+		if err := s.prepareResponsesCompatContinuation(ctx, c, &responsesReq); err != nil {
+			writeOpenAIResponsesFallbackError(c, http.StatusBadRequest, "previous_response_not_found", err.Error())
+			return nil, err
+		}
+		// Re-marshal the canonical replayed request.  The Chat bridge only
+		// consumes Responses fields, so unsupported upstream-only fields should
+		// not leak into the third-party request after the history is expanded.
+		replayedBody, marshalErr := json.Marshal(&responsesReq)
+		if marshalErr != nil {
+			return nil, fmt.Errorf("marshal replayed Responses request: %w", marshalErr)
+		}
+		body = replayedBody
+	}
 	originalModel := strings.TrimSpace(responsesReq.Model)
 	if originalModel == "" {
 		writeOpenAIResponsesFallbackError(c, http.StatusBadRequest, "invalid_request_error", "model is required")
@@ -111,10 +125,152 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 		return s.handleErrorResponse(ctx, resp, c, account, chatBody, billingModel)
 	}
 
+	var result *OpenAIForwardResult
 	if clientStream {
-		return s.streamChatCompletionsAsResponses(c, resp, originalModel, customTools, toolSearch, namespaceTools, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
+		result, err = s.streamChatCompletionsAsResponses(c, resp, originalModel, customTools, toolSearch, namespaceTools, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
+	} else {
+		result, err = s.bufferChatCompletionsAsResponses(c, resp, originalModel, customTools, toolSearch, namespaceTools, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
 	}
-	return s.bufferChatCompletionsAsResponses(c, resp, originalModel, customTools, toolSearch, namespaceTools, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
+	if err == nil && result != nil {
+		if result.ResponseID != "" {
+			s.bindHTTPResponseAccount(ctx, c, account, result.ResponseID)
+		}
+		if result.responsesCompatResponse != nil {
+			persistCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			persistErr := s.saveResponsesCompatResponse(persistCtx, c, &responsesReq, result.responsesCompatResponse)
+			cancel()
+			if persistErr != nil {
+				logger.L().Warn("openai responses compatibility session persistence failed", zap.Error(persistErr), zap.String("response_id", result.ResponseID))
+			}
+		}
+	}
+	return result, err
+}
+
+// forwardResponsesCompactViaRawChatCompletions implements /responses/compact
+// for API-key accounts whose upstream only exposes Chat Completions.  The
+// upstream receives a normal, tool-free summary turn; the client still gets a
+// Responses compaction item with a gateway-owned opaque payload and a portable
+// summary.  Native OpenAI compact responses never enter this path.
+func (s *OpenAIGatewayService) forwardResponsesCompactViaRawChatCompletions(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	body []byte,
+) (*OpenAIForwardResult, error) {
+	startTime := time.Now()
+
+	var responsesReq apicompat.ResponsesRequest
+	if err := json.Unmarshal(body, &responsesReq); err != nil {
+		writeOpenAIResponsesFallbackError(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
+		return nil, fmt.Errorf("parse Responses compact request: %w", err)
+	}
+	if strings.TrimSpace(responsesReq.PreviousResponseID) != "" {
+		if err := s.prepareResponsesCompatContinuation(ctx, c, &responsesReq); err != nil {
+			writeOpenAIResponsesFallbackError(c, http.StatusBadRequest, "previous_response_not_found", err.Error())
+			return nil, err
+		}
+	}
+	canonicalReq := responsesReq
+	originalModel := strings.TrimSpace(canonicalReq.Model)
+	if originalModel == "" {
+		writeOpenAIResponsesFallbackError(c, http.StatusBadRequest, "invalid_request_error", "model is required")
+		return nil, fmt.Errorf("missing model in compact request")
+	}
+
+	compactReq, err := buildResponsesCompatCompactRequest(&canonicalReq)
+	if err != nil {
+		writeOpenAIResponsesFallbackError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return nil, err
+	}
+	chatReq, err := apicompat.ResponsesToChatCompletionsRequest(compactReq)
+	if err != nil {
+		writeOpenAIResponsesFallbackError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return nil, fmt.Errorf("convert Responses compact request to Chat Completions: %w", err)
+	}
+
+	serviceTier := extractOpenAIServiceTierFromBody(body)
+	billingModel := resolveOpenAIForwardModel(account, originalModel, "")
+	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
+	reasoningEffort := extractOpenAIReasoningEffortFromBody(body, upstreamModel, billingModel, originalModel)
+	reasoningEffort = ApplyThinkingEnabledFallback(reasoningEffort, body, billingModel)
+	chatReq.Model = upstreamModel
+	chatReq.Stream = false
+	chatReq.Tools = nil
+	chatReq.ToolChoice = nil
+
+	chatBody, err := json.Marshal(chatReq)
+	if err != nil {
+		return nil, fmt.Errorf("marshal Chat Completions compact request: %w", err)
+	}
+	chatBody, err = s.applyOpenAIFastPolicyToBody(ctx, account, upstreamModel, chatBody)
+	if err != nil {
+		var blocked *OpenAIFastBlockedError
+		if errors.As(err, &blocked) {
+			writeOpenAIFastPolicyBlockedResponse(c, blocked)
+		}
+		return nil, err
+	}
+	if serviceTier == nil {
+		serviceTier = extractOpenAIServiceTierFromBody(chatBody)
+	}
+
+	apiKey, targetURL, err := s.resolveCCFallbackTarget(account)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := s.sendCCUpstreamRequest(ctx, c, account, targetURL, chatBody, false, apiKey, account.GetOpenAIUserAgent(), "")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode >= 400 {
+		respBody, upstreamMsg := s.readOpenAIUpstreamError(resp)
+		if foErr := s.failoverOpenAIUpstreamHTTPError(ctx, c, account, resp, respBody, upstreamMsg, upstreamModel); foErr != nil {
+			return nil, foErr
+		}
+		return s.handleErrorResponse(ctx, resp, c, account, chatBody, billingModel)
+	}
+
+	ccResp, usage, err := s.readCCUpstreamJSONResponse(c, resp, writeOpenAIResponsesFallbackError)
+	if err != nil {
+		return nil, err
+	}
+	responsesResp, err := responsesCompatCompactResponseFromChat(ccResp, originalModel)
+	if err != nil {
+		writeOpenAIResponsesFallbackError(c, http.StatusBadGateway, "api_error", "Failed to build compatibility compaction response")
+		return nil, err
+	}
+	if s.responseHeaderFilter != nil {
+		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+	}
+	c.Writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+	c.JSON(http.StatusOK, responsesResp)
+
+	result := &OpenAIForwardResult{
+		RequestID:               resp.Header.Get("x-request-id"),
+		ResponseID:              responsesResp.ID,
+		Usage:                   usage,
+		Model:                   originalModel,
+		BillingModel:            billingModel,
+		UpstreamModel:           upstreamModel,
+		ReasoningEffort:         reasoningEffort,
+		ServiceTier:             serviceTier,
+		Stream:                  false,
+		Duration:                time.Since(startTime),
+		responsesCompatResponse: responsesResp,
+	}
+	if result.ResponseID != "" {
+		s.bindHTTPResponseAccount(ctx, c, account, result.ResponseID)
+	}
+	persistCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	persistErr := s.saveResponsesCompatResponse(persistCtx, c, &canonicalReq, responsesResp)
+	cancel()
+	if persistErr != nil {
+		logger.L().Warn("openai responses compact compatibility session persistence failed", zap.Error(persistErr), zap.String("response_id", result.ResponseID))
+	}
+	return result, nil
 }
 
 func (s *OpenAIGatewayService) bufferChatCompletionsAsResponses(
@@ -143,15 +299,17 @@ func (s *OpenAIGatewayService) bufferChatCompletionsAsResponses(
 	c.JSON(http.StatusOK, responsesResp)
 
 	return &OpenAIForwardResult{
-		RequestID:       requestID,
-		Usage:           usage,
-		Model:           originalModel,
-		BillingModel:    billingModel,
-		UpstreamModel:   upstreamModel,
-		ReasoningEffort: reasoningEffort,
-		ServiceTier:     serviceTier,
-		Stream:          false,
-		Duration:        time.Since(startTime),
+		RequestID:               requestID,
+		ResponseID:              responsesResp.ID,
+		Usage:                   usage,
+		Model:                   originalModel,
+		BillingModel:            billingModel,
+		UpstreamModel:           upstreamModel,
+		ReasoningEffort:         reasoningEffort,
+		ServiceTier:             serviceTier,
+		Stream:                  false,
+		Duration:                time.Since(startTime),
+		responsesCompatResponse: responsesResp,
 	}, nil
 }
 
@@ -176,9 +334,18 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 	state.ToolSearchDeclared = toolSearch
 	state.NamespaceTools = namespaceTools
 	clientDisconnected := false
+	var compatResponse *apicompat.ResponsesResponse
 
 	writeEvents := func(events []apicompat.ResponsesStreamEvent) {
-		if clientDisconnected || len(events) == 0 {
+		if len(events) == 0 {
+			return
+		}
+		for _, event := range events {
+			if event.Response != nil && (event.Type == "response.completed" || event.Type == "response.incomplete" || event.Type == "response.failed") {
+				compatResponse = event.Response
+			}
+		}
+		if clientDisconnected {
 			return
 		}
 		writeStreamHeaders()
@@ -209,16 +376,18 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 
 	if scan.Err != nil {
 		return &OpenAIForwardResult{
-			RequestID:       requestID,
-			Usage:           scan.Usage,
-			Model:           originalModel,
-			BillingModel:    billingModel,
-			UpstreamModel:   upstreamModel,
-			ReasoningEffort: reasoningEffort,
-			ServiceTier:     serviceTier,
-			Stream:          true,
-			Duration:        time.Since(startTime),
-			FirstTokenMs:    scan.FirstTokenMs,
+			RequestID:               requestID,
+			ResponseID:              state.ResponseID,
+			Usage:                   scan.Usage,
+			Model:                   originalModel,
+			BillingModel:            billingModel,
+			UpstreamModel:           upstreamModel,
+			ReasoningEffort:         reasoningEffort,
+			ServiceTier:             serviceTier,
+			Stream:                  true,
+			Duration:                time.Since(startTime),
+			FirstTokenMs:            scan.FirstTokenMs,
+			responsesCompatResponse: compatResponse,
 		}, fmt.Errorf("stream usage incomplete: %w", scan.Err)
 	}
 
@@ -237,16 +406,18 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 	}
 
 	return &OpenAIForwardResult{
-		RequestID:       requestID,
-		Usage:           scan.Usage,
-		Model:           originalModel,
-		BillingModel:    billingModel,
-		UpstreamModel:   upstreamModel,
-		ReasoningEffort: reasoningEffort,
-		ServiceTier:     serviceTier,
-		Stream:          true,
-		Duration:        time.Since(startTime),
-		FirstTokenMs:    scan.FirstTokenMs,
+		RequestID:               requestID,
+		ResponseID:              state.ResponseID,
+		Usage:                   scan.Usage,
+		Model:                   originalModel,
+		BillingModel:            billingModel,
+		UpstreamModel:           upstreamModel,
+		ReasoningEffort:         reasoningEffort,
+		ServiceTier:             serviceTier,
+		Stream:                  true,
+		Duration:                time.Since(startTime),
+		FirstTokenMs:            scan.FirstTokenMs,
+		responsesCompatResponse: compatResponse,
 	}, nil
 }
 

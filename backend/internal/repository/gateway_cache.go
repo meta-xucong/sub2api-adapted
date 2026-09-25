@@ -68,7 +68,54 @@ func (c *gatewayCache) DeleteSessionAccountID(ctx context.Context, groupID int64
 const (
 	grokVideoPendingBillingPrefix = "grok_video_pending:"
 	grokVideoBilledPrefix         = "grok_video_billed:"
+	responsesCompatStatePrefix    = "responses_compat_state:"
 )
+
+// GetResponsesCompatState returns a serialized third-party Responses replay
+// snapshot. A cache miss is represented by (nil, nil), matching the other
+// gateway state helpers and keeping the service layer independent of Redis.
+func (c *gatewayCache) GetResponsesCompatState(ctx context.Context, key string) ([]byte, error) {
+	if c == nil || c.rdb == nil {
+		return nil, errors.New("gateway cache unavailable")
+	}
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return nil, errors.New("invalid Responses compatibility state key")
+	}
+	payload, err := c.rdb.Get(ctx, responsesCompatStatePrefix+key).Bytes()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return payload, nil
+}
+
+func (c *gatewayCache) SetResponsesCompatState(ctx context.Context, key string, payload []byte, ttl time.Duration) error {
+	if c == nil || c.rdb == nil {
+		return errors.New("gateway cache unavailable")
+	}
+	key = strings.TrimSpace(key)
+	if key == "" || len(payload) == 0 {
+		return errors.New("invalid Responses compatibility state payload")
+	}
+	if ttl <= 0 {
+		ttl = time.Hour
+	}
+	return c.rdb.Set(ctx, responsesCompatStatePrefix+key, payload, ttl).Err()
+}
+
+func (c *gatewayCache) DeleteResponsesCompatState(ctx context.Context, key string) error {
+	if c == nil || c.rdb == nil {
+		return errors.New("gateway cache unavailable")
+	}
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return errors.New("invalid Responses compatibility state key")
+	}
+	return c.rdb.Del(ctx, responsesCompatStatePrefix+key).Err()
+}
 
 func (c *gatewayCache) SetGrokVideoPendingBilling(ctx context.Context, key string, payload []byte, ttl time.Duration) error {
 	if c == nil || c.rdb == nil {
@@ -127,9 +174,11 @@ func (c *gatewayCache) ReleaseGrokVideoBilled(ctx context.Context, key string) e
 	return c.rdb.Del(ctx, grokVideoBilledPrefix+key).Err()
 }
 
-// Compile-time assertion: gatewayCache must implement CyberSessionBlockStore.
+// Compile-time assertions keep the optional gateway state stores wired to the
+// concrete Redis implementation.
 var _ service.CyberSessionBlockStore = (*gatewayCache)(nil)
 var _ service.LiveCallStore = (*gatewayCache)(nil)
+var _ service.ResponsesCompatStateCache = (*gatewayCache)(nil)
 
 const cyberSessionBlockPrefix = "cyber_session_block:"
 

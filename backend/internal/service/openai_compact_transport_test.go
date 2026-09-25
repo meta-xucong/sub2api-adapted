@@ -16,7 +16,7 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-func TestOpenAIGatewayService_Forward_APIKeyCompactBypassesRawChatFallback(t *testing.T) {
+func TestOpenAIGatewayService_Forward_APIKeyCompactUsesPortableChatFallback(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	rec := httptest.NewRecorder()
@@ -29,7 +29,7 @@ func TestOpenAIGatewayService_Forward_APIKeyCompactBypassesRawChatFallback(t *te
 	upstream := &httpUpstreamRecorder{resp: &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid-compact-http"}},
-		Body:       io.NopCloser(strings.NewReader(`{"id":"resp_compact","object":"response","status":"completed","model":"gpt-5.5","output":[{"id":"cmp_1","type":"compaction","encrypted_content":"compact-payload"}],"usage":{"input_tokens":2,"output_tokens":3,"total_tokens":5}}`)),
+		Body:       io.NopCloser(strings.NewReader(`{"id":"chatcmpl_compact","object":"chat.completion","model":"gpt-5.5","choices":[{"index":0,"message":{"role":"assistant","content":"portable compact summary"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}`)),
 	}}
 
 	cfg := &config.Config{}
@@ -60,10 +60,14 @@ func TestOpenAIGatewayService_Forward_APIKeyCompactBypassesRawChatFallback(t *te
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.NotNil(t, upstream.lastReq)
-	require.Equal(t, "https://example.com/v1/responses/compact", upstream.lastReq.URL.String())
+	require.Equal(t, "https://example.com/v1/chat/completions", upstream.lastReq.URL.String())
 	require.Equal(t, "application/json", upstream.lastReq.Header.Get("Accept"))
 	require.Equal(t, "gpt-5.5", gjson.GetBytes(upstream.lastBody, "model").String())
+	require.False(t, gjson.GetBytes(upstream.lastBody, "stream").Bool())
+	require.Contains(t, gjson.GetBytes(upstream.lastBody, "messages.1.content").String(), "Summarize the conversation")
 	require.Equal(t, "compaction", gjson.Get(rec.Body.String(), "output.0.type").String())
+	require.Equal(t, "portable compact summary", gjson.Get(rec.Body.String(), "output.0.summary.0.text").String())
+	require.True(t, strings.HasPrefix(gjson.Get(rec.Body.String(), "output.0.encrypted_content").String(), responsesCompatCompactEnvelopePrefix))
 }
 
 func TestOpenAIGatewayService_Forward_CompactForcesHTTPTransport(t *testing.T) {

@@ -352,11 +352,11 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "previous_response_id must be a response.id (resp_*), not a message id")
 			return
 		}
-		reqLog.Warn("openai.request_validation_failed",
-			zap.String("reason", "previous_response_id_requires_wsv2"),
-		)
-		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "previous_response_id is only supported on Responses WebSocket v2")
-		return
+		// HTTP third-party compatibility adapters can replay a stored canonical
+		// Responses history.  Native OpenAI/WSv2 requests still keep their
+		// existing account-sticky behavior; the selected service decides whether
+		// the opaque ID is forwarded natively or expanded locally.
+		reqLog.Debug("openai.http_previous_response_id_accepted_for_adapter")
 	}
 
 	setOpsRequestContext(c, reqModel, reqStream)
@@ -1432,7 +1432,7 @@ func (h *OpenAIGatewayHandler) validateFunctionCallOutputRequest(c *gin.Context,
 		reqLog.Warn("openai.request_validation_failed",
 			zap.String("reason", "function_call_output_missing_call_id"),
 		)
-		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "function_call_output requires call_id on HTTP requests; continuation via previous_response_id is only supported on Responses WebSocket v2")
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "function_call_output requires call_id or a complete Responses continuation context")
 		return false
 	}
 	if validation.HasItemReferenceForAllCallIDs {
@@ -1442,7 +1442,7 @@ func (h *OpenAIGatewayHandler) validateFunctionCallOutputRequest(c *gin.Context,
 	reqLog.Warn("openai.request_validation_failed",
 		zap.String("reason", "function_call_output_missing_item_reference"),
 	)
-	h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "function_call_output requires item_reference ids matching each call_id on HTTP requests; continuation via previous_response_id is only supported on Responses WebSocket v2")
+	h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "function_call_output requires item_reference ids matching each call_id on HTTP requests, or a complete Responses continuation context")
 	return false
 }
 

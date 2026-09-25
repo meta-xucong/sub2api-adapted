@@ -157,12 +157,30 @@ func convertResponsesInputToAnthropic(instructions string, inputRaw json.RawMess
 				Type:      "tool_result",
 				ToolUseID: fromResponsesCallIDToAnthropic(item.CallID),
 				Content:   contentJSON,
+				IsError:   item.IsError,
 			}
 			blockJSON, _ := json.Marshal([]AnthropicContentBlock{block})
 			messages = append(messages, AnthropicMessage{
 				Role:    "user",
 				Content: blockJSON,
 			})
+
+		case item.Type == "compaction" || item.Type == "compaction_summary":
+			// Provider-native encrypted compaction state is not portable to
+			// Anthropic.  Replay only the visible summary and fail closed when
+			// the item is opaque-only instead of silently losing history.
+			summaryRaw, _ := json.Marshal(item.Summary)
+			summary := extractResponsesCompactionSummary(map[string]json.RawMessage{
+				"summary": summaryRaw,
+			})
+			if strings.TrimSpace(summary) == "" {
+				return nil, nil, fmt.Errorf("Responses compaction item has no portable summary for Anthropic compatibility")
+			}
+			content, _ := json.Marshal([]AnthropicContentBlock{{
+				Type: "text",
+				Text: "<conversation_summary>\n" + summary + "\n</conversation_summary>",
+			}})
+			messages = append(messages, AnthropicMessage{Role: "user", Content: content})
 
 		case item.Type == "reasoning":
 			// Anthropic 无法摄入 OpenAI 的 reasoning：encrypted_content 是不透明的，

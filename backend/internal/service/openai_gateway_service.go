@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
@@ -287,6 +288,8 @@ type OpenAIForwardResult struct {
 
 	wsReplayInput       []json.RawMessage
 	wsReplayInputExists bool
+
+	responsesCompatResponse *apicompat.ResponsesResponse
 }
 
 // SucceededForScheduling reports whether this result is an upstream success
@@ -468,6 +471,7 @@ type OpenAIGatewayService struct {
 	codexModelsManifestCache            codexModelsManifestCache
 	openaiCompatSessionResponses        sync.Map
 	openaiCompatAnthropicDigestSessions sync.Map
+	responsesCompatSessions             sync.Map
 }
 
 // ScheduleAccountLastUsed records that an upstream account accepted a request.
