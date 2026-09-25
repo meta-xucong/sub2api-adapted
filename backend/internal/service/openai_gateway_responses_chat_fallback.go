@@ -165,6 +165,7 @@ func (s *OpenAIGatewayService) forwardResponsesCompactViaRawChatCompletions(
 	c *gin.Context,
 	account *Account,
 	body []byte,
+	clientModel string,
 ) (*OpenAIForwardResult, error) {
 	startTime := time.Now()
 
@@ -180,6 +181,13 @@ func (s *OpenAIGatewayService) forwardResponsesCompactViaRawChatCompletions(
 		}
 	}
 	canonicalReq := responsesReq
+	// /responses/compact may have already applied compact_model_mapping before
+	// native transport failed. That mapping is native-channel-specific: a Chat
+	// Completions fallback must resolve the client-visible model through the
+	// ordinary Chat mapping instead of sending the native compact alias.
+	if clientModel = strings.TrimSpace(clientModel); clientModel != "" {
+		canonicalReq.Model = clientModel
+	}
 	originalModel := strings.TrimSpace(canonicalReq.Model)
 	if originalModel == "" {
 		writeOpenAIResponsesFallbackError(c, http.StatusBadRequest, "invalid_request_error", "model is required")
@@ -235,6 +243,13 @@ func (s *OpenAIGatewayService) forwardResponsesCompactViaRawChatCompletions(
 
 	if resp.StatusCode >= 400 {
 		respBody, upstreamMsg := s.readOpenAIUpstreamError(resp)
+		logger.L().Warn("openai responses compact: Chat Completions fallback upstream failed",
+			zap.Int64("account_id", account.ID),
+			zap.Int("upstream_status", resp.StatusCode),
+			zap.String("upstream_code", extractUpstreamErrorCode(respBody)),
+			zap.String("upstream_message", truncateString(sanitizeUpstreamErrorMessage(upstreamMsg), 256)),
+			zap.Int("upstream_body_bytes", len(respBody)),
+		)
 		if foErr := s.failoverOpenAIUpstreamHTTPError(ctx, c, account, resp, respBody, upstreamMsg, upstreamModel); foErr != nil {
 			return nil, foErr
 		}

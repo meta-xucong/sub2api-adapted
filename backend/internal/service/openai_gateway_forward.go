@@ -193,7 +193,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	}
 
 	if compactPath && account.Type == AccountTypeAPIKey && !openai_compat.ShouldUseResponsesAPI(account.Extra) {
-		return s.forwardResponsesCompactViaRawChatCompletions(ctx, c, account, body)
+		return s.forwardResponsesCompactViaRawChatCompletions(ctx, c, account, body, "")
 	}
 	if shouldForwardOpenAIResponsesViaRawChatCompletions(account) {
 		return s.forwardResponsesViaRawChatCompletions(ctx, c, account, body)
@@ -1191,7 +1191,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 					zap.Int("upstream_status", resp.StatusCode),
 					zap.String("upstream_model", upstreamModel),
 				)
-				return s.forwardResponsesCompactViaRawChatCompletions(ctx, c, account, body)
+				return s.forwardResponsesCompactViaRawChatCompletions(ctx, c, account, body, requestedModel)
 			}
 			if s.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, upstreamMsg, respBody) {
 				upstreamDetail := ""

@@ -105,7 +105,11 @@ func TestOpenAIGatewayService_Forward_NativeCompactUnavailableFallsBackToChat(t 
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeAPIKey,
 		Concurrency: 1,
-		Credentials: map[string]any{"api_key": "sk-test", "base_url": "https://example.com/v1"},
+		Credentials: map[string]any{
+			"api_key":               "sk-test",
+			"base_url":              "https://example.com/v1",
+			"compact_model_mapping": map[string]any{"glm-5.2": "gpt-5.4"},
+		},
 		Extra:       map[string]any{openai_compat.ExtraKeyResponsesSupported: true},
 		Status:      StatusActive,
 		Schedulable: true,
@@ -117,6 +121,7 @@ func TestOpenAIGatewayService_Forward_NativeCompactUnavailableFallsBackToChat(t 
 	require.Len(t, upstream.requests, 2)
 	require.Equal(t, "/v1/responses/compact", upstream.requests[0].URL.Path)
 	require.Equal(t, "/v1/chat/completions", upstream.requests[1].URL.Path)
+	require.Equal(t, "glm-5.2", gjson.GetBytes(upstream.bodies[1], "model").String())
 	require.Equal(t, "compaction", gjson.Get(rec.Body.String(), "output.0.type").String())
 	require.Equal(t, "portable summary", gjson.Get(rec.Body.String(), "output.0.summary.0.text").String())
 }
