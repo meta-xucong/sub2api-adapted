@@ -75,9 +75,13 @@ type t0CompactObservation struct {
 	body []byte
 }
 
-func newT0CompactHTTPServer(t *testing.T, provider, outcome string) (*httptest.Server, string, <-chan t0CompactObservation, *atomic.Int32) {
+func newT0CompactHTTPServer(t *testing.T, provider, outcome string, options ...t0HTTPOptions) (*httptest.Server, string, <-chan t0CompactObservation, *atomic.Int32) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
+	opts := t0HTTPOptions{}
+	if len(options) > 0 {
+		opts = options[0]
+	}
 	observed := make(chan t0CompactObservation, 16)
 	hits := &atomic.Int32{}
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -90,11 +94,25 @@ func newT0CompactHTTPServer(t *testing.T, provider, outcome string) (*httptest.S
 		observed <- t0CompactObservation{r.URL.Path, body}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-Request-Id", "synthetic-upstream-request")
+		if outcome == "tool" || outcome == "slow_tool" {
+			if outcome == "slow_tool" {
+				time.Sleep(100 * time.Millisecond)
+			}
+			writeT0ToolFixture(w, provider, body)
+			return
+		}
 		if outcome == "delayed_bad_json" {
 			time.Sleep(1200 * time.Millisecond)
 		}
 		if outcome == "bad_json" || outcome == "delayed_bad_json" {
 			_, _ = io.WriteString(w, `not-json`)
+			return
+		}
+		if strings.HasPrefix(outcome, "status_") {
+			var code int
+			_, _ = fmt.Sscanf(outcome, "status_%d", &code)
+			w.WriteHeader(code)
+			_, _ = io.WriteString(w, `{"error":{"type":"synthetic_error","message":"synthetic upstream failure"}}`)
 			return
 		}
 		if outcome == "forbidden" {
@@ -121,12 +139,25 @@ func newT0CompactHTTPServer(t *testing.T, provider, outcome string) (*httptest.S
 		model = "claude-sonnet-4-6"
 		platform = service.PlatformAnthropic
 	}
+	if opts.Platform != "" {
+		platform = opts.Platform
+	}
+	if opts.Model != "" {
+		model = opts.Model
+	}
 	groupID := int64(9500)
 	group := &service.Group{ID: groupID, Platform: platform, Status: service.StatusActive}
 	account := service.Account{ID: 9501, Name: "synthetic-compact", Platform: platform, Type: service.AccountTypeAPIKey, Status: service.StatusActive, Schedulable: true, Concurrency: 1,
 		Credentials: map[string]any{"api_key": "synthetic-only", "base_url": upstream.URL, "model_mapping": map[string]any{model: model}},
 		Extra:       map[string]any{"openai_responses_supported": provider != "chat"},
 	}
+	if opts.Composite {
+		group.Platform = service.PlatformComposite
+	}
+	if opts.Protocol != "" {
+		account.Credentials["api_protocol"] = opts.Protocol
+	}
+	account.Credentials["api_base_urls"] = map[string]any{"chat_completions": upstream.URL, "anthropic": upstream.URL, "responses": upstream.URL}
 	accounts := &t0CompactHTTPAccounts{openAIWSFailoverHandlerAccountRepoStub: openAIWSFailoverHandlerAccountRepoStub{accounts: []service.Account{account}}}
 	cfg := &config.Config{RunMode: config.RunModeSimple}
 	cfg.Security.URLAllowlist.AllowInsecureHTTP = true
@@ -142,17 +173,20 @@ func newT0CompactHTTPServer(t *testing.T, provider, outcome string) (*httptest.S
 		acquireAccountSlotFn: func(context.Context, int64, int, string) (bool, error) { return true, nil },
 	})
 	transport := &t0CompactHTTPTransport{client: &http.Client{Timeout: 5 * time.Second}}
-	usage := &openAIWSUsageHandlerUsageLogRepoStub{}
+	var usage service.UsageLogRepository = &openAIWSUsageHandlerUsageLogRepoStub{}
+	if opts.Usage != nil {
+		usage = opts.Usage
+	}
 	rate := service.NewRateLimitService(accounts, nil, cfg, nil, nil)
 	apiKey := &service.APIKey{ID: 9502, GroupID: &groupID, Group: group, User: &service.User{ID: 9503, Status: service.StatusActive}}
 	var endpoint gin.HandlerFunc
-	if provider == "anthropic" {
-		gateway := service.NewGatewayService(accounts, &t0CompactHTTPGroups{group: group}, usage, nil, nil, nil, nil, nil, cfg, nil, nil,
+	if provider == "anthropic" && opts.Platform == "" {
+		gateway := service.NewGatewayService(accounts, &t0CompactHTTPGroups{group: group}, usage, nil, nil, nil, nil, opts.Cache, cfg, nil, nil,
 			service.NewBillingService(cfg, nil), rate, billing, nil, transport, &service.DeferredService{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 		h := &GatewayHandler{gatewayService: gateway, billingCacheService: billing, apiKeyService: &service.APIKeyService{}, concurrencyHelper: NewConcurrencyHelper(concurrency, SSEPingFormatComment, 0), maxAccountSwitches: 1, cfg: cfg}
 		endpoint = h.Responses
 	} else {
-		gateway := service.NewOpenAIGatewayService(accounts, usage, nil, nil, nil, nil, nil, cfg, nil, nil, service.NewBillingService(cfg, nil), rate, billing, transport, &service.DeferredService{}, nil, nil, nil, nil, nil, nil, nil)
+		gateway := service.NewOpenAIGatewayService(accounts, usage, nil, nil, nil, nil, opts.Cache, cfg, nil, nil, service.NewBillingService(cfg, nil), rate, billing, transport, &service.DeferredService{}, nil, nil, nil, nil, nil, nil, nil)
 		h := NewOpenAIGatewayHandler(gateway, concurrency, billing, &service.APIKeyService{}, nil, nil, nil, nil, cfg)
 		endpoint = h.Responses
 	}
@@ -162,7 +196,7 @@ func newT0CompactHTTPServer(t *testing.T, provider, outcome string) (*httptest.S
 		c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: apiKey.User.ID, Concurrency: 1})
 		c.Next()
 	})
-	for _, path := range []string{"/v1/responses/compact", "/openai/v1/responses/compact", "/responses/compact", "/backend-api/codex/responses/compact"} {
+	for _, path := range []string{"/v1/responses", "/v1/responses/compact", "/openai/v1/responses/compact", "/responses/compact", "/backend-api/codex/responses/compact"} {
 		router.POST(path, endpoint)
 	}
 	server := httptest.NewServer(router)

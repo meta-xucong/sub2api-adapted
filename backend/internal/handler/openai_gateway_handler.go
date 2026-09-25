@@ -376,6 +376,9 @@ func NewOpenAIGatewayHandler(
 // Responses handles OpenAI Responses API endpoint
 // POST /openai/v1/responses
 func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
+	if enterResponsesRequest(c, h.gatewayService.ResponsesRequestStore(), h.cfg, h.Responses) {
+		return
+	}
 	// 局部兜底：确保该 handler 内部任何 panic 都不会击穿到进程级。
 	streamStarted := false
 	defer h.recoverResponsesPanic(c, &streamStarted)

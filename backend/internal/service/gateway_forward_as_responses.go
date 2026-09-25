@@ -383,6 +383,7 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 
 	// Accumulate the final Anthropic response from streaming events
 	var finalResp *apicompat.AnthropicResponse
+	sawStop := false
 	var usage ClaudeUsage
 
 	for scanner.Scan() {
@@ -413,6 +414,9 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 		}
 
 		// message_start carries the initial response structure
+		if event.Type == "message_stop" {
+			sawStop = true
+		}
 		if event.Type == "message_start" && event.Message != nil {
 			finalResp = event.Message
 			mergeAnthropicUsage(&usage, event.Message.Usage)
@@ -434,7 +438,7 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 		}
 		if event.Type == "content_block_delta" && event.Delta != nil && finalResp != nil && event.Index != nil {
 			idx := *event.Index
-			if idx < len(finalResp.Content) {
+			if idx >= 0 && idx < len(finalResp.Content) {
 				switch event.Delta.Type {
 				case "text_delta":
 					finalResp.Content[idx].Text += event.Delta.Text
@@ -456,6 +460,10 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 		}
 	}
 
+	if !sawStop {
+		writeResponsesError(c, 502, "upstream_stream_error", "The upstream response stream ended before message_stop")
+		return nil, fmt.Errorf("incomplete upstream stream")
+	}
 	if finalResp == nil {
 		writeResponsesError(c, http.StatusBadGateway, "server_error", "Upstream stream ended without a response")
 		return nil, fmt.Errorf("upstream stream ended without response")
@@ -493,6 +501,9 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 		respBytes, _, err = apicompat.RestoreResponsesClientToolPayload(respBytes, clientToolMapping)
 		if err != nil {
 			return nil, fmt.Errorf("restore responses client tools: %w", err)
+		}
+		if err := json.Unmarshal(respBytes, responsesResp); err != nil {
+			return nil, err
 		}
 		c.Data(http.StatusOK, "application/json; charset=utf-8", respBytes)
 	} else {
@@ -611,6 +622,9 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 			}
 			for _, restored := range payloads {
 				eventType := gjson.GetBytes(restored, "type").String()
+				if captured := responsesCompatTerminalPayload(restored); captured != nil {
+					compatResponse = captured
+				}
 				if clientDisconnected {
 					continue
 				}
@@ -692,6 +706,10 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 		}
 	}
 
+	if !state.CompletedSent {
+		writeResponsesCompatAnthropicFailure(c, state, clientDisconnected, "upstream_stream_error")
+		return resultWithUsage(), fmt.Errorf("incomplete upstream stream")
+	}
 	return finalizeStream()
 }
 

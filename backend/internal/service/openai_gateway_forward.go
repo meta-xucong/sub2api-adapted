@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -23,6 +24,22 @@ import (
 func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, account *Account, body []byte) (*OpenAIForwardResult, error) {
 	beginUpstreamResponseModelObservation(c)
 	ClearActualOpenAIUpstreamEndpoint(c)
+	if account != nil && account.UsesNativeCNResponses() && strings.TrimSpace(gjson.GetBytes(body, "previous_response_id").String()) != "" {
+		var canonical apicompat.ResponsesRequest
+		if err := json.Unmarshal(body, &canonical); err != nil {
+			writeResponsesCompatError(c, err)
+			return nil, err
+		}
+		if err := s.prepareResponsesCompatContinuation(ctx, c, &canonical); err != nil {
+			writeResponsesCompatError(c, err)
+			return nil, err
+		}
+		replayed, err := json.Marshal(&canonical)
+		if err != nil {
+			return nil, err
+		}
+		body = replayed
+	}
 	if shouldForwardOpenAIResponsesViaRawChatCompletions(account) {
 		SetActualOpenAIUpstreamEndpoint(c, "/v1/chat/completions")
 	}
@@ -172,6 +189,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	// （Responses 客户端 × Anthropic 上游），转成 Anthropic 请求走原生端点。
 	// 不能落到下面的 raw-CC 分支——其 URL 构造会把 anthropic base 当 CC base 用。
 	if account.IsAnthropicProtocol() {
+		if compactPath {
+			return s.forwardResponsesCompactViaNativeAnthropic(ctx, c, account, body)
+		}
 		return s.forwardResponsesViaNativeAnthropic(ctx, c, account, body, reqModel)
 	}
 	if account.IsOpenAIApiKey() {
@@ -192,7 +212,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		originalModel = reqModel
 	}
 
-	if compactPath && account.Type == AccountTypeAPIKey && !openai_compat.ShouldUseResponsesAPI(account.Extra) {
+	if compactPath && shouldForwardOpenAIResponsesViaRawChatCompletions(account) {
 		return s.forwardResponsesCompactViaRawChatCompletions(ctx, c, account, body, "")
 	}
 	if shouldForwardOpenAIResponsesViaRawChatCompletions(account) {

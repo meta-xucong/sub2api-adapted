@@ -529,12 +529,18 @@ func detachStreamUpstreamContext(ctx context.Context, stream bool) (context.Cont
 	if !stream {
 		return ctx, func() {}
 	}
+	if accepted, _ := ctx.Value(responsesRequestExecutionKey{}).(bool); accepted {
+		return ctx, func() {}
+	}
 	return context.WithoutCancel(ctx), func() {}
 }
 
 func detachUpstreamContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	if ctx == nil {
 		return context.Background(), func() {}
+	}
+	if accepted, _ := ctx.Value(responsesRequestExecutionKey{}).(bool); accepted {
+		return ctx, func() {}
 	}
 	return context.WithoutCancel(ctx), func() {}
 }

@@ -380,6 +380,19 @@ func openAICompactSupportTier(account *Account) int {
 	if account.IsGrok() {
 		return 2
 	}
+	if account.IsCNProvider() && account.Type == AccountTypeAPIKey {
+		// Portable summary support is not evidence of a native compact probe.
+		if mode, _ := account.Extra["openai_compact_mode"].(string); mode == "force_off" {
+			return 0
+		}
+		if supported, known := account.Extra["openai_compact_supported"].(bool); known {
+			if !supported {
+				return 0
+			}
+			return 2
+		}
+		return 1
+	}
 	if !account.IsOpenAI() {
 		return 0
 	}

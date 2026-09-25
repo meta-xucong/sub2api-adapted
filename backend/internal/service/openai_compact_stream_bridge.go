@@ -76,7 +76,9 @@ func writeOpenAICompactSSEBridge(c *gin.Context, statusCode int, finalResponse [
 			writeOpenAICompactSSEFailure(c, http.StatusBadGateway, finalResponse)
 			return true
 		}
-		return false
+		MarkResponseCommitted(c)
+		c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{"type": "upstream_error", "code": "invalid_compaction_response", "message": "Upstream did not return a completed compaction result"}})
+		return true
 	}
 	if !committed {
 		header := c.Writer.Header()
@@ -147,6 +149,22 @@ func buildOpenAICompactSSEPayload(finalResponse []byte) ([]byte, bool) {
 		return nil, false
 	}
 	if !gjson.ParseBytes(finalResponse).IsObject() {
+		return nil, false
+	}
+	parsed := gjson.ParseBytes(finalResponse)
+	if parsed.Get("error").Exists() && parsed.Get("error").Type != gjson.Null {
+		return nil, false
+	}
+	if status := parsed.Get("status"); status.Exists() && status.String() != "completed" {
+		return nil, false
+	}
+	found := false
+	for _, item := range parsed.Get("output").Array() {
+		if (item.Get("type").String() == "compaction" || item.Get("type").String() == "compaction_summary") && item.Get("encrypted_content").Type == gjson.String && strings.TrimSpace(item.Get("encrypted_content").String()) != "" {
+			found = true
+		}
+	}
+	if !found {
 		return nil, false
 	}
 	// SSE 的 data 行不允许出现裸换行：上游 JSON 可能是 pretty-printed 形态，

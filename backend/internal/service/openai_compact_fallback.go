@@ -121,7 +121,7 @@ func isOpenAICompactModelFailure(statusCode int, upstreamMsg string, upstreamBod
 // native support is left on the native path so a transient 5xx is not silently
 // reinterpreted as a protocol mismatch.
 func shouldFallbackOpenAICompactToChat(account *Account, statusCode int, upstreamMsg string, upstreamBody []byte) bool {
-	if account == nil || account.Type != AccountTypeAPIKey || !account.IsOpenAI() || account.IsAnthropicProtocol() {
+	if account == nil || account.Type != AccountTypeAPIKey || (!account.IsOpenAI() && !account.IsCNProvider()) || account.IsAnthropicProtocol() {
 		return false
 	}
 	if supported, known := account.OpenAICompactSupportKnown(); known && supported {
