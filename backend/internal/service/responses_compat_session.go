@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -163,6 +164,9 @@ func loadResponsesCompatSession(
 				local.Delete(key)
 			} else {
 				state := binding.State
+				if state.ResponseID != responseID {
+					return nil, &responsesCompatError{status: http.StatusInternalServerError, code: "compat_session_corrupt", message: "Compatibility session identity is invalid", param: "previous_response_id"}
+				}
 				return &state, nil
 			}
 		}
@@ -175,17 +179,17 @@ func loadResponsesCompatSession(
 	cacheKey := responsesCompatSessionCacheKey(c, responseID)
 	payload, err := shared.GetResponsesCompatState(ctx, cacheKey)
 	if err != nil {
-		return nil, fmt.Errorf("load Responses compatibility session: %w", err)
+		return nil, &responsesCompatError{status: http.StatusServiceUnavailable, code: "compat_session_unavailable", message: "Compatibility session storage is temporarily unavailable", param: "previous_response_id", cause: err}
 	}
 	if len(payload) == 0 {
 		return nil, nil
 	}
 	var state responsesCompatSessionState
 	if err := json.Unmarshal(payload, &state); err != nil {
-		return nil, fmt.Errorf("decode Responses compatibility session: %w", err)
+		return nil, &responsesCompatError{status: http.StatusInternalServerError, code: "compat_session_corrupt", message: "Compatibility session data is invalid", param: "previous_response_id", cause: err}
 	}
-	if strings.TrimSpace(state.ResponseID) == "" {
-		return nil, nil
+	if state.ResponseID != responseID {
+		return nil, &responsesCompatError{status: http.StatusInternalServerError, code: "compat_session_corrupt", message: "Compatibility session identity is invalid", param: "previous_response_id"}
 	}
 	expiresAt := time.Now().Add(time.Hour)
 	if state.ExpiresAtUnix > 0 {
@@ -478,7 +482,7 @@ func prepareResponsesCompatContinuation(
 		return false, err
 	}
 	if state == nil {
-		return false, fmt.Errorf("previous response %q is not available for this compatibility session", previousID)
+		return false, &responsesCompatError{status: http.StatusBadRequest, code: "previous_response_not_found", message: "Previous response is not available for this compatibility session", param: "previous_response_id"}
 	}
 	current, err := responsesCompatRequestInputRaw(req.Input)
 	if err != nil {
@@ -486,6 +490,9 @@ func prepareResponsesCompatContinuation(
 	}
 	current, err = responsesCompatResolveToolOutputCallIDs(state, current)
 	if err != nil {
+		return false, err
+	}
+	if err := validateResponsesCompatToolOutputs(state, current); err != nil {
 		return false, err
 	}
 	req.Input, err = json.Marshal(mergeResponsesCompatInput(state, current))

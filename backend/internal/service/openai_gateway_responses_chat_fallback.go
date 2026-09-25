@@ -34,7 +34,7 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 	}
 	if strings.TrimSpace(responsesReq.PreviousResponseID) != "" {
 		if err := s.prepareResponsesCompatContinuation(ctx, c, &responsesReq); err != nil {
-			writeOpenAIResponsesFallbackError(c, http.StatusBadRequest, "previous_response_not_found", err.Error())
+			writeResponsesCompatError(c, err)
 			return nil, err
 		}
 		// Re-marshal the canonical replayed request.  The Chat bridge only
@@ -174,9 +174,13 @@ func (s *OpenAIGatewayService) forwardResponsesCompactViaRawChatCompletions(
 		writeOpenAIResponsesFallbackError(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse compact request body")
 		return nil, fmt.Errorf("parse Responses compact request: %w", err)
 	}
+	if err := validateResponsesCompatCompactStream(c, responsesReq.Stream); err != nil {
+		writeResponsesCompatError(c, err)
+		return nil, err
+	}
 	if strings.TrimSpace(responsesReq.PreviousResponseID) != "" {
 		if err := s.prepareResponsesCompatContinuation(ctx, c, &responsesReq); err != nil {
-			writeOpenAIResponsesFallbackError(c, http.StatusBadRequest, "previous_response_not_found", err.Error())
+			writeResponsesCompatError(c, err)
 			return nil, err
 		}
 	}
@@ -268,8 +272,10 @@ func (s *OpenAIGatewayService) forwardResponsesCompactViaRawChatCompletions(
 	if s.responseHeaderFilter != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	}
-	c.Writer.Header().Set("Content-Type", "application/json; charset=utf-8")
-	c.JSON(http.StatusOK, responsesResp)
+	if err := writeResponsesCompatCompactResult(c, responsesResp); err != nil {
+		writeResponsesCompatError(c, &responsesCompatError{status: http.StatusBadGateway, code: "compact_response_invalid", message: "Failed to encode compatibility compact response", cause: err})
+		return nil, err
+	}
 
 	result := &OpenAIForwardResult{
 		RequestID:               resp.Header.Get("x-request-id"),
@@ -280,7 +286,7 @@ func (s *OpenAIGatewayService) forwardResponsesCompactViaRawChatCompletions(
 		UpstreamModel:           upstreamModel,
 		ReasoningEffort:         reasoningEffort,
 		ServiceTier:             serviceTier,
-		Stream:                  false,
+		Stream:                  openAICompactClientWantsStream(c),
 		Duration:                time.Since(startTime),
 		responsesCompatResponse: responsesResp,
 	}
@@ -403,6 +409,27 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 		c.Writer.Flush()
 	}
 
+	writeFailure := func(code, message string) {
+		if state.CompletedSent || clientDisconnected {
+			return
+		}
+		if !state.CreatedSent {
+			writeResponsesCompatError(c, &responsesCompatError{status: http.StatusBadGateway, code: code, message: message})
+			return
+		}
+		failed := &apicompat.ResponsesResponse{
+			ID: state.ResponseID, Object: "response", CreatedAt: state.Created,
+			Model: originalModel, Status: "failed", Output: []apicompat.ResponsesOutput{},
+			Error: &apicompat.ResponsesError{Code: code, Message: message},
+		}
+		event := apicompat.ResponsesStreamEvent{Type: "response.failed", Response: failed, SequenceNumber: state.SequenceNumber}
+		state.SequenceNumber++
+		state.CompletedSent = true
+		MarkResponseCommitted(c)
+		MarkOpsStreamError(c, code, message, http.StatusBadGateway)
+		writeEvents([]apicompat.ResponsesStreamEvent{event})
+	}
+
 	scan := s.scanCCStream(c, resp, "openai responses chat fallback", requestID, startTime, func(chunk *apicompat.ChatCompletionsChunk) {
 		events := apicompat.ChatCompletionsChunkToResponsesEvents(chunk, state)
 		s.cacheReasoningItemsFromEvents(events)
@@ -410,6 +437,7 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 	})
 
 	if scan.Err != nil {
+		writeFailure("upstream_stream_error", "The upstream response stream was interrupted")
 		return &OpenAIForwardResult{
 			RequestID:                   requestID,
 			UpstreamHeaders:             resp.Header,
@@ -428,6 +456,7 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 		}, fmt.Errorf("stream usage incomplete: %w", scan.Err)
 	}
 	if err := state.ValidateToolCallArguments(); err != nil {
+		writeFailure("invalid_tool_arguments", "The upstream response contained invalid tool arguments")
 		return &OpenAIForwardResult{
 			RequestID:                   requestID,
 			UpstreamHeaders:             resp.Header,

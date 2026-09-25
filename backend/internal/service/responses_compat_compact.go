@@ -4,9 +4,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
 
@@ -144,4 +146,22 @@ func responsesCompatCompactResponseFromResponses(
 		Summary:          []apicompat.ResponsesSummary{{Type: "summary_text", Text: summary}},
 	}}
 	return responsesResp, nil
+}
+
+// Reuse the existing body-signal bridge rather than inventing a second compact
+// SSE protocol. An explicitly unary client still receives the original JSON.
+func writeResponsesCompatCompactResult(c *gin.Context, resp *apicompat.ResponsesResponse) error {
+	if openAICompactClientWantsStream(c) {
+		payload, err := json.Marshal(resp)
+		if err != nil {
+			return err
+		}
+		if !writeOpenAICompactSSEBridge(c, http.StatusOK, payload) {
+			return fmt.Errorf("compact SSE bridge rejected response")
+		}
+		return nil
+	}
+	c.Writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+	c.JSON(http.StatusOK, resp)
+	return nil
 }

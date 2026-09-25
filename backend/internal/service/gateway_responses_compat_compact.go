@@ -33,9 +33,13 @@ func (s *GatewayService) forwardResponsesCompactViaAnthropicMessages(
 		writeResponsesError(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse compact request")
 		return nil, fmt.Errorf("parse Responses compact request: %w", err)
 	}
+	if err := validateResponsesCompatCompactStream(c, responsesReq.Stream); err != nil {
+		writeResponsesCompatError(c, err)
+		return nil, err
+	}
 	if strings.TrimSpace(responsesReq.PreviousResponseID) != "" {
 		if err := s.prepareResponsesCompatContinuation(ctx, c, &responsesReq); err != nil {
-			writeResponsesError(c, http.StatusBadRequest, "previous_response_not_found", err.Error())
+			writeResponsesCompatError(c, err)
 			return nil, err
 		}
 	}
@@ -138,8 +142,10 @@ func (s *GatewayService) forwardResponsesCompactViaAnthropicMessages(
 	if s.responseHeaderFilter != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	}
-	c.Writer.Header().Set("Content-Type", "application/json; charset=utf-8")
-	c.JSON(http.StatusOK, responsesResp)
+	if err := writeResponsesCompatCompactResult(c, responsesResp); err != nil {
+		writeResponsesCompatError(c, &responsesCompatError{status: http.StatusBadGateway, code: "compact_response_invalid", message: "Failed to encode compatibility compact response", cause: err})
+		return nil, err
+	}
 
 	var usage ClaudeUsage
 	mergeAnthropicUsage(&usage, anthropicResp.Usage)
@@ -149,7 +155,7 @@ func (s *GatewayService) forwardResponsesCompactViaAnthropicMessages(
 		Model:                   originalModel,
 		UpstreamModel:           mappedModel,
 		ReasoningEffort:         ExtractResponsesReasoningEffortFromBody(body),
-		Stream:                  false,
+		Stream:                  openAICompactClientWantsStream(c),
 		Duration:                time.Since(startTime),
 		responsesCompatResponse: responsesResp,
 	}

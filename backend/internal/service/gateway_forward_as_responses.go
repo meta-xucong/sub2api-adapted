@@ -59,7 +59,7 @@ func (s *GatewayService) ForwardAsResponses(
 	}
 	if strings.TrimSpace(responsesReq.PreviousResponseID) != "" {
 		if err := s.prepareResponsesCompatContinuation(ctx, c, &responsesReq); err != nil {
-			writeResponsesError(c, http.StatusBadRequest, "previous_response_not_found", err.Error())
+			writeResponsesCompatError(c, err)
 			return nil, err
 		}
 	}
