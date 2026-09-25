@@ -165,6 +165,121 @@ func TestResponsesCompatHTTPContinuation_ReplaysFullHistoryToChatUpstream(t *tes
 	require.Equal(t, "function", gjson.GetBytes(replayed, "tools.0.type").String())
 }
 
+func TestResponsesCompatNativeResponsesFallback_ReplaysWhenUpstreamRejectsPreviousResponseID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{
+		{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_native_first"}},
+			Body:       io.NopCloser(strings.NewReader(`{"id":"resp_native_first","object":"response","created_at":1,"model":"glm-5.2","status":"completed","output":[{"type":"function_call","id":"fc_item_1","call_id":"call_exec_1","name":"unified_exec","arguments":"{\"command\":\"Get-Date\"}","status":"completed"}],"usage":{"input_tokens":10,"output_tokens":3,"total_tokens":13}}`)),
+		},
+		{
+			StatusCode: http.StatusBadRequest,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"error":{"type":"invalid_request_error","message":"previous_response_id is not available for this user"}}`)),
+		},
+		{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_chat_replay"}},
+			Body:       io.NopCloser(strings.NewReader(`{"id":"chatcmpl_replay","object":"chat.completion","model":"glm-5.2","choices":[{"index":0,"message":{"role":"assistant","content":"工具结果已处理"},"finish_reason":"stop"}],"usage":{"prompt_tokens":18,"completion_tokens":4,"total_tokens":22}}`)),
+		},
+	}}
+	svc := &OpenAIGatewayService{
+		cfg:          &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false, AllowInsecureHTTP: true}}},
+		httpUpstream: upstream,
+	}
+	account := &Account{
+		ID:       701,
+		Name:     "native-responses-without-stateful-continuation",
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key":  "sk-test",
+			"base_url": "http://upstream.example",
+		},
+		Extra: map[string]any{
+			openai_compat.ExtraKeyResponsesMode:      string(openai_compat.ResponsesSupportModeAuto),
+			openai_compat.ExtraKeyResponsesSupported: true,
+		},
+	}
+
+	firstBody := []byte(`{"model":"glm-5.2","instructions":"保留 Skills instructions","input":[{"type":"message","role":"user","content":"执行检查"}],"tools":[{"type":"function","name":"unified_exec","parameters":{"type":"object","properties":{}}}],"stream":false}`)
+	firstRecorder := httptest.NewRecorder()
+	firstContext, _ := gin.CreateTestContext(firstRecorder)
+	firstContext.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(firstBody))
+	firstContext.Request.Header.Set("Content-Type", "application/json")
+	firstResult, err := svc.Forward(context.Background(), firstContext, account, firstBody)
+	require.NoError(t, err)
+	require.NotNil(t, firstResult)
+	require.NotNil(t, firstResult.responsesCompatResponse)
+	require.Equal(t, "resp_native_first", firstResult.responsesCompatResponse.ID)
+
+	secondBody := []byte(`{"model":"glm-5.2","previous_response_id":"resp_native_first","input":[{"type":"function_call_output","call_id":"call_exec_1","output":"执行成功"}],"stream":false}`)
+	secondRecorder := httptest.NewRecorder()
+	secondContext, _ := gin.CreateTestContext(secondRecorder)
+	secondContext.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(secondBody))
+	secondContext.Request.Header.Set("Content-Type", "application/json")
+	secondResult, err := svc.Forward(context.Background(), secondContext, account, secondBody)
+	require.NoError(t, err)
+	require.NotNil(t, secondResult)
+	require.Equal(t, "chatcmpl_replay", secondResult.ResponseID)
+	require.Len(t, upstream.requests, 3)
+	require.Equal(t, "/v1/responses", upstream.requests[0].URL.Path)
+	require.Equal(t, "/v1/responses", upstream.requests[1].URL.Path)
+	require.Equal(t, "/v1/chat/completions", upstream.requests[2].URL.Path)
+
+	replayed := upstream.bodies[2]
+	require.Equal(t, int64(4), gjson.GetBytes(replayed, "messages.#").Int())
+	require.Equal(t, "system", gjson.GetBytes(replayed, "messages.0.role").String())
+	require.Equal(t, "保留 Skills instructions", gjson.GetBytes(replayed, "messages.0.content").String())
+	require.Equal(t, "user", gjson.GetBytes(replayed, "messages.1.role").String())
+	require.Equal(t, "call_exec_1", gjson.GetBytes(replayed, "messages.2.tool_calls.0.id").String())
+	require.Equal(t, "unified_exec", gjson.GetBytes(replayed, "messages.2.tool_calls.0.function.name").String())
+	require.Equal(t, "tool", gjson.GetBytes(replayed, "messages.3.role").String())
+	require.Equal(t, "call_exec_1", gjson.GetBytes(replayed, "messages.3.tool_call_id").String())
+	require.Equal(t, "执行成功", gjson.GetBytes(replayed, "messages.3.content").String())
+	require.Equal(t, "function", gjson.GetBytes(replayed, "tools.0.type").String())
+}
+
+func TestResponsesCompatNativeResponsesStreamingCapturesTerminalOutput(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	stream := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_native_stream","object":"response","created_at":1,"model":"glm-5.2","status":"in_progress","output":[]}}`,
+		"",
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_stream_1","call_id":"call_stream_1","name":"unified_exec","arguments":"{\"command\":\"Get-Date\"}","status":"completed"}}`,
+		"",
+		`data: {"type":"response.completed","response":{"id":"resp_native_stream","object":"response","created_at":1,"model":"glm-5.2","status":"completed","output":[{"type":"function_call","id":"fc_stream_1","call_id":"call_stream_1","name":"unified_exec","arguments":"{\"command\":\"Get-Date\"}","status":"completed"}],"usage":{"input_tokens":7,"output_tokens":2,"total_tokens":9}}}`,
+		"",
+	}, "\n")
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"glm-5.2","stream":true}`))
+	account := &Account{ID: 702, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Name: "native-stream"}
+	svc := &OpenAIGatewayService{}
+	result, err := svc.handleStreamingResponseWithReasoning(
+		context.Background(),
+		&http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(strings.NewReader(stream)),
+		},
+		c,
+		account,
+		time.Now(),
+		"glm-5.2",
+		"glm-5.2",
+		"",
+	)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, "resp_native_stream", result.responseID)
+	require.NotNil(t, result.responsesCompatResponse)
+	require.Len(t, result.responsesCompatResponse.Output, 1)
+	require.Equal(t, "function_call", result.responsesCompatResponse.Output[0].Type)
+	require.Equal(t, "call_stream_1", result.responsesCompatResponse.Output[0].CallID)
+}
+
 func TestResponsesCompatHTTPContinuation_FiveRoundsDoesNotDuplicateToolCall(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	upstream := &httpUpstreamRecorder{responses: []*http.Response{

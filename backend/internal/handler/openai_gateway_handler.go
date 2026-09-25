@@ -808,7 +808,8 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				apiKey.ID,
 			); bindErr != nil {
 				reqLog.Warn("openai.http_bind_response_owner_fallback_failed",
-					zap.String("response_id", result.ResponseID),
+					zap.Int("response_id_len", len(result.ResponseID)),
+					zap.String("response_id_kind", service.ClassifyOpenAIPreviousResponseIDKind(result.ResponseID)),
 					zap.Error(bindErr),
 				)
 			}

@@ -27,21 +27,51 @@ import (
 
 // openaiStreamingResult streaming response result
 type openaiStreamingResult struct {
-	usage            *OpenAIUsage
-	firstTokenMs     *int
-	responseID       string
-	imageCount       int
-	imageOutputSizes []string
-	searchCount      int
+	usage                   *OpenAIUsage
+	firstTokenMs            *int
+	responseID              string
+	responsesCompatResponse *apicompat.ResponsesResponse
+	imageCount              int
+	imageOutputSizes        []string
+	searchCount             int
 }
 
 type openaiNonStreamingResult struct {
 	*OpenAIUsage
-	usage            *OpenAIUsage
-	responseID       string
-	imageCount       int
-	imageOutputSizes []string
-	searchCount      int
+	usage                   *OpenAIUsage
+	responseID              string
+	responsesCompatResponse *apicompat.ResponsesResponse
+	imageCount              int
+	imageOutputSizes        []string
+	searchCount             int
+}
+
+// parseResponsesCompatResponse extracts the portable response state needed by
+// the local Responses compatibility session.  Native third-party Responses
+// providers often return extensions that are not represented by the bridge
+// types; only the canonical output items are intentionally retained here.
+func parseResponsesCompatResponse(body []byte, fallbackModel string) *apicompat.ResponsesResponse {
+	if len(body) == 0 || !gjson.ValidBytes(body) || !gjson.GetBytes(body, "output").Exists() {
+		return nil
+	}
+	var response apicompat.ResponsesResponse
+	if err := json.Unmarshal(body, &response); err != nil {
+		return nil
+	}
+	response.ID = strings.TrimSpace(response.ID)
+	if response.ID == "" {
+		response.ID = strings.TrimSpace(extractOpenAIResponseIDFromJSONBytes(body))
+	}
+	if response.ID == "" {
+		return nil
+	}
+	if strings.TrimSpace(response.Model) == "" {
+		response.Model = strings.TrimSpace(fallbackModel)
+	}
+	if strings.TrimSpace(response.Status) == "" {
+		response.Status = "completed"
+	}
+	return &response
 }
 
 func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, startTime time.Time, originalModel, mappedModel string) (*openaiStreamingResult, error) {
@@ -340,6 +370,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 	needModelReplace := originalModel != mappedModel
 	streamOutputAccumulator := apicompat.NewBufferedResponseAccumulator()
 	streamDoneItems := newResponsesStreamOutputItems()
+	var streamCompatResponse *apicompat.ResponsesResponse
 	streamImageOutputs := make([]json.RawMessage, 0, 1)
 	streamSeenImages := make(map[string]struct{})
 	searchCounter := 0
@@ -348,12 +379,13 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 	streamSearchSeen := make(map[string]struct{})
 	resultWithUsage := func() *openaiStreamingResult {
 		return &openaiStreamingResult{
-			usage:            usage,
-			firstTokenMs:     firstTokenMs,
-			responseID:       responseID,
-			imageCount:       imageCounter.Count(),
-			imageOutputSizes: imageCounter.Sizes(),
-			searchCount:      searchCounter,
+			usage:                   usage,
+			firstTokenMs:            firstTokenMs,
+			responseID:              responseID,
+			responsesCompatResponse: streamCompatResponse,
+			imageCount:              imageCounter.Count(),
+			imageOutputSizes:        imageCounter.Sizes(),
+			searchCount:             searchCounter,
 		}
 	}
 	flushPending := func(disconnectMessage string) {
@@ -650,6 +682,35 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 				data = string(restoredData)
 				line = "data: " + data
 				eventType = effectiveOpenAISSEEventType(dataBytes, eventType)
+			}
+			if eventType == "response.completed" || eventType == "response.done" || eventType == "response.incomplete" {
+				var streamEvent apicompat.ResponsesStreamEvent
+				if err := json.Unmarshal(dataBytes, &streamEvent); err == nil && streamEvent.Response != nil {
+					compatResponse := *streamEvent.Response
+					if strings.TrimSpace(compatResponse.ID) == "" {
+						compatResponse.ID = responseID
+					}
+					if responseID == "" {
+						responseID = strings.TrimSpace(compatResponse.ID)
+					}
+					if strings.TrimSpace(compatResponse.Model) == "" {
+						compatResponse.Model = originalModel
+					}
+					if strings.TrimSpace(compatResponse.Status) == "" {
+						compatResponse.Status = "completed"
+					}
+					if len(compatResponse.Output) == 0 {
+						if outputJSON, ok := streamDoneItems.BuildOutput(); ok {
+							_ = json.Unmarshal(outputJSON, &compatResponse.Output)
+						}
+						if len(compatResponse.Output) == 0 && streamOutputAccumulator.HasContent() {
+							compatResponse.Output = streamOutputAccumulator.BuildOutput()
+						}
+					}
+					if strings.TrimSpace(compatResponse.ID) != "" {
+						streamCompatResponse = &compatResponse
+					}
+				}
 			}
 			if sanitizedData, sanitized := sanitizeOpenAIResponseFailedEventForClient(
 				dataBytes,
@@ -1651,12 +1712,13 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 	}
 
 	return &openaiNonStreamingResult{
-		OpenAIUsage:      usage,
-		usage:            usage,
-		responseID:       extractOpenAIResponseIDFromJSONBytes(body),
-		imageCount:       countOpenAIResponseImageOutputsFromJSONBytes(body),
-		imageOutputSizes: collectOpenAIResponseImageOutputSizesFromJSONBytes(body),
-		searchCount:      countGrokNativeSearchCallsFromJSONBytes(body),
+		OpenAIUsage:             usage,
+		usage:                   usage,
+		responseID:              extractOpenAIResponseIDFromJSONBytes(body),
+		responsesCompatResponse: parseResponsesCompatResponse(body, originalModel),
+		imageCount:              countOpenAIResponseImageOutputsFromJSONBytes(body),
+		imageOutputSizes:        collectOpenAIResponseImageOutputSizesFromJSONBytes(body),
+		searchCount:             countGrokNativeSearchCallsFromJSONBytes(body),
 	}, nil
 }
 
@@ -1758,12 +1820,13 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 	}
 
 	return &openaiNonStreamingResult{
-		OpenAIUsage:      usage,
-		usage:            usage,
-		responseID:       extractOpenAIResponseIDFromJSONBytes(body),
-		imageCount:       countOpenAIImageOutputsFromSSEBody(bodyText),
-		imageOutputSizes: collectOpenAIImageOutputSizesFromSSEBody(bodyText),
-		searchCount:      countGrokNativeSearchCallsFromSSEBody(bodyText),
+		OpenAIUsage:             usage,
+		usage:                   usage,
+		responseID:              extractOpenAIResponseIDFromJSONBytes(body),
+		responsesCompatResponse: parseResponsesCompatResponse(body, originalModel),
+		imageCount:              countOpenAIImageOutputsFromSSEBody(bodyText),
+		imageOutputSizes:        collectOpenAIImageOutputSizesFromSSEBody(bodyText),
+		searchCount:             countGrokNativeSearchCallsFromSSEBody(bodyText),
 	}, nil
 }
 
