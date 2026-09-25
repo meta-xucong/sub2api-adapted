@@ -794,6 +794,25 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			}()
 			return h.gatewayService.Forward(c.Request.Context(), c, account, attemptBody)
 		}()
+		// The protocol adapter normally binds the response owner while forwarding.
+		// Keep an ingress-level binding as a safety net for native/third-party
+		// Responses paths whose response ID is assembled after the adapter returns.
+		// Without this, a valid first turn can be rejected on the next HTTP turn as
+		// an unowned previous_response_id even when the same API key is used.
+		if err == nil && result != nil && strings.TrimSpace(result.ResponseID) != "" && apiKey != nil && apiKey.GroupID != nil {
+			if bindErr := h.gatewayService.BindOpenAIHTTPResponseOwner(
+				c.Request.Context(),
+				*apiKey.GroupID,
+				result.ResponseID,
+				subject.UserID,
+				apiKey.ID,
+			); bindErr != nil {
+				reqLog.Warn("openai.http_bind_response_owner_fallback_failed",
+					zap.String("response_id", result.ResponseID),
+					zap.Error(bindErr),
+				)
+			}
+		}
 		var cyberBlockBodyHTTP []byte
 		if service.GetOpsCyberPolicy(c) != nil {
 			cyberBlockBodyHTTP = sessionHashBody
