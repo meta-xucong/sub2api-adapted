@@ -111,7 +111,7 @@ func responsesCompatCompactResponseFromChat(
 	chatResp *apicompat.ChatCompletionsResponse,
 	model string,
 ) (*apicompat.ResponsesResponse, error) {
-	responsesResp := apicompat.ChatCompletionsResponseToResponses(chatResp, model, nil, false, nil)
+	responsesResp := apicompat.ChatCompletionsResponseToResponses(chatResp, model, nil, nil, false, nil)
 	return responsesCompatCompactResponseFromResponses(responsesResp, model)
 }
 

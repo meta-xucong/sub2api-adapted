@@ -143,7 +143,7 @@ func TestCodexThirdPartyResponsesOutputPreservesResponseAndCallIDs(t *testing.T)
 		}},
 	}
 
-	out := ChatCompletionsResponseToResponses(&resp, resp.Model, nil, false, nil)
+	out := ChatCompletionsResponseToResponses(&resp, resp.Model, nil, nil, false, nil)
 	require.Equal(t, "chatcmpl_glm_parallel", out.ID)
 	require.Equal(t, "completed", out.Status)
 	require.Len(t, out.Output, 2)
