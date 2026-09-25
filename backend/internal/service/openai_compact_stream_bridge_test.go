@@ -68,10 +68,17 @@ func TestBuildOpenAICompactSSEPayload_EmitsItemsAndCompleted(t *testing.T) {
 	require.True(t, ok)
 
 	events := parseCompactBridgeSSE(t, string(payload))
-	require.Len(t, events, 3)
+	require.Len(t, events, 7)
+	require.Equal(t, "response.created", events[0][0])
+	require.Equal(t, "response.in_progress", events[1][0])
+	require.Equal(t, "response.output_item.added", events[2][0])
+	require.Equal(t, "response.output_item.added", events[4][0])
+	for i, event := range events {
+		require.Equal(t, int64(i), gjson.Get(event[1], "sequence_number").Int())
+	}
 
-	require.Equal(t, "response.output_item.done", events[0][0])
-	first := events[0][1]
+	require.Equal(t, "response.output_item.done", events[3][0])
+	first := events[3][1]
 	require.Equal(t, "response.output_item.done", gjson.Get(first, "type").String())
 	require.Equal(t, int64(0), gjson.Get(first, "output_index").Int())
 	require.Equal(t, "compaction", gjson.Get(first, "item.type").String())
@@ -80,12 +87,12 @@ func TestBuildOpenAICompactSSEPayload_EmitsItemsAndCompleted(t *testing.T) {
 	require.Equal(t, "compact summary", gjson.Get(first, "item.summary.0.text").String())
 	require.True(t, gjson.Get(first, "item.opaque.kept").Bool(), "item 原始字段必须逐字节保留")
 
-	require.Equal(t, "response.output_item.done", events[1][0])
-	require.Equal(t, int64(1), gjson.Get(events[1][1], "output_index").Int())
-	require.Equal(t, "message", gjson.Get(events[1][1], "item.type").String())
+	require.Equal(t, "response.output_item.done", events[5][0])
+	require.Equal(t, int64(1), gjson.Get(events[5][1], "output_index").Int())
+	require.Equal(t, "message", gjson.Get(events[5][1], "item.type").String())
 
-	require.Equal(t, "response.completed", events[2][0])
-	completed := events[2][1]
+	require.Equal(t, "response.completed", events[6][0])
+	completed := events[6][1]
 	require.Equal(t, "response.completed", gjson.Get(completed, "type").String())
 	require.Equal(t, "resp_compact_1", gjson.Get(completed, "response.id").String())
 	require.Equal(t, int64(13), gjson.Get(completed, "response.usage.total_tokens").Int())
@@ -97,8 +104,8 @@ func TestBuildOpenAICompactSSEPayload_InjectsMissingResponseID(t *testing.T) {
 	require.True(t, ok)
 
 	events := parseCompactBridgeSSE(t, string(payload))
-	require.Len(t, events, 2)
-	completed := events[1][1]
+	require.Len(t, events, 5)
+	completed := events[4][1]
 	// Codex 的 ResponseCompleted 解析要求 response.id 为非空 string，缺失时必须注入。
 	id := gjson.Get(completed, "response.id").String()
 	require.True(t, strings.HasPrefix(id, "resp_"), "缺失 id 必须注入 resp_* 兜底: %q", id)
@@ -192,11 +199,11 @@ func TestHandleNonStreamingResponse_CompactClientStreamBridgesToSSE(t *testing.T
 
 	require.Equal(t, "text/event-stream", rec.Header().Get("Content-Type"))
 	events := parseCompactBridgeSSE(t, rec.Body.String())
-	require.Len(t, events, 2)
-	require.Equal(t, "response.output_item.done", events[0][0])
-	require.Equal(t, "compaction", gjson.Get(events[0][1], "item.type").String())
-	require.Equal(t, "response.completed", events[1][0])
-	require.Equal(t, "resp_compact_json", gjson.Get(events[1][1], "response.id").String())
+	require.Len(t, events, 5)
+	require.Equal(t, "response.output_item.done", events[3][0])
+	require.Equal(t, "compaction", gjson.Get(events[3][1], "item.type").String())
+	require.Equal(t, "response.completed", events[4][0])
+	require.Equal(t, "resp_compact_json", gjson.Get(events[4][1], "response.id").String())
 
 	// 计费与响应元数据不受写回形态影响。
 	require.NotNil(t, result.usage)
@@ -251,11 +258,11 @@ func TestHandleSSEToJSON_CompactClientStreamBridgesToSSE(t *testing.T) {
 
 	require.Equal(t, "text/event-stream", rec.Header().Get("Content-Type"))
 	events := parseCompactBridgeSSE(t, rec.Body.String())
-	require.Len(t, events, 2)
-	require.Equal(t, "response.output_item.done", events[0][0])
-	require.Equal(t, "compact-sse-payload", gjson.Get(events[0][1], "item.encrypted_content").String())
-	require.Equal(t, "response.completed", events[1][0])
-	require.Equal(t, "resp_compact_sse", gjson.Get(events[1][1], "response.id").String())
+	require.Len(t, events, 5)
+	require.Equal(t, "response.output_item.done", events[3][0])
+	require.Equal(t, "compact-sse-payload", gjson.Get(events[3][1], "item.encrypted_content").String())
+	require.Equal(t, "response.completed", events[4][0])
+	require.Equal(t, "resp_compact_sse", gjson.Get(events[4][1], "response.id").String())
 }
 
 // 回归 #3887（#3777 问题 2）：上游对 compact 返回 SSE，compaction item 只在
@@ -284,18 +291,18 @@ func TestHandleSSEToJSON_CompactRawOutputItemDoneRepairsEmptyTerminalOutput(t *t
 
 	require.Equal(t, "text/event-stream", rec.Header().Get("Content-Type"))
 	events := parseCompactBridgeSSE(t, rec.Body.String())
-	require.Len(t, events, 2)
-	require.Equal(t, "response.output_item.done", events[0][0])
-	item := gjson.Get(events[0][1], "item")
+	require.Len(t, events, 5)
+	require.Equal(t, "response.output_item.done", events[3][0])
+	item := gjson.Get(events[3][1], "item")
 	require.Equal(t, "compaction_summary", item.Get("type").String())
 	require.Equal(t, "cmp_1", item.Get("id").String())
 	require.Equal(t, "compact-payload", item.Get("encrypted_content").String())
 	require.Equal(t, "compact summary", item.Get("summary.0.text").String())
 	require.True(t, item.Get("opaque.kept").Bool(), "raw item 字段必须逐字节保留")
-	require.Equal(t, "response.completed", events[1][0])
-	require.Equal(t, "resp_compact", gjson.Get(events[1][1], "response.id").String())
-	require.Len(t, gjson.Get(events[1][1], "response.output").Array(), 1)
-	require.Equal(t, int64(13), gjson.Get(events[1][1], "response.usage.total_tokens").Int())
+	require.Equal(t, "response.completed", events[4][0])
+	require.Equal(t, "resp_compact", gjson.Get(events[4][1], "response.id").String())
+	require.Len(t, gjson.Get(events[4][1], "response.output").Array(), 1)
+	require.Equal(t, int64(13), gjson.Get(events[4][1], "response.usage.total_tokens").Int())
 
 	require.NotNil(t, result.usage)
 	require.Equal(t, 9, result.usage.InputTokens)
@@ -324,10 +331,10 @@ func TestHandlePassthroughSSEToJSON_CompactRawOutputItemDoneRepairsEmptyTerminal
 
 	require.Equal(t, "text/event-stream", rec.Header().Get("Content-Type"))
 	events := parseCompactBridgeSSE(t, rec.Body.String())
-	require.Len(t, events, 2)
-	require.Equal(t, "compaction", gjson.Get(events[0][1], "item.type").String())
-	require.Equal(t, "compact-pt-raw", gjson.Get(events[0][1], "item.encrypted_content").String())
-	require.Len(t, gjson.Get(events[1][1], "response.output").Array(), 1)
+	require.Len(t, events, 5)
+	require.Equal(t, "compaction", gjson.Get(events[3][1], "item.type").String())
+	require.Equal(t, "compact-pt-raw", gjson.Get(events[3][1], "item.encrypted_content").String())
+	require.Len(t, gjson.Get(events[4][1], "response.output").Array(), 1)
 }
 
 // path-based（Codex v1 unary、链式 sub2api）未标记 client stream：同一上游
@@ -445,15 +452,15 @@ func TestHandleSSEToJSON_CompactSupplementsMissingCompactionIntoNonEmptyOutput(t
 	require.NotNil(t, result)
 
 	events := parseCompactBridgeSSE(t, rec.Body.String())
-	require.Len(t, events, 3)
+	require.Len(t, events, 7)
 	itemTypes := []string{
-		gjson.Get(events[0][1], "item.type").String(),
-		gjson.Get(events[1][1], "item.type").String(),
+		gjson.Get(events[3][1], "item.type").String(),
+		gjson.Get(events[5][1], "item.type").String(),
 	}
 	require.Contains(t, itemTypes, "compaction")
 	require.Contains(t, itemTypes, "message")
-	require.Equal(t, "response.completed", events[2][0])
-	require.Len(t, gjson.Get(events[2][1], "response.output").Array(), 2)
+	require.Equal(t, "response.completed", events[6][0])
+	require.Len(t, gjson.Get(events[6][1], "response.output").Array(), 2)
 }
 
 // 补全逻辑的门控：非 compact 请求原样返回；终态已含 compaction 不重复补入。
@@ -518,9 +525,9 @@ func TestHandleNonStreamingResponsePassthrough_CompactClientStreamBridgesToSSE(t
 
 	require.Equal(t, "text/event-stream", rec.Header().Get("Content-Type"))
 	events := parseCompactBridgeSSE(t, rec.Body.String())
-	require.Len(t, events, 2)
-	require.Equal(t, "compaction", gjson.Get(events[0][1], "item.type").String())
-	require.Equal(t, "resp_compact_pt", gjson.Get(events[1][1], "response.id").String())
+	require.Len(t, events, 5)
+	require.Equal(t, "compaction", gjson.Get(events[3][1], "item.type").String())
+	require.Equal(t, "resp_compact_pt", gjson.Get(events[4][1], "response.id").String())
 	require.NotNil(t, result.usage)
 	require.Equal(t, 7, result.usage.InputTokens)
 }

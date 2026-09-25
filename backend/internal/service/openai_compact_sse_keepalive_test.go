@@ -97,11 +97,11 @@ func TestWriteOpenAICompactSSEBridge_AfterKeepaliveCommitAppendsEvents(t *testin
 
 	require.Equal(t, http.StatusOK, rec.Code)
 	events := parseCompactBridgeSSE(t, stripKeepaliveComments(rec.Body.String()))
-	require.Len(t, events, 2)
-	require.Equal(t, "response.output_item.done", events[0][0])
-	require.Equal(t, "compaction", gjson.Get(events[0][1], "item.type").String())
-	require.Equal(t, "response.completed", events[1][0])
-	require.Equal(t, "resp_ka_1", gjson.Get(events[1][1], "response.id").String())
+	require.Len(t, events, 5)
+	require.Equal(t, "response.output_item.done", events[3][0])
+	require.Equal(t, "compaction", gjson.Get(events[3][1], "item.type").String())
+	require.Equal(t, "response.completed", events[4][0])
+	require.Equal(t, "resp_ka_1", gjson.Get(events[4][1], "response.id").String())
 }
 
 // 心跳已提交后上游非 2xx：状态码无法回传，必须以 response.failed 终止事件

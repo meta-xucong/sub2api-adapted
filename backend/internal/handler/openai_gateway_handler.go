@@ -285,8 +285,8 @@ func openAIResponsesRequiredCapability(imageIntent bool, platform string) servic
 }
 
 // openAIResponsesRequiredCapabilityForRequest returns the endpoint capability
-// required by an image or Responses request. needsResponses includes both the
-// legacy /responses/compact endpoint and native remote compaction v2.
+// required by an image or native Responses request. Legacy compact uses the
+// separate RequireCompact gate and may be served by a Chat summary adapter.
 func openAIResponsesRequiredCapabilityForRequest(imageIntent bool, needsResponses bool, platform string) service.OpenAIEndpointCapability {
 	if needsResponses && platform == service.PlatformOpenAI {
 		return service.OpenAIEndpointCapabilityResponses
@@ -487,6 +487,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", invalidStreamFieldTypeMessage)
 		return
 	}
+	reqStream = reqStream || service.OpenAICompactClientWantsStream(c)
 	if _, err := service.ValidateOpenAIServiceTierField(body); err != nil {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
@@ -651,7 +652,10 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	// 仅对 OpenAI 平台生效：Grok 生图走独立的 forwardGrokResponses 路径，不应被过滤。
 	// 复用前置权限与并发阶段在未修改 body 上确认的显式生图意图，避免大 tools 请求重复扫描。
 	// 该判断已排除 Codex 被动 image_gen namespace，避免 CC-only 账号被误过滤（#4476）。
-	needsResponses := nativeV2 || legacyCompact
+	// Portable compact already has an explicit RequireCompact gate below.
+	// Requiring native Responses as well would exclude the implemented Chat
+	// summary adapter before it can run. Native v2 and image tools stay strict.
+	needsResponses := nativeV2
 	requiredCapability := openAIResponsesRequiredCapabilityForRequest(imageIntent, needsResponses, requestPlatform)
 
 	// 分组利润控制：请求级装配定价上下文——pricingAt 固定本请求的
@@ -1042,7 +1046,22 @@ func isOpenAIRemoteCompactionV2Request(body []byte) bool {
 // promotion for non-streaming requests.
 // 返回归一化后的 body；ok=false 表示错误响应已写出，调用方应直接 return。
 func (h *OpenAIGatewayHandler) normalizeOpenAIResponsesCompactRequest(c *gin.Context, reqLog *zap.Logger, body []byte) ([]byte, bool) {
+	// Validate before the compact allowlist removes stream. Otherwise malformed
+	// types and an explicit streaming request become indistinguishable from
+	// an omitted field at the adapter boundary.
+	if !gjson.ValidBytes(body) || !gjson.ParseBytes(body).IsObject() {
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
+		return nil, false
+	}
+	clientStream, validStream := parseOpenAICompatibleStream(body)
+	if !validStream {
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", invalidStreamFieldTypeMessage)
+		return nil, false
+	}
 	isCompactRequest := isOpenAILegacyCompactPath(c)
+	if isCompactRequest && clientStream {
+		service.MarkOpenAICompactClientStream(c)
+	}
 	if !isCompactRequest && isBareOpenAIResponsesPath(c) && service.HasCompactionTriggerInInput(body) {
 		if normalized, changed, err := service.NormalizeCompactionTriggerInputOrder(body); err != nil {
 			reqLog.Warn("codex.remote_compact.trigger_order_normalization_failed", zap.Error(err))

@@ -75,7 +75,7 @@ func TestNormalizeOpenAIResponsesCompactRequest_RemoteV2StaysOnResponses(t *test
 			require.False(t, legacyCompact)
 			require.True(t, nativeV2)
 			require.Equal(t, service.OpenAIEndpointCapabilityResponses,
-				openAIResponsesRequiredCapabilityForRequest(false, nativeV2 || legacyCompact, service.PlatformOpenAI))
+				openAIResponsesRequiredCapabilityForRequest(false, nativeV2, service.PlatformOpenAI))
 
 			reqStream, streamOK := parseOpenAICompatibleStream(normalized)
 			require.True(t, streamOK)
@@ -110,7 +110,7 @@ func TestNormalizeOpenAIResponsesCompactRequest_RemoteV2PathAliasesStayOnRespons
 			require.False(t, legacyCompact)
 			require.True(t, nativeV2)
 			require.Equal(t, service.OpenAIEndpointCapabilityResponses,
-				openAIResponsesRequiredCapabilityForRequest(false, nativeV2 || legacyCompact, service.PlatformOpenAI))
+				openAIResponsesRequiredCapabilityForRequest(false, nativeV2, service.PlatformOpenAI))
 		})
 	}
 }
@@ -161,7 +161,7 @@ func TestOpenAIResponsesCompactionRoutingFlags(t *testing.T) {
 			wantNativeBefore:    false,
 			wantLegacyAfter:     true,
 			wantNativeAfter:     false,
-			wantCapabilityAfter: service.OpenAIEndpointCapabilityResponses,
+			wantCapabilityAfter: service.OpenAIEndpointCapabilityChatCompletions,
 			wantPathAfter:       "/v1/responses/compact",
 		},
 		{
@@ -172,7 +172,7 @@ func TestOpenAIResponsesCompactionRoutingFlags(t *testing.T) {
 			wantNativeBefore:    false,
 			wantLegacyAfter:     true,
 			wantNativeAfter:     false,
-			wantCapabilityAfter: service.OpenAIEndpointCapabilityResponses,
+			wantCapabilityAfter: service.OpenAIEndpointCapabilityChatCompletions,
 			wantPathAfter:       "/v1/responses/compact/detail",
 		},
 		{
@@ -195,7 +195,7 @@ func TestOpenAIResponsesCompactionRoutingFlags(t *testing.T) {
 			wantNativeBefore:    false,
 			wantLegacyAfter:     true,
 			wantNativeAfter:     false,
-			wantCapabilityAfter: service.OpenAIEndpointCapabilityResponses,
+			wantCapabilityAfter: service.OpenAIEndpointCapabilityChatCompletions,
 			wantPathAfter:       "/v1/responses/compact",
 		},
 		{
@@ -206,7 +206,7 @@ func TestOpenAIResponsesCompactionRoutingFlags(t *testing.T) {
 			wantNativeBefore:    false,
 			wantLegacyAfter:     true,
 			wantNativeAfter:     false,
-			wantCapabilityAfter: service.OpenAIEndpointCapabilityResponses,
+			wantCapabilityAfter: service.OpenAIEndpointCapabilityChatCompletions,
 			wantPathAfter:       "/v1/responses/compact",
 		},
 	}
@@ -226,7 +226,7 @@ func TestOpenAIResponsesCompactionRoutingFlags(t *testing.T) {
 			require.Equal(t, tt.wantLegacyAfter, legacyAfter)
 			require.Equal(t, tt.wantNativeAfter, nativeAfter)
 			require.Equal(t, tt.wantCapabilityAfter,
-				openAIResponsesRequiredCapabilityForRequest(false, nativeAfter || legacyAfter, service.PlatformOpenAI))
+				openAIResponsesRequiredCapabilityForRequest(false, nativeAfter, service.PlatformOpenAI))
 			if tt.wantBodyUnchanged {
 				require.Equal(t, tt.body, normalized)
 			}
@@ -339,9 +339,8 @@ func TestNormalizeOpenAIResponsesCompactRequest_SubpathNotPromoted(t *testing.T)
 	require.Equal(t, body, normalized)
 }
 
-// path-based compact（Codex v1 unary 协议）即使 body 带 stream:true 也不标记，
-// 保持 JSON 写回行为不变。
-func TestNormalizeOpenAIResponsesCompactRequest_PathBasedStreamTrueNotMarked(t *testing.T) {
+// Explicit compact preserves client stream intent before removing upstream-only fields.
+func TestNormalizeOpenAIResponsesCompactRequest_PathBasedStreamTrueMarked(t *testing.T) {
 	h := &OpenAIGatewayHandler{}
 	body := []byte(`{"model":"gpt-5.5","stream":true,"input":[{"type":"message","role":"user","content":"hello"}]}`)
 	c := newCompactBodySignalTestContext(t, "/v1/responses/compact", body)
@@ -349,5 +348,5 @@ func TestNormalizeOpenAIResponsesCompactRequest_PathBasedStreamTrueNotMarked(t *
 	_, ok := h.normalizeOpenAIResponsesCompactRequest(c, zap.NewNop(), body)
 	require.True(t, ok)
 	_, exists := c.Get(service.OpenAICompactClientStreamKeyForTest())
-	require.False(t, exists)
+	require.True(t, exists)
 }

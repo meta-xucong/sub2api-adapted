@@ -174,10 +174,7 @@ func (s *OpenAIGatewayService) forwardResponsesCompactViaRawChatCompletions(
 		writeOpenAIResponsesFallbackError(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse compact request body")
 		return nil, fmt.Errorf("parse Responses compact request: %w", err)
 	}
-	if err := validateResponsesCompatCompactStream(c, responsesReq.Stream); err != nil {
-		writeResponsesCompatError(c, err)
-		return nil, err
-	}
+	markResponsesCompatCompactStream(c, responsesReq.Stream)
 	if strings.TrimSpace(responsesReq.PreviousResponseID) != "" {
 		if err := s.prepareResponsesCompatContinuation(ctx, c, &responsesReq); err != nil {
 			writeResponsesCompatError(c, err)

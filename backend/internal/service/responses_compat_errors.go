@@ -41,11 +41,10 @@ func writeResponsesCompatError(c *gin.Context, err error) {
 	}})
 }
 
-// The legacy compact endpoint is unary. The existing marked body-signal
-// bridge is different: it retains the original Responses client's SSE intent.
-func validateResponsesCompatCompactStream(c *gin.Context, stream bool) error {
-	if stream && !openAICompactClientWantsStream(c) {
-		return &responsesCompatError{status: http.StatusBadRequest, code: "unsupported_parameter", message: "The legacy /responses/compact endpoint requires stream=false or an omitted stream field", param: "stream"}
+// Preserve downstream streaming intent independently of the upstream summary
+// transport. A handler may already have removed stream after setting the marker.
+func markResponsesCompatCompactStream(c *gin.Context, stream bool) {
+	if stream {
+		MarkOpenAICompactClientStream(c)
 	}
-	return nil
 }

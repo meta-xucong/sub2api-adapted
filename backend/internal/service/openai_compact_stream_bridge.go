@@ -14,16 +14,13 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-// openAICompactClientStreamKey 标记 body-signal compact 请求（Codex remote
-// compact v2，见 #3777）的原始 body 携带 stream:true。白名单归一化会删除
-// stream 字段并让上游走 unary /responses/compact（JSON），但客户端仍按
-// Responses SSE 协议消费响应：它必须收到 response.output_item.done（其中恰好
-// 一个 type=compaction 的 item）和 response.completed，否则报
-// "stream closed before response.completed" 并无限重连（#3875）。
+// openAICompactClientStreamKey preserves the original streaming intent for
+// explicit /responses/compact and legacy promoted requests. Upstream compact
+// or portable summary calls may stay unary while the client receives SSE.
 const openAICompactClientStreamKey = "openai_compact_client_stream"
 
-// MarkOpenAICompactClientStream 由 handler 在 body-signal 提升时调用，记录
-// 客户端的原始 stream 意图，供响应写回阶段决定是否合成 SSE。
+// MarkOpenAICompactClientStream records client intent before normalization or
+// protocol adaptation removes the upstream stream field.
 func MarkOpenAICompactClientStream(c *gin.Context) {
 	if c == nil {
 		return
@@ -34,6 +31,10 @@ func MarkOpenAICompactClientStream(c *gin.Context) {
 func OpenAICompactClientStreamKeyForTest() string {
 	return openAICompactClientStreamKey
 }
+
+// OpenAICompactClientWantsStream returns the original client mode saved before
+// compact request normalization. It does not alter the upstream transport.
+func OpenAICompactClientWantsStream(c *gin.Context) bool { return openAICompactClientWantsStream(c) }
 
 func openAICompactClientWantsStream(c *gin.Context) bool {
 	if c == nil {
@@ -47,10 +48,10 @@ func openAICompactClientWantsStream(c *gin.Context) bool {
 	return wants
 }
 
-// writeOpenAICompactSSEBridge 将 unary compact 的最终 JSON 响应按 Codex remote
-// compact v2 的消费协议合成为最小 Responses SSE 流写回客户端。仅当请求被标记
-// 为 body-signal 客户端流式、状态码为 2xx 且 body 是合法 JSON 对象时生效；
-// 返回 false 表示未写出任何内容，调用方应按原路径写回。
+// writeOpenAICompactSSEBridge emits a complete ordered Responses lifecycle
+// for a marked compact request. It does not stream the provider's partial
+// summary text: compaction items are delivered only after the summary succeeds.
+// An unmarked request retains the existing JSON response path.
 //
 // 若下游心跳已把响应头提交为 200（见 openAICompactSSEKeepalive），则本函数
 // 必须接管一切写回：非 2xx 或不可合成的响应降级为 response.failed 终止事件，
@@ -138,12 +139,9 @@ func writeOpenAICompactSSEFailureMessage(c *gin.Context, statusCode int, errType
 	c.Writer.Flush()
 }
 
-// buildOpenAICompactSSEPayload 把 compact 的 Response JSON 转成 SSE 事件序列：
-// 每个 output[] item 一条 response.output_item.done，最后一条 response.completed
-// 携带完整 response 对象。Codex 的 SSE 解析只从 output_item.done 收集 item，
-// 并要求 response.completed 的 response.id 必填、usage（若存在）必须携带
-// input_tokens/output_tokens/total_tokens 整数字段，否则整条 completed 事件
-// 解析失败，故此处做兜底修补。
+// buildOpenAICompactSSEPayload emits created/in_progress, each item's added/done
+// pair, and completed with continuous sequence_number values. The final response
+// retains its original item fields; missing required lifecycle metadata is filled.
 func buildOpenAICompactSSEPayload(finalResponse []byte) ([]byte, bool) {
 	if len(finalResponse) == 0 || !gjson.ValidBytes(finalResponse) {
 		return nil, false
@@ -174,36 +172,78 @@ func buildOpenAICompactSSEPayload(finalResponse []byte) ([]byte, bool) {
 		response = next
 	}
 
+	// Both the explicit compact API and the legacy marked path expose a full
+	// Responses lifecycle. Keep upstream-only fields in the final response.
+	defaults := map[string]any{"object": "response", "status": "completed", "created_at": time.Now().Unix()}
+	for field, value := range defaults {
+		if !gjson.GetBytes(response, field).Exists() {
+			next, err := sjson.SetBytes(response, field, value)
+			if err != nil {
+				return nil, false
+			}
+			response = next
+		}
+	}
+	initial := append([]byte(nil), response...)
+	var err error
+	initial, err = sjson.SetBytes(initial, "status", "in_progress")
+	if err != nil {
+		return nil, false
+	}
+	initial, err = sjson.SetBytes(initial, "output", []any{})
+	if err != nil {
+		return nil, false
+	}
+	initial, err = sjson.DeleteBytes(initial, "usage")
+	if err != nil {
+		return nil, false
+	}
+
 	var buf bytes.Buffer
-	outputIndex := 0
-	appendEvent := func(eventType string, data []byte) {
-		_, _ = buf.WriteString("event: ")
-		_, _ = buf.WriteString(eventType)
-		_, _ = buf.WriteString("\ndata: ")
+	sequence := 0
+	appendEvent := func(eventType string, data []byte) bool {
+		data, err = sjson.SetBytes(data, "sequence_number", sequence)
+		if err != nil {
+			return false
+		}
+		sequence++
+		_, _ = buf.WriteString("event: " + eventType + "\ndata: ")
 		_, _ = buf.Write(data)
 		_, _ = buf.WriteString("\n\n")
+		return true
 	}
+	for _, eventType := range []string{"response.created", "response.in_progress"} {
+		event, err := json.Marshal(map[string]any{"type": eventType, "response": json.RawMessage(initial)})
+		if err != nil || !appendEvent(eventType, event) {
+			return nil, false
+		}
+	}
+	outputIndex := 0
 	for _, item := range gjson.GetBytes(response, "output").Array() {
 		if !item.IsObject() {
 			continue
 		}
-		event, err := sjson.SetBytes([]byte(`{"type":"response.output_item.done"}`), "output_index", outputIndex)
+		added := []byte(item.Raw)
+		added, err = sjson.SetBytes(added, "status", "in_progress")
 		if err != nil {
 			return nil, false
 		}
-		event, err = sjson.SetRawBytes(event, "item", []byte(item.Raw))
-		if err != nil {
-			return nil, false
+		for _, eventType := range []string{"response.output_item.added", "response.output_item.done"} {
+			rawItem := []byte(item.Raw)
+			if eventType == "response.output_item.added" {
+				rawItem = added
+			}
+			event, err := json.Marshal(map[string]any{"type": eventType, "output_index": outputIndex, "item": json.RawMessage(rawItem)})
+			if err != nil || !appendEvent(eventType, event) {
+				return nil, false
+			}
 		}
-		appendEvent("response.output_item.done", event)
 		outputIndex++
 	}
-
-	completed, err := sjson.SetRawBytes([]byte(`{"type":"response.completed"}`), "response", response)
-	if err != nil {
+	completed, err := json.Marshal(map[string]any{"type": "response.completed", "response": json.RawMessage(response)})
+	if err != nil || !appendEvent("response.completed", completed) {
 		return nil, false
 	}
-	appendEvent("response.completed", completed)
 	return buf.Bytes(), true
 }
 

@@ -76,16 +76,17 @@ func t0AuditCompact(t *testing.T, provider, body string, marked bool) (*httptest
 	return recorder, upstream, err
 }
 
-func TestT0Audit_CompactExplicitStreamRejectedBeforeUpstream(t *testing.T) {
+func TestT0Audit_CompactExplicitStreamSupported(t *testing.T) {
 	for _, provider := range []string{"chat", "anthropic"} {
 		t.Run(provider, func(t *testing.T) {
 			rec, upstream, err := t0AuditCompact(t, provider, `{"model":"test-model","input":"hello","stream":true}`, false)
-			require.Error(t, err)
-			require.Equal(t, 400, rec.Code)
-			require.Equal(t, "invalid_request_error", gjson.Get(rec.Body.String(), "error.type").String())
-			require.Equal(t, "unsupported_parameter", gjson.Get(rec.Body.String(), "error.code").String())
-			require.Equal(t, "stream", gjson.Get(rec.Body.String(), "error.param").String())
-			require.Nil(t, upstream.lastReq, "unsupported mode must not incur an upstream request")
+			require.NoError(t, err)
+			require.Equal(t, 200, rec.Code)
+			require.Contains(t, rec.Header().Get("Content-Type"), "text/event-stream")
+			require.Contains(t, rec.Body.String(), "event: response.created")
+			require.Contains(t, rec.Body.String(), "event: response.completed")
+			require.NotNil(t, upstream.lastReq)
+			require.False(t, gjson.GetBytes(upstream.lastBody, "stream").Bool())
 		})
 	}
 }
