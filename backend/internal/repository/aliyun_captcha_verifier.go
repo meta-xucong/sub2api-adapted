@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	captcha "github.com/alibabacloud-go/captcha-20230305/client"
 	openapiutil "github.com/alibabacloud-go/darabonba-openapi/v2/utils"
@@ -65,17 +66,32 @@ func (v *aliyunCaptchaVerifier) VerifyCaptcha(ctx context.Context, cred service.
 func normalizeAliyunCaptchaError(err error) error {
 	var teaErr *tea.SDKError
 	if errors.As(err, &teaErr) {
-		return &service.AliyunCaptchaAPIError{
-			Code:    tea.StringValue(teaErr.Code),
-			Message: tea.StringValue(teaErr.Message),
+		// The Alibaba SDK also uses tea.SDKError for transport failures. In
+		// that case StatusCode may be populated from a synthetic gateway
+		// status, but Code is nil; only a response carrying an API error code
+		// should cross the repository/service API-error boundary.
+		if code := tea.StringValue(teaErr.Code); isAliyunCaptchaAPIErrorCode(code) {
+			return &service.AliyunCaptchaAPIError{
+				Code:    code,
+				Message: tea.StringValue(teaErr.Message),
+			}
 		}
+		return err
 	}
 	var daraErr *dara.SDKError
 	if errors.As(err, &daraErr) {
-		return &service.AliyunCaptchaAPIError{
-			Code:    dara.StringValue(daraErr.Code),
-			Message: dara.StringValue(daraErr.Message),
+		if code := dara.StringValue(daraErr.Code); isAliyunCaptchaAPIErrorCode(code) {
+			return &service.AliyunCaptchaAPIError{
+				Code:    code,
+				Message: dara.StringValue(daraErr.Message),
+			}
 		}
+		return err
 	}
 	return err
+}
+
+func isAliyunCaptchaAPIErrorCode(code string) bool {
+	code = strings.TrimSpace(code)
+	return code != "" && code != "<nil>"
 }

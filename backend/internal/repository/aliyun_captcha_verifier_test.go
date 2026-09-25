@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/alibabacloud-go/tea/tea"
 	"github.com/stretchr/testify/require"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -90,4 +91,14 @@ func TestAliyunCaptchaVerifier_TransportError(t *testing.T) {
 	require.Error(t, err)
 	var apiErr *service.AliyunCaptchaAPIError
 	require.False(t, errors.As(err, &apiErr), "transport errors must not be normalized to API errors")
+}
+
+func TestNormalizeAliyunCaptchaError_EmptySDKCodeRemainsTransportError(t *testing.T) {
+	err := &tea.SDKError{Code: tea.String("<nil>"), StatusCode: tea.Int(502), Message: tea.String("gateway transport failure")}
+
+	normalized := normalizeAliyunCaptchaError(err)
+
+	require.ErrorIs(t, normalized, err)
+	var apiErr *service.AliyunCaptchaAPIError
+	require.False(t, errors.As(normalized, &apiErr))
 }
