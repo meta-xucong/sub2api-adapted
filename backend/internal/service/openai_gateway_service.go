@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
@@ -298,6 +299,7 @@ type OpenAIForwardResult struct {
 	wsReplayInput                []json.RawMessage
 	wsReplayInputExists          bool
 	wsAccountFailoverReplayInput []json.RawMessage
+	responsesCompatResponse      *apicompat.ResponsesResponse
 }
 
 // SucceededForScheduling reports whether this result is an upstream success
@@ -492,11 +494,22 @@ type OpenAIGatewayService struct {
 	codexModelsManifestCache            codexModelsManifestCache
 	openaiCompatSessionResponses        sync.Map
 	openaiCompatAnthropicDigestSessions sync.Map
+	responsesCompatSessions             sync.Map
 	// openaiCodexTurnStateOrigins: 下游会话 seed → openAICodexTurnStateOrigin，
 	// 记录最近一次向该会话下发 x-codex-turn-state 的铸造账号，供出站守卫
 	// 剥离跨账号回带（openai_codex_turn_state.go）。
 	openaiCodexTurnStateOrigins sync.Map
 	openaiCodexTurnStateWrites  atomic.Uint64
+}
+
+// ScheduleAccountLastUsed records that an upstream account accepted a request.
+// Media creation is asynchronous and may not reach the later usage-settlement
+// path, so the account activity timestamp must be scheduled at acceptance time.
+func (s *OpenAIGatewayService) ScheduleAccountLastUsed(accountID int64) {
+	if s == nil || s.deferredService == nil || accountID <= 0 {
+		return
+	}
+	s.deferredService.ScheduleLastUsedUpdate(accountID)
 }
 
 // NewOpenAIGatewayService creates a new OpenAIGatewayService

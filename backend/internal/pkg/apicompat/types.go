@@ -268,16 +268,23 @@ type ResponsesInputItem struct {
 	Content json.RawMessage `json:"content,omitempty"` // string or []ResponsesContentPart
 
 	// type=reasoning (multi-turn replay of encrypted reasoning)
-	EncryptedContent string `json:"encrypted_content,omitempty"`
+	EncryptedContent string             `json:"encrypted_content,omitempty"`
+	Summary          []ResponsesSummary `json:"summary,omitempty"`
 
 	// type=function_call
 	CallID    string `json:"call_id,omitempty"`
 	Name      string `json:"name,omitempty"`
 	Arguments string `json:"arguments,omitempty"`
 	ID        string `json:"id,omitempty"`
+	// ItemReference links a function_call_output back to the originating
+	// function_call item when the caller supplies the Responses item reference.
+	// Chat Completions and Anthropic do not have a separate field for this
+	// reference, but the adapter must retain it at the Responses boundary.
+	ItemReference string `json:"item_reference,omitempty"`
 
 	// type=function_call_output
 	Output    string `json:"output,omitempty"`
+	IsError   bool   `json:"is_error,omitempty"`
 	outputRaw json.RawMessage
 }
 

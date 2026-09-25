@@ -219,9 +219,10 @@ func anthropicUserToResponses(raw json.RawMessage) ([]ResponsesInputItem, error)
 		}
 		outputText, imageParts := convertToolResultOutput(b)
 		out = append(out, ResponsesInputItem{
-			Type:   "function_call_output",
-			CallID: toResponsesCallID(b.ToolUseID),
-			Output: outputText,
+			Type:    "function_call_output",
+			CallID:  toResponsesCallID(b.ToolUseID),
+			Output:  outputText,
+			IsError: b.IsError,
 		})
 		toolResultImageParts = append(toolResultImageParts, imageParts...)
 	}

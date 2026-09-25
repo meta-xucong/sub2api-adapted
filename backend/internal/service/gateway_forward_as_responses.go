@@ -17,6 +17,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
 	"go.uber.org/zap"
 )
@@ -45,16 +46,36 @@ func (s *GatewayService) ForwardAsResponses(
 		body = normalizedBody
 	}
 
-	// 1. Lower Codex client-side tools to function tools understood by Anthropic.
-	adaptedBody, clientToolMapping, err := adaptResponsesClientToolsForAnthropic(body)
+	// Parse and prepare the canonical Responses request before lowering tools.
+	// The canonical copy is what gets persisted for the next
+	// previous_response_id continuation; Anthropic's flattened namespace names
+	// must not become the durable Responses history.
+	var responsesReq apicompat.ResponsesRequest
+	if err := json.Unmarshal(body, &responsesReq); err != nil {
+		return nil, fmt.Errorf("parse responses request: %w", err)
+	}
+	if isOpenAIResponsesCompactPath(c) && account != nil && account.Platform == PlatformAnthropic {
+		return s.forwardResponsesCompactViaAnthropicMessages(ctx, c, account, body)
+	}
+	if strings.TrimSpace(responsesReq.PreviousResponseID) != "" {
+		if err := s.prepareResponsesCompatContinuation(ctx, c, &responsesReq); err != nil {
+			writeResponsesError(c, http.StatusBadRequest, "previous_response_not_found", err.Error())
+			return nil, err
+		}
+	}
+	canonicalResponsesReq := responsesReq
+	canonicalBody, err := json.Marshal(&canonicalResponsesReq)
+	if err != nil {
+		return nil, fmt.Errorf("marshal canonical Responses request: %w", err)
+	}
+
+	// Lower Codex client-side tools to function tools understood by Anthropic.
+	adaptedBody, clientToolMapping, err := adaptResponsesClientToolsForAnthropic(canonicalBody)
 	if err != nil {
 		return nil, fmt.Errorf("adapt responses client tools: %w", err)
 	}
-
-	// 2. Parse Responses request
-	var responsesReq apicompat.ResponsesRequest
 	if err := json.Unmarshal(adaptedBody, &responsesReq); err != nil {
-		return nil, fmt.Errorf("parse responses request: %w", err)
+		return nil, fmt.Errorf("parse adapted Responses request: %w", err)
 	}
 	originalModel := responsesReq.Model
 	clientStream := responsesReq.Stream
@@ -196,6 +217,14 @@ func (s *GatewayService) ForwardAsResponses(
 		result, handleErr = s.handleResponsesBufferedStreamingResponse(resp, c, originalModel, mappedModel, reasoningEffort, startTime, clientToolMapping)
 	}
 
+	if handleErr == nil && result != nil && result.responsesCompatResponse != nil {
+		persistCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		persistErr := s.saveResponsesCompatResponse(persistCtx, c, &canonicalResponsesReq, result.responsesCompatResponse)
+		cancel()
+		if persistErr != nil {
+			logger.L().Warn("gateway responses compatibility session persistence failed", zap.Error(persistErr), zap.String("response_id", result.responsesCompatResponse.ID))
+		}
+	}
 	return result, handleErr
 }
 
@@ -444,6 +473,10 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 
 	// Convert to Responses format
 	responsesResp := apicompat.AnthropicToResponsesResponse(finalResp)
+	// Anthropic message IDs (msg_*) are not valid OpenAI Responses response
+	// IDs. Expose a stable Responses-compatible ID so a client can send it as
+	// previous_response_id on the next turn.
+	responsesResp.ID = normalizeResponsesCompatResponseID(responsesResp.ID)
 	responsesResp.Model = originalModel // Use original model name
 
 	if s.responseHeaderFilter != nil {
@@ -467,14 +500,15 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 	}
 
 	return &ForwardResult{
-		RequestID:       requestID,
-		UpstreamHeaders: resp.Header,
-		Usage:           usage,
-		Model:           originalModel,
-		UpstreamModel:   mappedModel,
-		ReasoningEffort: reasoningEffort,
-		Stream:          false,
-		Duration:        time.Since(startTime),
+		RequestID:               requestID,
+		UpstreamHeaders:         resp.Header,
+		Usage:                   usage,
+		Model:                   originalModel,
+		UpstreamModel:           mappedModel,
+		ReasoningEffort:         reasoningEffort,
+		Stream:                  false,
+		Duration:                time.Since(startTime),
+		responsesCompatResponse: responsesResp,
 	}, nil
 }
 
@@ -506,6 +540,8 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 	var usage ClaudeUsage
 	var firstTokenMs *int
 	firstChunk := true
+	clientDisconnected := false
+	var compatResponse *apicompat.ResponsesResponse
 
 	scanner := bufio.NewScanner(resp.Body)
 	maxLineSize := defaultMaxLineSize
@@ -516,20 +552,22 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 
 	resultWithUsage := func() *ForwardResult {
 		return &ForwardResult{
-			RequestID:       requestID,
-			UpstreamHeaders: resp.Header,
-			Usage:           usage,
-			Model:           originalModel,
-			UpstreamModel:   mappedModel,
-			ReasoningEffort: reasoningEffort,
-			Stream:          true,
-			Duration:        time.Since(startTime),
-			FirstTokenMs:    firstTokenMs,
+			RequestID:               requestID,
+			UpstreamHeaders:         resp.Header,
+			Usage:                   usage,
+			Model:                   originalModel,
+			UpstreamModel:           mappedModel,
+			ReasoningEffort:         reasoningEffort,
+			Stream:                  true,
+			Duration:                time.Since(startTime),
+			FirstTokenMs:            firstTokenMs,
+			ClientDisconnect:        clientDisconnected,
+			responsesCompatResponse: compatResponse,
 		}
 	}
 
 	// processEvent handles a single parsed Anthropic SSE event.
-	processEvent := func(event *apicompat.AnthropicStreamEvent) bool {
+	processEvent := func(event *apicompat.AnthropicStreamEvent) {
 		if firstChunk {
 			firstChunk = false
 			ms := int(time.Since(startTime).Milliseconds())
@@ -547,6 +585,12 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 
 		// Convert to Responses events
 		events := apicompat.AnthropicEventToResponsesEvents(event, state)
+		normalizeResponsesCompatStreamEvents(events, state)
+		for _, evt := range events {
+			if evt.Response != nil && (evt.Type == "response.completed" || evt.Type == "response.incomplete" || evt.Type == "response.failed") {
+				compatResponse = evt.Response
+			}
+		}
 		for _, evt := range events {
 			payload, err := json.Marshal(evt)
 			if err != nil {
@@ -567,31 +611,40 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 			}
 			for _, restored := range payloads {
 				eventType := gjson.GetBytes(restored, "type").String()
+				if clientDisconnected {
+					continue
+				}
 				if _, err := fmt.Fprintf(c.Writer, "event: %s\ndata: %s\n\n", eventType, restored); err != nil {
 					logger.L().Info("forward_as_responses stream: client disconnected",
 						zap.String("request_id", requestID),
 					)
-					return true // client disconnected
+					clientDisconnected = true
 				}
 			}
 		}
-		if len(events) > 0 {
+		if len(events) > 0 && !clientDisconnected {
 			c.Writer.Flush()
 		}
-		return false
 	}
 
 	finalizeStream := func() (*ForwardResult, error) {
 		if finalEvents := apicompat.FinalizeAnthropicResponsesStream(state); len(finalEvents) > 0 {
 			for _, evt := range finalEvents {
-				sse, err := apicompat.ResponsesEventToSSE(evt)
-				if err != nil {
-					continue
+				if evt.Response != nil && (evt.Type == "response.completed" || evt.Type == "response.incomplete" || evt.Type == "response.failed") {
+					compatResponse = evt.Response
 				}
-				out := string(reverseToolNamesIfPresent(c, []byte(sse)))
-				fmt.Fprint(c.Writer, out) //nolint:errcheck
 			}
-			c.Writer.Flush()
+			if !clientDisconnected {
+				for _, evt := range finalEvents {
+					sse, err := apicompat.ResponsesEventToSSE(evt)
+					if err != nil {
+						continue
+					}
+					out := string(reverseToolNamesIfPresent(c, []byte(sse)))
+					fmt.Fprint(c.Writer, out) //nolint:errcheck
+				}
+				c.Writer.Flush()
+			}
 		}
 		return resultWithUsage(), nil
 	}
@@ -624,9 +677,10 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 			continue
 		}
 
-		if processEvent(&event) {
-			return resultWithUsage(), nil
-		}
+		// A client write failure only disables downstream writes. Continue
+		// draining Anthropic so a terminal response can still be captured for
+		// previous_response_id recovery.
+		processEvent(&event)
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -652,6 +706,47 @@ func appendRawJSON(existing json.RawMessage, fragment string) json.RawMessage {
 		return json.RawMessage(fragment)
 	}
 	return json.RawMessage(string(existing) + fragment)
+}
+
+// normalizeResponsesCompatResponseID keeps the Responses boundary distinct
+// from Anthropic's message ID namespace. Native OpenAI Responses IDs are
+// already valid and should be preserved; upstream message-style IDs are
+// replaced with a generated resp_* ID that can safely be used for continuation.
+func normalizeResponsesCompatResponseID(id string) string {
+	id = strings.TrimSpace(id)
+	if id == "" || ClassifyOpenAIPreviousResponseIDKind(id) == OpenAIPreviousResponseIDKindMessageID {
+		return "resp_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	}
+	return id
+}
+
+func normalizeResponsesCompatStreamEvents(events []apicompat.ResponsesStreamEvent, state *apicompat.AnthropicEventToResponsesState) {
+	if state == nil {
+		return
+	}
+	if state.ResponseID == "" {
+		hasResponse := false
+		for _, event := range events {
+			if event.Response != nil {
+				hasResponse = true
+				break
+			}
+		}
+		if !hasResponse {
+			return
+		}
+	}
+
+	normalized := normalizeResponsesCompatResponseID(state.ResponseID)
+	if normalized == state.ResponseID {
+		return
+	}
+	state.ResponseID = normalized
+	for i := range events {
+		if events[i].Response != nil {
+			events[i].Response.ID = normalized
+		}
+	}
 }
 
 // writeResponsesError writes an error response in OpenAI Responses API format.

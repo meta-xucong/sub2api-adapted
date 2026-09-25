@@ -409,6 +409,19 @@ func buildChatMessagesFromItems(messages []ChatMessage, rawItems []json.RawMessa
 				lastTurnReasoning = pendingReasoning
 			}
 			continue
+		case "compaction", "compaction_summary":
+			// A native Responses compaction item contains provider-specific
+			// encrypted state.  Chat Completions has no equivalent field, so a
+			// compatibility lane may only replay its portable summary.  Refuse
+			// an opaque-only item instead of silently dropping the conversation.
+			summary := extractResponsesCompactionSummary(item)
+			if strings.TrimSpace(summary) == "" {
+				return nil, nil, fmt.Errorf("Responses compaction item has no portable summary for Chat Completions compatibility")
+			}
+			content, _ := json.Marshal("<conversation_summary>\n" + summary + "\n</conversation_summary>")
+			messages = append(messages, ChatMessage{Role: "user", Content: content})
+			pendingReasoning = ""
+			continue
 		case "function_call":
 			arguments := rawString(item["arguments"])
 			if strings.TrimSpace(arguments) == "" {
@@ -886,6 +899,37 @@ func ExtractResponsesReasoningItem(raw json.RawMessage) (id string, text string,
 		return "", "", false
 	}
 	return rawString(item["id"]), extractResponsesReasoningText(item), true
+}
+
+// extractResponsesCompactionSummary returns the visible summary carried by a
+// Responses compaction item.  encrypted_content is deliberately ignored: it
+// is provider-owned state and cannot be replayed through Chat Completions or
+// Anthropic without the original provider's decryption context.
+func extractResponsesCompactionSummary(item map[string]json.RawMessage) string {
+	var parts []string
+	collect := func(raw json.RawMessage) {
+		raw = bytesTrimSpace(raw)
+		if len(raw) == 0 || string(raw) == "null" {
+			return
+		}
+		var arr []map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &arr); err == nil {
+			for _, p := range arr {
+				if text := rawString(p["text"]); strings.TrimSpace(text) != "" {
+					parts = append(parts, text)
+				}
+			}
+			return
+		}
+		if text := rawString(raw); strings.TrimSpace(text) != "" {
+			parts = append(parts, text)
+		}
+	}
+	collect(item["summary"])
+	if len(parts) == 0 {
+		collect(item["text"])
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n"))
 }
 
 func chatCompletionsBridgeRole(role string) string {
@@ -1774,17 +1818,23 @@ func ensureChatToResponsesCreated(state *ChatCompletionsToResponsesStreamState) 
 		return nil
 	}
 	state.CreatedSent = true
-	return []ResponsesStreamEvent{chatToResponsesEvent(state, "response.created", &ResponsesStreamEvent{
-		Response: &ResponsesResponse{
-			ID:          state.ResponseID,
-			Object:      "response",
-			CreatedAt:   state.Created,
-			Model:       state.Model,
-			Status:      "in_progress",
-			ServiceTier: state.ServiceTier,
-			Output:      []ResponsesOutput{},
-		},
-	})}
+	response := &ResponsesResponse{
+		ID:          state.ResponseID,
+		Object:      "response",
+		CreatedAt:   state.Created,
+		Model:       state.Model,
+		Status:      "in_progress",
+		ServiceTier: state.ServiceTier,
+		Output:      []ResponsesOutput{},
+	}
+	// The Responses lifecycle has two distinct start events.  Some strict
+	// clients use response.in_progress as the transition before accepting
+	// output_item.added/delta events, so keep it explicit even when the
+	// upstream only exposes Chat Completions chunks.
+	return []ResponsesStreamEvent{
+		chatToResponsesEvent(state, "response.created", &ResponsesStreamEvent{Response: response}),
+		chatToResponsesEvent(state, "response.in_progress", &ResponsesStreamEvent{Response: response}),
+	}
 }
 
 // ensureChatReasoningItem opens the reasoning output item (output_item.added +
