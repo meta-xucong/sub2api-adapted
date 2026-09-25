@@ -873,6 +873,7 @@ func TestOpenAICompatPreviousResponseUnavailableRecognitionIsStrict(t *testing.T
 	t.Parallel()
 	body := []byte(`{"error":{"message":"previous_response_id is not available for this user","type":"invalid_request_error"}}`)
 	require.True(t, isOpenAICompatPreviousResponseNotFound(http.StatusBadRequest, "", body))
+	require.True(t, isOpenAICompatPreviousResponseNotFound(http.StatusBadRequest, "Not found previous_response_id: resp_123", nil))
 	require.False(t, isOpenAICompatPreviousResponseNotFound(http.StatusForbidden, "", body))
 	require.False(t, isOpenAICompatPreviousResponseNotFound(http.StatusBadRequest, "permission is not available for this user", nil))
 	require.False(t, isOpenAICompatPreviousResponseNotFound(http.StatusBadRequest, "previous_response_id is not available for this project", nil))
