@@ -70,6 +70,57 @@ func TestOpenAIGatewayService_Forward_APIKeyCompactUsesPortableChatFallback(t *t
 	require.True(t, strings.HasPrefix(gjson.Get(rec.Body.String(), "output.0.encrypted_content").String(), responsesCompatCompactEnvelopePrefix))
 }
 
+func TestOpenAIGatewayService_Forward_NativeCompactUnavailableFallsBackToChat(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"glm-5.2","input":[{"type":"compaction_trigger"},{"type":"input_text","text":"compact"}]}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses/compact", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+	SetOpenAIClientTransport(c, OpenAIClientTransportHTTP)
+
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{
+		{
+			StatusCode: http.StatusServiceUnavailable,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"Upstream service temporarily unavailable"}}`)),
+		},
+		{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid-compact-chat-fallback"}},
+			Body:       io.NopCloser(strings.NewReader(`{"id":"chatcmpl_compact_fallback","object":"chat.completion","model":"glm-5.2","choices":[{"index":0,"message":{"role":"assistant","content":"portable summary"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}`)),
+		},
+	}}
+	cfg := &config.Config{}
+	cfg.Security.URLAllowlist.Enabled = false
+	svc := &OpenAIGatewayService{
+		cfg:              cfg,
+		httpUpstream:     upstream,
+		openaiWSResolver: NewOpenAIWSProtocolResolver(cfg),
+	}
+	account := &Account{
+		ID:          44,
+		Name:        "apikey-native-compact-unknown",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{"api_key": "sk-test", "base_url": "https://example.com/v1"},
+		Extra:       map[string]any{openai_compat.ExtraKeyResponsesSupported: true},
+		Status:      StatusActive,
+		Schedulable: true,
+	}
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, upstream.requests, 2)
+	require.Equal(t, "/v1/responses/compact", upstream.requests[0].URL.Path)
+	require.Equal(t, "/v1/chat/completions", upstream.requests[1].URL.Path)
+	require.Equal(t, "compaction", gjson.Get(rec.Body.String(), "output.0.type").String())
+	require.Equal(t, "portable summary", gjson.Get(rec.Body.String(), "output.0.summary.0.text").String())
+}
+
 func TestOpenAIGatewayService_Forward_CompactForcesHTTPTransport(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

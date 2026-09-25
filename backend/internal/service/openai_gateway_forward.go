@@ -1183,6 +1183,16 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 					return s.forwardResponsesViaRawChatCompletions(ctx, c, account, body)
 				}
 			}
+			if compactPath && shouldFallbackOpenAICompactToChat(account, resp.StatusCode, upstreamMsg, respBody) {
+				_ = resp.Body.Close()
+				SetActualOpenAIUpstreamEndpoint(c, "/v1/chat/completions")
+				logger.L().Info("openai responses compact: native endpoint unavailable, using portable Chat Completions fallback",
+					zap.Int64("account_id", account.ID),
+					zap.Int("upstream_status", resp.StatusCode),
+					zap.String("upstream_model", upstreamModel),
+				)
+				return s.forwardResponsesCompactViaRawChatCompletions(ctx, c, account, body)
+			}
 			if s.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, upstreamMsg, respBody) {
 				upstreamDetail := ""
 				if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {

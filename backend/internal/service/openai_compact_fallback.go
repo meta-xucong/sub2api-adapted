@@ -114,6 +114,36 @@ func isOpenAICompactModelFailure(statusCode int, upstreamMsg string, upstreamBod
 	return false
 }
 
+// shouldFallbackOpenAICompactToChat covers providers that expose normal
+// Responses but reject the native compaction endpoint.  A missing compact
+// probe is deliberately treated as unknown: the gateway may still provide the
+// portable compaction contract through Chat Completions.  Explicitly confirmed
+// native support is left on the native path so a transient 5xx is not silently
+// reinterpreted as a protocol mismatch.
+func shouldFallbackOpenAICompactToChat(account *Account, statusCode int, upstreamMsg string, upstreamBody []byte) bool {
+	if account == nil || account.Type != AccountTypeAPIKey || !account.IsOpenAI() || account.IsAnthropicProtocol() {
+		return false
+	}
+	if supported, known := account.OpenAICompactSupportKnown(); known && supported {
+		return false
+	}
+	switch statusCode {
+	case http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusNotImplemented:
+		return true
+	case http.StatusBadRequest, http.StatusUnprocessableEntity:
+		lower := strings.ToLower(strings.TrimSpace(upstreamMsg + " " + string(upstreamBody)))
+		return strings.Contains(lower, "compact") && (strings.Contains(lower, "unsupported") ||
+			strings.Contains(lower, "not support") || strings.Contains(lower, "not available") ||
+			strings.Contains(lower, "disabled"))
+	case http.StatusBadGateway, http.StatusServiceUnavailable:
+		// A third-party account with no confirmed native compact capability often
+		// reports an unimplemented compact route as a generic 502/503.
+		return true
+	default:
+		return false
+	}
+}
+
 func isExplicitOpenAIModelAvailabilityMessage(value string) bool {
 	value = strings.ToLower(strings.TrimSpace(value))
 	if value == "" {
