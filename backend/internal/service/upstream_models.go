@@ -209,6 +209,7 @@ func (s *AccountTestService) FetchUpstreamSupportedModels(ctx context.Context, a
 func (s *AccountTestService) SyncUpstreamModelCatalog(ctx context.Context, account *Account) (*UpstreamModelCatalog, error) {
 	models, body, err := s.fetchUpstreamModelList(ctx, account)
 	liveListAvailable := err == nil
+	usedConfiguredModels := false
 	if err != nil {
 		configuredModels := configuredUpstreamModelsForCapabilitySync(account)
 		if !upstreamModelListEndpointUnsupported(err) || len(configuredModels) == 0 {
@@ -216,6 +217,7 @@ func (s *AccountTestService) SyncUpstreamModelCatalog(ctx context.Context, accou
 		}
 		models = configuredModels
 		body = nil
+		usedConfiguredModels = true
 		slog.Info("upstream model list endpoint unavailable; using configured models for capability sync",
 			"account_id", upstreamModelSyncAccountID(account),
 			"platform", upstreamModelSyncPlatform(account),
@@ -224,6 +226,12 @@ func (s *AccountTestService) SyncUpstreamModelCatalog(ctx context.Context, accou
 		)
 	}
 	catalog := &UpstreamModelCatalog{Models: models, Metadata: make(map[string]UpstreamModelMetadata)}
+	if usedConfiguredModels {
+		catalog.Warnings = append(catalog.Warnings, UpstreamModelSyncWarning{
+			Code:    UpstreamModelRefreshUnsupportedCode,
+			Message: "The upstream does not provide a supported model list endpoint; configured models were used for capability sync only.",
+		})
+	}
 	if len(body) > 0 {
 		_, directMetadata, parseErr := extractUpstreamModelCatalog(body, account != nil && account.IsGrok())
 		if parseErr == nil {
@@ -262,6 +270,7 @@ func (s *AccountTestService) SyncUpstreamModelCatalog(ctx context.Context, accou
 
 	completeMetadata := completeUpstreamModelMetadataSubset(capabilityIDs, catalog.Metadata)
 	persistedCapabilities := false
+	var metadataSnapshot *UpstreamModelMetadataSnapshot
 	if len(completeMetadata) > 0 && account != nil && account.ID > 0 && s.accountRepo != nil {
 		// Retain known metadata only for models still listed or explicitly mapped.
 		if previous := account.GetUpstreamModelMetadataSnapshot(); previous != nil {
@@ -293,10 +302,7 @@ func (s *AccountTestService) SyncUpstreamModelCatalog(ctx context.Context, accou
 			SyncedAt: time.Now().UTC().Format(time.RFC3339),
 			Models:   completeMetadata,
 		}
-		if err := s.accountRepo.UpdateExtra(ctx, account.ID, map[string]any{UpstreamModelMetadataExtraKey: snapshot}); err != nil {
-			return nil, newUpstreamModelSyncInternalError("Failed to save upstream model metadata", err)
-		}
-		account.SetUpstreamModelMetadataSnapshot(snapshot)
+		metadataSnapshot = &snapshot
 		persistedCapabilities = true
 	}
 
@@ -312,6 +318,25 @@ func (s *AccountTestService) SyncUpstreamModelCatalog(ctx context.Context, accou
 				Message: "Model IDs were synced, but capability metadata is incomplete.",
 			})
 		}
+	}
+	if liveListAvailable {
+		updates := make(map[string]any, 1)
+		if metadataSnapshot != nil {
+			updates[UpstreamModelMetadataExtraKey] = *metadataSnapshot
+		}
+		refreshSnapshot, refreshErr := s.persistUpstreamModelRefreshSuccessWithUpdates(ctx, account, models, time.Now(), updates)
+		if refreshErr != nil {
+			return nil, refreshErr
+		}
+		if metadataSnapshot != nil {
+			account.SetUpstreamModelMetadataSnapshot(*metadataSnapshot)
+		}
+		_ = refreshSnapshot
+	} else if metadataSnapshot != nil {
+		if err := s.accountRepo.UpdateExtra(ctx, account.ID, map[string]any{UpstreamModelMetadataExtraKey: *metadataSnapshot}); err != nil {
+			return nil, newUpstreamModelSyncInternalError("Failed to save upstream model metadata", err)
+		}
+		account.SetUpstreamModelMetadataSnapshot(*metadataSnapshot)
 	}
 	return catalog, nil
 }

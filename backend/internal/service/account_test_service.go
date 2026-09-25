@@ -138,21 +138,22 @@ func normalizeGrokAccountTestMode(mode string) string {
 
 // AccountTestService handles account testing operations
 type AccountTestService struct {
-	accountRepo               AccountRepository
-	geminiTokenProvider       *GeminiTokenProvider
-	claudeTokenProvider       *ClaudeTokenProvider
-	grokTokenProvider         *GrokTokenProvider
-	antigravityGatewayService *AntigravityGatewayService
-	httpUpstream              HTTPUpstream
-	cfg                       *config.Config
-	settingService            *SettingService
-	tlsFPProfileService       *TLSFingerprintProfileService
-	modelMetadataRegistryMu   sync.Mutex
-	modelMetadataRegistry     map[string]modelsDevProvider
-	modelMetadataRegistryAt   time.Time
-	pluginManager             *PluginManager
-	agentIdentityTaskMu       sync.Mutex
-	agentIdentityWS           agentIdentityWSConnectionInvalidator
+	accountRepo                  AccountRepository
+	geminiTokenProvider          *GeminiTokenProvider
+	claudeTokenProvider          *ClaudeTokenProvider
+	grokTokenProvider            *GrokTokenProvider
+	antigravityGatewayService    *AntigravityGatewayService
+	httpUpstream                 HTTPUpstream
+	cfg                          *config.Config
+	settingService               *SettingService
+	tlsFPProfileService          *TLSFingerprintProfileService
+	modelMetadataRegistryMu      sync.Mutex
+	modelMetadataRegistry        map[string]modelsDevProvider
+	modelMetadataRegistryAt      time.Time
+	pluginManager                *PluginManager
+	modelAvailabilityInvalidator ModelAvailabilityInvalidator
+	agentIdentityTaskMu          sync.Mutex
+	agentIdentityWS              agentIdentityWSConnectionInvalidator
 	// grokWSDialer is optional; realtime account tests use the default OpenAI-style
 	// WS dialer when nil (supports proxy + coder/websocket handshake).
 	grokWSDialer openAIWSClientDialer

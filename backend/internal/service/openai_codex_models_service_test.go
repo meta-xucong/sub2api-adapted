@@ -1171,6 +1171,54 @@ func TestBuildGroupConfiguredCodexModelsManifestUsesAdministratorConfiguration(t
 	require.Equal(t, manifest.ETag, notModified.ETag)
 }
 
+func TestBuildGroupConfiguredCodexModelsManifestUsesAuthoritativeRefreshDirectory(t *testing.T) {
+	t.Parallel()
+
+	const groupID int64 = 81
+	account := Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+	account.SetUpstreamModelRefreshSnapshot(canonicalUpstreamModelSnapshot(&account, []string{
+		"gpt-5.6",
+		"gpt-5.6-luna",
+		"gpt-5.6-sol",
+		"gpt-5.6-terra",
+		"gpt-5.6-20260901",
+	}, time.Now()))
+	svc := &OpenAIGatewayService{accountRepo: codexModelsVisibilityAccountRepo{
+		byGroup: map[int64][]Account{groupID: {account}},
+	}}
+
+	manifest, configured, err := svc.BuildGroupConfiguredCodexModelsManifest(
+		context.Background(),
+		&Group{ID: groupID, Platform: PlatformOpenAI},
+		"",
+	)
+	require.NoError(t, err)
+	require.True(t, configured)
+	require.Equal(t, []string{"gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"}, codexManifestModelSlugs(t, manifest.Body))
+}
+
+func TestMergeGroupConfiguredCodexModelsFiltersUpstreamToAuthoritativeRefreshDirectory(t *testing.T) {
+	t.Parallel()
+
+	const groupID int64 = 82
+	account := Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+	account.SetUpstreamModelRefreshSnapshot(canonicalUpstreamModelSnapshot(&account, []string{"live-model"}, time.Now()))
+	svc := &OpenAIGatewayService{accountRepo: codexModelsVisibilityAccountRepo{
+		byGroup: map[int64][]Account{groupID: {account}},
+	}}
+	manifest := &CodexModelsManifest{
+		Body: []byte(`{"models":[{"slug":"live-model"},{"slug":"retired-model"},{"slug":"gpt-5.6-20260901"}]}`),
+	}
+
+	require.NoError(t, svc.MergeGroupConfiguredCodexModels(
+		context.Background(),
+		&Group{ID: groupID, Platform: PlatformOpenAI},
+		manifest,
+		"",
+	))
+	require.Equal(t, []string{"live-model"}, codexManifestModelSlugs(t, manifest.Body))
+}
+
 // Scenario: OpenAI 通配映射展开组内精确选择，但不发布通配符 slug。
 func TestBuildGroupConfiguredCodexModelsManifestExpandsSelectedModelCoveredByWildcardMapping(t *testing.T) {
 	t.Parallel()

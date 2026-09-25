@@ -133,8 +133,8 @@ func (s *OpenAIGatewayService) BuildGroupConfiguredCodexModelsManifest(
 	if err != nil {
 		return nil, false, fmt.Errorf("load group configured Codex models: %w", err)
 	}
-	configuredModels := openAIConfiguredCodexModelIDsForGroup(visible, group)
-	if len(configuredModels) == 0 {
+	configuredModels, authoritative := openAIConfiguredCodexModelIDsForGroupWithAvailability(visible, group)
+	if len(configuredModels) == 0 && !authoritative {
 		return nil, false, nil
 	}
 
@@ -185,15 +185,25 @@ func (s *OpenAIGatewayService) MergeGroupConfiguredCodexModels(
 		return nil
 	}
 
-	configuredModels, err := s.groupConfiguredCodexModelIDs(ctx, group)
+	configuredModels, authoritative, err := s.groupConfiguredCodexModelIDsWithAvailability(ctx, group)
 	if err != nil {
 		return fmt.Errorf("load group configured Codex models: %w", err)
+	}
+	selectedModels := group.ModelsListConfig.Models
+	filterBySelection := group.CustomModelsListEnabled()
+	if authoritative {
+		filterBySelection = true
+		if group.CustomModelsListEnabled() {
+			selectedModels = intersectCodexModelIDs(configuredModels, selectedModels)
+		} else {
+			selectedModels = configuredModels
+		}
 	}
 	body, changed, err := mergeConfiguredCodexModelsManifest(
 		manifest.Body,
 		configuredModels,
-		group.ModelsListConfig.Models,
-		group.CustomModelsListEnabled(),
+		selectedModels,
+		filterBySelection,
 	)
 	if err != nil {
 		return fmt.Errorf("merge group configured Codex models: %w", err)
@@ -210,14 +220,20 @@ func (s *OpenAIGatewayService) MergeGroupConfiguredCodexModels(
 }
 
 func (s *OpenAIGatewayService) groupConfiguredCodexModelIDs(ctx context.Context, group *Group) ([]string, error) {
+	models, _, err := s.groupConfiguredCodexModelIDsWithAvailability(ctx, group)
+	return models, err
+}
+
+func (s *OpenAIGatewayService) groupConfiguredCodexModelIDsWithAvailability(ctx context.Context, group *Group) ([]string, bool, error) {
 	if group == nil {
-		return nil, nil
+		return nil, false, nil
 	}
 	accounts, err := s.accountRepo.ListSchedulableByGroupID(ctx, group.ID)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return openAIConfiguredCodexModelIDsForGroup(accounts, group), nil
+	models, authoritative := openAIConfiguredCodexModelIDsForGroupWithAvailability(accounts, group)
+	return models, authoritative, nil
 }
 
 // loadCodexGroupCatalogAccounts separates picker membership from capability
@@ -259,11 +275,32 @@ func loadCodexGroupCatalogAccounts(ctx context.Context, repo AccountRepository, 
 }
 
 func openAIConfiguredCodexModelIDs(accounts []Account) []string {
+	models, _ := openAIConfiguredCodexModelIDsWithAvailability(accounts)
+	return models
+}
+
+func openAIConfiguredCodexModelIDsWithAvailability(accounts []Account) ([]string, bool) {
 	seen := make(map[string]struct{})
 	models := make([]string, 0)
+	authoritative := false
 	for i := range accounts {
 		account := &accounts[i]
 		if account.Platform != PlatformOpenAI {
+			continue
+		}
+		if availableModels, accountAuthoritative := account.AvailablePublicModelIDs(); accountAuthoritative {
+			authoritative = true
+			for _, modelID := range availableModels {
+				modelID = strings.TrimSpace(modelID)
+				if modelID == "" || strings.Contains(modelID, "*") {
+					continue
+				}
+				if _, exists := seen[modelID]; exists {
+					continue
+				}
+				seen[modelID] = struct{}{}
+				models = append(models, modelID)
+			}
 			continue
 		}
 		for modelID := range account.GetModelMapping() {
@@ -279,13 +316,18 @@ func openAIConfiguredCodexModelIDs(accounts []Account) []string {
 		}
 	}
 	sort.Strings(models)
-	return models
+	return models, authoritative
 }
 
 func openAIConfiguredCodexModelIDsForGroup(accounts []Account, group *Group) []string {
-	models := openAIConfiguredCodexModelIDs(accounts)
+	models, _ := openAIConfiguredCodexModelIDsForGroupWithAvailability(accounts, group)
+	return models
+}
+
+func openAIConfiguredCodexModelIDsForGroupWithAvailability(accounts []Account, group *Group) ([]string, bool) {
+	models, authoritative := openAIConfiguredCodexModelIDsWithAvailability(accounts)
 	if group == nil || !group.CustomModelsListEnabled() {
-		return models
+		return models, authoritative
 	}
 
 	seen := make(map[string]struct{}, len(models)+len(group.ModelsListConfig.Models))
@@ -302,6 +344,16 @@ func openAIConfiguredCodexModelIDsForGroup(accounts []Account, group *Group) []s
 			if account.Platform != PlatformOpenAI {
 				continue
 			}
+			if _, available, accountAuthoritative := account.ResolveAvailableModel(selectedModel); accountAuthoritative {
+				if !available {
+					continue
+				}
+				if _, exists := seen[selectedModel]; !exists {
+					seen[selectedModel] = struct{}{}
+					models = append(models, selectedModel)
+				}
+				break
+			}
 			mappedModel, matched := account.ResolveMappedModel(selectedModel)
 			if !matched || strings.TrimSpace(mappedModel) == "" {
 				continue
@@ -314,7 +366,34 @@ func openAIConfiguredCodexModelIDsForGroup(accounts []Account, group *Group) []s
 		}
 	}
 	sort.Strings(models)
-	return models
+	return models, authoritative
+}
+
+func intersectCodexModelIDs(allowedModels, selectedModels []string) []string {
+	allowed := make(map[string]struct{}, len(allowedModels))
+	for _, modelID := range allowedModels {
+		modelID = strings.TrimSpace(modelID)
+		if modelID != "" {
+			allowed[modelID] = struct{}{}
+		}
+	}
+	result := make([]string, 0, len(selectedModels))
+	seen := make(map[string]struct{}, len(selectedModels))
+	for _, modelID := range selectedModels {
+		modelID = strings.TrimSpace(modelID)
+		if modelID == "" {
+			continue
+		}
+		if _, ok := allowed[modelID]; !ok {
+			continue
+		}
+		if _, ok := seen[modelID]; ok {
+			continue
+		}
+		seen[modelID] = struct{}{}
+		result = append(result, modelID)
+	}
+	return result
 }
 
 const (

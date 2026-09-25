@@ -1133,6 +1133,15 @@ type GatewayConfig struct {
 	UserGroupRateCacheTTLSeconds int `mapstructure:"user_group_rate_cache_ttl_seconds"`
 	// ModelsListCacheTTLSeconds: /v1/models 模型列表短缓存 TTL（秒）
 	ModelsListCacheTTLSeconds int `mapstructure:"models_list_cache_ttl_seconds"`
+	// UpstreamModelRefreshEnabled enables the daily upstream model catalog refresh.
+	UpstreamModelRefreshEnabled bool `mapstructure:"upstream_model_refresh_enabled"`
+	// UpstreamModelRefreshRequestTimeoutSeconds bounds one account's model-list request.
+	UpstreamModelRefreshRequestTimeoutSeconds int `mapstructure:"upstream_model_refresh_request_timeout_seconds"`
+	// UpstreamModelRefreshStaleGraceHours keeps the last successful catalog during
+	// transient upstream failures. The default spans one missed 04:00 batch.
+	UpstreamModelRefreshStaleGraceHours int `mapstructure:"upstream_model_refresh_stale_grace_hours"`
+	// UpstreamModelRefreshMaxConcurrency bounds the daily refresh fan-out.
+	UpstreamModelRefreshMaxConcurrency int `mapstructure:"upstream_model_refresh_max_concurrency"`
 
 	// UserMessageQueue: 用户消息串行队列配置
 	// 对 role:"user" 的真实用户消息实施账号级串行化 + RPM 自适应延迟
@@ -2773,6 +2782,10 @@ func setDefaults() {
 	viper.SetDefault("gateway.usage_record.auto_scale_cooldown_seconds", 10)
 	viper.SetDefault("gateway.user_group_rate_cache_ttl_seconds", 30)
 	viper.SetDefault("gateway.models_list_cache_ttl_seconds", 15)
+	viper.SetDefault("gateway.upstream_model_refresh_enabled", true)
+	viper.SetDefault("gateway.upstream_model_refresh_request_timeout_seconds", 30)
+	viper.SetDefault("gateway.upstream_model_refresh_stale_grace_hours", 48)
+	viper.SetDefault("gateway.upstream_model_refresh_max_concurrency", 4)
 	// TLS指纹伪装配置（默认关闭，需要账号级别单独启用）
 	// 用户消息串行队列默认值
 	viper.SetDefault("gateway.user_message_queue.enabled", false)
@@ -4021,6 +4034,15 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.ModelsListCacheTTLSeconds < 10 || c.Gateway.ModelsListCacheTTLSeconds > 30 {
 		return fmt.Errorf("gateway.models_list_cache_ttl_seconds must be between 10-30")
+	}
+	if c.Gateway.UpstreamModelRefreshRequestTimeoutSeconds < 5 || c.Gateway.UpstreamModelRefreshRequestTimeoutSeconds > 300 {
+		return fmt.Errorf("gateway.upstream_model_refresh_request_timeout_seconds must be between 5-300")
+	}
+	if c.Gateway.UpstreamModelRefreshStaleGraceHours < 24 || c.Gateway.UpstreamModelRefreshStaleGraceHours > 168 {
+		return fmt.Errorf("gateway.upstream_model_refresh_stale_grace_hours must be between 24-168")
+	}
+	if c.Gateway.UpstreamModelRefreshMaxConcurrency < 1 || c.Gateway.UpstreamModelRefreshMaxConcurrency > 64 {
+		return fmt.Errorf("gateway.upstream_model_refresh_max_concurrency must be between 1-64")
 	}
 	if c.Gateway.Scheduling.StickySessionMaxWaiting <= 0 {
 		return fmt.Errorf("gateway.scheduling.sticky_session_max_waiting must be positive")

@@ -118,6 +118,7 @@ func provideCleanup(
 	openAIGateway *service.OpenAIGatewayService,
 	smartRouterCalibration *service.SmartRouterCalibrationService,
 	scheduledTestRunner *service.ScheduledTestRunnerService,
+	upstreamModelRefresh *service.UpstreamModelRefreshService,
 	backupSvc *service.BackupService,
 	paymentOrderExpiry *service.PaymentOrderExpiryService,
 	channelMonitorRunner *service.ChannelMonitorRunner,
@@ -349,6 +350,12 @@ func provideCleanup(
 			{"ScheduledTestRunnerService", func() error {
 				if scheduledTestRunner != nil {
 					scheduledTestRunner.Stop()
+				}
+				return nil
+			}},
+			{"UpstreamModelRefreshService", func() error {
+				if upstreamModelRefresh != nil {
+					upstreamModelRefresh.Stop()
 				}
 				return nil
 			}},

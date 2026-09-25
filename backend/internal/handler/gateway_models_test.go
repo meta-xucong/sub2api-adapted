@@ -1159,6 +1159,41 @@ func TestGatewayModels_CustomModelsListFiltersDefaultFallbackModels(t *testing.T
 	require.Equal(t, []string{"gpt-5.5", "gpt-5.4"}, modelIDsForTest(got.Data))
 }
 
+func TestGatewayCodexModels_DoesNotFallbackWhenRefreshSnapshotExpired(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	groupID := int64(26)
+	account := service.Account{ID: 1, Platform: service.PlatformOpenAI}
+	account.SetUpstreamModelRefreshSnapshot(service.UpstreamModelRefreshSnapshot{
+		SchemaVersion: 1,
+		Status:        service.UpstreamModelRefreshStatusExpired,
+		RawModels:     []string{"retired-model"},
+		PublicModels:  []string{"retired-model"},
+		PublicToUpstream: map[string]string{
+			"retired-model": "retired-model",
+		},
+	})
+	h := newGatewayModelsHandlerForTest(
+		&gatewayModelsAccountRepoStub{
+			byGroup: map[int64][]service.Account{groupID: {account}},
+		},
+	)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/codex/models", nil)
+	c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{
+		Group: &service.Group{ID: groupID, Platform: service.PlatformOpenAI},
+	})
+
+	h.CodexModels(c)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var got codexModelsResponseForTest
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	require.Empty(t, got.Models)
+}
+
 func TestGatewayModels_OpenAICustomModelsListKeepsOpenAIResponseShapeForDefaultFallback(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

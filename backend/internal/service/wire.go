@@ -305,6 +305,7 @@ func ProvideAccountTestService(
 	cfg *config.Config,
 	tlsFPProfileService *TLSFingerprintProfileService,
 	openAIGatewayService *OpenAIGatewayService,
+	gatewayService *GatewayService,
 	settingService *SettingService,
 	pluginManager *PluginManager,
 ) *AccountTestService {
@@ -319,6 +320,7 @@ func ProvideAccountTestService(
 		tlsFPProfileService,
 	)
 	service.agentIdentityWS = openAIGatewayService
+	service.SetModelAvailabilityInvalidator(gatewayService)
 	service.SetSettingService(settingService)
 	service.SetPluginManager(pluginManager)
 	return service
@@ -688,6 +690,20 @@ func ProvideScheduledTestRunnerService(
 	return svc
 }
 
+// ProvideUpstreamModelRefreshService creates and starts the daily upstream
+// model catalog refresh runner.
+func ProvideUpstreamModelRefreshService(
+	accountRepo AccountRepository,
+	accountTestSvc *AccountTestService,
+	lockCache LeaderLockCache,
+	db *sql.DB,
+	cfg *config.Config,
+) *UpstreamModelRefreshService {
+	svc := NewUpstreamModelRefreshService(accountRepo, accountTestSvc, lockCache, db, cfg)
+	svc.Start()
+	return svc
+}
+
 // ProvideOpenAIGatewayService attaches the optional durable Smart Router
 // ledger during construction while keeping the public constructor stable for
 // focused unit tests and downstream integrations.
@@ -1036,6 +1052,7 @@ var ProviderSet = wire.NewSet(
 	ProvideIdempotencyCleanupService,
 	ProvideScheduledTestService,
 	ProvideScheduledTestRunnerService,
+	ProvideUpstreamModelRefreshService,
 	NewGroupCapacityService,
 	NewChannelService,
 	wire.Bind(new(ChannelCacheInvalidator), new(*ChannelService)),

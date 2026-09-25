@@ -1386,7 +1386,7 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 		if cached, found := s.modelsListCache.Get(cacheKey); found {
 			if models, ok := cached.([]string); ok {
 				modelsListCacheHitTotal.Add(1)
-				return cloneStringSlice(models)
+				return cloneRefreshStringSlice(models)
 			}
 		}
 	}
@@ -1419,8 +1419,16 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 	// Collect unique models from all accounts
 	modelSet := make(map[string]struct{})
 	hasAnyMapping := false
+	hasAnyAvailabilitySnapshot := false
 
 	for _, acc := range accounts {
+		if availableModels, authoritative := acc.AvailablePublicModelIDs(); authoritative {
+			hasAnyAvailabilitySnapshot = true
+			for _, model := range availableModels {
+				modelSet[model] = struct{}{}
+			}
+			continue
+		}
 		// Passthrough routing accepts models independently of model_mapping. A stale
 		// mapping on any eligible passthrough account therefore cannot define the
 		// public whitelist; return nil so the handler uses its default model set.
@@ -1441,8 +1449,9 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 		}
 	}
 
-	// If no account has model_mapping, return nil (use default)
-	if !hasAnyMapping {
+	// If no account has model_mapping or an authoritative live snapshot, return
+	// nil (use the existing default model set).
+	if !hasAnyMapping && !hasAnyAvailabilitySnapshot {
 		if s.modelsListCache != nil {
 			s.modelsListCache.Set(cacheKey, []string(nil), s.modelsListCacheTTL)
 			modelsListCacheStoreTotal.Add(1)
@@ -1456,12 +1465,75 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 		models = append(models, model)
 	}
 	models = NormalizePublicModelIDs(platform, models)
+	if hasAnyAvailabilitySnapshot && len(models) == 0 {
+		// A non-nil empty list is intentional: a successful/expired authoritative
+		// snapshot must not fall back to the static default model catalog.
+		models = []string{}
+	}
 
 	if s.modelsListCache != nil {
-		s.modelsListCache.Set(cacheKey, cloneStringSlice(models), s.modelsListCacheTTL)
+		s.modelsListCache.Set(cacheKey, cloneRefreshStringSlice(models), s.modelsListCacheTTL)
 		modelsListCacheStoreTotal.Add(1)
 	}
-	return cloneStringSlice(models)
+	return cloneRefreshStringSlice(models)
+}
+
+// HasAuthoritativeModelAvailability distinguishes an intentionally empty live
+// directory (for example after all configured models were retired) from the
+// legacy nil result that means "use the static default catalog".
+func (s *GatewayService) HasAuthoritativeModelAvailability(ctx context.Context, groupID *int64, platform string) bool {
+	if s == nil || s.accountRepo == nil {
+		return false
+	}
+	var accounts []Account
+	var err error
+	if groupID != nil {
+		accounts, err = s.accountRepo.ListSchedulableByGroupID(ctx, *groupID)
+	} else {
+		accounts, err = s.accountRepo.ListSchedulable(ctx)
+	}
+	if err != nil {
+		return false
+	}
+	platform = strings.TrimSpace(platform)
+	for _, account := range accounts {
+		if platform != "" && platform != PlatformComposite && account.Platform != platform {
+			continue
+		}
+		if _, authoritative := account.AvailablePublicModelIDs(); authoritative {
+			return true
+		}
+	}
+	return false
+}
+
+// InvalidateModelAvailabilityForAccount invalidates every model-list and
+// composite-ownership cache entry affected by an account refresh. It is also
+// used by the manual admin sync path through AccountTestService.
+func (s *GatewayService) InvalidateModelAvailabilityForAccount(account *Account) {
+	if s == nil || account == nil {
+		return
+	}
+	platform := strings.TrimSpace(account.Platform)
+	groupIDs := make(map[int64]struct{}, len(account.GroupIDs)+len(account.AccountGroups))
+	for _, groupID := range account.GroupIDs {
+		if groupID > 0 {
+			groupIDs[groupID] = struct{}{}
+		}
+	}
+	for _, accountGroup := range account.AccountGroups {
+		if accountGroup.GroupID > 0 {
+			groupIDs[accountGroup.GroupID] = struct{}{}
+		}
+	}
+	if len(groupIDs) == 0 {
+		s.InvalidateAvailableModelsCache(nil, platform)
+		return
+	}
+	for groupID := range groupIDs {
+		id := groupID
+		s.InvalidateAvailableModelsCache(&id, platform)
+	}
 }
 
 func (s *GatewayService) resolveCompositeModelOwnership(ctx context.Context, groupID int64, model string) (CompositeModelOwnership, error) {
@@ -1489,7 +1561,7 @@ func (s *GatewayService) resolveCompositeModelOwnership(ctx context.Context, gro
 	bestRankSet := false
 	for _, account := range accounts {
 		platform := strings.TrimSpace(account.Platform)
-		if !isConcreteRequestPlatform(platform) || !explicitModelMappingClaims(account, model) {
+		if !isConcreteRequestPlatform(platform) || !accountClaimsAvailableModel(account, model) {
 			continue
 		}
 		rank := compositeModelOwnershipRankFor(account, groupID)
@@ -1549,6 +1621,13 @@ func (r compositeModelOwnershipRank) less(other compositeModelOwnershipRank) boo
 		return r.groupPriority < other.groupPriority
 	}
 	return r.accountPriority < other.accountPriority
+}
+
+func accountClaimsAvailableModel(account Account, model string) bool {
+	if _, available, authoritative := account.ResolveAvailableModel(model); authoritative {
+		return available
+	}
+	return explicitModelMappingClaims(account, model)
 }
 
 func explicitModelMappingClaims(account Account, model string) bool {
