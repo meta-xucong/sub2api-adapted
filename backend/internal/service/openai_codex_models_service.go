@@ -53,6 +53,12 @@ const (
 // and are not feature opt-ins. Wildcard keys such as "foo-*" are routing
 // patterns, not concrete Codex models.
 func FilterCodexModelIDsForGroup(modelIDs []string, group *Group) []string {
+	platform := ""
+	if group != nil {
+		platform = group.Platform
+	}
+	modelIDs = NormalizePublicModelIDs(platform, modelIDs)
+
 	explicitlyEnabled := make(map[string]struct{})
 	if group != nil && group.CustomModelsListEnabled() {
 		for _, modelID := range group.ModelsListConfig.Models {

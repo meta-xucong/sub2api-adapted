@@ -1455,7 +1455,7 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 	for model := range modelSet {
 		models = append(models, model)
 	}
-	sort.Strings(models)
+	models = NormalizePublicModelIDs(platform, models)
 
 	if s.modelsListCache != nil {
 		s.modelsListCache.Set(cacheKey, cloneStringSlice(models), s.modelsListCacheTTL)
@@ -1485,12 +1485,23 @@ func (s *GatewayService) resolveCompositeModelOwnership(ctx context.Context, gro
 	}
 
 	platforms := make(map[string]struct{})
+	var bestRank compositeModelOwnershipRank
+	bestRankSet := false
 	for _, account := range accounts {
 		platform := strings.TrimSpace(account.Platform)
 		if !isConcreteRequestPlatform(platform) || !explicitModelMappingClaims(account, model) {
 			continue
 		}
-		platforms[platform] = struct{}{}
+		rank := compositeModelOwnershipRankFor(account, groupID)
+		if !bestRankSet || rank.less(bestRank) {
+			bestRank = rank
+			bestRankSet = true
+			platforms = map[string]struct{}{platform: {}}
+			continue
+		}
+		if rank == bestRank {
+			platforms[platform] = struct{}{}
+		}
 	}
 
 	ownership := CompositeModelOwnership{}
@@ -1509,12 +1520,51 @@ func (s *GatewayService) resolveCompositeModelOwnership(ctx context.Context, gro
 	return ownership, nil
 }
 
+// compositeModelOwnershipRank follows the same lower-priority-first ordering
+// used by the account scheduler. A composite group can legitimately expose a
+// model through more than one provider; when that happens, use the configured
+// group/account priority instead of falling back to a provider guessed from
+// the model prefix. Equal-priority claims remain ambiguous and fail closed.
+type compositeModelOwnershipRank struct {
+	groupPriority   int
+	accountPriority int
+}
+
+func compositeModelOwnershipRankFor(account Account, groupID int64) compositeModelOwnershipRank {
+	groupPriority := 0
+	for _, accountGroup := range account.AccountGroups {
+		if accountGroup.GroupID == groupID {
+			groupPriority = accountGroup.Priority
+			break
+		}
+	}
+	return compositeModelOwnershipRank{
+		groupPriority:   groupPriority,
+		accountPriority: account.Priority,
+	}
+}
+
+func (r compositeModelOwnershipRank) less(other compositeModelOwnershipRank) bool {
+	if r.groupPriority != other.groupPriority {
+		return r.groupPriority < other.groupPriority
+	}
+	return r.accountPriority < other.accountPriority
+}
+
 func explicitModelMappingClaims(account Account, model string) bool {
 	if account.Credentials == nil || model == "" {
 		return false
 	}
-	mapped, ok := stringMappingFromRaw(account.Credentials["model_mapping"])[model]
-	return ok && strings.TrimSpace(mapped) != ""
+	mapping := account.GetModelMapping()
+	if mapped, ok := mapping[model]; ok {
+		return strings.TrimSpace(mapped) != ""
+	}
+	// A public canonical ID may be derived from one unique dated mapping key.
+	// Let composite ownership use the same safe alias rule as account routing;
+	// otherwise /v1/models would advertise the canonical ID but the middleware
+	// would fall back to DetectModelPlatform and select the wrong provider pool.
+	_, matched := resolveSafeModelAlias(mapping, model)
+	return matched
 }
 
 // GetSchedulablePlatforms returns the concrete platforms that currently have

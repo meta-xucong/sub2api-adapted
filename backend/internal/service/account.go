@@ -814,7 +814,8 @@ func mappingSupportsRequestedModel(mapping map[string]string, requestedModel str
 			return true
 		}
 	}
-	return false
+	_, matched := resolveSafeModelAlias(mapping, requestedModel)
+	return matched
 }
 
 func resolveRequestedModelInMapping(mapping map[string]string, requestedModel string) (mappedModel string, matched bool) {
@@ -824,7 +825,10 @@ func resolveRequestedModelInMapping(mapping map[string]string, requestedModel st
 	if mappedModel, exists := mapping[requestedModel]; exists {
 		return mappedModel, true
 	}
-	return matchWildcardMappingResult(mapping, requestedModel)
+	if mappedModel, matched := matchWildcardMappingResult(mapping, requestedModel); matched {
+		return mappedModel, true
+	}
+	return resolveSafeModelAlias(mapping, requestedModel)
 }
 
 // IsModelSupported 检查模型是否在 model_mapping 中（支持通配符）
