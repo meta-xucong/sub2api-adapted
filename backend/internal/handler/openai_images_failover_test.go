@@ -107,6 +107,36 @@ func (u *openAIImagesFailoverHTTPUpstream) calls() []int64 {
 	return append([]int64(nil), u.accountIDs...)
 }
 
+type openAIImagesTextReplyHTTPUpstream struct {
+	service.HTTPUpstream
+	mu         sync.Mutex
+	accountIDs []int64
+}
+
+func (u *openAIImagesTextReplyHTTPUpstream) Do(_ *http.Request, _ string, accountID int64, _ int) (*http.Response, error) {
+	u.mu.Lock()
+	u.accountIDs = append(u.accountIDs, accountID)
+	u.mu.Unlock()
+	if accountID == 1 {
+		return &http.Response{
+			StatusCode: http.StatusBadRequest,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(bytes.NewBufferString(`{"error":{"code":"upstream_text_reply","message":"requires a usable image target"}}`)),
+		}, nil
+	}
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(bytes.NewBufferString(`{"data":[{"b64_json":"aGVsbG8="}]}`)),
+	}, nil
+}
+
+func (u *openAIImagesTextReplyHTTPUpstream) calls() []int64 {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return append([]int64(nil), u.accountIDs...)
+}
+
 func TestOpenAIGatewayHandlerImages_ServerErrorFailsOverAndReturnsClearErrorWhenExhausted(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	groupID := int64(3130)
@@ -311,4 +341,57 @@ func TestOpenAIGatewayHandlerImages_TotalTimeoutStopsFurtherFailover(t *testing.
 
 	require.Equal(t, []int64{1}, upstream.calls())
 	require.Equal(t, http.StatusBadGateway, rec.Code)
+}
+
+func TestOpenAIGatewayHandlerImages_TextReplySwitchesAccountAndSucceeds(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	groupID := int64(3131)
+	accounts := []service.Account{
+		{
+			ID: 1, Name: "image-account-text-bridge", Platform: service.PlatformOpenAI,
+			Type: service.AccountTypeAPIKey, Status: service.StatusActive, Schedulable: true,
+			Priority: 0, Credentials: map[string]any{"api_key": "key-1", "base_url": "https://image-1.example/v1"},
+		},
+		{
+			ID: 2, Name: "image-account-healthy", Platform: service.PlatformOpenAI,
+			Type: service.AccountTypeAPIKey, Status: service.StatusActive, Schedulable: true,
+			Priority: 1, Credentials: map[string]any{"api_key": "key-2", "base_url": "https://image-2.example/v1"},
+		},
+	}
+	accountRepo := openAIImagesFailoverAccountRepo{accounts: accounts}
+	upstream := &openAIImagesTextReplyHTTPUpstream{}
+	cfg := &config.Config{RunMode: config.RunModeSimple}
+	gatewayService := service.NewOpenAIGatewayService(
+		accountRepo, nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil, nil, nil,
+		upstream, nil, nil, nil, nil, nil, nil, nil, nil,
+	)
+	billingService := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
+	t.Cleanup(billingService.Stop)
+	handler := NewOpenAIGatewayHandler(
+		gatewayService,
+		service.NewConcurrencyService(nil),
+		billingService,
+		service.NewAPIKeyService(nil, nil, nil, nil, nil, nil, cfg),
+		nil, nil, nil, nil, cfg,
+	)
+	handler.maxAccountSwitches = 10
+
+	body := []byte(`{"model":"gpt-image-2","prompt":"draw a cat"}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = req
+	c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{
+		ID: 99, GroupID: &groupID,
+		Group: &service.Group{ID: groupID, AllowImageGeneration: true},
+		User:  &service.User{ID: 100},
+	})
+	c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 100, Concurrency: 0})
+
+	handler.Images(c)
+
+	require.Equal(t, []int64{1, 2}, upstream.calls())
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, "aGVsbG8=", gjson.GetBytes(rec.Body.Bytes(), "data.0.b64_json").String())
 }

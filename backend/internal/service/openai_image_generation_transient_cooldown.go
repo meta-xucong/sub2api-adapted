@@ -113,7 +113,16 @@ func isOpenAIImageUpstreamTextReply(body []byte) bool {
 			return true
 		}
 	}
+	// A valid JSON error is authoritative: do not classify a prompt echo or
+	// diagnostic field that merely contains the marker as a lane mismatch.
+	if gjson.ValidBytes(body) {
+		return false
+	}
 	return strings.Contains(strings.ToLower(string(body)), "upstream_text_reply")
+}
+
+func isOpenAIImageUpstreamTextReplyFailover(statusCode int, body []byte) bool {
+	return statusCode == http.StatusBadRequest && isOpenAIImageUpstreamTextReply(body)
 }
 
 func openAIImageGenerationTransientCooldownReason(failoverErr *UpstreamFailoverError) string {

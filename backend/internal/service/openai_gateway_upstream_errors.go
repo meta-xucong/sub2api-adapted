@@ -231,11 +231,10 @@ func (s *OpenAIGatewayService) shouldFailoverOpenAIUpstreamResponse(statusCode i
 	return isOpenAITransientProcessingError(statusCode, upstreamMsg, upstreamBody)
 }
 
-// Image-compatible gateways can return a text-only error for an image request.
-// This is a lane-local incompatibility, so fail over without changing the
-// ordinary Responses error policy.
+// This lane-local incompatibility merits a cross-account switch, without
+// changing the ordinary Responses error policy.
 func (s *OpenAIGatewayService) shouldFailoverOpenAIImagesResponse(statusCode int, upstreamMsg string, upstreamBody []byte) bool {
-	if isOpenAIImageUpstreamTextReply(upstreamBody) {
+	if isOpenAIImageUpstreamTextReplyFailover(statusCode, upstreamBody) {
 		return true
 	}
 	return s.shouldFailoverOpenAIUpstreamResponse(statusCode, upstreamMsg, upstreamBody)
