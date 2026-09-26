@@ -365,6 +365,20 @@ func TestShouldFailoverOpenAIUpstreamResponseContextWindow502(t *testing.T) {
 	))
 }
 
+func TestShouldFailoverOpenAIImagesResponse_TextReplyIsNarrowAndStructured(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	marker := []byte(`{"error":{"code":"upstream_text_reply"}}`)
+
+	require.True(t, svc.shouldFailoverOpenAIImagesResponse(http.StatusBadRequest, "", marker))
+	require.True(t, svc.shouldFailoverOpenAIImagesResponse(http.StatusBadRequest, "", []byte(`plain upstream_text_reply`)))
+	require.False(t, svc.shouldFailoverOpenAIImagesResponse(http.StatusBadRequest, "", []byte(`{"error":{"message":"upstream_text_reply appeared in the prompt"}}`)))
+	require.False(t, svc.shouldFailoverOpenAIImagesResponse(http.StatusNotFound, "", marker))
+	require.True(t, svc.shouldFailoverOpenAIImagesResponse(http.StatusBadGateway, "temporary outage", []byte(`{"error":{"message":"temporary outage"}}`)))
+
+	require.False(t, isOpenAIImageUpstreamTextReply([]byte(`{"error":{"message":"upstream_text_reply appeared in the prompt"}}`)))
+	require.False(t, isOpenAIImageUpstreamTextReplyFailover(http.StatusInternalServerError, marker))
+}
+
 func TestOpenAIGatewayService_Forward_LogsInstructionsRequiredDetails(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	logSink, restore := captureStructuredLog(t)

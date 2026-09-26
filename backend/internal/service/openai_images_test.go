@@ -1438,6 +1438,53 @@ func TestOpenAIGatewayServiceForwardImages_APIKeyAccessStateUsesTypedFailover(t 
 	require.False(t, c.Writer.Written())
 }
 
+func TestOpenAIGatewayServiceForwardImages_TextReplySkipsSameAccountPoolRetry(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"model":"gpt-image-2","prompt":"draw a cat"}`)
+	upstreamBody := []byte(`{"error":{"code":"upstream_text_reply","message":"requires a usable image target"}}`)
+
+	for _, tt := range []struct {
+		name        string
+		accountType string
+		credentials map[string]any
+	}{
+		{name: "api key", accountType: AccountTypeAPIKey, credentials: map[string]any{"api_key": "sk-test"}},
+		{name: "oauth", accountType: AccountTypeOAuth, credentials: map[string]any{"access_token": "token-test"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
+			c.Request.Header.Set("Content-Type", "application/json")
+			upstream := &httpUpstreamRecorder{resp: &http.Response{
+				StatusCode: http.StatusBadRequest,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(bytes.NewReader(upstreamBody)),
+			}}
+			svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
+			parsed, err := svc.ParseOpenAIImagesRequest(c, body)
+			require.NoError(t, err)
+			credentials := map[string]any{
+				"pool_mode":                    true,
+				"pool_mode_retry_status_codes": []any{float64(http.StatusBadRequest)},
+			}
+			for key, value := range tt.credentials {
+				credentials[key] = value
+			}
+			account := &Account{ID: 53, Platform: PlatformOpenAI, Type: tt.accountType, Credentials: credentials}
+
+			result, err := svc.ForwardImages(context.Background(), c, account, body, parsed, "")
+
+			require.Nil(t, result)
+			var failoverErr *UpstreamFailoverError
+			require.ErrorAs(t, err, &failoverErr)
+			require.Equal(t, http.StatusBadRequest, failoverErr.StatusCode)
+			require.False(t, failoverErr.RetryableOnSameAccount)
+			require.False(t, c.Writer.Written())
+		})
+	}
+}
+
 func TestOpenAIGatewayServiceForwardImages_APIKeyStreamJSONResponseBillsImage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	body := []byte(`{"model":"gpt-image-2","prompt":"draw a cat","stream":true,"response_format":"b64_json"}`)
