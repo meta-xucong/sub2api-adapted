@@ -2537,11 +2537,12 @@ func setDefaults() {
 	viper.SetDefault("gateway.max_account_switches", 10)
 	viper.SetDefault("gateway.max_account_switches_gemini", 3)
 	viper.SetDefault("gateway.smart_router.enabled", false)
-	// Unified gateway is deliberately disabled until the operator explicitly
-	// enables it and assigns one designated API-key group. Registering zero
-	// defaults also keeps these scalar fields reachable from environment-only
-	// deployments during Viper unmarshal.
-	viper.SetDefault("gateway.unified_gateway_admin_ui_enabled", false)
+	// The unified gateway admin plane is visible by default so administrators
+	// can inspect and configure it. Runtime traffic remains fail-closed until
+	// the operator explicitly enables it and assigns one designated API-key
+	// group. Registering defaults also keeps these scalar fields reachable from
+	// environment-only deployments during Viper unmarshal.
+	viper.SetDefault("gateway.unified_gateway_admin_ui_enabled", true)
 	viper.SetDefault("gateway.unified_gateway_runtime_enabled", false)
 	viper.SetDefault("gateway.unified_gateway_access_group_id", int64(0))
 	viper.SetDefault("gateway.smart_router.top_k", 5)

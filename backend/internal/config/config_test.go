@@ -30,6 +30,15 @@ func TestLoadDefaultModelsListReadMaxBytes(t *testing.T) {
 	require.Equal(t, DefaultModelsListReadMaxBytes, cfg.Gateway.ModelsListReadMaxBytes)
 }
 
+func TestLoadUnifiedGatewayAdminUIEnabledByDefaultWithoutEnablingRuntime(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.True(t, cfg.Gateway.UnifiedGatewayAdminUIEnabled)
+	require.False(t, cfg.Gateway.UnifiedGatewayRuntimeEnabled)
+	require.Zero(t, cfg.Gateway.UnifiedGatewayAccessGroupID)
+}
+
 func TestLoadTimezonePrecedence(t *testing.T) {
 	tests := []struct {
 		name         string
