@@ -119,6 +119,12 @@ func DetectModelPlatform(model string) (string, bool) {
 	case strings.HasPrefix(normalized, "gpt-"),
 		strings.HasPrefix(normalized, "chatgpt-"),
 		strings.HasPrefix(normalized, "codex-"),
+		// These providers expose the OpenAI Chat Completions contract in
+		// composite groups. Keep the detector aligned with the model-family
+		// mappings used by the OpenAI gateway so streaming requests can reach
+		// account selection instead of being rejected by the early guard.
+		strings.HasPrefix(normalized, "deepseek-"),
+		strings.HasPrefix(normalized, "glm-"),
 		strings.HasPrefix(normalized, "text-embedding-"),
 		strings.HasPrefix(normalized, "text-moderation-"),
 		strings.HasPrefix(normalized, "omni-moderation-"),

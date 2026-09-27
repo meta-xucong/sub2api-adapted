@@ -19,6 +19,8 @@ func TestDetectModelPlatform(t *testing.T) {
 		{name: "anthropic prefix", model: "anthropic/claude-opus-4-5", platform: PlatformAnthropic, ok: true},
 		{name: "gpt", model: "gpt-5.1", platform: PlatformOpenAI, ok: true},
 		{name: "o series", model: "o3-mini", platform: PlatformOpenAI, ok: true},
+		{name: "deepseek openai-compatible", model: "deepseek-v4-pro-0813", platform: PlatformOpenAI, ok: true},
+		{name: "glm openai-compatible", model: "glm-5.3-flash", platform: PlatformOpenAI, ok: true},
 		{name: "embedding", model: "text-embedding-3-large", platform: PlatformOpenAI, ok: true},
 		{name: "gemini", model: "gemini-3-pro", platform: PlatformGemini, ok: true},
 		{name: "gemini models prefix", model: "models/gemini-2.5-flash", platform: PlatformGemini, ok: true},
