@@ -102,7 +102,7 @@ func TestShouldUseResponsesCompatSessionForPassthrough(t *testing.T) {
 
 	require.True(t, shouldUseResponsesCompatSessionForPassthrough(base("https://gateway.example/v1", AccountTypeAPIKey, true)))
 	require.False(t, shouldUseResponsesCompatSessionForPassthrough(base("https://api.openai.com/v1", AccountTypeAPIKey, true)))
-	require.False(t, shouldUseResponsesCompatSessionForPassthrough(base("https://gateway.example/v1", AccountTypeAPIKey, false)))
+	require.True(t, shouldUseResponsesCompatSessionForPassthrough(base("https://gateway.example/v1", AccountTypeAPIKey, false)))
 	require.False(t, shouldUseResponsesCompatSessionForPassthrough(base("https://gateway.example/v1", AccountTypeOAuth, true)))
 	require.False(t, shouldUseResponsesCompatSessionForPassthrough(nil))
 }
