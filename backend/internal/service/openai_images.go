@@ -638,6 +638,10 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 	if err != nil {
 		return nil, err
 	}
+	forwardBody, forwardContentType, err = sanitizeOpenAIImagesRequestForAccount(account, forwardBody, forwardContentType, upstreamParsed.Model)
+	if err != nil {
+		return nil, err
+	}
 	// 生图是长耗时、上游侧已产生实际成本的操作：客户端中途断开不应连带取消上游请求。
 	// detachStreamUpstreamContext 在非流式时原样返回请求 context，于是客户端一断开
 	// 就把已经在出图的上游调用打断成 context canceled，网关记 502、不扣费，而上游那边
@@ -1082,6 +1086,89 @@ func rewriteOpenAIImagesMultipartModel(body []byte, contentType string, model st
 		if err := writer.WriteField("model", model); err != nil {
 			return nil, "", fmt.Errorf("append multipart model field: %w", err)
 		}
+	}
+	if err := writer.Close(); err != nil {
+		return nil, "", fmt.Errorf("finalize multipart body: %w", err)
+	}
+	return buffer.Bytes(), writer.FormDataContentType(), nil
+}
+
+// sanitizeOpenAIImagesRequestForAccount applies only the explicitly strict
+// native OpenAI Images contract. Compatible providers keep the historical
+// payload unchanged because many of them still accept response_format.
+func sanitizeOpenAIImagesRequestForAccount(account *Account, body []byte, contentType string, model string) ([]byte, string, error) {
+	if !usesStrictOpenAIImagesContract(account) || !strings.EqualFold(strings.TrimSpace(model), "gpt-image-2") || len(body) == 0 {
+		return body, contentType, nil
+	}
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err == nil && strings.EqualFold(mediaType, "multipart/form-data") {
+		return stripOpenAIImagesMultipartField(body, contentType, "response_format")
+	}
+	if !gjson.ValidBytes(body) {
+		return body, contentType, nil
+	}
+	rewritten, err := sjson.DeleteBytes(body, "response_format")
+	if err != nil {
+		return nil, "", fmt.Errorf("sanitize image request: %w", err)
+	}
+	return rewritten, contentType, nil
+}
+
+func usesStrictOpenAIImagesContract(account *Account) bool {
+	if account == nil || !account.IsOpenAIApiKey() {
+		return false
+	}
+	profile := strings.ToLower(strings.TrimSpace(account.getExtraString("openai_images_transport_profile")))
+	switch profile {
+	case "strict", "strict_openai_images", "native", "native_openai_images":
+		return true
+	case "compat", "openai_compatible":
+		return false
+	}
+	// The official API is the only safe implicit strict default. Custom base
+	// URLs remain compatibility-first unless explicitly opted in above.
+	baseURL := strings.TrimSpace(account.GetCredential("base_url"))
+	if baseURL == "" {
+		return true
+	}
+	parsed, err := url.Parse(baseURL)
+	return err == nil && strings.EqualFold(parsed.Hostname(), "api.openai.com")
+}
+
+func stripOpenAIImagesMultipartField(body []byte, contentType string, fieldName string) ([]byte, string, error) {
+	_, params, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return nil, "", fmt.Errorf("parse multipart content-type: %w", err)
+	}
+	boundary := strings.TrimSpace(params["boundary"])
+	if boundary == "" {
+		return nil, "", fmt.Errorf("multipart boundary is required")
+	}
+	reader := multipart.NewReader(bytes.NewReader(body), boundary)
+	var buffer bytes.Buffer
+	writer := multipart.NewWriter(&buffer)
+	for {
+		part, err := reader.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, "", fmt.Errorf("read multipart body: %w", err)
+		}
+		if strings.EqualFold(strings.TrimSpace(part.FormName()), fieldName) && part.FileName() == "" {
+			_ = part.Close()
+			continue
+		}
+		target, err := writer.CreatePart(cloneMultipartHeader(part.Header))
+		if err != nil {
+			_ = part.Close()
+			return nil, "", fmt.Errorf("create multipart part: %w", err)
+		}
+		if _, err := io.Copy(target, part); err != nil {
+			_ = part.Close()
+			return nil, "", fmt.Errorf("copy multipart part: %w", err)
+		}
+		_ = part.Close()
 	}
 	if err := writer.Close(); err != nil {
 		return nil, "", fmt.Errorf("finalize multipart body: %w", err)
