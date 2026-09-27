@@ -165,9 +165,19 @@ func TestAnthropicEventToResponses_ToolCallCompletedCarriesArguments(t *testing.
 	feed(&AnthropicStreamEvent{Type: "content_block_stop", Index: &idx})
 	feed(&AnthropicStreamEvent{Type: "message_stop"})
 
+	var addedID, doneID string
 	var completed *ResponsesStreamEvent
 	for i := range events {
-		if events[i].Type == "response.completed" {
+		switch events[i].Type {
+		case "response.output_item.added":
+			if events[i].Item != nil && events[i].Item.Type == "function_call" {
+				addedID = events[i].Item.ID
+			}
+		case "response.output_item.done":
+			if events[i].Item != nil && events[i].Item.Type == "function_call" {
+				doneID = events[i].Item.ID
+			}
+		case "response.completed":
 			completed = &events[i]
 		}
 	}
@@ -183,5 +193,8 @@ func TestAnthropicEventToResponses_ToolCallCompletedCarriesArguments(t *testing.
 	}
 	if fc.Name != "get_weather" {
 		t.Errorf("name = %q, want get_weather", fc.Name)
+	}
+	if addedID == "" || doneID == "" || addedID != doneID || addedID != fc.ID {
+		t.Errorf("tool item ID mismatch: added=%q done=%q completed=%q", addedID, doneID, fc.ID)
 	}
 }

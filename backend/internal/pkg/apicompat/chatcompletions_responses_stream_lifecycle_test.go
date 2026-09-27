@@ -179,6 +179,50 @@ func TestStream_ToolCallLifecycleComplete(t *testing.T) {
 	require.True(t, sawItemDone, "function_call output_item.done missing")
 }
 
+func TestStream_CompletedOutputReusesStreamItemIDAcrossChatModels(t *testing.T) {
+	for _, model := range []string{"glm-5.2", "deepseek-v4-pro", "gpt-5.6-sol"} {
+		t.Run(model, func(t *testing.T) {
+			state := NewChatCompletionsToResponsesStreamState(model)
+			var events []ResponsesStreamEvent
+			for _, payload := range []string{
+				// GLM-style chunks can carry id, name, and arguments together.
+				`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_glm","type":"function","function":{"name":"exec","arguments":"{\"cmd\":\"Get-Date\"}"}}]}}]}`,
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+			} {
+				var chunk ChatCompletionsChunk
+				require.NoError(t, json.Unmarshal([]byte(payload), &chunk))
+				events = append(events, ChatCompletionsChunkToResponsesEvents(&chunk, state)...)
+			}
+			events = append(events, FinalizeChatCompletionsResponsesStream(state)...)
+
+			var addedID, doneID, completedID string
+			for _, event := range events {
+				switch event.Type {
+				case "response.output_item.added":
+					if event.Item != nil && event.Item.Type == "function_call" {
+						addedID = event.Item.ID
+					}
+				case "response.output_item.done":
+					if event.Item != nil && event.Item.Type == "function_call" {
+						doneID = event.Item.ID
+					}
+				case "response.completed":
+					require.NotNil(t, event.Response)
+					for _, item := range event.Response.Output {
+						if item.Type == "function_call" && item.CallID == "call_glm" {
+							completedID = item.ID
+						}
+					}
+				}
+			}
+
+			require.NotEmpty(t, addedID)
+			require.Equal(t, addedID, doneID)
+			require.Equal(t, addedID, completedID)
+		})
+	}
+}
+
 // TestStream_ToolCallArgumentsInFirstChunkNotDoubled guards the GLM/Zhipu shape
 // where a single tool_call delta chunk carries id+name+arguments together.
 // Earlier code copied the whole tool_call (including arguments) into state and
