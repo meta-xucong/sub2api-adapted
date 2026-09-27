@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	smartrouter "github.com/Wei-Shaw/sub2api/internal/smartrouter/core"
@@ -1247,6 +1248,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	documentScanner := newOpenAISSEJSONDocumentScanner(scanner)
 
 	needModelReplace := strings.TrimSpace(originalModel) != "" && strings.TrimSpace(mappedModel) != "" && strings.TrimSpace(originalModel) != strings.TrimSpace(mappedModel)
+	streamItemIDReconciler := apicompat.NewResponsesStreamItemIDReconciler()
 	resultWithUsage := func() *openaiStreamingResultPassthrough {
 		return &openaiStreamingResultPassthrough{
 			usage:            usage,
@@ -1299,7 +1301,14 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 					line = "data: " + string(restoredData)
 				}
 			}
+			streamItemIDReconciler.Observe(dataBytes)
 			eventType := strings.TrimSpace(gjson.Get(trimmedData, "type").String())
+			if reconciledData, reconciled := streamItemIDReconciler.ReconcileTerminalEvent(dataBytes); reconciled {
+				dataBytes = reconciledData
+				trimmedData = strings.TrimSpace(string(reconciledData))
+				line = "data: " + string(reconciledData)
+				eventType = strings.TrimSpace(gjson.Get(trimmedData, "type").String())
+			}
 			if eventType == "response.failed" {
 				failedMessage = extractOpenAISSEErrorMessage(dataBytes)
 				failedPayload = append(failedPayload[:0], dataBytes...)

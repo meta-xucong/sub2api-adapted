@@ -223,6 +223,48 @@ func TestStream_CompletedOutputReusesStreamItemIDAcrossChatModels(t *testing.T) 
 	}
 }
 
+func TestStream_CompletedOutputReusesStreamItemIDForSparseToolIndex(t *testing.T) {
+	state := NewChatCompletionsToResponsesStreamState("glm-5.2")
+	var events []ResponsesStreamEvent
+	for _, payload := range []string{
+		// Some Chat Completions providers use a non-zero/sparse tool-call index.
+		// The bridge must key terminal output by the actual upstream index, not
+		// by the number of calls currently stored in the state map.
+		`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":7,"id":"call_sparse","type":"function","function":{"name":"exec","arguments":"{\"cmd\":\"Get-Date\"}"}}]}}]}`,
+		`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+	} {
+		var chunk ChatCompletionsChunk
+		require.NoError(t, json.Unmarshal([]byte(payload), &chunk))
+		events = append(events, ChatCompletionsChunkToResponsesEvents(&chunk, state)...)
+	}
+	events = append(events, FinalizeChatCompletionsResponsesStream(state)...)
+
+	var addedID, doneID, completedID string
+	for _, event := range events {
+		switch event.Type {
+		case "response.output_item.added":
+			if event.Item != nil && event.Item.Type == "function_call" {
+				addedID = event.Item.ID
+			}
+		case "response.output_item.done":
+			if event.Item != nil && event.Item.Type == "function_call" {
+				doneID = event.Item.ID
+			}
+		case "response.completed":
+			require.NotNil(t, event.Response)
+			for _, item := range event.Response.Output {
+				if item.Type == "function_call" && item.CallID == "call_sparse" {
+					completedID = item.ID
+				}
+			}
+		}
+	}
+
+	require.NotEmpty(t, addedID)
+	require.Equal(t, addedID, doneID)
+	require.Equal(t, addedID, completedID)
+}
+
 // TestStream_ToolCallArgumentsInFirstChunkNotDoubled guards the GLM/Zhipu shape
 // where a single tool_call delta chunk carries id+name+arguments together.
 // Earlier code copied the whole tool_call (including arguments) into state and

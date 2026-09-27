@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -1697,11 +1698,12 @@ func announceChatToolItem(
 		state.toolNamespace[idx] = ns
 		itemName, itemNamespace = ns.Name, ns.Namespace
 	}
+	itemID := state.toolItemID(idx)
 	events := []ResponsesStreamEvent{chatToResponsesEvent(state, "response.output_item.added", &ResponsesStreamEvent{
 		OutputIndex: state.ToolOutputIndex[idx],
 		Item: &ResponsesOutput{
 			Type:      itemType,
-			ID:        state.ToolItemIDs[idx],
+			ID:        itemID,
 			CallID:    stored.ID,
 			Name:      itemName,
 			Namespace: itemNamespace,
@@ -1712,7 +1714,7 @@ func announceChatToolItem(
 	if !isCustom && !isToolSearch && stored.Function.Arguments != "" {
 		events = append(events, chatToResponsesEvent(state, "response.function_call_arguments.delta", &ResponsesStreamEvent{
 			OutputIndex: state.ToolOutputIndex[idx],
-			ItemID:      state.ToolItemIDs[idx],
+			ItemID:      itemID,
 			Delta:       stored.Function.Arguments,
 			CallID:      stored.ID,
 			Name:        stored.Function.Name,
@@ -1730,15 +1732,12 @@ func closeChatToolItems(state *ChatCompletionsToResponsesStreamState) []Response
 		return nil
 	}
 	var events []ResponsesStreamEvent
-	for i := 0; i < len(state.ToolCalls); i++ {
+	for _, i := range state.orderedToolCallIndexes() {
 		toolCall, ok := state.ToolCalls[i]
 		if !ok || toolCall == nil {
 			continue
 		}
-		itemID, opened := state.ToolItemIDs[i]
-		if !opened {
-			continue
-		}
+		itemID := state.toolItemID(i)
 		// 名字始终未到导致尚未宣告的调用，收尾前按最终名字兜底宣告。
 		events = append(events, announceChatToolItem(state, i, toolCall, true)...)
 		arguments := toolCall.Function.Arguments
@@ -1848,7 +1847,7 @@ func (state *ChatCompletionsToResponsesStreamState) chatOutput() []ResponsesOutp
 			Status: "completed",
 		})
 	}
-	for i := 0; i < len(state.ToolCalls); i++ {
+	for _, i := range state.orderedToolCallIndexes() {
 		toolCall, ok := state.ToolCalls[i]
 		if !ok || toolCall == nil {
 			continue
@@ -1857,7 +1856,7 @@ func (state *ChatCompletionsToResponsesStreamState) chatOutput() []ResponsesOutp
 		if strings.TrimSpace(arguments) == "" {
 			arguments = "{}"
 		}
-		itemID := nonEmpty(state.ToolItemIDs[i], generateItemID())
+		itemID := state.toolItemID(i)
 		if state.toolIsCustom[i] {
 			outputs = append(outputs, ResponsesOutput{
 				Type:   "custom_tool_call",
@@ -1894,6 +1893,48 @@ func (state *ChatCompletionsToResponsesStreamState) chatOutput() []ResponsesOutp
 		})
 	}
 	return outputs
+}
+
+// orderedToolCallIndexes returns the actual upstream tool-call indexes in the
+// order in which their Responses output items were opened. Upstream Chat
+// Completions implementations are allowed to use sparse or non-zero indexes;
+// iterating 0..len(ToolCalls)-1 silently drops those calls and can make the
+// response.completed item differ from the streamed item identity.
+func (state *ChatCompletionsToResponsesStreamState) orderedToolCallIndexes() []int {
+	indexes := make([]int, 0, len(state.ToolCalls))
+	for idx, toolCall := range state.ToolCalls {
+		if toolCall != nil {
+			indexes = append(indexes, idx)
+		}
+	}
+	sort.SliceStable(indexes, func(i, j int) bool {
+		left, leftOK := state.ToolOutputIndex[indexes[i]]
+		right, rightOK := state.ToolOutputIndex[indexes[j]]
+		if leftOK != rightOK {
+			return leftOK
+		}
+		if left != right {
+			return left < right
+		}
+		return indexes[i] < indexes[j]
+	})
+	return indexes
+}
+
+// toolItemID is the single allocator/accessor for a tool call's Responses
+// item ID. Every lifecycle event and response.completed must use this stored
+// value; generating a fallback at serialization time would split one call
+// into two IDs.
+func (state *ChatCompletionsToResponsesStreamState) toolItemID(idx int) string {
+	if id := state.ToolItemIDs[idx]; id != "" {
+		return id
+	}
+	id := generateItemID()
+	if state.ToolItemIDs == nil {
+		state.ToolItemIDs = make(map[int]string)
+	}
+	state.ToolItemIDs[idx] = id
+	return id
 }
 
 func chatToResponsesEvent(
