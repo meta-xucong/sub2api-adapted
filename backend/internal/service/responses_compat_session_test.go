@@ -85,6 +85,28 @@ func TestResponsesCompatSession_UnknownPreviousResponseIsStructuredAtAdapterBoun
 	require.Contains(t, err.Error(), "not available")
 }
 
+func TestShouldUseResponsesCompatSessionForPassthrough(t *testing.T) {
+	base := func(baseURL string, accountType string, passthrough bool) *Account {
+		return &Account{
+			Platform: PlatformOpenAI,
+			Type:     accountType,
+			Credentials: map[string]any{
+				"api_key":  "sk-test",
+				"base_url": baseURL,
+			},
+			Extra: map[string]any{
+				"openai_passthrough": passthrough,
+			},
+		}
+	}
+
+	require.True(t, shouldUseResponsesCompatSessionForPassthrough(base("https://gateway.example/v1", AccountTypeAPIKey, true)))
+	require.False(t, shouldUseResponsesCompatSessionForPassthrough(base("https://api.openai.com/v1", AccountTypeAPIKey, true)))
+	require.False(t, shouldUseResponsesCompatSessionForPassthrough(base("https://gateway.example/v1", AccountTypeAPIKey, false)))
+	require.False(t, shouldUseResponsesCompatSessionForPassthrough(base("https://gateway.example/v1", AccountTypeOAuth, true)))
+	require.False(t, shouldUseResponsesCompatSessionForPassthrough(nil))
+}
+
 func TestResponsesCompatSession_OutputItemsKeepCallAndItemIdentity(t *testing.T) {
 	items, err := responsesCompatOutputItems([]apicompat.ResponsesOutput{
 		{Type: "function_call", ID: "item_1", CallID: "call_1", Name: "工具", Arguments: `{"x":1}`},
@@ -163,6 +185,142 @@ func TestResponsesCompatHTTPContinuation_ReplaysFullHistoryToChatUpstream(t *tes
 	require.Equal(t, "call_exec_1", gjson.GetBytes(replayed, "messages.3.tool_call_id").String())
 	require.Equal(t, "已完成", gjson.GetBytes(replayed, "messages.3.content").String())
 	require.Equal(t, "function", gjson.GetBytes(replayed, "tools.0.type").String())
+}
+
+func TestResponsesCompatPassthrough_ReplaysPreviousResponseIDForCustomAPIKey(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{
+		{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_passthrough_first"}},
+			Body:       io.NopCloser(strings.NewReader(`{"id":"resp_passthrough_first","object":"response","status":"completed","model":"glm-5.2","output":[{"type":"function_call","id":"item_first","call_id":"call_first","name":"codex_usb_echo","arguments":"{\"token\":\"abc\"}"}],"usage":{"input_tokens":12,"output_tokens":4,"total_tokens":16}}`)),
+		},
+		{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_passthrough_second"}},
+			Body:       io.NopCloser(strings.NewReader(`{"id":"resp_passthrough_second","object":"response","status":"completed","model":"glm-5.2","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":20,"output_tokens":2,"total_tokens":22}}`)),
+		},
+	}}
+	svc := &OpenAIGatewayService{
+		cfg:          &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false, AllowInsecureHTTP: true}}},
+		httpUpstream: upstream,
+	}
+	account := &Account{
+		ID:          104,
+		Name:        "custom-responses-gateway",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Credentials: map[string]any{
+			"api_key":  "sk-test",
+			"base_url": "http://upstream.example",
+		},
+		Extra: map[string]any{
+			"openai_passthrough":                     true,
+			openai_compat.ExtraKeyResponsesSupported: true,
+		},
+	}
+
+	firstBody := []byte(`{"model":"glm-5.2","stream":false,"store":true,"input":[{"type":"message","role":"user","content":"echo abc"}],"tools":[{"type":"function","name":"codex_usb_echo","parameters":{"type":"object","properties":{"token":{"type":"string"}}}}]}`)
+	firstRecorder := httptest.NewRecorder()
+	firstContext, _ := gin.CreateTestContext(firstRecorder)
+	firstContext.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(firstBody))
+	firstContext.Request.Header.Set("Content-Type", "application/json")
+	firstResult, err := svc.Forward(context.Background(), firstContext, account, firstBody)
+	require.NoError(t, err)
+	require.NotNil(t, firstResult)
+	require.Equal(t, "resp_passthrough_first", firstResult.ResponseID)
+
+	secondBody := []byte(`{"model":"glm-5.2","stream":false,"store":true,"previous_response_id":"resp_passthrough_first","input":[{"type":"function_call_output","call_id":"call_first","output":"{\"token\":\"abc\",\"challenge\":\"ok\"}"}]}`)
+	secondRecorder := httptest.NewRecorder()
+	secondContext, _ := gin.CreateTestContext(secondRecorder)
+	secondContext.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(secondBody))
+	secondContext.Request.Header.Set("Content-Type", "application/json")
+	secondResult, err := svc.Forward(context.Background(), secondContext, account, secondBody)
+	require.NoError(t, err)
+	require.NotNil(t, secondResult)
+	require.Equal(t, "resp_passthrough_second", secondResult.ResponseID)
+
+	require.Len(t, upstream.bodies, 2)
+	replayed := upstream.bodies[1]
+	require.Empty(t, gjson.GetBytes(replayed, "previous_response_id").String())
+	require.Equal(t, int64(3), gjson.GetBytes(replayed, "input.#").Int())
+	require.Equal(t, "message", gjson.GetBytes(replayed, "input.0.type").String())
+	require.Equal(t, "function_call", gjson.GetBytes(replayed, "input.1.type").String())
+	require.Equal(t, "item_first", gjson.GetBytes(replayed, "input.1.id").String())
+	require.Equal(t, "call_first", gjson.GetBytes(replayed, "input.1.call_id").String())
+	require.Equal(t, "function_call_output", gjson.GetBytes(replayed, "input.2.type").String())
+	require.Equal(t, "call_first", gjson.GetBytes(replayed, "input.2.call_id").String())
+}
+
+func TestResponsesCompatPassthrough_PersistsStreamingTerminalResponse(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	streamBody := strings.Join([]string{
+		`data: {"type":"response.output_item.done","item":{"type":"function_call","id":"item_stream","call_id":"call_stream","name":"codex_usb_echo","arguments":"{\"token\":\"abc\"}"}}`,
+		``,
+		`data: {"type":"response.completed","response":{"id":"resp_stream_first","object":"response","status":"completed","model":"glm-5.2","output":[{"type":"function_call","id":"item_stream","call_id":"call_stream","name":"codex_usb_echo","arguments":"{\"token\":\"abc\"}"}],"usage":{"input_tokens":10,"output_tokens":3,"total_tokens":13}}}`,
+		``,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{
+		{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_stream_first"}},
+			Body:       io.NopCloser(strings.NewReader(streamBody)),
+		},
+		{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_stream_second"}},
+			Body:       io.NopCloser(strings.NewReader(`{"id":"resp_stream_second","object":"response","status":"completed","model":"glm-5.2","output":[]}`)),
+		},
+	}}
+	svc := &OpenAIGatewayService{
+		cfg:          &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false, AllowInsecureHTTP: true}}},
+		httpUpstream: upstream,
+	}
+	account := &Account{
+		ID:       105,
+		Name:     "custom-streaming-gateway",
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key":  "sk-test",
+			"base_url": "http://upstream.example",
+		},
+		Extra: map[string]any{
+			"openai_passthrough":                     true,
+			openai_compat.ExtraKeyResponsesSupported: true,
+		},
+	}
+
+	firstBody := []byte(`{"model":"glm-5.2","stream":true,"store":false,"input":[{"type":"message","role":"user","content":"echo abc"}]}`)
+	firstRecorder := httptest.NewRecorder()
+	firstContext, _ := gin.CreateTestContext(firstRecorder)
+	firstContext.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(firstBody))
+	firstResult, err := svc.Forward(context.Background(), firstContext, account, firstBody)
+	require.NoError(t, err)
+	require.NotNil(t, firstResult)
+	require.Equal(t, "resp_stream_first", firstResult.ResponseID)
+	require.Contains(t, firstRecorder.Body.String(), "response.completed")
+
+	secondBody := []byte(`{"model":"glm-5.2","stream":false,"previous_response_id":"resp_stream_first","input":[{"type":"function_call_output","call_id":"call_stream","output":"ok"}]}`)
+	secondRecorder := httptest.NewRecorder()
+	secondContext, _ := gin.CreateTestContext(secondRecorder)
+	secondContext.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(secondBody))
+	secondResult, err := svc.Forward(context.Background(), secondContext, account, secondBody)
+	require.NoError(t, err)
+	require.NotNil(t, secondResult)
+	require.Equal(t, "resp_stream_second", secondResult.ResponseID)
+
+	replayed := upstream.bodies[1]
+	require.Empty(t, gjson.GetBytes(replayed, "previous_response_id").String())
+	require.Equal(t, "function_call", gjson.GetBytes(replayed, "input.1.type").String())
+	require.Equal(t, "item_stream", gjson.GetBytes(replayed, "input.1.id").String())
+	require.Equal(t, "function_call_output", gjson.GetBytes(replayed, "input.2.type").String())
 }
 
 func TestResponsesCompatHTTPContinuation_FiveRoundsDoesNotDuplicateToolCall(t *testing.T) {

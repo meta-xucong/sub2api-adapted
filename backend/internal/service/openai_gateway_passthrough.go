@@ -39,6 +39,24 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	reqStream bool,
 	startTime time.Time,
 ) (*OpenAIForwardResult, error) {
+	compatSessionEnabled := shouldUseResponsesCompatSessionForPassthrough(account)
+	var compatRequest apicompat.ResponsesRequest
+	if compatSessionEnabled {
+		if err := json.Unmarshal(body, &compatRequest); err != nil {
+			return nil, fmt.Errorf("parse Responses compatibility request: %w", err)
+		}
+		if strings.TrimSpace(compatRequest.PreviousResponseID) != "" {
+			if err := s.prepareResponsesCompatContinuation(ctx, c, &compatRequest); err != nil {
+				writeOpenAIResponsesFallbackError(c, http.StatusBadRequest, "previous_response_not_found", err.Error())
+				return nil, err
+			}
+			replayedBody, err := json.Marshal(&compatRequest)
+			if err != nil {
+				return nil, fmt.Errorf("marshal replayed Responses compatibility request: %w", err)
+			}
+			body = replayedBody
+		}
+	}
 	upstreamPassthroughModel := ""
 	if isOpenAIResponsesCompactPath(c) {
 		compactMappedModel := resolveOpenAICompactForwardModel(account, reqModel)
@@ -246,6 +264,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	responseID := ""
 	imageCount := 0
 	var imageOutputSizes []string
+	var compatResponse *apicompat.ResponsesResponse
 	if reqStream {
 		result, err := s.handleStreamingResponsePassthrough(ctx, resp, c, account, startTime, reqModel, upstreamPassthroughModel)
 		if err != nil {
@@ -256,6 +275,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		responseID = strings.TrimSpace(result.responseID)
 		imageCount = result.imageCount
 		imageOutputSizes = result.imageOutputSizes
+		compatResponse = result.responsesCompatResponse
 	} else {
 		result, err := s.handleNonStreamingResponsePassthrough(ctx, resp, c, reqModel, upstreamPassthroughModel)
 		if err != nil {
@@ -265,8 +285,17 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		responseID = strings.TrimSpace(result.responseID)
 		imageCount = result.imageCount
 		imageOutputSizes = result.imageOutputSizes
+		compatResponse = result.responsesCompatResponse
 	}
 	s.bindHTTPResponseAccount(ctx, c, account, responseID)
+	if compatSessionEnabled && compatResponse != nil {
+		persistCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		persistErr := s.saveResponsesCompatResponse(persistCtx, c, &compatRequest, compatResponse)
+		cancel()
+		if persistErr != nil {
+			logger.L().Warn("openai passthrough Responses compatibility session persistence failed", zap.Error(persistErr), zap.String("response_id", compatResponse.ID))
+		}
+	}
 
 	// 排除 spark 影子:其 codex_* 仅由 QueryUsage(/wham/usage bengalfox)更新(外审第7轮 P1)。
 	if !account.IsShadow() {
@@ -756,19 +785,29 @@ func collectOpenAIPassthroughTimeoutHeaders(h http.Header) []string {
 }
 
 type openaiStreamingResultPassthrough struct {
-	usage            *OpenAIUsage
-	firstTokenMs     *int
-	responseID       string
-	imageCount       int
-	imageOutputSizes []string
+	usage                   *OpenAIUsage
+	firstTokenMs            *int
+	responseID              string
+	imageCount              int
+	imageOutputSizes        []string
+	responsesCompatResponse *apicompat.ResponsesResponse
 }
 
 type openaiNonStreamingResultPassthrough struct {
 	*OpenAIUsage
-	usage            *OpenAIUsage
-	responseID       string
-	imageCount       int
-	imageOutputSizes []string
+	usage                   *OpenAIUsage
+	responseID              string
+	imageCount              int
+	imageOutputSizes        []string
+	responsesCompatResponse *apicompat.ResponsesResponse
+}
+
+func parsePassthroughResponsesCompatResponse(body []byte) *apicompat.ResponsesResponse {
+	var response apicompat.ResponsesResponse
+	if err := json.Unmarshal(body, &response); err != nil || strings.TrimSpace(response.ID) == "" {
+		return nil
+	}
+	return &response
 }
 
 func openAIStreamClientOutputStarted(c *gin.Context, localStarted bool) bool {
@@ -1204,6 +1243,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	imageCounter := newOpenAIImageOutputCounter()
 	var firstTokenMs *int
 	responseID := ""
+	var compatResponse *apicompat.ResponsesResponse
 	clientDisconnected := false
 	sawDone := false
 	sawTerminalEvent := false
@@ -1251,11 +1291,12 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	streamItemIDReconciler := apicompat.NewResponsesStreamItemIDReconciler()
 	resultWithUsage := func() *openaiStreamingResultPassthrough {
 		return &openaiStreamingResultPassthrough{
-			usage:            usage,
-			firstTokenMs:     firstTokenMs,
-			responseID:       responseID,
-			imageCount:       imageCounter.Count(),
-			imageOutputSizes: imageCounter.Sizes(),
+			usage:                   usage,
+			firstTokenMs:            firstTokenMs,
+			responseID:              responseID,
+			imageCount:              imageCounter.Count(),
+			imageOutputSizes:        imageCounter.Sizes(),
+			responsesCompatResponse: compatResponse,
 		}
 	}
 
@@ -1355,6 +1396,11 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 			}
 			if openAIStreamEventIsTerminal(trimmedData) {
 				sawTerminalEvent = true
+			}
+			if eventType == "response.completed" || eventType == "response.done" || eventType == "response.incomplete" {
+				if parsed := parsePassthroughResponsesCompatResponse([]byte(gjson.GetBytes(dataBytes, "response").Raw)); parsed != nil {
+					compatResponse = parsed
+				}
 			}
 			if responseID == "" {
 				responseID = extractOpenAIResponseIDFromJSONBytes(dataBytes)
@@ -1534,11 +1580,12 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 		c.Data(resp.StatusCode, contentType, body)
 	}
 	return &openaiNonStreamingResultPassthrough{
-		OpenAIUsage:      usage,
-		usage:            usage,
-		responseID:       extractOpenAIResponseIDFromJSONBytes(body),
-		imageCount:       countOpenAIResponseImageOutputsFromJSONBytes(body),
-		imageOutputSizes: collectOpenAIResponseImageOutputSizesFromJSONBytes(body),
+		OpenAIUsage:             usage,
+		usage:                   usage,
+		responseID:              extractOpenAIResponseIDFromJSONBytes(body),
+		imageCount:              countOpenAIResponseImageOutputsFromJSONBytes(body),
+		imageOutputSizes:        collectOpenAIResponseImageOutputSizesFromJSONBytes(body),
+		responsesCompatResponse: parsePassthroughResponsesCompatResponse(body),
 	}, nil
 }
 
@@ -1613,11 +1660,12 @@ func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(resp *http.Response, c
 	}
 
 	return &openaiNonStreamingResultPassthrough{
-		OpenAIUsage:      usage,
-		usage:            usage,
-		responseID:       extractOpenAIResponseIDFromJSONBytes(body),
-		imageCount:       countOpenAIImageOutputsFromSSEBody(bodyText),
-		imageOutputSizes: collectOpenAIImageOutputSizesFromSSEBody(bodyText),
+		OpenAIUsage:             usage,
+		usage:                   usage,
+		responseID:              extractOpenAIResponseIDFromJSONBytes(body),
+		imageCount:              countOpenAIImageOutputsFromSSEBody(bodyText),
+		imageOutputSizes:        collectOpenAIImageOutputSizesFromSSEBody(bodyText),
+		responsesCompatResponse: parsePassthroughResponsesCompatResponse(body),
 	}, nil
 }
 

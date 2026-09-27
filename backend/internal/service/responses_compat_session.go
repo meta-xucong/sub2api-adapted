@@ -54,6 +54,19 @@ func responsesCompatSessionScope(c *gin.Context) string {
 	return fmt.Sprintf("group:%d:key:%d", getOpenAIGroupIDFromContext(c), getAPIKeyIDFromContext(c))
 }
 
+// shouldUseResponsesCompatSessionForPassthrough limits local history replay to
+// custom OpenAI-compatible API-key accounts. Official OpenAI Responses
+// accounts must retain their native previous_response_id/store semantics.
+func shouldUseResponsesCompatSessionForPassthrough(account *Account) bool {
+	if account == nil || account.Platform != PlatformOpenAI || account.Type != AccountTypeAPIKey {
+		return false
+	}
+	if !account.IsOpenAIPassthroughEnabled() {
+		return false
+	}
+	return !isOfficialOpenAIBaseURL(account.GetOpenAIBaseURL())
+}
+
 func responsesCompatSessionLocalKey(c *gin.Context, responseID string) string {
 	responseID = strings.TrimSpace(responseID)
 	if responseID == "" {
