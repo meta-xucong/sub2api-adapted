@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 )
@@ -64,6 +65,24 @@ func shouldUseResponsesCompatSessionForPassthrough(account *Account) bool {
 		return false
 	}
 	return !isOfficialOpenAIBaseURL(account.GetOpenAIBaseURL())
+}
+
+// shouldUseResponsesCompatSessionForNativeHTTP covers custom API-key accounts
+// whose capability refresh recorded native Responses support without an
+// explicit routing mode. These providers often accept /responses but do not
+// retain previous_response_id state over HTTP. Explicit modes (including
+// auto) retain their configured native behavior and are handled by the
+// existing routing policy.
+func shouldUseResponsesCompatSessionForNativeHTTP(account *Account) bool {
+	if !shouldUseResponsesCompatSessionForPassthrough(account) || account.Extra == nil {
+		return false
+	}
+	supported, ok := account.Extra[openai_compat.ExtraKeyResponsesSupported].(bool)
+	if !ok || !supported {
+		return false
+	}
+	_, modeConfigured := account.Extra[openai_compat.ExtraKeyResponsesMode]
+	return !modeConfigured
 }
 
 func responsesCompatSessionLocalKey(c *gin.Context, responseID string) string {

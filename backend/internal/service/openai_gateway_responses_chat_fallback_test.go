@@ -162,6 +162,7 @@ func TestForwardResponses_AutoSupportedAccountStillUsesResponsesEndpoint(t *test
 		httpUpstream: upstream,
 	}
 	account := rawChatCompletionsTestAccount()
+	account.Credentials["base_url"] = "https://api.openai.com/v1"
 	account.Extra = map[string]any{
 		openai_compat.ExtraKeyResponsesMode:      string(openai_compat.ResponsesSupportModeAuto),
 		openai_compat.ExtraKeyResponsesSupported: true,
@@ -170,10 +171,65 @@ func TestForwardResponses_AutoSupportedAccountStillUsesResponsesEndpoint(t *test
 	result, err := svc.Forward(context.Background(), c, account, body)
 	require.NoError(t, err)
 	require.NotNil(t, result)
-	require.Equal(t, "http://upstream.example/v1/responses", upstream.lastReq.URL.String())
+	require.Equal(t, "https://api.openai.com/v1/responses", upstream.lastReq.URL.String())
 	require.True(t, gjson.GetBytes(upstream.lastBody, "input").Exists())
 	require.False(t, gjson.GetBytes(upstream.lastBody, "messages").Exists())
 	require.Equal(t, "ok", gjson.Get(rec.Body.String(), "output.0.content.0.text").String())
+}
+
+func TestForwardResponses_CustomOpenAIAccountReplaysNativeResponsesContinuation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	firstBody := []byte(`{"model":"glm-5.2","input":"run a command","tools":[{"type":"function","name":"unified_exec","description":"execute","parameters":{"type":"object","properties":{"command":{"type":"string"}}}}],"stream":true}`)
+	firstRec := httptest.NewRecorder()
+	firstCtx, _ := gin.CreateTestContext(firstRec)
+	firstCtx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(firstBody))
+	firstCtx.Request.Header.Set("Content-Type", "application/json")
+
+	secondBody := []byte(`{"model":"glm-5.2","previous_response_id":"resp_first","input":[{"type":"function_call_output","call_id":"call_exec","output":"{\"ok\":true}"}],"stream":false}`)
+	secondRec := httptest.NewRecorder()
+	secondCtx, _ := gin.CreateTestContext(secondRec)
+	secondCtx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(secondBody))
+	secondCtx.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{
+		&http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_resp_first"}},
+			Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+				`data: {"type":"response.completed","response":{"id":"resp_first","object":"response","model":"glm-5.2","status":"completed","output":[{"type":"function_call","id":"fc_1","call_id":"call_exec","name":"unified_exec","arguments":"{\"command\":\"Get-Date\"}","status":"completed"}],"usage":{"input_tokens":10,"output_tokens":3,"total_tokens":13}}}`,
+				"",
+				"data: [DONE]",
+				"",
+			}, "\n"))),
+		},
+		newJSONResponse(http.StatusOK, `{"id":"resp_second","object":"response","model":"glm-5.2","status":"completed","output":[{"type":"message","id":"msg_2","role":"assistant","status":"completed","content":[{"type":"output_text","text":"done"}]}],"usage":{"input_tokens":20,"output_tokens":2,"total_tokens":22}}`),
+	}}
+	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
+	account := rawChatCompletionsTestAccount()
+	account.Extra = map[string]any{
+		openai_compat.ExtraKeyResponsesSupported: true,
+	}
+
+	firstResult, err := svc.Forward(context.Background(), firstCtx, account, firstBody)
+	require.NoError(t, err)
+	require.NotNil(t, firstResult)
+	require.Equal(t, "resp_first", firstResult.ResponseID)
+	require.True(t, firstResult.Stream)
+	require.Equal(t, "http://upstream.example/v1/responses", upstream.requests[0].URL.String())
+
+	secondResult, err := svc.Forward(context.Background(), secondCtx, account, secondBody)
+	require.NoError(t, err)
+	require.NotNil(t, secondResult)
+	require.Equal(t, "resp_second", secondResult.ResponseID)
+	require.Equal(t, "http://upstream.example/v1/responses", upstream.requests[1].URL.String())
+	require.False(t, gjson.GetBytes(upstream.bodies[1], "previous_response_id").Exists())
+	require.Equal(t, int64(3), gjson.GetBytes(upstream.bodies[1], "input.#").Int())
+	require.Equal(t, "function_call", gjson.GetBytes(upstream.bodies[1], "input.1.type").String())
+	require.Equal(t, "call_exec", gjson.GetBytes(upstream.bodies[1], "input.1.call_id").String())
+	require.Equal(t, "function_call_output", gjson.GetBytes(upstream.bodies[1], "input.2.type").String())
+	require.Equal(t, "call_exec", gjson.GetBytes(upstream.bodies[1], "input.2.call_id").String())
+	require.Equal(t, "{\"ok\":true}", gjson.GetBytes(upstream.bodies[1], "input.2.output").String())
 }
 
 func forceChatResponsesFallbackAccount() *Account {

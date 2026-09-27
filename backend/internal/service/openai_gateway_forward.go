@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -10,11 +11,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
+	"go.uber.org/zap"
 )
 
 // Forward forwards request to OpenAI API
@@ -202,6 +205,34 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			reqStream,
 			startTime,
 		)
+	}
+
+	// Custom OpenAI-compatible HTTP Responses providers may accept the native
+	// endpoint while still not implementing previous_response_id. Keep the
+	// compatibility session at this boundary so a tool-result continuation is
+	// expanded into explicit history before the native request is sent. Official
+	// OpenAI accounts retain their native stateful semantics.
+	compatSessionEnabled := shouldUseResponsesCompatSessionForNativeHTTP(account) && wsDecision.Transport == OpenAIUpstreamTransportHTTPSSE
+	var compatRequest apicompat.ResponsesRequest
+	if compatSessionEnabled {
+		if err := json.Unmarshal(body, &compatRequest); err != nil {
+			return nil, fmt.Errorf("parse Responses compatibility request: %w", err)
+		}
+		if strings.TrimSpace(compatRequest.PreviousResponseID) != "" {
+			if err := s.prepareResponsesCompatContinuation(ctx, c, &compatRequest); err != nil {
+				writeOpenAIResponsesFallbackError(c, http.StatusBadRequest, "previous_response_not_found", err.Error())
+				return nil, err
+			}
+			replayedBody, err := json.Marshal(&compatRequest)
+			if err != nil {
+				return nil, fmt.Errorf("marshal replayed Responses compatibility request: %w", err)
+			}
+			body = replayedBody
+			originalBody = replayedBody
+			requestView = newOpenAIRequestView(body)
+			reqModel, reqStream, promptCacheKey = requestView.Model, requestView.Stream, requestView.PromptCacheKey
+			originalModel = reqModel
+		}
 	}
 
 	bodyModified := false
@@ -964,6 +995,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		var usage *OpenAIUsage
 		var firstTokenMs *int
 		responseID := ""
+		var compatResponse *apicompat.ResponsesResponse
 		imageCount := 0
 		searchCount := 0
 		var imageOutputSizes []string
@@ -978,6 +1010,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			imageCount = streamResult.imageCount
 			imageOutputSizes = streamResult.imageOutputSizes
 			searchCount = streamResult.searchCount
+			compatResponse = streamResult.responsesCompatResponse
 		} else {
 			nonStreamResult, err := s.handleNonStreamingResponse(ctx, resp, c, account, originalModel, upstreamModel)
 			if err != nil {
@@ -988,8 +1021,17 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			imageCount = nonStreamResult.imageCount
 			imageOutputSizes = nonStreamResult.imageOutputSizes
 			searchCount = nonStreamResult.searchCount
+			compatResponse = nonStreamResult.responsesCompatResponse
 		}
 		s.bindHTTPResponseAccount(ctx, c, account, responseID)
+		if compatSessionEnabled && compatResponse != nil {
+			persistCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			persistErr := s.saveResponsesCompatResponse(persistCtx, c, &compatRequest, compatResponse)
+			cancel()
+			if persistErr != nil {
+				logger.L().Warn("openai native Responses compatibility session persistence failed", zap.Error(persistErr), zap.String("response_id", compatResponse.ID))
+			}
+		}
 
 		// Extract and save Codex usage snapshot from response headers (for OAuth accounts).
 		// 排除 spark 影子:其 codex_* 仅由 QueryUsage(/wham/usage bengalfox)更新(外审第7轮 P1)。

@@ -23,21 +23,23 @@ import (
 
 // openaiStreamingResult streaming response result
 type openaiStreamingResult struct {
-	usage            *OpenAIUsage
-	firstTokenMs     *int
-	responseID       string
-	imageCount       int
-	imageOutputSizes []string
-	searchCount      int
+	usage                   *OpenAIUsage
+	firstTokenMs            *int
+	responseID              string
+	imageCount              int
+	imageOutputSizes        []string
+	searchCount             int
+	responsesCompatResponse *apicompat.ResponsesResponse
 }
 
 type openaiNonStreamingResult struct {
 	*OpenAIUsage
-	usage            *OpenAIUsage
-	responseID       string
-	imageCount       int
-	imageOutputSizes []string
-	searchCount      int
+	usage                   *OpenAIUsage
+	responseID              string
+	imageCount              int
+	imageOutputSizes        []string
+	searchCount             int
+	responsesCompatResponse *apicompat.ResponsesResponse
 }
 
 func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, startTime time.Time, originalModel, mappedModel string) (*openaiStreamingResult, error) {
@@ -142,6 +144,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 	usage := &OpenAIUsage{}
 	imageCounter := newOpenAIImageOutputCounter()
 	responseID := ""
+	var compatResponse *apicompat.ResponsesResponse
 	var firstOutputScanGuard atomic.Bool
 	firstOutputScanGuard.Store(guardFirstOutput)
 	scanner := bufio.NewScanner(resp.Body)
@@ -313,12 +316,13 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 	streamSearchSeen := make(map[string]struct{})
 	resultWithUsage := func() *openaiStreamingResult {
 		return &openaiStreamingResult{
-			usage:            usage,
-			firstTokenMs:     firstTokenMs,
-			responseID:       responseID,
-			imageCount:       imageCounter.Count(),
-			imageOutputSizes: imageCounter.Sizes(),
-			searchCount:      searchCounter,
+			usage:                   usage,
+			firstTokenMs:            firstTokenMs,
+			responseID:              responseID,
+			imageCount:              imageCounter.Count(),
+			imageOutputSizes:        imageCounter.Sizes(),
+			searchCount:             searchCounter,
+			responsesCompatResponse: compatResponse,
 		}
 	}
 	flushPending := func(disconnectMessage string) {
@@ -544,6 +548,11 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 				data = string(reconciledData)
 				line = "data: " + data
 				eventType = strings.TrimSpace(gjson.GetBytes(dataBytes, "type").String())
+			}
+			if eventType == "response.completed" || eventType == "response.done" || eventType == "response.incomplete" {
+				if parsed := parsePassthroughResponsesCompatResponse([]byte(gjson.GetBytes(dataBytes, "response").Raw)); parsed != nil {
+					compatResponse = parsed
+				}
 			}
 			if sanitizedData, sanitized := sanitizeOpenAIResponseFailedEventForClient(
 				dataBytes,
@@ -1294,12 +1303,13 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 	}
 
 	return &openaiNonStreamingResult{
-		OpenAIUsage:      usage,
-		usage:            usage,
-		responseID:       extractOpenAIResponseIDFromJSONBytes(body),
-		imageCount:       countOpenAIResponseImageOutputsFromJSONBytes(body),
-		imageOutputSizes: collectOpenAIResponseImageOutputSizesFromJSONBytes(body),
-		searchCount:      countGrokNativeSearchCallsFromJSONBytes(body),
+		OpenAIUsage:             usage,
+		usage:                   usage,
+		responseID:              extractOpenAIResponseIDFromJSONBytes(body),
+		imageCount:              countOpenAIResponseImageOutputsFromJSONBytes(body),
+		imageOutputSizes:        collectOpenAIResponseImageOutputSizesFromJSONBytes(body),
+		searchCount:             countGrokNativeSearchCallsFromJSONBytes(body),
+		responsesCompatResponse: parsePassthroughResponsesCompatResponse(body),
 	}, nil
 }
 
@@ -1393,12 +1403,13 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 	}
 
 	return &openaiNonStreamingResult{
-		OpenAIUsage:      usage,
-		usage:            usage,
-		responseID:       extractOpenAIResponseIDFromJSONBytes(body),
-		imageCount:       countOpenAIImageOutputsFromSSEBody(bodyText),
-		imageOutputSizes: collectOpenAIImageOutputSizesFromSSEBody(bodyText),
-		searchCount:      countGrokNativeSearchCallsFromSSEBody(bodyText),
+		OpenAIUsage:             usage,
+		usage:                   usage,
+		responseID:              extractOpenAIResponseIDFromJSONBytes(body),
+		imageCount:              countOpenAIImageOutputsFromSSEBody(bodyText),
+		imageOutputSizes:        collectOpenAIImageOutputSizesFromSSEBody(bodyText),
+		searchCount:             countGrokNativeSearchCallsFromSSEBody(bodyText),
+		responsesCompatResponse: parsePassthroughResponsesCompatResponse(body),
 	}, nil
 }
 
