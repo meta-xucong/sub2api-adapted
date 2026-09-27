@@ -2958,6 +2958,18 @@ data: {"type":"response.failed","error":{"message":"This content was flagged"}}
 		require.True(t, reported)
 	})
 
+	t.Run("protocol mismatch after write", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodPost, EndpointChatCompletions, nil)
+		before := c.Writer.Size()
+		_, _ = c.Writer.WriteString("data: {\"error\":{\"code\":\"protocol_mismatch\"}}\n\ndata: [DONE]\n\n")
+
+		reported := openAIForwardErrorAlreadyCommunicated(c, before, errors.New("protocol_mismatch: Chat Completions upstream returned a Responses API event"))
+
+		require.True(t, reported)
+	})
+
 	t.Run("no write still needs fallback", func(t *testing.T) {
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)

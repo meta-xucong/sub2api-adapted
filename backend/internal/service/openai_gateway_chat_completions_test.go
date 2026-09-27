@@ -89,6 +89,70 @@ func TestHandleChatStreamingResponse_ClassifiesHTTP2ReadError(t *testing.T) {
 	require.NotContains(t, message, "INTERNAL_ERROR")
 }
 
+func TestHandleChatStreamingResponse_RejectsChatChunkFromResponsesUpstream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body: io.NopCloser(strings.NewReader(
+			"data: {\"id\":\"chatcmpl_1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"}}]}\n\n",
+		)),
+	}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+
+	_, err := svc.handleChatStreamingResponse(
+		resp,
+		c,
+		&Account{ID: 1, Name: "responses-compat", Platform: PlatformOpenAI},
+		"gpt-5.6-terra",
+		"gpt-5.6-terra",
+		"gpt-5.6-terra",
+		time.Now(),
+		0,
+	)
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "protocol_mismatch")
+	require.Empty(t, rec.Body.String())
+}
+
+func TestHandleChatStreamingResponse_ClosesPartialStreamOnProtocolMismatch(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			`data: {"type":"response.output_text.delta","delta":"partial"}`,
+			"",
+			`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"unexpected"}}]}`,
+			"",
+		}, "\n"))),
+	}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+
+	_, err := svc.handleChatStreamingResponse(
+		resp,
+		c,
+		&Account{ID: 1, Name: "responses-compat", Platform: PlatformOpenAI},
+		"gpt-5.6-terra",
+		"gpt-5.6-terra",
+		"gpt-5.6-terra",
+		time.Now(),
+		0,
+	)
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "protocol_mismatch")
+	require.Contains(t, rec.Body.String(), `"code":"protocol_mismatch"`)
+	require.Contains(t, rec.Body.String(), "data: [DONE]")
+}
+
 func TestNormalizeResponsesRequestServiceTier(t *testing.T) {
 	t.Parallel()
 

@@ -602,6 +602,16 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 			)
 			return false
 		}
+		if isChatCompletionsProtocolPayload([]byte(payload)) {
+			streamNonFailoverErr = fmt.Errorf("protocol_mismatch: Responses upstream returned a Chat Completions chunk")
+			if !clientDisconnected && c != nil && c.Writer != nil && c.Writer.Written() {
+				if _, writeErr := fmt.Fprint(c.Writer, buildChatStreamErrorSSE("protocol_mismatch", "Responses upstream returned a Chat Completions chunk")); writeErr == nil {
+					_, _ = fmt.Fprint(c.Writer, "data: [DONE]\n\n")
+					c.Writer.Flush()
+				}
+			}
+			return true
+		}
 		observer.ObserveOpenAI([]byte(payload), event.Type)
 		refusalDetector.ObservePayload([]byte(payload))
 

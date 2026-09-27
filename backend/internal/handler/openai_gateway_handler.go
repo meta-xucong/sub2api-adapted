@@ -2853,6 +2853,7 @@ func openAIForwardErrorAlreadyCommunicated(c *gin.Context, writerSizeBeforeForwa
 	for _, prefix := range []string{
 		"upstream response failed:",
 		"non-streaming openai protocol error:",
+		"protocol_mismatch:",
 	} {
 		if strings.HasPrefix(msg, prefix) {
 			return true

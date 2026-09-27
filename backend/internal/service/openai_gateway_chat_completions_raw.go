@@ -307,9 +307,15 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 	for scanner.Scan() {
 		line := scanner.Text()
 		refusalDetector.ObserveSSELine(line)
+		if eventType, ok := extractOpenAISSEEventLine(line); ok && strings.HasPrefix(strings.TrimSpace(eventType), "response.") {
+			return nil, failChatStreamProtocolMismatch(c, "Chat Completions upstream returned a Responses API event")
+		}
 		if payload, ok := extractOpenAISSEDataLine(line); ok {
 			trimmedPayload := strings.TrimSpace(payload)
 			if trimmedPayload != "[DONE]" {
+				if isResponsesProtocolPayload([]byte(trimmedPayload)) {
+					return nil, failChatStreamProtocolMismatch(c, "Chat Completions upstream returned a Responses API event")
+				}
 				observer.ObserveOpenAI([]byte(payload), strings.TrimSpace(gjson.Get(payload, "type").String()))
 				usageOnlyChunk := isOpenAIChatUsageOnlyStreamChunk(payload)
 				if u := extractCCStreamUsage(payload); u != nil {
@@ -378,6 +384,44 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 		Duration:                      time.Since(startTime),
 		FirstTokenMs:                  firstTokenMs,
 	}, nil
+}
+
+// isResponsesProtocolPayload identifies Responses API events at the protocol
+// boundary. Chat Completions clients must not receive these envelopes.
+func isResponsesProtocolPayload(payload []byte) bool {
+	if !gjson.ValidBytes(payload) {
+		return false
+	}
+	eventType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
+	if strings.HasPrefix(eventType, "response.") {
+		return true
+	}
+	return strings.TrimSpace(gjson.GetBytes(payload, "response.object").String()) == "response"
+}
+
+// isChatCompletionsProtocolPayload identifies Chat Completions chunks at the
+// Responses API boundary. The two event formats are not interchangeable.
+func isChatCompletionsProtocolPayload(payload []byte) bool {
+	if !gjson.ValidBytes(payload) {
+		return false
+	}
+	object := strings.TrimSpace(gjson.GetBytes(payload, "object").String())
+	return object == "chat.completion" || object == "chat.completion.chunk" ||
+		gjson.GetBytes(payload, "choices").IsArray()
+}
+
+func failChatStreamProtocolMismatch(c *gin.Context, message string) error {
+	const code = "protocol_mismatch"
+	if c == nil || c.Writer == nil || !c.Writer.Written() {
+		if c != nil {
+			writeChatCompletionsError(c, http.StatusBadGateway, code, message)
+		}
+		return fmt.Errorf("%s: %s", code, message)
+	}
+	_, _ = fmt.Fprint(c.Writer, buildChatStreamErrorSSE(code, message))
+	_, _ = fmt.Fprint(c.Writer, "data: [DONE]\n\n")
+	c.Writer.Flush()
+	return fmt.Errorf("%s: %s", code, message)
 }
 
 // ensureOpenAIChatStreamUsage 确保 raw Chat Completions 流式请求会让上游返回 usage。
