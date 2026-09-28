@@ -617,7 +617,10 @@ type ResponsesStreamEvent struct {
 	Param string `json:"param,omitempty"`
 
 	// Sequence number for ordering events
-	SequenceNumber int `json:"sequence_number,omitempty"`
+	// sequence_number is required on every Responses SSE event, including the
+	// first event whose value is zero. Do not use omitempty here: strict clients
+	// treat an omitted zero as a malformed event rather than as sequence 0.
+	SequenceNumber int `json:"sequence_number"`
 }
 
 // ---------------------------------------------------------------------------

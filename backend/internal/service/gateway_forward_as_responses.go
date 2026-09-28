@@ -395,7 +395,15 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 
 		// Accumulate content blocks
 		if event.Type == "content_block_start" && event.ContentBlock != nil && finalResp != nil {
-			finalResp.Content = append(finalResp.Content, *event.ContentBlock)
+			block := *event.ContentBlock
+			// Anthropic streaming tool_use blocks start with input:{} and then
+			// deliver the real JSON through input_json_delta. That placeholder is
+			// not part of the arguments; retaining it would produce invalid JSON
+			// such as {}{"token":"..."} in the buffered Responses response.
+			if block.Type == "tool_use" {
+				block.Input = nil
+			}
+			finalResp.Content = append(finalResp.Content, block)
 		}
 		if event.Type == "content_block_delta" && event.Delta != nil && finalResp != nil && event.Index != nil {
 			idx := *event.Index

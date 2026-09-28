@@ -102,6 +102,15 @@ func TestWire_ArgumentsDonePresentEvenEmpty(t *testing.T) {
 	require.Equal(t, "", m["arguments"])
 }
 
+func TestWire_SequenceNumberPresentAtZero(t *testing.T) {
+	m := marshalEvent(t, ResponsesStreamEvent{
+		Type: "response.created", SequenceNumber: 0,
+		Response: &ResponsesResponse{ID: "resp_1", Object: "response", Status: "in_progress"},
+	})
+	require.Contains(t, m, "sequence_number")
+	require.EqualValues(t, 0, m["sequence_number"])
+}
+
 // TestWire_CustomToolCallInputIndexPresentAtZero guards the omitempty trap for
 // custom_tool_call_input.delta/done: output_index must serialize even when 0
 // (custom tool call as the first output item).
