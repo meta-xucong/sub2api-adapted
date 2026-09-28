@@ -418,12 +418,17 @@ func anthToResHandleContentBlockStop(evt *AnthropicStreamEvent, state *Anthropic
 
 	case "function_call":
 		// Emit function_call_arguments.done + output item done
+		args := state.CurrentArgs
+		if args == "" {
+			args = "{}"
+		}
 		events := []ResponsesStreamEvent{
 			makeResponsesEvent(state, "response.function_call_arguments.done", &ResponsesStreamEvent{
 				OutputIndex: state.OutputIndex,
 				ItemID:      state.CurrentItemID,
 				CallID:      state.CurrentCallID,
 				Name:        state.CurrentName,
+				Arguments:   args,
 			}),
 		}
 		events = append(events, closeCurrentResponsesItem(state)...)

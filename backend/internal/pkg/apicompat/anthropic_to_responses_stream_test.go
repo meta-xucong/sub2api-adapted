@@ -165,7 +165,7 @@ func TestAnthropicEventToResponses_ToolCallCompletedCarriesArguments(t *testing.
 	feed(&AnthropicStreamEvent{Type: "content_block_stop", Index: &idx})
 	feed(&AnthropicStreamEvent{Type: "message_stop"})
 
-	var addedID, doneID string
+	var addedID, doneID, argumentsDone string
 	var completed *ResponsesStreamEvent
 	for i := range events {
 		switch events[i].Type {
@@ -177,6 +177,8 @@ func TestAnthropicEventToResponses_ToolCallCompletedCarriesArguments(t *testing.
 			if events[i].Item != nil && events[i].Item.Type == "function_call" {
 				doneID = events[i].Item.ID
 			}
+		case "response.function_call_arguments.done":
+			argumentsDone = events[i].Arguments
 		case "response.completed":
 			completed = &events[i]
 		}
@@ -190,6 +192,9 @@ func TestAnthropicEventToResponses_ToolCallCompletedCarriesArguments(t *testing.
 	}
 	if fc.Arguments != `{"city":"SH"}` {
 		t.Errorf("arguments = %q, want %q", fc.Arguments, `{"city":"SH"}`)
+	}
+	if argumentsDone != fc.Arguments {
+		t.Errorf("arguments.done = %q, want %q", argumentsDone, fc.Arguments)
 	}
 	if fc.Name != "get_weather" {
 		t.Errorf("name = %q, want get_weather", fc.Name)
