@@ -107,6 +107,7 @@ func TestOpenAIGatewayService_Forward_CompactForcesHTTPTransport(t *testing.T) {
 		},
 		Extra: map[string]any{
 			openai_compat.ExtraKeyResponsesSupported:        true,
+			"openai_compact_supported":                      true,
 			"openai_apikey_responses_websockets_v2_enabled": true,
 		},
 		Status:      StatusActive,
@@ -123,4 +124,34 @@ func TestOpenAIGatewayService_Forward_CompactForcesHTTPTransport(t *testing.T) {
 	reason, _ := c.Get("openai_ws_transport_reason")
 	require.Equal(t, string(OpenAIUpstreamTransportHTTPSSE), decision)
 	require.Equal(t, "compact_requires_http", reason)
+}
+
+func TestOpenAIGatewayService_Forward_ResponsesSupportedButCompactUnknownUsesPortableFallback(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"deepseek-v4-pro","input":[{"type":"compaction_trigger"}]}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses/compact", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"id":"chatcmpl_compat","object":"chat.completion","model":"deepseek-v4-pro","choices":[{"index":0,"message":{"role":"assistant","content":"portable summary"},"finish_reason":"stop"}]}`)),
+	}}
+	cfg := &config.Config{}
+	cfg.Security.URLAllowlist.Enabled = false
+	svc := &OpenAIGatewayService{cfg: cfg, httpUpstream: upstream, openaiWSResolver: NewOpenAIWSProtocolResolver(cfg)}
+	account := &Account{
+		ID: 44, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Concurrency: 1,
+		Credentials: map[string]any{"api_key": "sk-test", "base_url": "https://example.com/v1"},
+		Extra:       map[string]any{openai_compat.ExtraKeyResponsesSupported: true},
+		Status:      StatusActive, Schedulable: true,
+	}
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, "https://example.com/v1/chat/completions", upstream.lastReq.URL.String())
+	require.Equal(t, "compaction", gjson.Get(rec.Body.String(), "output.0.type").String())
 }

@@ -1302,7 +1302,7 @@ func TestOpenAIGatewayService_APIKeyPassthrough_CompactErrorBeforeKeepaliveIsSin
 	account := &Account{
 		ID: 125, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Concurrency: 1,
 		Credentials: map[string]any{"api_key": "sk-test", "base_url": "https://secret-upstream.example"},
-		Extra:       map[string]any{"openai_passthrough": true}, Status: StatusActive, Schedulable: true,
+		Extra:       map[string]any{"openai_passthrough": true, "openai_compact_supported": true}, Status: StatusActive, Schedulable: true,
 	}
 
 	_, err := svc.Forward(context.Background(), c, account, []byte(`{"model":"gpt-5.2","input":"hello"}`))
@@ -1337,7 +1337,7 @@ func TestOpenAIGatewayService_APIKeyPassthrough_CompactErrorAfterKeepaliveIsFail
 	account := &Account{
 		ID: 126, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Concurrency: 1,
 		Credentials: map[string]any{"api_key": "sk-test", "base_url": "https://secret-upstream.example"},
-		Extra:       map[string]any{"openai_passthrough": true}, Status: StatusActive, Schedulable: true,
+		Extra:       map[string]any{"openai_passthrough": true, "openai_compact_supported": true}, Status: StatusActive, Schedulable: true,
 	}
 
 	_, err := svc.Forward(context.Background(), c, account, []byte(`{"model":"gpt-5.2","input":"hello"}`))

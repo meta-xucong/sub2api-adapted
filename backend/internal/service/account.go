@@ -915,6 +915,23 @@ func (a *Account) AllowsOpenAICompact() bool {
 	return a.GetOpenAICompactMode() != OpenAICompactModeForceOff
 }
 
+// UsesNativeOpenAICompact reports whether an API-key account should receive
+// /responses/compact directly. Responses API support is independent from
+// compact support: many third-party OpenAI-compatible providers expose
+// /responses but not the standalone compact endpoint. For those accounts the
+// gateway must use its portable Chat Completions summary fallback instead of
+// sending an unsupported request upstream.
+func (a *Account) UsesNativeOpenAICompact() bool {
+	if a == nil || !a.IsOpenAI() {
+		return false
+	}
+	supported, known := a.OpenAICompactSupportKnown()
+	if known {
+		return supported
+	}
+	return openAIAccountUsesNativeOpenAIEndpoint(a)
+}
+
 // GetCompactModelMapping returns compact-only model remapping configuration.
 // This mapping is intended for /responses/compact only and does not affect
 // normal /responses traffic.

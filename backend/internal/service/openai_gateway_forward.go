@@ -118,7 +118,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		return s.forwardGrokResponses(ctx, c, account, body, originalModel, reqStream, startTime)
 	}
 
-	if account.Type == AccountTypeAPIKey && requiresCompactLane && !openai_compat.ShouldUseResponsesAPI(account.Extra) {
+	if account.Type == AccountTypeAPIKey && requiresCompactLane && !account.UsesNativeOpenAICompact() {
 		return s.forwardResponsesCompactViaRawChatCompletions(ctx, c, account, body)
 	}
 	if account.Type == AccountTypeAPIKey && !requiresCompactLane && !openai_compat.ShouldUseResponsesAPI(account.Extra) {

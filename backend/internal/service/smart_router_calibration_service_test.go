@@ -81,6 +81,7 @@ func TestRunSmartRouterCompactCalibrationProbeForcesHTTPTransport(t *testing.T) 
 		},
 		Extra: map[string]any{
 			"use_responses_api":                             true,
+			"openai_compact_supported":                      true,
 			"openai_apikey_responses_websockets_v2_enabled": true,
 		},
 	}
