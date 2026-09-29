@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -1691,7 +1692,10 @@ func ChatCompletionsChunkToResponsesEvents(
 	if chunk == nil || state == nil {
 		return nil
 	}
-	if chunk.ID != "" {
+	// Bind the Responses identity to the first upstream chunk only. Some
+	// providers emit a different/synthetic ID on later chunks; changing it
+	// mid-stream makes response.created and response.completed disagree.
+	if !state.CreatedSent && chunk.ID != "" {
 		state.ResponseID = chunk.ID
 	}
 	if state.Model == "" && chunk.Model != "" {
@@ -1763,7 +1767,9 @@ func ChatCompletionsChunkToResponsesEvents(
 				state.ToolItemIDs[idx] = generateItemID()
 				state.ToolOutputIndex[idx] = state.allocOutputIndex()
 			} else {
-				if toolCall.ID != "" {
+				// Preserve the first non-empty call ID. Later argument chunks from
+				// some providers may repeat a different synthetic ID.
+				if stored.ID == "" && toolCall.ID != "" {
 					stored.ID = toolCall.ID
 				}
 				if toolCall.Function.Name != "" {
@@ -2041,7 +2047,7 @@ func announceChatToolItem(
 		OutputIndex: state.ToolOutputIndex[idx],
 		Item: &ResponsesOutput{
 			Type:      itemType,
-			ID:        state.ToolItemIDs[idx],
+			ID:        state.toolItemID(idx),
 			CallID:    stored.ID,
 			Name:      itemName,
 			Namespace: itemNamespace,
@@ -2052,7 +2058,7 @@ func announceChatToolItem(
 	if !isCustom && !isToolSearch && stored.Function.Arguments != "" {
 		events = append(events, chatToResponsesEvent(state, "response.function_call_arguments.delta", &ResponsesStreamEvent{
 			OutputIndex: state.ToolOutputIndex[idx],
-			ItemID:      state.ToolItemIDs[idx],
+			ItemID:      state.toolItemID(idx),
 			Delta:       stored.Function.Arguments,
 			CallID:      stored.ID,
 			Name:        stored.Function.Name,
@@ -2070,15 +2076,12 @@ func closeChatToolItems(state *ChatCompletionsToResponsesStreamState) []Response
 		return nil
 	}
 	var events []ResponsesStreamEvent
-	for i := 0; i < len(state.ToolCalls); i++ {
+	for _, i := range state.orderedToolCallIndexes() {
 		toolCall, ok := state.ToolCalls[i]
 		if !ok || toolCall == nil {
 			continue
 		}
-		itemID, opened := state.ToolItemIDs[i]
-		if !opened {
-			continue
-		}
+		itemID := state.toolItemID(i)
 		// 名字始终未到导致尚未宣告的调用，收尾前按最终名字兜底宣告。
 		events = append(events, announceChatToolItem(state, i, toolCall, true)...)
 		arguments := toolCall.Function.Arguments
@@ -2169,7 +2172,7 @@ func (state *ChatCompletionsToResponsesStreamState) chatOutput() []ResponsesOutp
 	if state.Reasoning.Len() > 0 {
 		outputs = append(outputs, ResponsesOutput{
 			Type: "reasoning",
-			ID:   generateItemID(),
+			ID:   nonEmpty(state.ReasoningItemID, generateItemID()),
 			Summary: []ResponsesSummary{{
 				Type: "summary_text",
 				Text: state.Reasoning.String(),
@@ -2188,7 +2191,7 @@ func (state *ChatCompletionsToResponsesStreamState) chatOutput() []ResponsesOutp
 			Status: "completed",
 		})
 	}
-	for i := 0; i < len(state.ToolCalls); i++ {
+	for _, i := range state.orderedToolCallIndexes() {
 		toolCall, ok := state.ToolCalls[i]
 		if !ok || toolCall == nil {
 			continue
@@ -2197,10 +2200,11 @@ func (state *ChatCompletionsToResponsesStreamState) chatOutput() []ResponsesOutp
 		if strings.TrimSpace(arguments) == "" {
 			arguments = "{}"
 		}
+		itemID := state.toolItemID(i)
 		if state.toolIsCustom[i] {
 			outputs = append(outputs, ResponsesOutput{
 				Type:   "custom_tool_call",
-				ID:     generateItemID(),
+				ID:     itemID,
 				CallID: toolCall.ID,
 				Name:   customNameForStreamTool(state, toolCall.Function.Name),
 				Input:  extractCustomToolCallInput(arguments),
@@ -2211,7 +2215,7 @@ func (state *ChatCompletionsToResponsesStreamState) chatOutput() []ResponsesOutp
 		if state.toolIsToolSearch[i] {
 			outputs = append(outputs, ResponsesOutput{
 				Type:      "tool_search_call",
-				ID:        generateItemID(),
+				ID:        itemID,
 				CallID:    toolCall.ID,
 				Arguments: arguments,
 				Status:    "completed",
@@ -2224,7 +2228,7 @@ func (state *ChatCompletionsToResponsesStreamState) chatOutput() []ResponsesOutp
 		}
 		outputs = append(outputs, ResponsesOutput{
 			Type:      "function_call",
-			ID:        generateItemID(),
+			ID:        itemID,
 			CallID:    toolCall.ID,
 			Name:      name,
 			Namespace: namespace,
@@ -2233,6 +2237,43 @@ func (state *ChatCompletionsToResponsesStreamState) chatOutput() []ResponsesOutp
 		})
 	}
 	return outputs
+}
+
+// orderedToolCallIndexes preserves sparse/non-zero upstream indexes while
+// retaining the order in which Responses output items were opened.
+func (state *ChatCompletionsToResponsesStreamState) orderedToolCallIndexes() []int {
+	indexes := make([]int, 0, len(state.ToolCalls))
+	for idx, toolCall := range state.ToolCalls {
+		if toolCall != nil {
+			indexes = append(indexes, idx)
+		}
+	}
+	sort.SliceStable(indexes, func(i, j int) bool {
+		left, leftOK := state.ToolOutputIndex[indexes[i]]
+		right, rightOK := state.ToolOutputIndex[indexes[j]]
+		if leftOK != rightOK {
+			return leftOK
+		}
+		if left != right {
+			return left < right
+		}
+		return indexes[i] < indexes[j]
+	})
+	return indexes
+}
+
+// toolItemID is the single allocator/accessor for a tool call's Responses
+// item ID. Every lifecycle event and response.completed use this value.
+func (state *ChatCompletionsToResponsesStreamState) toolItemID(idx int) string {
+	if id := state.ToolItemIDs[idx]; id != "" {
+		return id
+	}
+	id := generateItemID()
+	if state.ToolItemIDs == nil {
+		state.ToolItemIDs = make(map[int]string)
+	}
+	state.ToolItemIDs[idx] = id
+	return id
 }
 
 func chatToResponsesEvent(
