@@ -17,13 +17,13 @@
 | 当前代码快照（备份对象） | `13430dd5209728a4a1b5523f92ed4de267d1c745` |
 | 本方案文档提交 | `654a154f66b07a95ad2b6fde89edd8dcf3183baf`；不改变上述代码快照 |
 | GitHub 留档分支 | `backup/pre-v0210-migration-20260930` |
-| 官方升级基线 | tag `v0.2.10`，commit `2f3fed2fd` |
-| 官方主线复核 | `upstream/main`，当前 `a60a29549`，版本同步为 `0.2.10` |
+| 官方升级基线 | `upstream/main`，commit `a60a29549`（版本 `0.2.10`） |
+| 本地可复现标签 | `v0.2.10` → `2f3fed2fd`；只比官方主线少 `backend/cmd/server/VERSION` 同步提交，不作为官方发布标签证据 |
 | 当前源码版本 | `0.1.173` |
 | 当前工作树未跟踪内容 | `backend/internal/pkg/apicompat/historical_model_contract_matrix_test.go`；保留但不纳入备份和迁移提交，除非后续单独审查后明确收录 |
 | 已知脏实验树 | `D:\AI\SSH\_worktrees\sub2api-v0210-overlay-port`（branch `upgrade/v0210-overlay-port-20260929`）；禁止清理、复用或从其中直接复制整批文件 |
 
-官方 tag 是本次可复现基线。GitHub Releases 页面在当前抓取结果中将 `0.2.9` 显示为 Latest，但仓库已存在 `v0.2.10` tag 且 `upstream/main` 已同步到 `0.2.10`；因此本次不使用浮动 `latest`，只使用不可变 tag/commit，并在最终报告中同时记录该发布元数据差异。
+官方仓库当前 `upstream/main` 已同步到版本 `0.2.10`，但 `git ls-remote upstream` 未返回 `v0.2.10` 标签；本地 `v0.2.10` 是适配仓库可复现标签。故迁移分支已补入官方 `a60a29549` 的版本同步提交，后续统一以 `a60a29549` 作为官方来源证据，不使用浮动 `latest`。
 
 ## 3. 迁移原则
 
@@ -161,10 +161,14 @@
 ```yaml
 PLAN_STATUS: REVISED_WITH_EVIDENCE_REAUDIT_REQUIRED
 CURRENT_SNAPSHOT_PUSHED: true
-OFFICIAL_BASELINE: v0.2.10@2f3fed2fd
-OVERLAY_MIGRATION: NOT_STARTED
+OFFICIAL_BASELINE: upstream/main@a60a29549 (version 0.2.10)
+LOCAL_TAG_REFERENCE: v0.2.10@2f3fed2fd (adapted repository tag only)
+OVERLAY_MIGRATION: IN_PROGRESS
+MIGRATION_COMMITS: 3ecc366a3, 014b69f61, 5bd7026ff, b5b625173, c1a2eb579
+COMPLETED_BATCHES: model-filter-and-manual-mapping (targeted tests passed); smart-router-core (targeted tests passed)
+ACTIVE_BATCHES: protocol-delta, smart-router-persistence, image-bridge
 FULL_LOCAL_TEST: NOT_RUN_ON_MIGRATED_TREE
 LIVE_TEST: NOT_RUN_ON_MIGRATED_TREE
 VPS_DEPLOY: NOT_AUTHORIZED_IN_THIS_PHASE
-INDEPENDENT_AUDIT: INITIAL_FAIL_REMEDIATIONS_WRITTEN_EVIDENCE_REAUDIT_REQUIRED
+INDEPENDENT_AUDIT: BATCH_AUDITS_IN_PROGRESS; RELEASE_NOT_ACCEPTED
 ```

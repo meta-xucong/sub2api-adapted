@@ -7,8 +7,8 @@
 ## 结论
 
 ```yaml
-AUDIT_STATUS: REAUDIT_REQUIRED_AFTER_EVIDENCE_REPAIR
-CODE_MIGRATION: NOT_STARTED
+AUDIT_STATUS: BATCH_REAUDIT_IN_PROGRESS
+CODE_MIGRATION: IN_PROGRESS
 RELEASE_STATUS: NOT_ACCEPTED
 ```
 
@@ -25,8 +25,8 @@ RELEASE_STATUS: NOT_ACCEPTED
 | 当前代码快照（备份对象） | `13430dd5209728a4a1b5523f92ed4de267d1c745` | CODE_FACT |
 | 方案文档提交 | `654a154f66b07a95ad2b6fde89edd8dcf3183baf` | DOC_FACT；不属于旧代码备份 |
 | 当前快照 GitHub 留档 | `backup/pre-v0210-migration-20260930` | OPERATION_FACT |
-| 官方 tag | `v0.2.10` → `2f3fed2fd` | OFFICIAL_SOURCE_FACT |
-| 官方 main | `a60a29549`，仅比 tag 多版本同步提交 | OFFICIAL_SOURCE_FACT |
+| 官方本次基线 | `upstream/main` → `a60a29549`，版本为 `0.2.10` | OFFICIAL_SOURCE_FACT |
+| 本地标签对照 | `v0.2.10` → `2f3fed2fd`，仅少 `VERSION` 同步提交；来自适配仓库 | OFFICIAL_SOURCE_FACT / REPOSITORY_FACT |
 | 当前自有树与官方差异过大 | 约 1939 个文件，不能整体 merge | CODE_FACT |
 | 旧实验树不干净 | `D:\AI\SSH\_worktrees\sub2api-v0210-overlay-port` / branch `upgrade/v0210-overlay-port-20260929` 有大量未提交/未跟踪项 | OPERATION_FACT |
 | 当前工作树未跟踪测试文件 | `backend/internal/pkg/apicompat/historical_model_contract_matrix_test.go` | CODE_FACT；不纳入留档 |
@@ -68,6 +68,16 @@ git grep -l "function_call_arguments.done" v0.2.10 -- backend/internal/pkg/apico
 
 这已经补足了“官方吸收项”的第一层证据；仍需在每个实际移植批次中附定向测试退出码，不能把本表当成代码验收。
 
+## 已开始迁移的批次证据
+
+| 批次 | 提交 | 结果 | 测试证据 |
+|---|---|---|---|
+| Smart Router core | `014b69f61` | 已移植；尚未接入 service/config/repository | `go.cmd test -count=1 -timeout=120s ./internal/smartrouter/core` → exit 0；worker 的 `-tags unit` → exit 0 |
+| 模型目录过滤/手工 mapping | `5bd7026ff`, `b5b625173`, `c1a2eb579` | 已移植；日期/过期 ID 过滤、正式 ID 保留、空结果拒绝、手工 mapping 不再被自动发现规则误伤 | `go.cmd test ... ./internal/pkg/openai` → exit 0；`./internal/service -run TestFetchUpstream` → exit 0；`-tags unit ...TestAdminService_CompositeModelsListCandidatesIncludeConcreteAccountMappings` → exit 0 |
+| 官方版本同步 | `3ecc366a3` | 已纳入官方 `upstream/main` 的 VERSION 同步 | `git show --stat 3ecc366a3` |
+
+上述只证明对应批次的定向测试；不等于整树、数据库、实盘或发布验收。
+
 ## 仍需核对/移植的自有差异
 
 - Smart Router core、exact-model/capability/source-group、429 backoff、持久健康账本、04:00 校准。
@@ -80,11 +90,11 @@ git grep -l "function_call_arguments.done" v0.2.10 -- backend/internal/pkg/apico
 
 ## 阻断项
 
-1. 尚无干净 v0.2.10 叠加后的代码提交。
-2. 尚无迁移后定向或全仓测试退出码。
+1. 尚无完整迁移完成后的干净发布提交。
+2. 尚无迁移后全仓测试退出码；当前只有已列批次定向测试。
 3. 尚无数据库前向/回滚、权限负向、账务不变性证据。
 4. 尚无真实 GLM、DeepSeek、Claude、Qwen、MiniMax、Kimi、HY4 矩阵证据。
-5. 尚无针对新迁移树的独立代码审计。
+5. 已启动针对模型目录和 Smart Router core 的独立代码审计；结果尚未全部回写，不能视为 PASS。
 6. 官方吸收项目前只有源码存在性和测试文件证据，尚未逐项生成 `git show`/定向测试的独立证据包；因此本记录仍是计划级条件结论，不是迁移放行。
 
 ## 放行条件
