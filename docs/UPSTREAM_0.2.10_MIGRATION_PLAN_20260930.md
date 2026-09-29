@@ -14,13 +14,14 @@
 
 | 项目 | 固定值 |
 |---|---|
-| 当前已提交快照 | `13430dd5209728a4a1b5523f92ed4de267d1c745` |
+| 当前代码快照（备份对象） | `13430dd5209728a4a1b5523f92ed4de267d1c745` |
+| 本方案文档提交 | `654a154f66b07a95ad2b6fde89edd8dcf3183baf`；不改变上述代码快照 |
 | GitHub 留档分支 | `backup/pre-v0210-migration-20260930` |
 | 官方升级基线 | tag `v0.2.10`，commit `2f3fed2fd` |
 | 官方主线复核 | `upstream/main`，当前 `a60a29549`，版本同步为 `0.2.10` |
 | 当前源码版本 | `0.1.173` |
 | 当前工作树未跟踪内容 | `backend/internal/pkg/apicompat/historical_model_contract_matrix_test.go`；保留但不纳入备份和迁移提交，除非后续单独审查后明确收录 |
-| 已知脏实验树 | `_worktrees/sub2api-v0210-overlay-port`；禁止清理、复用或从其中直接复制整批文件 |
+| 已知脏实验树 | `D:\AI\SSH\_worktrees\sub2api-v0210-overlay-port`（branch `upgrade/v0210-overlay-port-20260929`）；禁止清理、复用或从其中直接复制整批文件 |
 
 官方 tag 是本次可复现基线。GitHub Releases 页面在当前抓取结果中将 `0.2.9` 显示为 Latest，但仓库已存在 `v0.2.10` tag 且 `upstream/main` 已同步到 `0.2.10`；因此本次不使用浮动 `latest`，只使用不可变 tag/commit，并在最终报告中同时记录该发布元数据差异。
 
@@ -144,6 +145,8 @@
 ### 8.2 证据和覆盖缺口修复
 
 - 在第一批代码提交前生成 `docs/UPSTREAM_0.2.10_OVERLAY_AUDIT_20260930.md`，逐条列出“自有提交/文件 → 批次 → 官方文件/测试 → 保留/废弃/范围外”，每条必须带 `git show` 或测试命令证据；没有证据的项标记 `INSUFFICIENT_EVIDENCE`，不得默认为保留。
+- 当前已经采集的官方源码证据：`v0.2.10` 中存在 `backend/internal/service/openai_responses_item_id.go`、`backend/internal/pkg/apicompat/anthropic_to_responses_response.go`、`chatcompletions_responses_bridge.go`、`anthropic_to_responses_stream_tool_input_test.go`、`responses_stream_event_wire_test.go`、`backend/internal/service/openai_gateway_response_handling.go`、`openai_compact_*` 和 `openai_fast_service_tier_test.go`；不存在自有 `backend/internal/smartrouter/core/`、`backend/internal/service/openai_responses_image_bridge.go`、`backend/internal/server/middleware/operator_test_guard.go`。`git diff --name-status v0.2.10 upstream/main` 仅显示 `backend/cmd/server/VERSION`，因此官方 tag 是可复现迁移基线。
+- 官方基线全仓实测：`go.cmd test -count=1 -timeout=900s ./...` 退出码 `1`；核心 handler/apicompat/service/server/routes 通过，但 `internal/repository` 有官方基线环境失败：`TestAliyunCaptchaVerifier_TransportError`，以及三个 `backup_pg_dumper` 测试因 Windows PATH 缺 `sh` 失败。该结果必须作为基线对照，不得在迁移后把这些环境失败算作自有回归；迁移后要补跑可复现的 Linux/容器基线或明确隔离。
 - 记录官方基线 `go version`、Node/pnpm、依赖 lockfile SHA256、`go test`/前端测试真实退出码；文档中的“待执行”不算通过。
 - 数据库门槛增加：在临时 PostgreSQL/Redis 上从当前 schema 执行官方与自有 migration，验证重复启动幂等、旧数据可读、回滚点可恢复；发现 migration 编号冲突（例如旧的 221 文件与官方 221）时改用新的自有编号并更新 runner，不覆盖官方 migration。
 - 权限矩阵至少覆盖匿名、普通用户、管理员、operator test key、Veyra portal 五类主体；每个受保护端点有允许/拒绝测试、状态码、审计日志和“不产生客户 usage/扣费”的断言。
@@ -156,12 +159,12 @@
 ## 9. 当前状态
 
 ```yaml
-PLAN_STATUS: REVISED_AFTER_AUDIT_FAIL_REMEDIATION_PENDING
+PLAN_STATUS: REVISED_WITH_EVIDENCE_REAUDIT_REQUIRED
 CURRENT_SNAPSHOT_PUSHED: true
 OFFICIAL_BASELINE: v0.2.10@2f3fed2fd
 OVERLAY_MIGRATION: NOT_STARTED
 FULL_LOCAL_TEST: NOT_RUN_ON_MIGRATED_TREE
 LIVE_TEST: NOT_RUN_ON_MIGRATED_TREE
 VPS_DEPLOY: NOT_AUTHORIZED_IN_THIS_PHASE
-INDEPENDENT_AUDIT: INITIAL_FAIL_REMEDIATIONS_WRITTEN_REAUDIT_REQUIRED
+INDEPENDENT_AUDIT: INITIAL_FAIL_REMEDIATIONS_WRITTEN_EVIDENCE_REAUDIT_REQUIRED
 ```

@@ -7,7 +7,7 @@
 ## 结论
 
 ```yaml
-AUDIT_STATUS: CONDITIONAL_PASS_FOR_PLAN_ONLY
+AUDIT_STATUS: REAUDIT_REQUIRED_AFTER_EVIDENCE_REPAIR
 CODE_MIGRATION: NOT_STARTED
 RELEASE_STATUS: NOT_ACCEPTED
 ```
@@ -22,13 +22,16 @@ RELEASE_STATUS: NOT_ACCEPTED
 
 | 事实 | 证据 | 判定 |
 |---|---|---|
-| 当前代码快照 | `13430dd5209728a4a1b5523f92ed4de267d1c745` | CODE_FACT |
+| 当前代码快照（备份对象） | `13430dd5209728a4a1b5523f92ed4de267d1c745` | CODE_FACT |
+| 方案文档提交 | `654a154f66b07a95ad2b6fde89edd8dcf3183baf` | DOC_FACT；不属于旧代码备份 |
 | 当前快照 GitHub 留档 | `backup/pre-v0210-migration-20260930` | OPERATION_FACT |
 | 官方 tag | `v0.2.10` → `2f3fed2fd` | OFFICIAL_SOURCE_FACT |
 | 官方 main | `a60a29549`，仅比 tag 多版本同步提交 | OFFICIAL_SOURCE_FACT |
 | 当前自有树与官方差异过大 | 约 1939 个文件，不能整体 merge | CODE_FACT |
-| 旧实验树不干净 | `sub2api-v0210-overlay-port-20260929` 有大量未提交/未跟踪项 | OPERATION_FACT |
+| 旧实验树不干净 | `D:\AI\SSH\_worktrees\sub2api-v0210-overlay-port` / branch `upgrade/v0210-overlay-port-20260929` 有大量未提交/未跟踪项 | OPERATION_FACT |
 | 当前工作树未跟踪测试文件 | `backend/internal/pkg/apicompat/historical_model_contract_matrix_test.go` | CODE_FACT；不纳入留档 |
+| 官方 tag 与 main 差异 | `git diff --name-status v0.2.10 upstream/main` 仅为 `backend/cmd/server/VERSION` | OFFICIAL_SOURCE_FACT |
+| 官方基线全仓测试 | `go.cmd test -count=1 -timeout=900s ./...` → exit `1`；核心包通过，repository 有 Aliyun 与 Windows `sh` 环境失败 | EXPERIMENT_FACT；迁移回归对照 |
 
 ## 官方已覆盖的能力（迁移时跳过旧实现）
 
@@ -38,6 +41,32 @@ RELEASE_STATUS: NOT_ACCEPTED
 - DeepSeek reasoning、Anthropic 通用 bridge、基础图片路由/错误处理、Fast `service_tier`、Codex manifest、通用 Grok media 的基础能力。
 
 以官方 `v0.2.10` 源码和对应 tests 为准，不能以旧提交标题单独判定已吸收。
+
+### 可复核的官方提交证据
+
+以下命令已在干净官方基线工作树执行，提交均可由 `git show` 复核：
+
+| 官方提交 | 结果 | 迁移含义 |
+|---|---|---|
+| `0952ce341` | `fix(apicompat): include streamed arguments in function_call_arguments.done` | 旧的工具参数 `.done` 补丁不重复移植 |
+| `a5d8db244` | `fix(responses): strip oversized input item IDs` | 输入 item ID 基础清洗不重复移植 |
+| `97bdde313` | `fix(apicompat): keep tool arguments sent on content_block_start` | Anthropic 工具输入基础修复不重复移植 |
+| `cf3577a3c`、`d6d9f6ea4`、`26b5e8745` | Responses 兼容、未完成流终态、content_part/full output | 只核对自有终态重协调和 fail-closed 差异 |
+| `f06bf181d` | `service_tier` across Responses/Chat/WS | 只保留第三方 URL 策略差异 |
+| `8490a8186` | Claude Sonnet 5.5 | 官方模型目录能力不重复移植 |
+
+已执行的结构检查：
+
+```text
+git diff --name-status v0.2.10 upstream/main
+=> M backend/cmd/server/VERSION
+git cat-file -e v0.2.10:<official file>
+=> official bridge/item-id/compact files PRESENT; custom smartrouter/image bridge/operator guard ABSENT
+git grep -l "function_call_arguments.done" v0.2.10 -- backend/internal/pkg/apicompat | Measure-Object
+=> 19 files
+```
+
+这已经补足了“官方吸收项”的第一层证据；仍需在每个实际移植批次中附定向测试退出码，不能把本表当成代码验收。
 
 ## 仍需核对/移植的自有差异
 
@@ -56,6 +85,7 @@ RELEASE_STATUS: NOT_ACCEPTED
 3. 尚无数据库前向/回滚、权限负向、账务不变性证据。
 4. 尚无真实 GLM、DeepSeek、Claude、Qwen、MiniMax、Kimi、HY4 矩阵证据。
 5. 尚无针对新迁移树的独立代码审计。
+6. 官方吸收项目前只有源码存在性和测试文件证据，尚未逐项生成 `git show`/定向测试的独立证据包；因此本记录仍是计划级条件结论，不是迁移放行。
 
 ## 放行条件
 
