@@ -21,8 +21,9 @@ import (
 )
 
 // SmartRouterCalibrationService owns the one daily, low-volume calibration
-// cycle. It is intentionally text-only: image probing and compatibility
-// adapters are outside this batch.
+// cycle. It probes only the text/Responses capabilities implemented by the
+// gateway calibration adapter. Image health is learned from real image
+// requests; silently issuing paid image probes at 04:00 would be unsafe.
 type SmartRouterCalibrationService struct {
 	accountRepo  smartRouterCalibrationAccountSource
 	modelRefresh smartRouterCalibrationModelRefresher
@@ -152,8 +153,6 @@ func (s *SmartRouterCalibrationService) runCalibration() {
 		if !ok {
 			continue
 		}
-		// The adapter exposes only chat/responses/compact capabilities, so the
-		// core will never schedule an image probe from this daily job.
 		lanes = append(lanes, lane)
 		accountsByLane[lane.LaneID] = account
 	}
@@ -164,6 +163,7 @@ func (s *SmartRouterCalibrationService) runCalibration() {
 		return
 	}
 	probes := smartrouter.BuildCalibrationPlan(now, lanes, toCoreCapabilityEvidence(evidenceRows), smartRouterCalibrationPolicy(s.cfg))
+	probes = textCalibrationProbes(probes)
 	if len(probes) == 0 {
 		if !success {
 			summary = "model refresh completed with failures"
@@ -189,6 +189,17 @@ func (s *SmartRouterCalibrationService) runCalibration() {
 			success = false
 		}
 	}
+}
+
+func textCalibrationProbes(probes []smartrouter.CalibrationProbe) []smartrouter.CalibrationProbe {
+	filtered := make([]smartrouter.CalibrationProbe, 0, len(probes))
+	for _, probe := range probes {
+		switch probe.Capability {
+		case smartrouter.CapabilityChat, smartrouter.CapabilityResponses, smartrouter.CapabilityResponsesCompact:
+			filtered = append(filtered, probe)
+		}
+	}
+	return filtered
 }
 
 // refreshOpenAIModelCatalog is deliberately best-effort. SyncUpstreamModelCatalog
@@ -232,7 +243,7 @@ func (s *SmartRouterCalibrationService) runProbe(ctx context.Context, account *A
 		result.ModelFamily = s.compactCalibrationModel()
 		result.StatusCode, result.LatencyMs, _ = s.gateway.RunSmartRouterCompactCalibrationProbe(probeCtx, account, result.ModelFamily)
 	default:
-		result.ErrorSummary = "unsupported text calibration capability"
+		result.ErrorSummary = "unsupported calibration capability"
 		return result
 	}
 	// The probe methods record the detailed health event. Reconstruct success

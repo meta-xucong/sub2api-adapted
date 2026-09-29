@@ -225,6 +225,24 @@ func TestSmartRouterCalibrationRefreshFailureKeepsExistingCatalog(t *testing.T) 
 	}
 }
 
+func TestSmartRouterCalibrationSkipsUnimplementedImageProbes(t *testing.T) {
+	probes := textCalibrationProbes([]smartrouter.CalibrationProbe{
+		{LaneID: "chat", Capability: smartrouter.CapabilityChat},
+		{LaneID: "responses", Capability: smartrouter.CapabilityResponses},
+		{LaneID: "compact", Capability: smartrouter.CapabilityResponsesCompact},
+		{LaneID: "image", Capability: smartrouter.CapabilityImageGeneration},
+		{LaneID: "edit", Capability: smartrouter.CapabilityImageEdit},
+	})
+	if len(probes) != 3 {
+		t.Fatalf("text calibration probe count = %d, want 3: %#v", len(probes), probes)
+	}
+	for _, probe := range probes {
+		if probe.Capability == smartrouter.CapabilityImageGeneration || probe.Capability == smartrouter.CapabilityImageEdit {
+			t.Fatalf("paid image probe leaked into daily text calibration: %#v", probe)
+		}
+	}
+}
+
 func TestSmartRouterCalibrationStartStopDoesNotLeakCronGoroutine(t *testing.T) {
 	before := runtime.NumGoroutine()
 	cfg := &config.Config{}
