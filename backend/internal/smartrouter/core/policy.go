@@ -12,6 +12,7 @@ type ScoreWeights struct {
 	Load     float64
 	Queue    float64
 	Latency  float64
+	Recovery float64
 }
 
 type Policy struct {
@@ -28,10 +29,11 @@ type Policy struct {
 
 func DefaultPolicy() Policy {
 	return Policy{
+		Enabled:                 false,
 		TopK:                    5,
 		MaxAttemptsImage:        2,
 		MaxAttemptsChat:         3,
-		MaxAttemptsCompact:      0,
+		MaxAttemptsCompact:      2,
 		MaxAttemptsDefault:      3,
 		SameSourceGroupAttempts: 1,
 		CostBiasMax:             3,
@@ -42,32 +44,36 @@ func DefaultPolicy() Policy {
 			Load:     1.0,
 			Queue:    0.6,
 			Latency:  0.4,
+			Recovery: 0.8,
 		},
 	}
 }
 
 func (p Policy) Normalize() Policy {
-	d := DefaultPolicy()
+	defaults := DefaultPolicy()
 	if p.TopK <= 0 {
-		p.TopK = d.TopK
+		p.TopK = defaults.TopK
 	}
 	if p.MaxAttemptsImage <= 0 {
-		p.MaxAttemptsImage = d.MaxAttemptsImage
+		p.MaxAttemptsImage = defaults.MaxAttemptsImage
 	}
 	if p.MaxAttemptsChat <= 0 {
-		p.MaxAttemptsChat = d.MaxAttemptsChat
+		p.MaxAttemptsChat = defaults.MaxAttemptsChat
+	}
+	if p.MaxAttemptsCompact <= 0 {
+		p.MaxAttemptsCompact = defaults.MaxAttemptsCompact
 	}
 	if p.MaxAttemptsDefault <= 0 {
-		p.MaxAttemptsDefault = d.MaxAttemptsDefault
+		p.MaxAttemptsDefault = defaults.MaxAttemptsDefault
 	}
 	if p.SameSourceGroupAttempts <= 0 {
-		p.SameSourceGroupAttempts = d.SameSourceGroupAttempts
+		p.SameSourceGroupAttempts = defaults.SameSourceGroupAttempts
 	}
 	if p.CostBiasMax <= 0 {
-		p.CostBiasMax = d.CostBiasMax
+		p.CostBiasMax = defaults.CostBiasMax
 	}
 	if scoreWeightSum(p.Weights) <= 0 || scoreWeightsInvalid(p.Weights) {
-		p.Weights = d.Weights
+		p.Weights = defaults.Weights
 	}
 	return p
 }
@@ -115,12 +121,13 @@ func (p Policy) AttemptBudget(capability Capability) int {
 }
 
 func scoreWeightSum(w ScoreWeights) float64 {
-	return w.Priority + w.Cost + w.Health + w.Load + w.Queue + w.Latency
+	return w.Priority + w.Cost + w.Health + w.Load + w.Queue + w.Latency + w.Recovery
 }
 
 func scoreWeightsInvalid(w ScoreWeights) bool {
-	for _, value := range []float64{w.Priority, w.Cost, w.Health, w.Load, w.Queue, w.Latency} {
-		if value < 0 || math.IsNaN(value) || math.IsInf(value, 0) {
+	values := []float64{w.Priority, w.Cost, w.Health, w.Load, w.Queue, w.Latency, w.Recovery}
+	for _, v := range values {
+		if v < 0 || math.IsNaN(v) || math.IsInf(v, 0) {
 			return true
 		}
 	}

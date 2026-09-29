@@ -9,17 +9,15 @@ func ClassifyFailure(statusCode int, capability Capability, clientCancelled bool
 	return ClassifyFailureDetails(statusCode, capability, "", "", clientCancelled)
 }
 
-// ClassifyFailureDetails keeps deterministic model/capability failures
-// separate from transient 429 and upstream failures. Callers can then apply a
-// model or capability scoped policy without importing provider error types.
-func ClassifyFailureDetails(statusCode int, capability Capability, message, code string, clientCancelled bool) FailureClass {
+// ClassifyFailureDetails separates deterministic capability failures from
+// transient provider failures. The distinction is important for image lanes:
+// a provider that returns an edit-style text reply for a generation request
+// should be quarantined for that capability instead of retried every 30s.
+func ClassifyFailureDetails(statusCode int, capability Capability, message string, code string, clientCancelled bool) FailureClass {
 	if clientCancelled {
 		return FailureCancelled
 	}
 	lower := strings.ToLower(strings.TrimSpace(message + " " + code))
-	if containsModelCapabilityFailure(lower) {
-		return FailureCapabilityError
-	}
 	if strings.Contains(lower, "upstream_text_reply") ||
 		(strings.Contains(lower, "requires a usable image target") && capability == CapabilityImageGeneration) ||
 		(strings.Contains(lower, "upload the reference image") && capability == CapabilityImageGeneration) {
@@ -34,6 +32,9 @@ func ClassifyFailureDetails(statusCode int, capability Capability, message, code
 	}
 	if strings.Contains(lower, "moderation") || strings.Contains(lower, "content policy") || strings.Contains(lower, "safety violation") {
 		return FailureContentRejected
+	}
+	if containsModelCapabilityFailure(lower) {
+		return FailureCapabilityError
 	}
 	if IsConcurrencyRateLimit(message, code) && (statusCode == 0 || statusCode == http.StatusTooManyRequests) {
 		return FailureConcurrencyLimited
@@ -70,14 +71,9 @@ func ClassifyFailureDetails(statusCode int, capability Capability, message, code
 
 func containsModelCapabilityFailure(lower string) bool {
 	for _, marker := range []string{
-		"model_not_found",
-		"model not found",
-		"no available channel for model",
-		"no channel for model",
-		"model is not available",
-		"model unavailable",
-		"unsupported model",
-		"model unsupported",
+		"model_not_found", "model not found", "no available channel for model",
+		"no channel for model", "model is not available", "model unavailable",
+		"unsupported model", "model unsupported",
 	} {
 		if strings.Contains(lower, marker) {
 			return true

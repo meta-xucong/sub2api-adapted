@@ -1045,6 +1045,9 @@ type GatewayConfig struct {
 	Live GatewayLiveConfig `mapstructure:"live"`
 	// OpenAIScheduler: OpenAI 高级调度器粘性逃逸配置
 	OpenAIScheduler GatewayOpenAISchedulerConfig `mapstructure:"openai_scheduler"`
+	// SmartRouter: optional text-capability health-aware routing and calibration.
+	// Image routing remains outside this batch.
+	SmartRouter GatewaySmartRouterConfig `mapstructure:"smart_router"`
 	// OpenAIHTTP2: OpenAI HTTP 上游协议策略（默认启用 HTTP/2，可按代理能力回退 HTTP/1.1）
 	OpenAIHTTP2 GatewayOpenAIHTTP2Config `mapstructure:"openai_http2"`
 	// OpenAIProxyStreamCircuit: Responses SSE 代理断流熔断策略。
@@ -1134,6 +1137,46 @@ type GatewayConfig struct {
 	// CNProviders: 国产 OpenAI 兼容供应商（kimi/zhipu/deepseek）的余额检测配置。
 	// 仅作用于 payg（按量付费）账号：周期探测余额，低于阈值则临时停调。
 	CNProviders GatewayCNProvidersConfig `mapstructure:"cn_providers"`
+}
+
+// GatewaySmartRouterConfig is deliberately limited to text routing in this
+// migration. It controls the core policy, durable health recovery and the
+// Asia/Shanghai daily calibration job.
+type GatewaySmartRouterConfig struct {
+	Enabled                 bool                                `mapstructure:"enabled"`
+	TopK                    int                                 `mapstructure:"top_k"`
+	MaxAttemptsChat         int                                 `mapstructure:"max_attempts_chat"`
+	MaxAttemptsCompact      int                                 `mapstructure:"max_attempts_compact"`
+	MaxAttemptsDefault      int                                 `mapstructure:"max_attempts_default"`
+	SameSourceGroupAttempts int                                 `mapstructure:"same_source_group_attempts"`
+	CostBiasMax             float64                             `mapstructure:"cost_bias_max"`
+	Recovery                GatewaySmartRouterRecoveryConfig    `mapstructure:"recovery"`
+	Calibration             GatewaySmartRouterCalibrationConfig `mapstructure:"calibration"`
+	Scoring                 GatewaySmartRouterScoringConfig     `mapstructure:"scoring"`
+}
+
+type GatewaySmartRouterRecoveryConfig struct {
+	SecondFailureCooldownSeconds int `mapstructure:"second_failure_cooldown_seconds"`
+	SustainedFailureThreshold    int `mapstructure:"sustained_failure_threshold"`
+}
+
+type GatewaySmartRouterCalibrationConfig struct {
+	Enabled             bool `mapstructure:"enabled"`
+	AutoEnrollEnabled   bool `mapstructure:"auto_enroll_enabled"`
+	Hour                int  `mapstructure:"hour"`
+	Minute              int  `mapstructure:"minute"`
+	TotalBudgetSeconds  int  `mapstructure:"total_budget_seconds"`
+	ProbeTimeoutSeconds int  `mapstructure:"probe_timeout_seconds"`
+}
+
+type GatewaySmartRouterScoringConfig struct {
+	Priority float64 `mapstructure:"priority"`
+	Cost     float64 `mapstructure:"cost"`
+	Health   float64 `mapstructure:"health"`
+	Load     float64 `mapstructure:"load"`
+	Queue    float64 `mapstructure:"queue"`
+	Latency  float64 `mapstructure:"latency"`
+	Recovery float64 `mapstructure:"recovery"`
 }
 
 // GatewayGrokConfig holds Grok-specific gateway scheduling knobs.
@@ -2417,6 +2460,28 @@ func setDefaults() {
 	viper.SetDefault("gateway.failover_on_400", false)
 	viper.SetDefault("gateway.max_account_switches", 10)
 	viper.SetDefault("gateway.max_account_switches_gemini", 3)
+	viper.SetDefault("gateway.smart_router.enabled", false)
+	viper.SetDefault("gateway.smart_router.top_k", 5)
+	viper.SetDefault("gateway.smart_router.max_attempts_chat", 3)
+	viper.SetDefault("gateway.smart_router.max_attempts_compact", 2)
+	viper.SetDefault("gateway.smart_router.max_attempts_default", 3)
+	viper.SetDefault("gateway.smart_router.same_source_group_attempts", 1)
+	viper.SetDefault("gateway.smart_router.cost_bias_max", 3.0)
+	viper.SetDefault("gateway.smart_router.recovery.second_failure_cooldown_seconds", 600)
+	viper.SetDefault("gateway.smart_router.recovery.sustained_failure_threshold", 3)
+	viper.SetDefault("gateway.smart_router.calibration.enabled", true)
+	viper.SetDefault("gateway.smart_router.calibration.auto_enroll_enabled", true)
+	viper.SetDefault("gateway.smart_router.calibration.hour", 4)
+	viper.SetDefault("gateway.smart_router.calibration.minute", 0)
+	viper.SetDefault("gateway.smart_router.calibration.total_budget_seconds", 1800)
+	viper.SetDefault("gateway.smart_router.calibration.probe_timeout_seconds", 180)
+	viper.SetDefault("gateway.smart_router.scoring.priority", 0.8)
+	viper.SetDefault("gateway.smart_router.scoring.cost", 1.0)
+	viper.SetDefault("gateway.smart_router.scoring.health", 1.2)
+	viper.SetDefault("gateway.smart_router.scoring.load", 1.0)
+	viper.SetDefault("gateway.smart_router.scoring.queue", 0.6)
+	viper.SetDefault("gateway.smart_router.scoring.latency", 0.4)
+	viper.SetDefault("gateway.smart_router.scoring.recovery", 0.8)
 	viper.SetDefault("gateway.force_codex_cli", false)
 	viper.SetDefault("gateway.disable_codex_identity_enforcement", false)
 	viper.SetDefault("gateway.disable_codex_originator_normalization", false)
@@ -3351,6 +3416,34 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.ProxyProbeResponseReadMaxBytes <= 0 {
 		return fmt.Errorf("gateway.proxy_probe_response_read_max_bytes must be positive")
+	}
+	if c.Gateway.SmartRouter.TopK < 0 || c.Gateway.SmartRouter.MaxAttemptsChat < 0 ||
+		c.Gateway.SmartRouter.MaxAttemptsCompact < 0 || c.Gateway.SmartRouter.MaxAttemptsDefault < 0 ||
+		c.Gateway.SmartRouter.SameSourceGroupAttempts < 0 || c.Gateway.SmartRouter.CostBiasMax < 0 {
+		return fmt.Errorf("gateway.smart_router numeric limits must be non-negative")
+	}
+	recovery := c.Gateway.SmartRouter.Recovery
+	if recovery.SecondFailureCooldownSeconds < 0 || recovery.SustainedFailureThreshold < 0 {
+		return fmt.Errorf("gateway.smart_router.recovery values must be non-negative")
+	}
+	calibration := c.Gateway.SmartRouter.Calibration
+	if calibration.Hour < 0 || calibration.Hour > 23 || calibration.Minute < 0 || calibration.Minute > 59 {
+		return fmt.Errorf("gateway.smart_router.calibration hour/minute is out of range")
+	}
+	if calibration.TotalBudgetSeconds < 0 || calibration.ProbeTimeoutSeconds < 0 {
+		return fmt.Errorf("gateway.smart_router.calibration durations must be non-negative")
+	}
+	smartRouterWeights := c.Gateway.SmartRouter.Scoring
+	smartRouterWeightValues := []float64{smartRouterWeights.Priority, smartRouterWeights.Cost, smartRouterWeights.Health, smartRouterWeights.Load, smartRouterWeights.Queue, smartRouterWeights.Latency, smartRouterWeights.Recovery}
+	smartRouterWeightSum := 0.0
+	for _, value := range smartRouterWeightValues {
+		if value < 0 || math.IsNaN(value) || math.IsInf(value, 0) {
+			return fmt.Errorf("gateway.smart_router.scoring values must be finite and non-negative")
+		}
+		smartRouterWeightSum += value
+	}
+	if c.Gateway.SmartRouter.Enabled && smartRouterWeightSum <= 0 {
+		return fmt.Errorf("gateway.smart_router.scoring must not be all zero when enabled")
 	}
 	if c.Gateway.ResponseHeaderTimeout < 0 {
 		return fmt.Errorf("gateway.response_header_timeout must be non-negative")

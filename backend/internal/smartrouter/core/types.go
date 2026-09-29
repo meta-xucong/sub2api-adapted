@@ -1,8 +1,5 @@
 package core
 
-// Capability identifies the upstream operation a lane is eligible to serve.
-// It is deliberately provider neutral so the core package can be reused by an
-// adapter without importing service or account types.
 type Capability string
 
 const (
@@ -38,6 +35,8 @@ const (
 	RecoveryNormal           RecoveryStage = "normal"
 	RecoveryCooling          RecoveryStage = "cooling"
 	RecoveryProbeDue         RecoveryStage = "probe_due"
+	RecoveryWarming5         RecoveryStage = "warming_5"
+	RecoveryWarming25        RecoveryStage = "warming_25"
 	RecoveryModelUnavailable RecoveryStage = "model_unavailable"
 )
 
@@ -53,16 +52,31 @@ type RouteRequest struct {
 	AttemptNumber        int
 	NowUnix              int64
 	Seed                 uint64
+	// RemainingBudgetSeconds is the end-to-end budget left for this request.
+	// The fields are intentionally request-scoped so chat routing is unaffected.
+	RemainingBudgetSeconds     float64
+	MinimumAttemptSeconds      float64
+	FinalizationReserveSeconds float64
+	// ImageSizeTier is the normalized requested output tier (1K, 2K, or 4K)
+	// for explicit OpenAI Images sizes. It is empty for non-image and
+	// implicit-size requests, preserving ordinary lane selection.
+	ImageSizeTier string
 }
 
 type LaneSnapshot struct {
-	LaneID                    string
-	AccountID                 int64
-	Name                      string
-	SourceGroup               string
-	Capabilities              map[Capability]bool
-	ModelPatterns             []string
-	Priority                  int
+	LaneID       string
+	AccountID    int64
+	Name         string
+	SourceGroup  string
+	Capabilities map[Capability]bool
+	// ImageSizeTiers optionally makes a lane specialized for explicit image
+	// output tiers. An empty slice means the lane remains a generic fallback.
+	ImageSizeTiers []string
+	ModelPatterns  []string
+	Priority       int
+	// PriorityPenalty is a temporary, in-memory shift applied after the
+	// configured priority. It must never be persisted as the account priority.
+	PriorityPenalty           int
 	CostMultiplier            float64
 	BaseWeight                float64
 	MaxConcurrency            int
@@ -75,20 +89,23 @@ type LaneSnapshot struct {
 	LatencyEWMAms             float64
 	CooldownUntilUnix         int64
 	RecoveryStage             RecoveryStage
+	RecentFailureStreak       int
 	Metadata                  map[string]string
 }
 
 type RouteResult struct {
-	Source       string
-	LaneID       string
-	AccountID    int64
-	SourceGroup  string
-	Capability   Capability
-	Model        string
-	Success      bool
-	StatusCode   int
-	ErrorClass   FailureClass
-	ErrorSummary string
+	Source         string
+	LaneID         string
+	AccountID      int64
+	SourceGroup    string
+	Capability     Capability
+	Model          string
+	Success        bool
+	StatusCode     int
+	ErrorClass     FailureClass
+	FirstTokenMs   *int
+	TotalLatencyMs int64
+	ErrorSummary   string
 }
 
 type CandidateDecision struct {
@@ -102,5 +119,6 @@ type RoutePlan struct {
 	Candidates     []CandidateDecision
 	OrderedLaneIDs []string
 	AttemptBudget  int
+	BudgetBlocked  bool
 	SkipReasons    map[string]string
 }

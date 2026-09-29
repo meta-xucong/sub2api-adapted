@@ -1116,15 +1116,24 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAISelectionOrder(
 				unknown = append(unknown, candidate)
 			}
 		}
+		orderTier := func(pool []openAIAccountCandidateScore) []openAIAccountCandidateScore {
+			if order, applied := s.buildSmartRouterSelectionOrder(req, openAIAccountLoadPlan{candidates: pool, topK: plan.topK, includeOverflowFallback: plan.includeOverflowFallback}); applied {
+				return order
+			}
+			return buildSelectionOrder(pool)
+		}
 		selectionOrder := make([]openAIAccountCandidateScore, 0, len(plan.allCandidates))
-		selectionOrder = append(selectionOrder, buildSelectionOrder(supported)...)
-		selectionOrder = append(selectionOrder, buildSelectionOrder(unknown)...)
+		selectionOrder = append(selectionOrder, orderTier(supported)...)
+		selectionOrder = append(selectionOrder, orderTier(unknown)...)
 		if len(plan.staleSnapshotCompactRetry) > 0 && s.service.schedulerSnapshot != nil {
 			selectionOrder = append(selectionOrder, sortOpenAICompactRetryCandidates(plan.staleSnapshotCompactRetry)...)
 		}
 		return selectionOrder
 	}
 
+	if order, applied := s.buildSmartRouterSelectionOrder(req, plan); applied {
+		return order
+	}
 	return buildSelectionOrder(plan.candidates)
 }
 

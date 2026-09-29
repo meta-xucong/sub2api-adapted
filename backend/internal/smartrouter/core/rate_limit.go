@@ -1,6 +1,7 @@
 package core
 
 import (
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -66,8 +67,18 @@ func ParseRetryAfter(headers http.Header, now time.Time, max time.Duration) time
 		return 0
 	}
 	var delay time.Duration
-	if seconds, err := strconv.Atoi(raw); err == nil && seconds >= 0 {
+	if seconds, err := strconv.ParseInt(raw, 10, 64); err == nil && seconds >= 0 {
+		// Convert only after checking the nanosecond multiplication. A large
+		// Retry-After header must never wrap into a negative duration.
+		if seconds > int64(math.MaxInt64)/int64(time.Second) {
+			if max > 0 {
+				return max
+			}
+			return 0
+		}
 		delay = time.Duration(seconds) * time.Second
+	} else if strings.HasPrefix(raw, "-") {
+		return 0
 	} else if at, err := http.ParseTime(raw); err == nil {
 		if now.IsZero() {
 			now = time.Now()
@@ -98,7 +109,11 @@ func (c RateLimitBackoffConfig) Delay(attempt int, retryAfter time.Duration, see
 	if shift > 6 {
 		shift = 6
 	}
-	delay := c.Initial * time.Duration(1<<shift)
+	factor := time.Duration(1 << shift)
+	delay := c.Max
+	if c.Initial <= c.Max/factor {
+		delay = c.Initial * factor
+	}
 	if delay > c.Max {
 		delay = c.Max
 	}
@@ -113,7 +128,17 @@ func (c RateLimitBackoffConfig) Delay(attempt int, retryAfter time.Duration, see
 			seed = uint64(time.Now().UnixNano())
 		}
 		rng := newRNG(seed ^ uint64(attempt+1))
-		delay += time.Duration(float64(delay) * ((rng.nextFloat64()*2 - 1) * c.JitterRatio))
+		jitter := float64(delay) * ((rng.nextFloat64()*2 - 1) * c.JitterRatio)
+		if jitter > float64(c.Max-delay) {
+			jitter = float64(c.Max - delay)
+		}
+		if jitter < -float64(delay) {
+			jitter = -float64(delay)
+		}
+		delay += time.Duration(jitter)
+	}
+	if delay > c.Max {
+		return c.Max
 	}
 	if delay < time.Millisecond {
 		return time.Millisecond
