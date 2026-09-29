@@ -63,6 +63,8 @@ func TestFilterAutoDiscoveredModelIDsKeepsFormalModelsAndCustomIDs(t *testing.T)
 		"gpt-5.6-sol-2026-07-09",
 		"gpt-5.6-sol",
 		"gpt-5.5-codex",
+		"gpt-6-astra",
+		"gpt-image-2.5-flare",
 		"gpt-image-1.5",
 		"custom-provider-model",
 	})
@@ -71,5 +73,7 @@ func TestFilterAutoDiscoveredModelIDsKeepsFormalModelsAndCustomIDs(t *testing.T)
 		"custom-provider-model",
 		"gpt-5.5-codex",
 		"gpt-5.6-sol",
+		"gpt-6-astra",
+		"gpt-image-2.5-flare",
 	}, got)
 }

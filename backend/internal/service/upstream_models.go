@@ -785,9 +785,10 @@ func (s *AccountTestService) fetchUpstreamModelList(ctx context.Context, account
 	}
 	if account != nil && account.IsOpenAI() {
 		filtered := openai.FilterAutoDiscoveredModelIDs(models)
-		if len(filtered) > 0 {
-			models = filtered
+		if len(filtered) == 0 {
+			return nil, nil, newUpstreamModelSyncUpstreamError("Upstream returned no current supported models", nil)
 		}
+		models = filtered
 	}
 
 	return models, body, nil

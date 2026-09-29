@@ -122,9 +122,6 @@ func (s *adminServiceImpl) GetGroupModelsListCandidates(ctx context.Context, id 
 			if model == "" {
 				continue
 			}
-			if platform == PlatformOpenAI && !openai.IsAutoDiscoveredModelID(model) {
-				continue
-			}
 			if _, ok := seen[model]; ok {
 				continue
 			}

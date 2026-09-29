@@ -7,18 +7,24 @@ import (
 )
 
 var stableAutoDiscoveryModels = map[string]struct{}{
-	"codex-auto-review":   {},
-	"gpt-5.3-codex-spark": {},
-	"gpt-5.4":             {},
-	"gpt-5.4-mini":        {},
-	"gpt-5.4-nano":        {},
-	"gpt-5.5":             {},
-	"gpt-5.5-pro":         {},
-	"gpt-5.6":             {},
-	"gpt-5.6-luna":        {},
-	"gpt-5.6-sol":         {},
-	"gpt-5.6-terra":       {},
-	"gpt-image-2":         {},
+	"codex-auto-review":      {},
+	"gpt-5.3-codex-spark":    {},
+	"gpt-5.4":                {},
+	"gpt-5.4-mini":           {},
+	"gpt-5.4-nano":           {},
+	"gpt-5.5":                {},
+	"gpt-5.5-pro":            {},
+	"gpt-5.6":                {},
+	"gpt-5.6-luna":           {},
+	"gpt-5.6-sol":            {},
+	"gpt-5.6-terra":          {},
+	"gpt-6":                  {},
+	"gpt-6-astra":            {},
+	"gpt-6-luna":             {},
+	"gpt-6-sol":              {},
+	"gpt-image-2":            {},
+	"gpt-image-2.5-flare":    {},
+	"gpt-image-2.5-sunburst": {},
 }
 
 var deprecatedAutoDiscoveryModels = map[string]struct{}{
@@ -152,7 +158,13 @@ func IsAutoDiscoveredModelID(model string) bool {
 	if !looksLikeOpenAIManagedModel(lower) {
 		return true
 	}
-	return isFutureStableOpenAIModel(lower)
+	if isFutureStableOpenAIModel(lower) {
+		return true
+	}
+	// Unknown, undated OpenAI IDs are retained until an explicit deprecation
+	// rule exists. This prevents a catalog refresh from hiding a newly released
+	// formal model merely because this binary has not learned its suffix yet.
+	return !strings.HasSuffix(lower, "-latest")
 }
 
 func normalizeListedModelID(model string) string {
