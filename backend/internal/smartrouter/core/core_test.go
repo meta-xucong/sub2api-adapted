@@ -87,6 +87,28 @@ func TestClassifierSeparatesModelAndConcurrency429(t *testing.T) {
 	}
 }
 
+func TestHealthKeepsConcurrency429AndFormalModelsIsolated(t *testing.T) {
+	now := time.Unix(4_000, 0)
+	tracker := NewHealthTracker(HealthPolicy{SustainedFailureUntil: func(time.Time) time.Time {
+		return now.Add(time.Hour)
+	}}, func() time.Time { return now }, nil)
+	busy := tracker.Observe(RouteResult{LaneID: "lane", Capability: CapabilityImageGeneration, Model: "gpt-image-2", StatusCode: http.StatusTooManyRequests, ErrorClass: FailureConcurrencyLimited})
+	if busy.HealthPenalty != 0 || busy.RecoveryStage != RecoveryNormal {
+		t.Fatalf("concurrency 429 changed health state: %#v", busy)
+	}
+	compact := tracker.Observe(RouteResult{LaneID: "lane", Capability: CapabilityResponsesCompact, Model: "gpt-5.6-sol", StatusCode: http.StatusBadGateway, ErrorClass: FailureUpstream5xx})
+	if compact.CooldownUntilUnix != now.Add(time.Hour).Unix() {
+		t.Fatalf("compact cooldown = %d, want %d", compact.CooldownUntilUnix, now.Add(time.Hour).Unix())
+	}
+	tracker.Observe(RouteResult{LaneID: "lane", Capability: CapabilityResponsesCompact, Model: "gpt-5.6-terra", StatusCode: http.StatusBadGateway, ErrorClass: FailureUpstream5xx})
+	tracker.Observe(RouteResult{LaneID: "lane", Capability: CapabilityResponsesCompact, Model: "gpt-5.6-terra", Success: true})
+	sol := tracker.Snapshot(LaneSnapshot{LaneID: "lane", Priority: 1}, CapabilityResponsesCompact, "gpt-5.6-sol", now.Unix())
+	terra := tracker.Snapshot(LaneSnapshot{LaneID: "lane", Priority: 1}, CapabilityResponsesCompact, "gpt-5.6-terra", now.Unix())
+	if sol.CooldownUntilUnix == terra.CooldownUntilUnix || sol.Priority == terra.Priority {
+		t.Fatalf("formal model health keys were merged: sol=%#v terra=%#v", sol, terra)
+	}
+}
+
 func TestRateLimitPolicyParsesRetryAfterAndBoundsDelay(t *testing.T) {
 	policy := DefaultRateLimitBackoffConfig()
 	policy.JitterRatio = 0

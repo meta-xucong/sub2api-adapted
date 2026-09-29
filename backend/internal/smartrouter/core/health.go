@@ -309,6 +309,10 @@ func (t *HealthTracker) Observe(result RouteResult) HealthSnapshot {
 			action = "no_penalty"
 			// Client cancellations, request-specific rejections, and content
 			// policy blocks are not evidence that the upstream lane is unhealthy.
+		case FailureConcurrencyLimited:
+			// A concurrency 429 is pressure on the lane, not proof that its
+			// provider is broken. Leave health and recovery ordering unchanged.
+			action = "rate_limit_backoff"
 		case FailureCapabilityError:
 			state.ConsecutiveFailures++
 			state.ConsecutiveSuccesses = 0
@@ -343,6 +347,12 @@ func (t *HealthTracker) Observe(result RouteResult) HealthSnapshot {
 			state.HealthScore = maxFloat(0.05, state.HealthScore*0.65)
 			state.HealthPenalty = minInt(state.HealthPenalty+1, t.policy.MaxPenalty)
 			until := now.Add(t.cooldownFor(state.ConsecutiveFailures))
+			if result.Capability == CapabilityResponsesCompact && t.policy.SustainedFailureUntil != nil {
+				if compactUntil := t.policy.SustainedFailureUntil(now); compactUntil.After(now) {
+					until = compactUntil
+					action = "compact_failure_quarantine"
+				}
+			}
 			if state.ConsecutiveFailures == 2 && t.policy.SecondTransientCooldown > 0 {
 				until = now.Add(t.policy.SecondTransientCooldown)
 			}
@@ -486,14 +496,10 @@ func defaultSource(source string) string {
 }
 
 func modelFamily(model string) string {
-	model = strings.ToLower(strings.TrimSpace(model))
-	if strings.HasPrefix(model, "gpt-image-") {
-		return "gpt-image"
-	}
-	if strings.HasPrefix(model, "gpt-5") {
-		return "gpt-5"
-	}
-	return model
+	// Health is keyed by the formal model ID. Collapsing gpt-5.6-sol,
+	// gpt-5.6-terra and gpt-5.6-luna into one family would let a failure on
+	// one upstream lane quarantine the others.
+	return ExactModelKey(model)
 }
 
 func truncateSummary(value string, max int) string {
