@@ -104,6 +104,12 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 	}
 
 	contentType := c.GetHeader("Content-Type")
+	if endpoint == service.GrokMediaEndpointVideosGenerations {
+		if err := service.ValidateGrokVideoGenerationRequest(contentType, body); err != nil {
+			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+			return
+		}
+	}
 	requestInfo := service.ParseGrokMediaRequest(contentType, body)
 	if endpoint == service.SeedanceEndpointCreate {
 		requestInfo, err = service.ParseSeedanceRequest(body)
@@ -322,6 +328,21 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 		)
 
 		account := selection.Account
+		if !account.SupportsGrokMediaEndpoint(endpoint) {
+			releaseAccount()
+			failedAccountIDs[account.ID] = struct{}{}
+			mediaEligibilityRejected = true
+			reqLog.Warn("grok_media.account_endpoint_unsupported",
+				zap.Int64("account_id", account.ID),
+				zap.String("endpoint", string(endpoint)),
+			)
+			if switchCount >= maxAccountSwitches {
+				h.errorResponse(c, http.StatusServiceUnavailable, noAccountCode, noAccountMessage)
+				return
+			}
+			switchCount++
+			continue
+		}
 		if endpoint.IsGenerationRequest() && !endpoint.IsSeedance() {
 			eligible, eligibilityReason, eligibilityErr := h.ensureGrokMediaAccountEligibility(requestCtx, account)
 			if !eligible {
@@ -388,6 +409,13 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 		service.SetOpsLatencyMs(c, service.OpsResponseLatencyMsKey, responseLatencyMs)
 
 		if err != nil {
+			var inputValidationErr *service.GrokVideoInputValidationError
+			if errors.As(err, &inputValidationErr) {
+				if !service.IsResponseCommitted(c) && c.Writer.Size() == writerSizeBeforeForward {
+					h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", inputValidationErr.Error())
+				}
+				return
+			}
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
 				if failoverClientGone(c) {
