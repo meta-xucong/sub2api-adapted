@@ -201,6 +201,27 @@ func (s *AccountTestService) FetchOpenAIAccountModels(ctx context.Context, accou
 	if err := json.Unmarshal(projectedBody, &payload); err != nil {
 		return nil, fmt.Errorf("decode OpenAI account models: %w", err)
 	}
+	// The picker must not expose stale bare aliases or dated OpenAI snapshots.
+	// Explicit account mappings remain visible, including wildcard mappings;
+	// this preserves intentional routing without reintroducing stale defaults.
+	if account != nil && !account.IsOpenAIPassthroughEnabled() {
+		mapping := account.GetModelMapping()
+		filtered := make([]openai.Model, 0, len(payload.Data))
+		for _, model := range payload.Data {
+			if openai.IsAdminSelectableModelID(model.ID) || (len(mapping) > 0 && account.IsModelSupported(model.ID)) {
+				filtered = append(filtered, model)
+			}
+		}
+		payload.Data = filtered
+	} else {
+		filtered := make([]openai.Model, 0, len(payload.Data))
+		for _, model := range payload.Data {
+			if openai.IsAdminSelectableModelID(model.ID) {
+				filtered = append(filtered, model)
+			}
+		}
+		payload.Data = filtered
+	}
 	// Every entry in the picker is labelled by the same rule: the upstream display
 	// name when the catalog has one, otherwise the local catalog name for that model
 	// ID, otherwise the raw ID. Without this the picker mixes "GPT-5.6 Sol" with
@@ -223,7 +244,7 @@ func (s *AccountTestService) FetchOpenAIAccountModels(ctx context.Context, accou
 		for _, model := range payload.Data {
 			seen[model.ID] = true
 		}
-		for _, model := range openai.DefaultModels {
+		for _, model := range openai.AdminSelectableModels() {
 			if IsGPTImageGenerationModel(model.ID) && account.IsModelSupported(model.ID) && !seen[model.ID] {
 				if !passthrough && !IsGPTImageGenerationModel(account.GetMappedModel(model.ID)) {
 					continue
