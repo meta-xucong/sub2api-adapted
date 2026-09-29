@@ -47,3 +47,31 @@ func TestResponsesStreamItemIDReconciler_DoesNotInventOrCrossTypeIDs(t *testing.
 		t.Fatalf("unexpected ID reconciliation: changed=%v payload=%s", changed, updated)
 	}
 }
+
+func TestResponsesStreamItemIDReconciler_UsesSSEEventTypeHint(t *testing.T) {
+	r := NewResponsesStreamItemIDReconciler()
+	r.Observe([]byte(`{"output_index":0,"item":{"id":"fc_hint","type":"function_call","call_id":"call_hint"}}`), "response.output_item.added")
+
+	completed := []byte(`{"response":{"output":[{"type":"function_call","id":"fc_rebuilt","call_id":"call_hint"}]}}`)
+	updated, changed := r.ReconcileTerminalEvent(completed, "response.completed")
+	if !changed {
+		t.Fatal("expected event type hint to enable reconciliation")
+	}
+	if got := gjson.GetBytes(updated, "response.output.0.id").String(); got != "fc_hint" {
+		t.Fatalf("response.output[0].id = %q, want fc_hint", got)
+	}
+}
+
+func TestResponsesStreamItemIDReconciler_ReconcilesFailedTerminalEvent(t *testing.T) {
+	r := NewResponsesStreamItemIDReconciler()
+	r.Observe([]byte(`{"type":"response.output_item.done","output_index":0,"item":{"id":"fc_failed","type":"function_call","call_id":"call_failed"}}`))
+
+	failed := []byte(`{"type":"response.failed","response":{"output":[{"type":"function_call","id":"fc_rebuilt","call_id":"call_failed"}]}}`)
+	updated, changed := r.ReconcileTerminalEvent(failed)
+	if !changed {
+		t.Fatal("expected failed terminal output ID to be reconciled")
+	}
+	if got := gjson.GetBytes(updated, "response.output.0.id").String(); got != "fc_failed" {
+		t.Fatalf("response.output[0].id = %q, want fc_failed", got)
+	}
+}

@@ -33,11 +33,14 @@ func NewResponsesStreamItemIDReconciler() *ResponsesStreamItemIDReconciler {
 
 // Observe records IDs from output_item.added/done. Invalid or unrelated
 // provider extensions are ignored to preserve the tolerant passthrough path.
-func (r *ResponsesStreamItemIDReconciler) Observe(payload []byte) {
+func (r *ResponsesStreamItemIDReconciler) Observe(payload []byte, eventTypeHint ...string) {
 	if r == nil || len(bytes.TrimSpace(payload)) == 0 || !gjson.ValidBytes(payload) {
 		return
 	}
 	eventType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
+	if eventType == "" && len(eventTypeHint) > 0 {
+		eventType = strings.TrimSpace(eventTypeHint[0])
+	}
 	if eventType != "response.output_item.added" && eventType != "response.output_item.done" {
 		return
 	}
@@ -67,13 +70,16 @@ func (r *ResponsesStreamItemIDReconciler) Observe(payload []byte) {
 // ReconcileTerminalEvent replaces response.output item IDs with IDs observed
 // earlier in the same response. call_id is preferred because terminal arrays
 // may reorder sparse output indexes; array position is the fallback.
-func (r *ResponsesStreamItemIDReconciler) ReconcileTerminalEvent(payload []byte) ([]byte, bool) {
+func (r *ResponsesStreamItemIDReconciler) ReconcileTerminalEvent(payload []byte, eventTypeHint ...string) ([]byte, bool) {
 	if r == nil || len(bytes.TrimSpace(payload)) == 0 || !gjson.ValidBytes(payload) {
 		return payload, false
 	}
 	eventType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
+	if eventType == "" && len(eventTypeHint) > 0 {
+		eventType = strings.TrimSpace(eventTypeHint[0])
+	}
 	switch eventType {
-	case "response.completed", "response.done", "response.incomplete", "response.cancelled", "response.canceled":
+	case "response.completed", "response.done", "response.failed", "response.incomplete", "response.cancelled", "response.canceled":
 	default:
 		return payload, false
 	}

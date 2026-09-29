@@ -1594,9 +1594,10 @@ type ChatCompletionsToResponsesStreamState struct {
 	Reasoning strings.Builder
 
 	// Tool-call lifecycle, keyed by the upstream tool_call index.
-	ToolCalls       map[int]*ChatToolCall
-	ToolItemIDs     map[int]string
-	ToolOutputIndex map[int]int
+	ToolCalls           map[int]*ChatToolCall
+	ToolCallIDSynthetic map[int]bool
+	ToolItemIDs         map[int]string
+	ToolOutputIndex     map[int]int
 
 	// CustomTools 是客户端请求中 custom/freeform 工具的名字集合（见
 	// CustomToolNames）。命中的调用按 custom_tool_call 生命周期下发，codex 才能
@@ -1637,16 +1638,17 @@ type ChatCompletionsToResponsesStreamState struct {
 // NewChatCompletionsToResponsesStreamState returns an initialized stream state.
 func NewChatCompletionsToResponsesStreamState(model string) *ChatCompletionsToResponsesStreamState {
 	return &ChatCompletionsToResponsesStreamState{
-		ResponseID:       generateResponsesID(),
-		Model:            model,
-		Created:          time.Now().Unix(),
-		ToolCalls:        make(map[int]*ChatToolCall),
-		ToolItemIDs:      make(map[int]string),
-		ToolOutputIndex:  make(map[int]int),
-		toolIsCustom:     make(map[int]bool),
-		toolIsToolSearch: make(map[int]bool),
-		toolNamespace:    make(map[int]NamespacedToolName),
-		toolAnnounced:    make(map[int]bool),
+		ResponseID:          generateResponsesID(),
+		Model:               model,
+		Created:             time.Now().Unix(),
+		ToolCalls:           make(map[int]*ChatToolCall),
+		ToolCallIDSynthetic: make(map[int]bool),
+		ToolItemIDs:         make(map[int]string),
+		ToolOutputIndex:     make(map[int]int),
+		toolIsCustom:        make(map[int]bool),
+		toolIsToolSearch:    make(map[int]bool),
+		toolNamespace:       make(map[int]NamespacedToolName),
+		toolAnnounced:       make(map[int]bool),
 	}
 }
 
@@ -1751,8 +1753,10 @@ func ChatCompletionsChunkToResponsesEvents(
 				// A tool call closes any open reasoning item first.
 				events = append(events, closeChatReasoningItem(state)...)
 				copyCall := toolCall
+				syntheticCallID := false
 				if copyCall.ID == "" {
 					copyCall.ID = generateItemID()
+					syntheticCallID = true
 				}
 				copyCall.Type = "function"
 				// Arguments are accumulated by the shared block below so the
@@ -1764,13 +1768,15 @@ func ChatCompletionsChunkToResponsesEvents(
 				copyCall.Function.Arguments = ""
 				state.ToolCalls[idx] = &copyCall
 				stored = &copyCall
+				state.ToolCallIDSynthetic[idx] = syntheticCallID
 				state.ToolItemIDs[idx] = generateItemID()
 				state.ToolOutputIndex[idx] = state.allocOutputIndex()
 			} else {
 				// Preserve the first non-empty call ID. Later argument chunks from
 				// some providers may repeat a different synthetic ID.
-				if stored.ID == "" && toolCall.ID != "" {
+				if toolCall.ID != "" && (stored.ID == "" || state.ToolCallIDSynthetic[idx]) {
 					stored.ID = toolCall.ID
+					state.ToolCallIDSynthetic[idx] = false
 				}
 				if toolCall.Function.Name != "" {
 					stored.Function.Name = toolCall.Function.Name

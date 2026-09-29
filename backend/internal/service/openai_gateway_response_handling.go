@@ -645,8 +645,8 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 			// Some compatible upstreams rebuild response.completed.output item IDs
 			// after emitting output_item.added/done. Reconcile only terminal
 			// Responses events, using identities observed in this same stream.
-			responseItemIDReconciler.Observe(dataBytes)
-			if reconciledData, reconciled := responseItemIDReconciler.ReconcileTerminalEvent(dataBytes); reconciled {
+			responseItemIDReconciler.Observe(dataBytes, eventType)
+			if reconciledData, reconciled := responseItemIDReconciler.ReconcileTerminalEvent(dataBytes, eventType); reconciled {
 				dataBytes = reconciledData
 				data = string(reconciledData)
 				line = "data: " + data

@@ -214,6 +214,27 @@ func TestStream_ToolCallArgumentsInFirstChunkNotDoubled(t *testing.T) {
 	require.Equal(t, `{"cmd":"ls"}`, argsDelta.String())
 }
 
+func TestStream_LateToolCallIDReplacesSyntheticID(t *testing.T) {
+	events := collectStreamEvents(t, []string{
+		`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"type":"function","function":{"name":"exec","arguments":"{\"cmd\":\"ls\"}"}}]}}]}`,
+		`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_late","function":{"arguments":""}}]}}]}`,
+		`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+	})
+
+	var sawDone bool
+	for _, event := range events {
+		if event.Type == "response.output_item.done" && event.Item != nil && event.Item.Type == "function_call" {
+			sawDone = true
+			if event.Item.CallID != "call_late" {
+				t.Fatalf("late tool call ID was not retained: got %q", event.Item.CallID)
+			}
+		}
+	}
+	if !sawDone {
+		t.Fatal("function_call output_item.done missing")
+	}
+}
+
 func TestStream_InvalidToolArgumentsAreRejectedBeforeFinalize(t *testing.T) {
 	idx := 0
 	state := NewChatCompletionsToResponsesStreamState("deepseek-v4-flash")
