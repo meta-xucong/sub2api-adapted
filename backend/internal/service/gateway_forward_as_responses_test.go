@@ -209,6 +209,15 @@ func TestForwardAsResponses_ClaudeThinkingSignatureSurvivesToolContinuation(t *t
 		`event: content_block_stop`,
 		`data: {"type":"content_block_stop","index":1}`,
 		``,
+		`event: content_block_start`,
+		`data: {"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"toolu_read_1","name":"read_thread","input":{}}}`,
+		``,
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"thread_id\":\"thread_1\"}"}}`,
+		``,
+		`event: content_block_stop`,
+		`data: {"type":"content_block_stop","index":2}`,
+		``,
 		`event: message_delta`,
 		`data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":6}}`,
 		``,
@@ -265,7 +274,7 @@ func TestForwardAsResponses_ClaudeThinkingSignatureSurvivesToolContinuation(t *t
 		},
 	}
 
-	firstBody := []byte(`{"model":"claude-fable-5","stream":true,"reasoning":{"effort":"high"},"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"inspect"}]}],"tools":[{"type":"function","name":"unified_exec","parameters":{"type":"object","properties":{"command":{"type":"string"}}}}]}`)
+	firstBody := []byte(`{"model":"claude-fable-5","stream":true,"reasoning":{"effort":"high"},"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"inspect"}]}],"tools":[{"type":"function","name":"unified_exec","parameters":{"type":"object","properties":{"command":{"type":"string"}}}},{"type":"function","name":"read_thread","parameters":{"type":"object","properties":{"thread_id":{"type":"string"}}}}]}`)
 	firstRecorder := httptest.NewRecorder()
 	firstContext, _ := gin.CreateTestContext(firstRecorder)
 	firstContext.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(firstBody))
@@ -297,10 +306,11 @@ func TestForwardAsResponses_ClaudeThinkingSignatureSurvivesToolContinuation(t *t
 				completedReasoningSignature = event.Item.EncryptedContent
 			}
 		case "response.completed":
-			require.Len(t, event.Response.Output, 2)
+			require.Len(t, event.Response.Output, 3)
 			require.Equal(t, "reasoning", event.Response.Output[0].Type)
 			require.Equal(t, "claude-signature-part-1-part-2", event.Response.Output[0].EncryptedContent)
 			require.Equal(t, reasoningDoneID, event.Response.Output[0].ID)
+			require.Equal(t, "toolu_read_1", event.Response.Output[2].CallID)
 		}
 	}
 	require.NotEmpty(t, reasoningAddedID)
@@ -310,7 +320,7 @@ func TestForwardAsResponses_ClaudeThinkingSignatureSurvivesToolContinuation(t *t
 		require.Equal(t, index, got, "Responses sequence_number must be continuous")
 	}
 
-	secondBody := []byte(`{"model":"claude-fable-5","stream":false,"previous_response_id":"` + firstResponseID + `","input":[{"type":"function_call_output","call_id":"toolu_exec_1","output":"permission denied","is_error":true}]}`)
+	secondBody := []byte(`{"model":"claude-fable-5","stream":false,"previous_response_id":"` + firstResponseID + `","input":[{"type":"function_call_output","call_id":"toolu_exec_1","output":"permission denied","is_error":true},{"type":"function_call_output","call_id":"toolu_read_1","output":"thread contents"}]}`)
 	secondRecorder := httptest.NewRecorder()
 	secondContext, _ := gin.CreateTestContext(secondRecorder)
 	secondContext.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(secondBody))
@@ -325,10 +335,14 @@ func TestForwardAsResponses_ClaudeThinkingSignatureSurvivesToolContinuation(t *t
 	require.Equal(t, "claude-signature-part-1-part-2", gjson.GetBytes(upstream.bodies[1], "messages.1.content.0.signature").String())
 	require.Equal(t, "tool_use", gjson.GetBytes(upstream.bodies[1], "messages.1.content.1.type").String())
 	require.Equal(t, "toolu_exec_1", gjson.GetBytes(upstream.bodies[1], "messages.1.content.1.id").String())
+	require.Equal(t, "tool_use", gjson.GetBytes(upstream.bodies[1], "messages.1.content.2.type").String())
+	require.Equal(t, "toolu_read_1", gjson.GetBytes(upstream.bodies[1], "messages.1.content.2.id").String())
 	require.Equal(t, "user", gjson.GetBytes(upstream.bodies[1], "messages.2.role").String())
 	require.Equal(t, "tool_result", gjson.GetBytes(upstream.bodies[1], "messages.2.content.0.type").String())
 	require.Equal(t, "toolu_exec_1", gjson.GetBytes(upstream.bodies[1], "messages.2.content.0.tool_use_id").String())
 	require.True(t, gjson.GetBytes(upstream.bodies[1], "messages.2.content.0.is_error").Bool())
+	require.Equal(t, "tool_result", gjson.GetBytes(upstream.bodies[1], "messages.2.content.1.type").String())
+	require.Equal(t, "toolu_read_1", gjson.GetBytes(upstream.bodies[1], "messages.2.content.1.tool_use_id").String())
 }
 
 func TestExtractResponsesReasoningEffortFromBody(t *testing.T) {
