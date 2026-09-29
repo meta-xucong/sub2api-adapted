@@ -342,6 +342,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 
 	needModelReplace := originalModel != mappedModel
 	streamOutputAccumulator := apicompat.NewBufferedResponseAccumulator()
+	responseItemIDReconciler := apicompat.NewResponsesStreamItemIDReconciler()
 	streamDoneItems := newResponsesStreamOutputItems()
 	streamImageOutputs := make([]json.RawMessage, 0, 1)
 	streamSeenImages := make(map[string]struct{})
@@ -638,6 +639,16 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 			if normalizedData, normalized := normalizeResponsesStreamingTerminalOutput(dataBytes, streamOutputAccumulator, streamDoneItems, streamImageOutputs); normalized {
 				dataBytes = normalizedData
 				data = string(normalizedData)
+				line = "data: " + data
+				eventType = effectiveOpenAISSEEventType(dataBytes, eventType)
+			}
+			// Some compatible upstreams rebuild response.completed.output item IDs
+			// after emitting output_item.added/done. Reconcile only terminal
+			// Responses events, using identities observed in this same stream.
+			responseItemIDReconciler.Observe(dataBytes)
+			if reconciledData, reconciled := responseItemIDReconciler.ReconcileTerminalEvent(dataBytes); reconciled {
+				dataBytes = reconciledData
+				data = string(reconciledData)
 				line = "data: " + data
 				eventType = effectiveOpenAISSEEventType(dataBytes, eventType)
 			}
