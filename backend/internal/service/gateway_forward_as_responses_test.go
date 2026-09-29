@@ -3,6 +3,8 @@
 package service
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -11,9 +13,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func TestAdaptResponsesClientToolsForAnthropic_FlattensNamespace(t *testing.T) {
@@ -171,6 +175,151 @@ func TestHandleResponsesStreamingResponse_RestoresNamespaceTool(t *testing.T) {
 	require.Contains(t, rec.Body.String(), `"name":"read_thread"`)
 	require.Contains(t, rec.Body.String(), `"namespace":"codex_app"`)
 	require.NotContains(t, rec.Body.String(), `"name":"codex_app__read_thread"`)
+}
+
+func TestForwardAsResponses_ClaudeThinkingSignatureSurvivesToolContinuation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	firstStream := strings.Join([]string{
+		`event: message_start`,
+		`data: {"type":"message_start","message":{"id":"msg_claude_first","type":"message","role":"assistant","content":[],"model":"claude-fable-5","stop_reason":null,"usage":{"input_tokens":10}}}`,
+		``,
+		`event: content_block_start`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}`,
+		``,
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"inspect"}}`,
+		``,
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"claude-signature-part-1"}}`,
+		``,
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"-part-2"}}`,
+		``,
+		`event: content_block_stop`,
+		`data: {"type":"content_block_stop","index":0}`,
+		``,
+		`event: content_block_start`,
+		`data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_exec_1","name":"unified_exec","input":{}}}`,
+		``,
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"command\":\"Get-Date\"}"}}`,
+		``,
+		`event: content_block_stop`,
+		`data: {"type":"content_block_stop","index":1}`,
+		``,
+		`event: message_delta`,
+		`data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":6}}`,
+		``,
+		`event: message_stop`,
+		`data: {"type":"message_stop"}`,
+		``,
+	}, "\n")
+	secondStream := strings.Join([]string{
+		`event: message_start`,
+		`data: {"type":"message_start","message":{"id":"msg_claude_second","type":"message","role":"assistant","content":[],"model":"claude-fable-5","stop_reason":null,"usage":{"input_tokens":30}}}`,
+		``,
+		`event: content_block_start`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":"done"}}`,
+		``,
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"done"}}`,
+		``,
+		`event: content_block_stop`,
+		`data: {"type":"content_block_stop","index":0}`,
+		``,
+		`event: message_delta`,
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}`,
+		``,
+		`event: message_stop`,
+		`data: {"type":"message_stop"}`,
+		``,
+	}, "\n")
+
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{
+		{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(firstStream))},
+		{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(secondStream))},
+	}}
+	svc := &GatewayService{
+		cfg:                 &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false, AllowInsecureHTTP: true}}},
+		httpUpstream:        upstream,
+		tlsFPProfileService: &TLSFingerprintProfileService{},
+	}
+	account := &Account{
+		ID:       901,
+		Name:     "claude-local-compat-fixture",
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key":  "sk-test",
+			"base_url": "http://upstream.example",
+		},
+	}
+
+	firstBody := []byte(`{"model":"claude-fable-5","stream":true,"reasoning":{"effort":"high"},"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"inspect"}]}],"tools":[{"type":"function","name":"unified_exec","parameters":{"type":"object","properties":{"command":{"type":"string"}}}}]}`)
+	firstRecorder := httptest.NewRecorder()
+	firstContext, _ := gin.CreateTestContext(firstRecorder)
+	firstContext.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(firstBody))
+	firstContext.Request.Header.Set("Content-Type", "application/json")
+	firstResult, err := svc.ForwardAsResponses(context.Background(), firstContext, account, firstBody, nil)
+	require.NoError(t, err)
+	require.NotNil(t, firstResult)
+	require.NotNil(t, firstResult.responsesCompatResponse)
+	firstResponseID := firstResult.responsesCompatResponse.ID
+	require.True(t, strings.HasPrefix(firstResponseID, "resp_"))
+
+	var reasoningAddedID, reasoningDoneID, completedReasoningSignature string
+	var sequence []int
+	for _, line := range strings.Split(firstRecorder.Body.String(), "\n") {
+		if !strings.HasPrefix(line, "data: ") || strings.TrimSpace(strings.TrimPrefix(line, "data: ")) == "[DONE]" {
+			continue
+		}
+		var event apicompat.ResponsesStreamEvent
+		require.NoError(t, json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &event))
+		sequence = append(sequence, event.SequenceNumber)
+		switch event.Type {
+		case "response.output_item.added":
+			if event.Item != nil && event.Item.Type == "reasoning" {
+				reasoningAddedID = event.Item.ID
+			}
+		case "response.output_item.done":
+			if event.Item != nil && event.Item.Type == "reasoning" {
+				reasoningDoneID = event.Item.ID
+				completedReasoningSignature = event.Item.EncryptedContent
+			}
+		case "response.completed":
+			require.Len(t, event.Response.Output, 2)
+			require.Equal(t, "reasoning", event.Response.Output[0].Type)
+			require.Equal(t, "claude-signature-part-1-part-2", event.Response.Output[0].EncryptedContent)
+			require.Equal(t, reasoningDoneID, event.Response.Output[0].ID)
+		}
+	}
+	require.NotEmpty(t, reasoningAddedID)
+	require.Equal(t, reasoningAddedID, reasoningDoneID)
+	require.Equal(t, "claude-signature-part-1-part-2", completedReasoningSignature)
+	for index, got := range sequence {
+		require.Equal(t, index, got, "Responses sequence_number must be continuous")
+	}
+
+	secondBody := []byte(`{"model":"claude-fable-5","stream":false,"previous_response_id":"` + firstResponseID + `","input":[{"type":"function_call_output","call_id":"toolu_exec_1","output":"permission denied","is_error":true}]}`)
+	secondRecorder := httptest.NewRecorder()
+	secondContext, _ := gin.CreateTestContext(secondRecorder)
+	secondContext.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(secondBody))
+	secondContext.Request.Header.Set("Content-Type", "application/json")
+	secondResult, err := svc.ForwardAsResponses(context.Background(), secondContext, account, secondBody, nil)
+	require.NoError(t, err)
+	require.NotNil(t, secondResult)
+	require.Len(t, upstream.bodies, 2)
+	require.Equal(t, "user", gjson.GetBytes(upstream.bodies[1], "messages.0.role").String())
+	require.Equal(t, "assistant", gjson.GetBytes(upstream.bodies[1], "messages.1.role").String())
+	require.Equal(t, "thinking", gjson.GetBytes(upstream.bodies[1], "messages.1.content.0.type").String())
+	require.Equal(t, "claude-signature-part-1-part-2", gjson.GetBytes(upstream.bodies[1], "messages.1.content.0.signature").String())
+	require.Equal(t, "tool_use", gjson.GetBytes(upstream.bodies[1], "messages.1.content.1.type").String())
+	require.Equal(t, "toolu_exec_1", gjson.GetBytes(upstream.bodies[1], "messages.1.content.1.id").String())
+	require.Equal(t, "user", gjson.GetBytes(upstream.bodies[1], "messages.2.role").String())
+	require.Equal(t, "tool_result", gjson.GetBytes(upstream.bodies[1], "messages.2.content.0.type").String())
+	require.Equal(t, "toolu_exec_1", gjson.GetBytes(upstream.bodies[1], "messages.2.content.0.tool_use_id").String())
+	require.True(t, gjson.GetBytes(upstream.bodies[1], "messages.2.content.0.is_error").Bool())
 }
 
 func TestExtractResponsesReasoningEffortFromBody(t *testing.T) {
