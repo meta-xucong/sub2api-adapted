@@ -2694,3 +2694,48 @@ func TestLoadSimpleModeAutoCreateDefaultGroups(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadOperatorTestGuardDefaultsDisabled(t *testing.T) {
+	resetViperWithJWTSecret(t)
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.False(t, cfg.Gateway.OperatorTestGuard.Enabled)
+	require.True(t, cfg.Gateway.OperatorTestGuard.RequireAdminUser)
+	require.Equal(t, []string{"127.0.0.1", "::1"}, cfg.Gateway.OperatorTestGuard.TrustedClientIPs)
+	require.NotEmpty(t, cfg.Gateway.OperatorTestGuard.BlockedUserAgents)
+	require.NotEmpty(t, cfg.Gateway.OperatorTestGuard.AllowedAPIKeyNames)
+	require.Contains(t, cfg.Gateway.OperatorTestGuard.Paths, "/v1/images/*")
+}
+
+func TestLoadOperatorTestGuardRejectsIncompleteEnabledConfig(t *testing.T) {
+	tests := []struct {
+		name string
+		key  string
+		want string
+	}{
+		{name: "trusted client ips", key: "gateway.operator_test_guard.trusted_client_ips", want: "trusted_client_ips"},
+		{name: "blocked user agents", key: "gateway.operator_test_guard.blocked_user_agents", want: "blocked_user_agents"},
+		{name: "paths", key: "gateway.operator_test_guard.paths", want: "paths"},
+		{name: "allowed key identity", key: "gateway.operator_test_guard.allowed_api_key_names", want: "allowed_user_emails or allowed_api_key_names"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resetViperWithJWTSecret(t)
+			viper.Set("gateway.operator_test_guard.enabled", true)
+			viper.Set("gateway.operator_test_guard.trusted_client_ips", []string{"127.0.0.1"})
+			viper.Set("gateway.operator_test_guard.blocked_user_agents", []string{"curl/"})
+			viper.Set("gateway.operator_test_guard.paths", []string{"/v1/images/*"})
+			viper.Set("gateway.operator_test_guard.allowed_api_key_names", []string{"ops-test*"})
+			viper.Set("gateway.operator_test_guard.allowed_user_emails", []string{"ops-test@example.com"})
+			viper.Set(tt.key, []string{})
+			if tt.name == "allowed key identity" {
+				viper.Set("gateway.operator_test_guard.allowed_user_emails", []string{})
+			}
+
+			_, err := Load()
+			require.ErrorContains(t, err, "gateway.operator_test_guard."+tt.want)
+		})
+	}
+}
