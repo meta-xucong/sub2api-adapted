@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"net/http"
 	"strings"
 	"time"
 
@@ -107,14 +108,52 @@ func (s *OpenAIGatewayService) smartRouterHealthTracker() *smartrouter.HealthTra
 }
 
 // ReportSmartRouterChatResult and ReportSmartRouterResponsesResult are called
-// by the existing text forwarding handlers after each real upstream attempt.
-// They are intentionally not called from image or compatibility handlers.
+// by the existing forwarding handlers after each real upstream attempt.
 func (s *OpenAIGatewayService) ReportSmartRouterChatResult(account *Account, model string, result *OpenAIForwardResult, err error, latencyMs int64) {
 	s.reportSmartRouterTextResult(account, smartrouter.CapabilityChat, model, result, err, latencyMs, "production")
 }
 
 func (s *OpenAIGatewayService) ReportSmartRouterResponsesResult(account *Account, model string, result *OpenAIForwardResult, err error, latencyMs int64) {
 	s.reportSmartRouterTextResult(account, smartrouter.CapabilityResponses, model, result, err, latencyMs, "production")
+}
+
+// ReportSmartRouterImageResult keeps image health independent from text and
+// Responses health. A failed Images attempt must not quarantine a text lane.
+func (s *OpenAIGatewayService) ReportSmartRouterImageResult(account *Account, model string, result *OpenAIForwardResult, err error, latencyMs int64) {
+	if !s.smartRouterEnabled() || account == nil {
+		return
+	}
+	tracker := s.smartRouterHealthTracker()
+	if tracker == nil {
+		return
+	}
+	status := http.StatusOK
+	if err != nil {
+		status = 0
+		var imageErr *OpenAIImagesUpstreamError
+		if errors.As(err, &imageErr) && imageErr != nil {
+			status = imageErr.StatusCode
+		}
+		if upstreamErr := smartRouterUpstreamError(err); upstreamErr != nil {
+			status = upstreamErr.StatusCode
+		}
+	}
+	class := smartrouter.FailureClass("")
+	if err != nil {
+		class = smartrouter.ClassifyFailureDetails(status, smartrouter.CapabilityImageGeneration, smartRouterErrorSummary(err), "", errors.Is(err, context.Canceled))
+	}
+	tracker.Observe(smartrouter.RouteResult{
+		Source: "production", LaneID: smartRouterLaneID(account), AccountID: account.ID,
+		SourceGroup: smartRouterSourceGroup(account), Capability: smartrouter.CapabilityImageGeneration, Model: model,
+		Success: err == nil, StatusCode: status, ErrorClass: class, TotalLatencyMs: latencyMs,
+		FirstTokenMs: func() *int {
+			if result != nil {
+				return result.FirstTokenMs
+			}
+			return nil
+		}(),
+		ErrorSummary: smartRouterErrorSummary(err),
+	})
 }
 
 func (s *OpenAIGatewayService) reportSmartRouterTextResult(account *Account, capability smartrouter.Capability, model string, result *OpenAIForwardResult, err error, latencyMs int64, source string) {
@@ -227,6 +266,9 @@ func (s *OpenAIGatewayService) smartRouterLaneSnapshot(account *Account, loadInf
 	if account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityResponses) {
 		capabilities[smartrouter.CapabilityResponses] = true
 	}
+	if account.SupportsOpenAIImageCapability(OpenAIImagesCapabilityBasic) {
+		capabilities[smartrouter.CapabilityImageGeneration] = true
+	}
 	if account.AllowsOpenAICompact() {
 		capabilities[smartrouter.CapabilityResponsesCompact] = true
 	}
@@ -256,6 +298,9 @@ func (s *OpenAIGatewayService) smartRouterLaneSnapshot(account *Account, loadInf
 }
 
 func smartRouterRouteCapability(req OpenAIAccountScheduleRequest) smartrouter.Capability {
+	if req.RequiredImageCapability != "" {
+		return smartrouter.CapabilityImageGeneration
+	}
 	if req.RequireCompact {
 		return smartrouter.CapabilityResponsesCompact
 	}

@@ -831,7 +831,11 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		}
 		h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, err != nil, cyberBlockBodyHTTP, clientRequestedUsageFields(c, channelMapping, reqModel, ""), service.HashUsageRequestPayload(body))
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
-		h.gatewayService.ReportSmartRouterResponsesResult(account, reqModel, result, err, forwardDurationMs)
+		if responsesImageBridge {
+			h.gatewayService.ReportSmartRouterImageResult(account, reqModel, result, err, forwardDurationMs)
+		} else {
+			h.gatewayService.ReportSmartRouterResponsesResult(account, reqModel, result, err, forwardDurationMs)
+		}
 		upstreamLatencyMs, _ := getContextInt64(c, service.OpsUpstreamLatencyMsKey)
 		responseLatencyMs := forwardDurationMs
 		if upstreamLatencyMs > 0 && forwardDurationMs > upstreamLatencyMs {

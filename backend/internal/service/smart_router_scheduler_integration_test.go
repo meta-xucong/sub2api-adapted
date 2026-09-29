@@ -118,6 +118,24 @@ func TestSmartRouterSchedulerUsesHealthLedgerAndCoreOrder(t *testing.T) {
 	}
 }
 
+func TestSmartRouterImageHealthUsesDedicatedCapability(t *testing.T) {
+	ledger := &smartRouterLedgerProbe{}
+	cfg := &config.Config{}
+	cfg.Gateway.SmartRouter.Enabled = true
+	gateway := &OpenAIGatewayService{cfg: cfg, smartRouterHealthLedger: ledger}
+	account := smartRouterTestAccount(9, "image-source")
+	gateway.ReportSmartRouterImageResult(account, "gpt-image-2", nil, &OpenAIImagesUpstreamError{StatusCode: 502, ErrorType: "upstream_error"}, 40)
+	if len(ledger.events) != 1 {
+		t.Fatalf("ledger events = %d, want 1", len(ledger.events))
+	}
+	if got := ledger.events[0].Key.Capability; got != smartrouter.CapabilityImageGeneration {
+		t.Fatalf("image capability = %q, want %q", got, smartrouter.CapabilityImageGeneration)
+	}
+	if ledger.events[0].Key.Model != "gpt-image" {
+		t.Fatalf("image model family = %q, want gpt-image", ledger.events[0].Key.Model)
+	}
+}
+
 func TestSmartRouterStartupRestorePreservesRecoveryPriority(t *testing.T) {
 	ledger := &smartRouterLedgerProbe{states: []SmartRouterHealthState{{
 		LaneID: "account:1", SourceGroup: "failed", Capability: smartrouter.CapabilityChat, ModelFamily: "gpt-5.5",

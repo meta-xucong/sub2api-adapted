@@ -30,6 +30,21 @@ func TestOrderFiltersExactModelAndCapability(t *testing.T) {
 	}
 }
 
+func TestOrderKeepsImageHealthSeparateFromResponses(t *testing.T) {
+	policy := DefaultPolicy()
+	policy.Enabled = true
+	plan := Order(RouteRequest{Model: "gpt-image-2", Capability: CapabilityImageGeneration, Seed: 3}, []LaneSnapshot{
+		{LaneID: "image", AccountID: 1, ModelPatterns: []string{"gpt-image-2"}, Capabilities: map[Capability]bool{CapabilityImageGeneration: true}},
+		{LaneID: "responses", AccountID: 2, ModelPatterns: []string{"gpt-image-2"}, Capabilities: map[Capability]bool{CapabilityResponses: true}},
+	}, policy)
+	if len(plan.OrderedLaneIDs) != 1 || plan.OrderedLaneIDs[0] != "image" {
+		t.Fatalf("image route = %v, want [image]", plan.OrderedLaneIDs)
+	}
+	if plan.SkipReasons["responses"] != "capability_mismatch" {
+		t.Fatalf("responses skip reason = %q, want capability_mismatch", plan.SkipReasons["responses"])
+	}
+}
+
 func TestOrderSourceGroupExclusionAndConcurrency(t *testing.T) {
 	policy := DefaultPolicy()
 	policy.Enabled = true
