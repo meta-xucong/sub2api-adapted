@@ -242,6 +242,22 @@ type ccStreamScanState struct {
 	Err error
 }
 
+// ccStreamProtocolError marks a response that cannot be interpreted as the
+// protocol requested by the fallback path.  In particular, a Responses event
+// must never be decoded as an empty Chat Completions chunk: doing so lets the
+// caller synthesize a successful empty response after an otherwise valid SSE
+// connection.
+type ccStreamProtocolError struct {
+	message string
+}
+
+func (e *ccStreamProtocolError) Error() string {
+	if e == nil || e.message == "" {
+		return "upstream protocol error"
+	}
+	return "upstream protocol error: " + e.message
+}
+
 // scanCCStream 驱动两条 CC 回退路径共享的 SSE 读循环：提取 data 行、在 [DONE]
 // 哨兵处停止、保留最新 usage、记录首 token 时延，并把每个解析成功的 chunk 交给
 // emit 回调做各自的协议转换与写出。读错误按既有约定过滤 context 取消类噪声后
@@ -255,20 +271,29 @@ func (s *OpenAIGatewayService) scanCCStream(
 ) ccStreamScanState {
 	var st ccStreamScanState
 
-	scanner := s.newUpstreamSSEScanner(resp.Body)
-	for scanner.Scan() {
-		line := scanner.Text()
-		payload, ok := extractOpenAISSEDataLine(line)
-		if !ok {
-			continue
-		}
-		payload = strings.TrimSpace(payload)
+	scanner := newOpenAISSEJSONDocumentScanner(s.newUpstreamSSEScanner(resp.Body))
+	var parser openAICompatSSEFrameParser
+	processFrame := func(frame openAICompatSSEFrame) bool {
+		payload := strings.TrimSpace(openAICompatPayloadWithEventType(frame.Data, frame.EventType))
 		if payload == "" {
-			continue
+			return false
 		}
 		if payload == "[DONE]" {
 			st.SawDone = true
-			break
+			return true
+		}
+
+		// Check the protocol before unmarshalling into ChatCompletionsChunk.
+		// A Responses event with only {delta:...} otherwise decodes as an empty
+		// Chat chunk and is later reported as a successful empty completion.
+		payloadBytes := []byte(payload)
+		if isResponsesProtocolPayload(payloadBytes) {
+			st.Err = &ccStreamProtocolError{message: "Responses API event received on Chat Completions fallback"}
+			return true
+		}
+		if !isChatCompletionsProtocolPayload(payloadBytes) {
+			st.Err = &ccStreamProtocolError{message: "upstream SSE data is neither a Chat Completions chunk nor a valid usage chunk"}
+			return true
 		}
 
 		if u := extractCCStreamUsage(payload); u != nil {
@@ -276,21 +301,38 @@ func (s *OpenAIGatewayService) scanCCStream(
 		}
 
 		var chunk apicompat.ChatCompletionsChunk
-		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+		if err := json.Unmarshal(payloadBytes, &chunk); err != nil {
+			st.Err = &ccStreamProtocolError{message: "invalid Chat Completions SSE JSON"}
 			logger.L().Warn(logPrefix+": failed to parse chat stream chunk",
 				zap.Error(err),
 				zap.String("request_id", requestID),
 			)
-			continue
+			return true
 		}
 		if st.FirstTokenMs == nil && !isOpenAIChatUsageOnlyStreamChunk(payload) && chatChunkStartsResponsesOutput(&chunk) {
 			ms := int(time.Since(startTime).Milliseconds())
 			st.FirstTokenMs = &ms
 		}
 		emit(&chunk)
+		return false
 	}
 
-	if err := scanner.Err(); err != nil {
+	for scanner.Scan() {
+		frame, ok := parser.AddLine(scanner.Text())
+		if !ok {
+			continue
+		}
+		if processFrame(frame) {
+			break
+		}
+	}
+	if st.Err == nil {
+		if frame, ok := parser.Finish(); ok {
+			processFrame(frame)
+		}
+	}
+
+	if err := scanner.Err(); err != nil && st.Err == nil {
 		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 			logger.L().Warn(logPrefix+": stream read error",
 				zap.Error(err),
@@ -323,11 +365,23 @@ func (s *OpenAIGatewayService) readCCUpstreamJSONResponse(
 		}
 		return nil, OpenAIUsage{}, fmt.Errorf("read upstream body: %w", err)
 	}
+	if isResponsesProtocolPayload(respBody) {
+		writeError(c, http.StatusBadGateway, "upstream_protocol_error", "upstream returned Responses API JSON on a Chat Completions route")
+		return nil, OpenAIUsage{}, &ccStreamProtocolError{message: "Responses API JSON received on Chat Completions fallback"}
+	}
+	if !isChatCompletionsProtocolPayload(respBody) {
+		writeError(c, http.StatusBadGateway, "upstream_protocol_error", "upstream JSON is not a Chat Completions response")
+		return nil, OpenAIUsage{}, &ccStreamProtocolError{message: "upstream JSON is not a Chat Completions response"}
+	}
 
 	var ccResp apicompat.ChatCompletionsResponse
 	if err := json.Unmarshal(respBody, &ccResp); err != nil {
 		writeError(c, http.StatusBadGateway, "api_error", "Failed to parse upstream response")
 		return nil, OpenAIUsage{}, fmt.Errorf("parse chat completions response: %w", err)
+	}
+	if len(ccResp.Choices) == 0 {
+		writeError(c, http.StatusBadGateway, "upstream_empty_response", "upstream Chat Completions response contains no choices")
+		return nil, OpenAIUsage{}, errors.New("upstream Chat Completions response contains no choices")
 	}
 
 	usage := OpenAIUsage{}

@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -228,6 +229,45 @@ func FinalizeAnthropicResponsesStream(state *AnthropicEventToResponsesState) []R
 	status, incompleteDetails := anthropicResponsesStreamTerminalState(state.StopReason)
 	events = append(events, makeResponsesCompletedEvent(state, status, incompleteDetails))
 	state.CompletedSent = true
+	return events
+}
+
+// FailAnthropicResponsesStream terminates a translated stream after an
+// upstream read/protocol failure. Partial output items are deliberately not
+// closed: a client must not execute a function call whose arguments were not
+// received completely.
+func FailAnthropicResponsesStream(state *AnthropicEventToResponsesState, code, message string) []ResponsesStreamEvent {
+	if state == nil || state.CompletedSent {
+		return nil
+	}
+	if strings.TrimSpace(code) == "" {
+		code = "upstream_stream_error"
+	}
+	if strings.TrimSpace(message) == "" {
+		message = "upstream stream failed before a complete response was received"
+	}
+	if strings.TrimSpace(state.ResponseID) == "" {
+		state.ResponseID = generateResponsesID()
+	}
+	events := make([]ResponsesStreamEvent, 0, 3)
+	if !state.CreatedSent {
+		state.CreatedSent = true
+		events = append(events, makeResponsesCreatedEvent(state), makeResponsesInProgressEvent(state))
+	}
+	state.CompletedSent = true
+	events = append(events, makeResponsesEvent(state, "response.failed", &ResponsesStreamEvent{
+		Response: &ResponsesResponse{
+			ID:     state.ResponseID,
+			Object: "response",
+			Model:  state.Model,
+			Status: "failed",
+			Output: []ResponsesOutput{},
+			Error: &ResponsesError{
+				Code:    code,
+				Message: message,
+			},
+		},
+	}))
 	return events
 }
 

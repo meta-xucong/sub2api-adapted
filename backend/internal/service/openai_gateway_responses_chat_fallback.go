@@ -375,7 +375,7 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 	})
 
 	if scan.Err != nil {
-		return &OpenAIForwardResult{
+		result := &OpenAIForwardResult{
 			RequestID:               requestID,
 			ResponseID:              state.ResponseID,
 			Usage:                   scan.Usage,
@@ -388,7 +388,82 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 			Duration:                time.Since(startTime),
 			FirstTokenMs:            scan.FirstTokenMs,
 			responsesCompatResponse: compatResponse,
-		}, fmt.Errorf("stream usage incomplete: %w", scan.Err)
+		}
+		if !clientDisconnected {
+			code := "upstream_stream_error"
+			if _, ok := scan.Err.(*ccStreamProtocolError); ok {
+				code = "upstream_protocol_error"
+			}
+			writeEvents(apicompat.FailChatCompletionsResponsesStream(state, code, scan.Err.Error()))
+			writeStreamHeaders()
+			if _, writeErr := fmt.Fprint(c.Writer, "data: [DONE]\n\n"); writeErr != nil {
+				clientDisconnected = true
+			}
+			if !clientDisconnected {
+				c.Writer.Flush()
+			}
+		}
+		result.ResponseID = state.ResponseID
+		if compatResponse != nil {
+			result.responsesCompatResponse = compatResponse
+		}
+		return result, fmt.Errorf("stream usage incomplete: %w", scan.Err)
+	}
+	if !scan.SawDone {
+		err := errors.New("upstream Chat Completions stream ended without [DONE]")
+		result := &OpenAIForwardResult{
+			RequestID:               requestID,
+			ResponseID:              state.ResponseID,
+			Usage:                   scan.Usage,
+			Model:                   originalModel,
+			BillingModel:            billingModel,
+			UpstreamModel:           upstreamModel,
+			ReasoningEffort:         reasoningEffort,
+			ServiceTier:             serviceTier,
+			Stream:                  true,
+			Duration:                time.Since(startTime),
+			FirstTokenMs:            scan.FirstTokenMs,
+			responsesCompatResponse: compatResponse,
+		}
+		if !clientDisconnected {
+			writeEvents(apicompat.FailChatCompletionsResponsesStream(state, "upstream_stream_incomplete", err.Error()))
+			writeStreamHeaders()
+			if _, writeErr := fmt.Fprint(c.Writer, "data: [DONE]\n\n"); writeErr != nil {
+				clientDisconnected = true
+			}
+			if !clientDisconnected {
+				c.Writer.Flush()
+			}
+		}
+		return result, fmt.Errorf("stream usage incomplete: %w", err)
+	}
+	if scan.FirstTokenMs == nil {
+		err := errors.New("upstream Chat Completions stream completed without semantic output")
+		result := &OpenAIForwardResult{
+			RequestID:               requestID,
+			ResponseID:              state.ResponseID,
+			Usage:                   scan.Usage,
+			Model:                   originalModel,
+			BillingModel:            billingModel,
+			UpstreamModel:           upstreamModel,
+			ReasoningEffort:         reasoningEffort,
+			ServiceTier:             serviceTier,
+			Stream:                  true,
+			Duration:                time.Since(startTime),
+			FirstTokenMs:            scan.FirstTokenMs,
+			responsesCompatResponse: compatResponse,
+		}
+		if !clientDisconnected {
+			writeEvents(apicompat.FailChatCompletionsResponsesStream(state, "upstream_empty_response", err.Error()))
+			writeStreamHeaders()
+			if _, writeErr := fmt.Fprint(c.Writer, "data: [DONE]\n\n"); writeErr != nil {
+				clientDisconnected = true
+			}
+			if !clientDisconnected {
+				c.Writer.Flush()
+			}
+		}
+		return result, fmt.Errorf("stream usage incomplete: %w", err)
 	}
 
 	writeEvents(apicompat.FinalizeChatCompletionsResponsesStream(state))
@@ -401,10 +476,6 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 			c.Writer.Flush()
 		}
 	}
-	if !scan.SawDone {
-		logCCStreamMissingDoneSentinel("openai responses chat fallback", requestID)
-	}
-
 	return &OpenAIForwardResult{
 		RequestID:               requestID,
 		ResponseID:              state.ResponseID,
@@ -426,7 +497,9 @@ func chatChunkStartsResponsesOutput(chunk *apicompat.ChatCompletionsChunk) bool 
 		return false
 	}
 	for _, choice := range chunk.Choices {
-		if choice.Delta.Content != nil || choice.Delta.ReasoningContent != nil || len(choice.Delta.ToolCalls) > 0 {
+		if (choice.Delta.Content != nil && *choice.Delta.Content != "") ||
+			(choice.Delta.ReasoningContent != nil && *choice.Delta.ReasoningContent != "") ||
+			len(choice.Delta.ToolCalls) > 0 {
 			return true
 		}
 	}

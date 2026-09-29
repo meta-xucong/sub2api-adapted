@@ -514,6 +514,7 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 	firstChunk := true
 	clientDisconnected := false
 	var compatResponse *apicompat.ResponsesResponse
+	var streamErr error
 
 	scanner := bufio.NewScanner(resp.Body)
 	maxLineSize := defaultMaxLineSize
@@ -630,12 +631,14 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 
 		// Read data line
 		if !scanner.Scan() {
+			streamErr = errors.New("upstream Anthropic stream ended before event data")
 			break
 		}
 		dataLine := scanner.Text()
 		payload, ok := parseAnthropicSSEField(dataLine, "data")
 		if !ok {
-			continue
+			streamErr = errors.New("upstream Anthropic stream event is missing data")
+			break
 		}
 
 		var event apicompat.AnthropicStreamEvent
@@ -645,7 +648,8 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 				zap.String("request_id", requestID),
 				zap.String("event_type", eventType),
 			)
-			continue
+			streamErr = fmt.Errorf("parse upstream Anthropic stream event: %w", err)
+			break
 		}
 
 		// A client write failure only disables downstream writes. Continue
@@ -661,6 +665,30 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 				zap.String("request_id", requestID),
 			)
 		}
+		streamErr = fmt.Errorf("read upstream Anthropic stream: %w", err)
+	}
+	if streamErr == nil && !state.CompletedSent {
+		streamErr = errors.New("upstream Anthropic stream ended without message_stop")
+	}
+	if streamErr != nil {
+		if !clientDisconnected {
+			for _, evt := range apicompat.FailAnthropicResponsesStream(state, "upstream_stream_incomplete", streamErr.Error()) {
+				sse, err := apicompat.ResponsesEventToSSE(evt)
+				if err != nil {
+					continue
+				}
+				out := string(reverseToolNamesIfPresent(c, []byte(sse)))
+				if _, err := fmt.Fprint(c.Writer, out); err != nil {
+					clientDisconnected = true
+					break
+				}
+			}
+			if !clientDisconnected {
+				_, _ = fmt.Fprint(c.Writer, "data: [DONE]\n\n")
+				c.Writer.Flush()
+			}
+		}
+		return resultWithUsage(), streamErr
 	}
 
 	return finalizeStream()

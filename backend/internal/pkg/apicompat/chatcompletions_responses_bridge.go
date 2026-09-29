@@ -1356,7 +1356,11 @@ func ChatCompletionsChunkToResponsesEvents(
 	if chunk == nil || state == nil {
 		return nil
 	}
-	if chunk.ID != "" {
+	// Bind the Responses identity to the first upstream chunk only. Later
+	// chunks belong to the same logical response even when a provider emits a
+	// different or synthetic chunk id; changing it mid-stream would make the
+	// lifecycle events disagree about response_id.
+	if !state.CreatedSent && chunk.ID != "" {
 		state.ResponseID = chunk.ID
 	}
 	if state.Model == "" && chunk.Model != "" {
@@ -1425,7 +1429,11 @@ func ChatCompletionsChunkToResponsesEvents(
 				state.ToolItemIDs[idx] = generateItemID()
 				state.ToolOutputIndex[idx] = state.allocOutputIndex()
 			} else {
-				if toolCall.ID != "" {
+				// The first non-empty ID is the stable call identity. Some
+				// providers repeat a different ID on later argument chunks;
+				// replacing it would make output_item.added, arguments.done and
+				// response.completed refer to different calls.
+				if stored.ID == "" && toolCall.ID != "" {
 					stored.ID = toolCall.ID
 				}
 				if toolCall.Function.Name != "" {
@@ -1521,6 +1529,38 @@ func FinalizeChatCompletionsResponsesStream(state *ChatCompletionsToResponsesStr
 			Output:            state.chatOutput(),
 			Usage:             state.Usage,
 			IncompleteDetails: incompleteDetails,
+		},
+	}))
+	return events
+}
+
+// FailChatCompletionsResponsesStream terminates a fallback stream with a
+// structured Responses failure.  It deliberately does not close partial tool
+// items or emit response.completed: a client must never execute a partially
+// received call after an upstream protocol/read failure.
+func FailChatCompletionsResponsesStream(state *ChatCompletionsToResponsesStreamState, code, message string) []ResponsesStreamEvent {
+	if state == nil || state.CompletedSent {
+		return nil
+	}
+	if strings.TrimSpace(code) == "" {
+		code = "upstream_stream_error"
+	}
+	if strings.TrimSpace(message) == "" {
+		message = "upstream stream failed before a complete response was received"
+	}
+	events := ensureChatToResponsesCreated(state)
+	state.CompletedSent = true
+	events = append(events, chatToResponsesEvent(state, "response.failed", &ResponsesStreamEvent{
+		Response: &ResponsesResponse{
+			ID:     state.ResponseID,
+			Object: "response",
+			Model:  state.Model,
+			Status: "failed",
+			Output: []ResponsesOutput{},
+			Error: &ResponsesError{
+				Code:    code,
+				Message: message,
+			},
 		},
 	}))
 	return events

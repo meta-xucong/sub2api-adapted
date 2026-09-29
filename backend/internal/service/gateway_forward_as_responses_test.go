@@ -398,3 +398,31 @@ func TestHandleResponsesStreamingResponse_CompactSSEFormat(t *testing.T) {
 	require.Equal(t, 6, result.Usage.OutputTokens)
 	require.Contains(t, rec.Body.String(), `response.completed`)
 }
+
+func TestHandleResponsesStreamingResponse_FailsClosedWithoutMessageStop(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	resp := &http.Response{
+		Header: http.Header{"x-request-id": []string{"rid_anthropic_missing_stop"}},
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			`event: message_start`,
+			`data: {"type":"message_start","message":{"id":"msg_missing_stop","type":"message","role":"assistant","content":[],"model":"claude-fable-5","stop_reason":"","usage":{"input_tokens":1}}}`,
+			``,
+			`event: content_block_start`,
+			`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_partial","name":"unified_exec","input":{}}}`,
+			``,
+		}, "\n"))),
+	}
+
+	svc := &GatewayService{}
+	result, err := svc.handleResponsesStreamingResponse(resp, c, "claude-fable-5", "claude-fable-5", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
+	require.Error(t, err)
+	require.NotNil(t, result)
+	require.Contains(t, err.Error(), "message_stop")
+	require.Contains(t, rec.Body.String(), "response.failed")
+	require.Contains(t, rec.Body.String(), `"code":"upstream_stream_incomplete"`)
+	require.NotContains(t, rec.Body.String(), "response.completed")
+}

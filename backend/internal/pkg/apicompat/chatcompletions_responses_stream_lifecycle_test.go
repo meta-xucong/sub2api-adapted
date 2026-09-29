@@ -187,6 +187,8 @@ func TestStream_CompletedOutputReusesStreamItemIDAcrossChatModels(t *testing.T) 
 			for _, payload := range []string{
 				// GLM-style chunks can carry id, name, and arguments together.
 				`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_glm","type":"function","function":{"name":"exec","arguments":"{\"cmd\":\"Get-Date\"}"}}]}}]}`,
+				// A later argument chunk must not replace the established call ID.
+				`{"id":"chatcmpl_later","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_changed","function":{"arguments":""}}]}}]}`,
 				`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
 			} {
 				var chunk ChatCompletionsChunk
@@ -195,9 +197,13 @@ func TestStream_CompletedOutputReusesStreamItemIDAcrossChatModels(t *testing.T) 
 			}
 			events = append(events, FinalizeChatCompletionsResponsesStream(state)...)
 
-			var addedID, doneID, completedID string
+			var addedID, doneID, completedID, createdResponseID, completedResponseID string
 			for _, event := range events {
 				switch event.Type {
+				case "response.created":
+					if event.Response != nil {
+						createdResponseID = event.Response.ID
+					}
 				case "response.output_item.added":
 					if event.Item != nil && event.Item.Type == "function_call" {
 						addedID = event.Item.ID
@@ -208,6 +214,7 @@ func TestStream_CompletedOutputReusesStreamItemIDAcrossChatModels(t *testing.T) 
 					}
 				case "response.completed":
 					require.NotNil(t, event.Response)
+					completedResponseID = event.Response.ID
 					for _, item := range event.Response.Output {
 						if item.Type == "function_call" && item.CallID == "call_glm" {
 							completedID = item.ID
@@ -219,6 +226,8 @@ func TestStream_CompletedOutputReusesStreamItemIDAcrossChatModels(t *testing.T) 
 			require.NotEmpty(t, addedID)
 			require.Equal(t, addedID, doneID)
 			require.Equal(t, addedID, completedID)
+			require.NotEmpty(t, createdResponseID)
+			require.Equal(t, createdResponseID, completedResponseID)
 		})
 	}
 }

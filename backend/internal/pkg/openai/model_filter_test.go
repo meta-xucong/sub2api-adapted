@@ -10,12 +10,12 @@ func TestAdminSelectableModelIDsIncludeCurrentLunaAndExcludeInternalAliases(t *t
 	ids := AdminSelectableModelIDs()
 
 	require.Equal(t, []string{
-		"gpt-5.4-mini",
-		"gpt-5.4",
-		"gpt-5.5",
 		"gpt-5.6-sol",
 		"gpt-5.6-terra",
 		"gpt-5.6-luna",
+		"gpt-5.5",
+		"gpt-5.4",
+		"gpt-5.4-mini",
 		"gpt-image-2",
 	}, ids)
 	require.NotContains(t, ids, "gpt-5.6")

@@ -1119,7 +1119,10 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 
 	// Fallback to default models
 	if platform == service.PlatformOpenAI {
-		writeOpenAIModelsList(c, openai.DefaultModelIDs())
+		// Keep routing-only aliases in DefaultModelIDs, but do not advertise
+		// them to downstream clients when no account mapping is available.
+		// The public fallback list must contain the curated concrete model IDs.
+		writeOpenAIModelsList(c, openai.AdminSelectableModelIDs())
 		return
 	}
 
@@ -1345,7 +1348,10 @@ func customModelsListAllowsModel(availablePatterns []string, model string) bool 
 func defaultModelIDsForPlatform(platform string) []string {
 	switch platform {
 	case service.PlatformOpenAI:
-		return openai.DefaultModelIDs()
+		// DefaultModelIDs also contains routing compatibility aliases and
+		// historical snapshots. They remain valid internal routing targets but
+		// must not be exposed as the public fallback model catalogue.
+		return openai.AdminSelectableModelIDs()
 	case service.PlatformGemini:
 		ids := make([]string, 0, len(geminicli.DefaultModels))
 		for _, model := range geminicli.DefaultModels {

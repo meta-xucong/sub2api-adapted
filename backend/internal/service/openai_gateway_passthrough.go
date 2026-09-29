@@ -1289,6 +1289,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 
 	needModelReplace := strings.TrimSpace(originalModel) != "" && strings.TrimSpace(mappedModel) != "" && strings.TrimSpace(originalModel) != strings.TrimSpace(mappedModel)
 	streamItemIDReconciler := apicompat.NewResponsesStreamItemIDReconciler()
+	var pendingSSEEventType string
 	resultWithUsage := func() *openaiStreamingResultPassthrough {
 		return &openaiStreamingResultPassthrough{
 			usage:                   usage,
@@ -1302,11 +1303,25 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 
 	for documentScanner.Scan() {
 		line := documentScanner.Text()
+		if strings.TrimSpace(line) == "" {
+			pendingSSEEventType = ""
+		}
+		if eventType, ok := extractOpenAISSEEventLine(line); ok {
+			pendingSSEEventType = eventType
+		}
 		lineStartsClientOutput := false
 		forceFlushFailedEvent := false
 		if data, ok := extractOpenAISSEDataLine(line); ok {
 			dataBytes := []byte(data)
 			trimmedData := strings.TrimSpace(data)
+			if pendingSSEEventType != "" && trimmedData != "[DONE]" {
+				if patched := openAICompatPayloadWithEventType(data, pendingSSEEventType); patched != data {
+					dataBytes = []byte(patched)
+					trimmedData = strings.TrimSpace(patched)
+					line = "data: " + patched
+				}
+			}
+			pendingSSEEventType = ""
 			rawEventType := strings.TrimSpace(gjson.GetBytes(dataBytes, "type").String())
 			observer.ObserveOpenAI(dataBytes, rawEventType)
 			if needModelReplace && strings.Contains(data, mappedModel) {

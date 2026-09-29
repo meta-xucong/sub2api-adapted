@@ -145,6 +145,22 @@ func TestOpenAIStreamingPassthroughKeepsPreamblePendingUntilFirstOutputBoundary(
 	}, writer.flushBodyLengths)
 }
 
+func TestOpenAIStreamingPassthroughLiftsSSEEventTypeWhenDataOmitsType(t *testing.T) {
+	upstream := "event: response.output_text.delta\n" +
+		`data: {"delta":"hello"}` + "\n\n" +
+		"event: response.completed\n" +
+		`data: {"response":{"id":"resp_event_type","usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}}}` + "\n\n"
+
+	result, recorder, _, err := runPassthroughFlushTest(t, io.NopCloser(strings.NewReader(upstream)), -1)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Contains(t, recorder.Body.String(), `data: {"delta":"hello","type":"response.output_text.delta"}`)
+	require.Contains(t, recorder.Body.String(), `data: {"response":{"id":"resp_event_type"`)
+	require.Equal(t, 2, result.usage.InputTokens)
+	require.Equal(t, 1, result.usage.OutputTokens)
+}
+
 func TestOpenAIStreamingPassthroughFlushesTerminalEventAtEOFWithoutBlankLine(t *testing.T) {
 	upstream := "event: response.completed\n" +
 		`data: {"type":"response.completed","response":{"id":"resp_eof","usage":{"input_tokens":5,"output_tokens":2,"total_tokens":7}}}`

@@ -1069,6 +1069,28 @@ func TestStreamingFailedNoOutput(t *testing.T) {
 	assert.Equal(t, "message_stop", events[1].Type)
 }
 
+func TestFailAnthropicResponsesStreamDoesNotCompletePartialTool(t *testing.T) {
+	state := NewAnthropicEventToResponsesState()
+	state.ResponseID = "resp_anthropic_failure"
+	state.Model = "claude-fable-5"
+	state.CreatedSent = true
+	state.CurrentItemType = "function_call"
+	state.CurrentItemID = "item_partial"
+	state.CurrentCallID = "call_partial"
+	state.CurrentName = "unified_exec"
+	state.CurrentArgs = `{"command":"partial"}`
+
+	events := FailAnthropicResponsesStream(state, "upstream_stream_incomplete", "missing message_stop")
+	require.Len(t, events, 1)
+	assert.Equal(t, "response.failed", events[0].Type)
+	assert.Equal(t, "failed", events[0].Response.Status)
+	assert.Empty(t, events[0].Response.Output)
+	assert.Equal(t, "call_partial", state.CurrentCallID, "partial call must remain unclosed")
+	for _, event := range events {
+		assert.NotEqual(t, "response.completed", event.Type)
+	}
+}
+
 func TestResponsesToAnthropic_Failed(t *testing.T) {
 	resp := &ResponsesResponse{
 		ID:     "resp_fail_3",
