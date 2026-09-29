@@ -74,6 +74,9 @@ git grep -l "function_call_arguments.done" v0.2.10 -- backend/internal/pkg/apico
 |---|---|---|---|
 | Smart Router core | `014b69f61` | 已移植；尚未接入 service/config/repository | `go.cmd test -count=1 -timeout=120s ./internal/smartrouter/core` → exit 0；worker 的 `-tags unit` → exit 0 |
 | 模型目录过滤/手工 mapping | `5bd7026ff`, `b5b625173`, `c1a2eb579` | 已移植；日期/过期 ID 过滤、正式 ID 保留、空结果拒绝、手工 mapping 不再被自动发现规则误伤 | `go.cmd test ... ./internal/pkg/openai` → exit 0；`./internal/service -run TestFetchUpstream` → exit 0；`-tags unit ...TestAdminService_CompositeModelsListCandidatesIncludeConcreteAccountMappings` → exit 0 |
+| 模型目录第二轮收紧 | `389b0500b` | 自定义 provider 的日期样式 ID 不再误删；bare `gpt-5.6`/`gpt-6` 不进入自动目录或管理员候选；管理员 OpenAI 候选改用 curated formal IDs；standalone mapping 有覆盖 | `go.cmd test -count=1 -timeout=180s ./internal/pkg/openai` → exit 0；`go.cmd test ... ./internal/service -run TestFetchUpstream` → exit 0；`-tags unit ...TestAdminService_CompositeModelsListCandidatesIncludeConcreteAccountMappings` → exit 0 |
+| Responses 终态 item ID | `45c17b42b`, `23279d81f` | Chat->Responses 首 ID/工具 call ID 保持稳定，并将同一 SSE 响应中 output_item ID 重协调到 terminal `response.output`；已接入 `openai_gateway_response_handling.go` | `go.cmd test -count=1 -timeout=300s ./internal/pkg/apicompat ./internal/service -run TestResponsesStreamItemIDReconciler` → exit 0；独立复审尚未完成 |
+| Smart Router core | `014b69f61` | 仅移植了独立 core；独立审计判定 FAIL：尚无 service/API 接线，compact 默认预算和限流边界存在缺口 | `go test ./internal/smartrouter/core` → exit 0；不能作为功能通过 |
 | 官方版本同步 | `3ecc366a3` | 已纳入官方 `upstream/main` 的 VERSION 同步 | `git show --stat 3ecc366a3` |
 
 上述只证明对应批次的定向测试；不等于整树、数据库、实盘或发布验收。

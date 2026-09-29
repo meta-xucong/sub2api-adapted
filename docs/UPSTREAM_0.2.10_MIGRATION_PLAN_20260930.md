@@ -164,11 +164,11 @@ CURRENT_SNAPSHOT_PUSHED: true
 OFFICIAL_BASELINE: upstream/main@a60a29549 (version 0.2.10)
 LOCAL_TAG_REFERENCE: v0.2.10@2f3fed2fd (adapted repository tag only)
 OVERLAY_MIGRATION: IN_PROGRESS
-MIGRATION_COMMITS: 3ecc366a3, 014b69f61, 5bd7026ff, b5b625173, c1a2eb579
-COMPLETED_BATCHES: model-filter-and-manual-mapping (targeted tests passed); smart-router-core (targeted tests passed)
+MIGRATION_COMMITS: 3ecc366a3, 014b69f61, 5bd7026ff, b5b625173, c1a2eb579, 389b0500b, 45c17b42b, 23279d81f
+COMPLETED_BATCHES: model-filter-and-manual-mapping (targeted tests passed); Responses terminal item-ID reconciliation (targeted tests passed); smart-router-core (package test only, integration audit FAIL)
 ACTIVE_BATCHES: protocol-delta, smart-router-persistence, image-bridge
 FULL_LOCAL_TEST: NOT_RUN_ON_MIGRATED_TREE
 LIVE_TEST: NOT_RUN_ON_MIGRATED_TREE
 VPS_DEPLOY: NOT_AUTHORIZED_IN_THIS_PHASE
-INDEPENDENT_AUDIT: BATCH_AUDITS_IN_PROGRESS; RELEASE_NOT_ACCEPTED
+INDEPENDENT_AUDIT: model-filter-and-protocol-reviews-in-progress; smart-router-core-FAIL; RELEASE_NOT_ACCEPTED
 ```
