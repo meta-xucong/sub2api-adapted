@@ -13,10 +13,15 @@ func TestAdminSelectableModelIDsIncludeCurrentLunaAndExcludeInternalAliases(t *t
 		"gpt-5.6-sol",
 		"gpt-5.6-terra",
 		"gpt-5.6-luna",
+		"gpt-6-astra",
+		"gpt-6-sol",
+		"gpt-6-luna",
 		"gpt-5.5",
 		"gpt-5.4",
 		"gpt-5.4-mini",
 		"gpt-image-2",
+		"gpt-image-2.5-flare",
+		"gpt-image-2.5-sunburst",
 	}, ids)
 	require.NotContains(t, ids, "gpt-5.6")
 	require.NotContains(t, ids, "codex-auto-review")
@@ -76,4 +81,11 @@ func TestFilterAutoDiscoveredModelIDsKeepsFormalModelsAndCustomIDs(t *testing.T)
 		"gpt-6-astra",
 		"gpt-image-2.5-flare",
 	}, got)
+}
+
+func TestFilterAutoDiscoveredModelIDsOnlyAppliesDateRulesToOpenAIIDs(t *testing.T) {
+	require.False(t, IsAutoDiscoveredModelID("gpt-5.6-sol-2026-07-09"))
+	require.True(t, IsAutoDiscoveredModelID("custom-provider-2026-07-09"))
+	require.False(t, IsAutoDiscoveredModelID("gpt-5.6"))
+	require.False(t, IsAutoDiscoveredModelID("gpt-6"))
 }

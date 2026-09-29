@@ -117,7 +117,8 @@ func TestAdminService_CreateAccountAllowsCompositeGroupAssignment(t *testing.T) 
 	accountRepo := &accountRepoStubForBulkUpdate{createID: 7}
 	groupRepo := &groupRepoStubForAdmin{
 		getByIDByID: map[int64]*Group{
-			99: {ID: 99, Platform: PlatformComposite},
+			99:  {ID: 99, Platform: PlatformComposite},
+			100: {ID: 100, Platform: PlatformOpenAI},
 		},
 	}
 	svc := &adminServiceImpl{accountRepo: accountRepo, groupRepo: groupRepo}
@@ -146,7 +147,8 @@ func TestAdminService_UpdateAccountAllowsCompositeGroupAssignment(t *testing.T) 
 	}
 	groupRepo := &groupRepoStubForAdmin{
 		getByIDByID: map[int64]*Group{
-			99: {ID: 99, Platform: PlatformComposite},
+			99:  {ID: 99, Platform: PlatformComposite},
+			100: {ID: 100, Platform: PlatformOpenAI},
 		},
 	}
 	svc := &adminServiceImpl{accountRepo: accountRepo, groupRepo: groupRepo}
@@ -194,7 +196,8 @@ func TestAdminService_CompositeModelsListCandidatesIncludeConcreteAccountMapping
 	}
 	groupRepo := &groupRepoStubForAdmin{
 		getByIDByID: map[int64]*Group{
-			99: {ID: 99, Platform: PlatformComposite},
+			99:  {ID: 99, Platform: PlatformComposite},
+			100: {ID: 100, Platform: PlatformOpenAI},
 		},
 	}
 	svc := &adminServiceImpl{accountRepo: accountRepo, groupRepo: groupRepo}
@@ -208,6 +211,12 @@ func TestAdminService_CompositeModelsListCandidatesIncludeConcreteAccountMapping
 	require.Contains(t, candidates, "kimi-custom")
 	require.Contains(t, candidates, "gpt-5.5")
 	require.Contains(t, candidates, "gemini-2.5-flash")
+
+	standalone, err := svc.GetGroupModelsListCandidates(context.Background(), 100, PlatformOpenAI)
+	require.NoError(t, err)
+	require.Contains(t, standalone, "gpt-6-astra")
+	require.NotContains(t, standalone, "gpt-5.6")
+	require.NotContains(t, standalone, "gpt-image-1")
 }
 
 // 独立 CN 分组的模型列表候选沿用 default 分支的 Claude 默认列表；

@@ -14,11 +14,9 @@ var stableAutoDiscoveryModels = map[string]struct{}{
 	"gpt-5.4-nano":           {},
 	"gpt-5.5":                {},
 	"gpt-5.5-pro":            {},
-	"gpt-5.6":                {},
 	"gpt-5.6-luna":           {},
 	"gpt-5.6-sol":            {},
 	"gpt-5.6-terra":          {},
-	"gpt-6":                  {},
 	"gpt-6-astra":            {},
 	"gpt-6-luna":             {},
 	"gpt-6-sol":              {},
@@ -38,10 +36,12 @@ var deprecatedAutoDiscoveryModels = map[string]struct{}{
 	"gpt-5.2-chat-latest":  {},
 	"gpt-5.2-codex":        {},
 	"gpt-5.2-pro":          {},
+	"gpt-5.6":              {},
 	"gpt-5.3-chat-latest":  {},
 	"gpt-image-1":          {},
 	"gpt-image-1-mini":     {},
 	"gpt-image-1.5":        {},
+	"gpt-6":                {},
 }
 
 // adminSelectableOpenAIModels is the intentionally small list shown in
@@ -51,10 +51,15 @@ var adminSelectableOpenAIModels = []string{
 	"gpt-5.6-sol",
 	"gpt-5.6-terra",
 	"gpt-5.6-luna",
+	"gpt-6-astra",
+	"gpt-6-sol",
+	"gpt-6-luna",
 	"gpt-5.5",
 	"gpt-5.4",
 	"gpt-5.4-mini",
 	"gpt-image-2",
+	"gpt-image-2.5-flare",
+	"gpt-image-2.5-sunburst",
 }
 
 var adminSelectableOpenAIModelSet = makeModelSet(adminSelectableOpenAIModels)
@@ -152,11 +157,13 @@ func IsAutoDiscoveredModelID(model string) bool {
 	if _, ok := deprecatedAutoDiscoveryModels[lower]; ok {
 		return false
 	}
+	if !looksLikeOpenAIManagedModel(lower) {
+		// Only OpenAI-managed IDs are subject to the date/ft cleanup rules.
+		// A custom provider is allowed to use a date-looking public ID.
+		return true
+	}
 	if isOpenAIDatedSnapshot(lower) || strings.HasPrefix(lower, "ft:") {
 		return false
-	}
-	if !looksLikeOpenAIManagedModel(lower) {
-		return true
 	}
 	if isFutureStableOpenAIModel(lower) {
 		return true
