@@ -15,7 +15,7 @@
 | 项目 | 固定值 |
 |---|---|
 | 迁移分支 | `upgrade/v0210-overlay-migration-20260930` |
-| 当前 HEAD | `f3372897d4b476aaef9213639d887f6955d24f78` |
+| 当前 HEAD | `bfae17a20d33aabb61c2e08ac4d8199bd5bbf63d` |
 | 当前 HEAD 已推送 | `origin/upgrade/v0210-overlay-migration-20260930` |
 | 官方来源 | `upstream/main@a60a29549f488a854966aaec9541abbe006cac22` |
 | 官方版本 | `0.2.10` |
@@ -82,25 +82,31 @@
 
 已迁移 operator/test guard：默认关闭，仅接受专用管理员测试 key；客户端伪造 `X-Forwarded-For`/`X-Real-IP` 不改变 TCP 来源判断。生产普通用户 key 不承担探测流量。
 
+### 4.6 Wokey/KIE/Grok 自定义媒体增量
+
+已集成 worker 的独立提交 `2d3d03963`（当前主线为 cherry-pick 后的 `bfae17a20`）：普通 Grok 继续走官方 OpenAI-compatible 路径；只有精确 provider/profile 判定时才进入 Wokey/KIE transport；包含 KIE createTask/recordInfo、状态/内容代理、公开图片 URL 预检、relay 图片安全下载/上传、multipart 和 billing 状态归一化，并有负向测试阻止不支持的编辑/扩展接口误进 KIE。
+
+当前只完成代码和模拟/定向测试，真实 provider 网络、异步状态、真实用量和失败计费仍待受控实测；未把该增量视为已上线。
+
 ## 5. 尚未闭环的自有适配层
 
 以下项目不能因为主干编译通过而标记完成：
 
 | 项目 | 当前结论 | 放行条件 |
 |---|---|---|
-| Wokey/KIE 自定义媒体/视频 relay | 官方没有对应 profile/jobs/input/relay；现有旧提交相互依赖，尚未安全移植 | 独立 worker 完成依赖链分析；若移植，必须形成独立提交、负向测试、provider/profile 判定和专项审计 |
+| Wokey/KIE 自定义媒体/视频 relay | 已形成独立提交并集成；定向测试通过，真实 provider 和独立审计待完成 | 专项只读审计、真实最小请求、异步状态/错误/账单证据 |
 | Veyra portal/账务 overlay | 属于自有业务层，不是官方 Sub2API 协议核心；当前未移植 | 单独定义范围、SQL/权限/账务迁移和回滚方案，不与本次核心升级混入 |
 | Smart Router SQL 真正重启恢复 | 代码和迁移已在；还需临时 PostgreSQL 上跑官方+自有 migration，写入、重启、恢复和重复 migration 证据 | 隔离数据库测试通过 |
 | Compact 完整 HTTP 入口和真实账号矩阵 | 适配器/服务已有定向测试，完整 handler + 真实统一网关仍待测 | 完整 HTTP 夹具、真实 GLM/DeepSeek/Claude 及权限组证据 |
-| Wokey/KIE/Grok、Kimi、MiniMax、Qwen、HY4 实际矩阵 | 不能把 `/v1/models` 出现当作可用；各 provider 能力仍需真实请求分级记录 | 文本、流式、工具、续接、错误和计费逐模型完成 |
+| Wokey/KIE/Grok、Kimi、MiniMax、Qwen、HY4 实际矩阵 | Wokey/KIE 已有代码；各 provider 能力仍需真实请求分级记录 | 文本、流式、工具、续接、错误和计费逐模型完成 |
 | 独立最终审计 | 之前审计曾对 image lane、Wokey/KIE、Veyra、数据库证据提出 FAIL；修复后需按新 HEAD 重审 | 审计员只读 PASS，明确剩余范围 |
 
 ## 6. 具体执行方案
 
 ### 阶段 A：完成当前本地代码闭环
 
-1. 等待 Wokey/KIE 独立 worker 返回；只审阅其提交，不直接复制工作树。
-2. 对 Wokey/KIE 采用“完整依赖链才移植”的原则；无法形成闭环就保持不移植，并把它作为独立 provider 批次阻断，不用半成品冒充支持。
+1. 对已集成的 Wokey/KIE 提交做独立只读审计；只接受精确 provider/profile 判定和负向测试，不把普通 Grok 请求改道。
+2. 对 Wokey/KIE 做真实最小请求前，先完成 URL 安全、异步状态、错误和 usage 证据；不能以定向单测代替 provider 端到端。
 3. 核对 compact、Responses lifecycle、image bridge 和模型过滤的共享文件差异，补齐缺失的 HTTP 入口测试。
 4. 在临时 PostgreSQL/Redis 上执行所有 migration，验证幂等、旧数据读取、重启恢复和 rollback 点。
 5. 生成迁移文件清单、SHA256、测试日志和审计包。
@@ -148,7 +154,7 @@ git merge-base --is-ancestor a60a29549 HEAD
 
 - 迁移后全仓测试尚未在最终 HEAD 上形成完整日志；
 - 独立最终审计尚未完成；
-- Wokey/KIE worker 结果未纳入主分支；
+- Wokey/KIE worker 已纳入主分支，但专项独立审计和真实 provider 证据仍未完成；
 - 临时 PostgreSQL/Redis 的最终重启恢复证据尚未生成；
 - aiself、404token 尚未部署和真实矩阵尚未执行。
 
@@ -157,7 +163,7 @@ git merge-base --is-ancestor a60a29549 HEAD
 ```yaml
 WRITER_STATUS: MIGRATION_IMPLEMENTATION_PUSHED_LOCAL_VERIFICATION_IN_PROGRESS
 OFFICIAL_BASELINE: upstream/main@a60a29549
-CURRENT_VERSION: f3372897d4b476aaef9213639d887f6955d24f78
+CURRENT_VERSION: bfae17a20d33aabb61c2e08ac4d8199bd5bbf63d
 BACKUP_VERSION: 13430dd5209728a4a1b5523f92ed4de267d1c745
 INDEPENDENT_AUDIT: PENDING_AFTER_LATEST_FIXES
 FULL_LOCAL_TEST: PENDING_ON_FINAL_HEAD
