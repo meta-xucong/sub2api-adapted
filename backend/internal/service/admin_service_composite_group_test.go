@@ -170,7 +170,10 @@ func TestAdminService_CompositeModelsListCandidatesIncludeConcreteAccountMapping
 				ID:       1,
 				Platform: PlatformOpenAI,
 				Credentials: map[string]any{
-					"model_mapping": map[string]any{"gpt-custom": "gpt-5"},
+					"model_mapping": map[string]any{
+						"gpt-custom":  "gpt-5",
+						"gpt-6-astra": "gpt-6-astra",
+					},
 				},
 			},
 			{
@@ -200,6 +203,7 @@ func TestAdminService_CompositeModelsListCandidatesIncludeConcreteAccountMapping
 
 	require.NoError(t, err)
 	require.Contains(t, candidates, "gpt-custom")
+	require.Contains(t, candidates, "gpt-6-astra")
 	require.Contains(t, candidates, "gemini-custom")
 	require.Contains(t, candidates, "kimi-custom")
 	require.Contains(t, candidates, "gpt-5.5")
