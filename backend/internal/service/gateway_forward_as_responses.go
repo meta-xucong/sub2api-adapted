@@ -349,6 +349,7 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 	// Accumulate the final Anthropic response from streaming events
 	var finalResp *apicompat.AnthropicResponse
 	var usage ClaudeUsage
+	var messageStopSeen bool
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -392,6 +393,9 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 				finalResp.StopReason = apicompat.AnthropicStopReasonPtr(event.Delta.StopReason)
 			}
 		}
+		if event.Type == "message_stop" {
+			messageStopSeen = true
+		}
 
 		// Accumulate content blocks
 		if event.Type == "content_block_start" && event.ContentBlock != nil && finalResp != nil {
@@ -413,6 +417,8 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 					finalResp.Content[idx].Text += event.Delta.Text
 				case "thinking_delta":
 					finalResp.Content[idx].Thinking += event.Delta.Thinking
+				case "signature_delta":
+					finalResp.Content[idx].Signature += event.Delta.Signature
 				case "input_json_delta":
 					finalResp.Content[idx].Input = appendRawJSON(finalResp.Content[idx].Input, event.Delta.PartialJSON)
 				}
@@ -432,6 +438,10 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 	if finalResp == nil {
 		writeResponsesError(c, http.StatusBadGateway, "server_error", "Upstream stream ended without a response")
 		return nil, fmt.Errorf("upstream stream ended without response")
+	}
+	if !messageStopSeen {
+		writeResponsesError(c, http.StatusBadGateway, "upstream_stream_incomplete", "Upstream stream ended without message_stop")
+		return nil, fmt.Errorf("upstream stream ended without message_stop")
 	}
 
 	// Update usage from accumulated delta

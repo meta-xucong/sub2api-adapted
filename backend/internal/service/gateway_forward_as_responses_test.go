@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -240,10 +241,18 @@ func TestForwardAsResponses_ClaudeThinkingSignatureSurvivesToolContinuation(t *t
 		{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(firstStream))},
 		{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(secondStream))},
 	}}
-	svc := &GatewayService{
+	sharedCache := &sharedResponsesCompatCache{states: make(map[string][]byte)}
+	firstService := &GatewayService{
 		cfg:                 &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false, AllowInsecureHTTP: true}}},
 		httpUpstream:        upstream,
 		tlsFPProfileService: &TLSFingerprintProfileService{},
+		cache:               sharedCache,
+	}
+	secondService := &GatewayService{
+		cfg:                 firstService.cfg,
+		httpUpstream:        upstream,
+		tlsFPProfileService: &TLSFingerprintProfileService{},
+		cache:               sharedCache,
 	}
 	account := &Account{
 		ID:       901,
@@ -261,7 +270,7 @@ func TestForwardAsResponses_ClaudeThinkingSignatureSurvivesToolContinuation(t *t
 	firstContext, _ := gin.CreateTestContext(firstRecorder)
 	firstContext.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(firstBody))
 	firstContext.Request.Header.Set("Content-Type", "application/json")
-	firstResult, err := svc.ForwardAsResponses(context.Background(), firstContext, account, firstBody, nil)
+	firstResult, err := firstService.ForwardAsResponses(context.Background(), firstContext, account, firstBody, nil)
 	require.NoError(t, err)
 	require.NotNil(t, firstResult)
 	require.NotNil(t, firstResult.responsesCompatResponse)
@@ -306,7 +315,7 @@ func TestForwardAsResponses_ClaudeThinkingSignatureSurvivesToolContinuation(t *t
 	secondContext, _ := gin.CreateTestContext(secondRecorder)
 	secondContext.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(secondBody))
 	secondContext.Request.Header.Set("Content-Type", "application/json")
-	secondResult, err := svc.ForwardAsResponses(context.Background(), secondContext, account, secondBody, nil)
+	secondResult, err := secondService.ForwardAsResponses(context.Background(), secondContext, account, secondBody, nil)
 	require.NoError(t, err)
 	require.NotNil(t, secondResult)
 	require.Len(t, upstream.bodies, 2)
@@ -355,6 +364,9 @@ func TestHandleResponsesBufferedStreamingResponse_PreservesMessageStartCacheUsag
 			`event: message_delta`,
 			`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}`,
 			``,
+			`event: message_stop`,
+			`data: {"type":"message_stop"}`,
+			``,
 		}, "\n"))),
 	}
 
@@ -367,6 +379,136 @@ func TestHandleResponsesBufferedStreamingResponse_PreservesMessageStartCacheUsag
 	require.Equal(t, 9, result.Usage.CacheReadInputTokens)
 	require.Equal(t, 3, result.Usage.CacheCreationInputTokens)
 	require.Contains(t, rec.Body.String(), `"cached_tokens":9`)
+}
+
+func TestHandleResponsesBufferedStreamingResponse_PreservesThinkingSignature(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	resp := &http.Response{
+		Header: http.Header{"x-request-id": []string{"rid_buffered_signature"}},
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			`event: message_start`,
+			`data: {"type":"message_start","message":{"id":"msg_signature","type":"message","role":"assistant","content":[],"model":"claude-fable-5","stop_reason":null,"usage":{"input_tokens":4}}}`,
+			``,
+			`event: content_block_start`,
+			`data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"inspect"}}`,
+			``,
+			`event: content_block_delta`,
+			`data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig-buffered"}}`,
+			``,
+			`event: content_block_stop`,
+			`data: {"type":"content_block_stop","index":0}`,
+			``,
+			`event: message_delta`,
+			`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}`,
+			``,
+			`event: message_stop`,
+			`data: {"type":"message_stop"}`,
+			``,
+		}, "\n"))),
+	}
+
+	svc := &GatewayService{}
+	result, err := svc.handleResponsesBufferedStreamingResponse(resp, c, "claude-fable-5", "claude-fable-5", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, "sig-buffered", gjson.Get(rec.Body.String(), "output.0.encrypted_content").String())
+}
+
+func TestHandleResponsesBufferedStreamingResponse_FailsClosedWithoutMessageStop(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	resp := &http.Response{
+		Header: http.Header{"x-request-id": []string{"rid_buffered_missing_stop"}},
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			`event: message_start`,
+			`data: {"type":"message_start","message":{"id":"msg_missing_stop_buffered","type":"message","role":"assistant","content":[],"model":"claude-fable-5","stop_reason":null,"usage":{"input_tokens":1}}}`,
+			``,
+			`event: content_block_start`,
+			`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_partial_buffered","name":"unified_exec","input":{}}}`,
+			``,
+		}, "\n"))),
+	}
+
+	svc := &GatewayService{}
+	result, err := svc.handleResponsesBufferedStreamingResponse(resp, c, "claude-fable-5", "claude-fable-5", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.Contains(t, err.Error(), "message_stop")
+	require.Contains(t, rec.Body.String(), `"code":"upstream_stream_incomplete"`)
+	require.NotContains(t, rec.Body.String(), `"object":"response"`)
+}
+
+// sharedResponsesCompatCache models the shared-cache contract between two
+// GatewayService instances. The repository package separately verifies the
+// same contract against Redis; keeping this fixture in the service package
+// lets the test exercise the complete Claude continuation path without an
+// import cycle.
+type sharedResponsesCompatCache struct {
+	mu     sync.Mutex
+	states map[string][]byte
+}
+
+func (c *sharedResponsesCompatCache) GetSessionAccountID(context.Context, int64, string) (int64, error) {
+	return 0, ErrStickySessionNotFound
+}
+
+func (*sharedResponsesCompatCache) SetSessionAccountID(context.Context, int64, string, int64, time.Duration) error {
+	return nil
+}
+
+func (*sharedResponsesCompatCache) RefreshSessionTTL(context.Context, int64, string, time.Duration) error {
+	return nil
+}
+
+func (*sharedResponsesCompatCache) DeleteSessionAccountID(context.Context, int64, string) error {
+	return nil
+}
+
+func (*sharedResponsesCompatCache) SetGrokVideoPendingBilling(context.Context, string, []byte, time.Duration) error {
+	return nil
+}
+
+func (*sharedResponsesCompatCache) GetGrokVideoPendingBilling(context.Context, string) ([]byte, error) {
+	return nil, nil
+}
+
+func (*sharedResponsesCompatCache) ClaimGrokVideoBilled(context.Context, string, time.Duration) (bool, error) {
+	return false, nil
+}
+
+func (*sharedResponsesCompatCache) ReleaseGrokVideoBilled(context.Context, string) error {
+	return nil
+}
+
+func (c *sharedResponsesCompatCache) GetResponsesCompatState(_ context.Context, key string) ([]byte, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	payload := c.states[key]
+	if payload == nil {
+		return nil, nil
+	}
+	return append([]byte(nil), payload...), nil
+}
+
+func (c *sharedResponsesCompatCache) SetResponsesCompatState(_ context.Context, key string, payload []byte, _ time.Duration) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.states[key] = append([]byte(nil), payload...)
+	return nil
+}
+
+func (c *sharedResponsesCompatCache) DeleteResponsesCompatState(_ context.Context, key string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.states, key)
+	return nil
 }
 
 func TestHandleResponsesStreamingResponse_PreservesMessageStartCacheUsage(t *testing.T) {
@@ -501,6 +643,9 @@ func TestHandleResponsesBufferedStreamingResponse_CompactSSEFormat(t *testing.T)
 			``,
 			`event:message_delta`,
 			`data:{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}`,
+			``,
+			`event:message_stop`,
+			`data:{"type":"message_stop"}`,
 			``,
 		}, "\n"))),
 	}
