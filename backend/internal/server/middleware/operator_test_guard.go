@@ -134,17 +134,14 @@ func operatorGuardClientCandidates(c *gin.Context) []string {
 	if c == nil || c.Request == nil {
 		return nil
 	}
-	values := []string{
-		c.ClientIP(),
-		c.GetHeader("X-Real-IP"),
-	}
+	// Do not trust forwarded headers here. This middleware protects the test
+	// credential itself, so accepting a client-supplied X-Forwarded-For or
+	// X-Real-IP would let an external caller spoof a trusted local address.
+	values := make([]string, 0, 1)
 	if host, _, err := net.SplitHostPort(c.Request.RemoteAddr); err == nil {
 		values = append(values, host)
 	} else {
 		values = append(values, c.Request.RemoteAddr)
-	}
-	for _, part := range strings.Split(c.GetHeader("X-Forwarded-For"), ",") {
-		values = append(values, strings.TrimSpace(part))
 	}
 	out := make([]string, 0, len(values))
 	seen := make(map[string]struct{}, len(values))

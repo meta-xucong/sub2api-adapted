@@ -64,6 +64,19 @@ func TestOperatorTestGuardAllowsUntrustedClientIP(t *testing.T) {
 	require.Equal(t, http.StatusOK, response.Code)
 }
 
+func TestOperatorTestGuardDoesNotTrustSpoofedForwardedIP(t *testing.T) {
+	router := newOperatorTestGuardRouter(t, operatorTestGuardCustomerKey())
+	request := httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
+	request.RemoteAddr = "203.0.113.10:45678"
+	request.Header.Set("User-Agent", "curl/7.74.0")
+	request.Header.Set("X-Forwarded-For", "141.11.138.220")
+	request.Header.Set("X-Real-IP", "141.11.138.220")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+
+	require.Equal(t, http.StatusOK, response.Code, "untrusted TCP peer must not become blocked solely because the header is spoofed")
+}
+
 func TestOperatorTestGuardDisabled(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cfg := operatorTestGuardConfig()
