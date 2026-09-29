@@ -1,6 +1,6 @@
 # Sub2API 官方 v0.2.10 适配层升级方案
 
-状态：`PLAN_DRAFT_AWAITING_INDEPENDENT_AUDIT`
+状态：`PLAN_REVISED_AFTER_INDEPENDENT_AUDIT`
 
 日期：2026-09-30（Asia/Shanghai）
 
@@ -45,7 +45,7 @@
 
 候选范围：`backend/internal/pkg/apicompat/`、Responses handler/service、compact 入口及其对应测试。
 
-先逐项核对官方是否已吸收：Responses item ID、工具参数终态、Anthropic 工具名称重写、DeepSeek reasoning 占位、流式终态和 usage 转发、`previous_response_id`/工具结果续接、幂等保护。官方已有实现不重放旧补丁；只有官方缺失的第三方模型兼容、ID 保持、结构化失败终态和 compact 契约才保留为独立最小改动。
+先逐项核对官方是否已吸收：Responses item ID、工具参数终态、Anthropic 工具名称重写、DeepSeek reasoning 占位、流式终态和 usage 转发、`previous_response_id`/工具结果续接、幂等保护。官方已有实现不重放旧补丁；只有官方缺失的第三方模型兼容、ID 终态重协调、Claude signed thinking、结构化失败终态和 compact 契约才保留为独立最小改动。官方基线已有 `backend/internal/pkg/apicompat/` 的基础桥接、`backend/internal/service/openai_responses_item_id.go` 和 `openai_gateway_response_handling.go` 的基础 compact 处理，必须以源码/测试对照确认后再移植。
 
 硬门槛：普通文本、单/多/并行工具、工具错误回传、五轮续接、断线回放、重复 `call_id`、流式事件序号和非流式响应必须分别有测试；`response.completed` 不得被误判为整个 Agent 任务完成。
 
@@ -119,14 +119,49 @@
 - 最终交付必须包含：升级文档、官方基线 commit、移植提交清单、删除/跳过的旧补丁清单、测试命令/退出码、真实证据包 SHA256、独立审计结论、`WRITER_STATUS`、`AUDIT_STATUS`、`RELEASE_STATUS`。
 - 任何生产部署前先做配置/数据库备份、镜像唯一 tag、健康检查和可回滚演练；本轮未授权 VPS 写入。
 
-## 8. 当前状态
+## 8. 独立审计修订与完整覆盖矩阵
+
+初次审计结论为 `FAIL`，以下内容是必须执行的修订，不是可选说明。执行表拆成八批，覆盖矩阵优先于前文的五类概览。
+
+| 批次 | 自有能力/候选文件 | 官方 v0.2.10 证据 | 决定 |
+|---|---|---|---|
+| 1 | Smart Router core、exact-model、capability lane、source-group、429 backoff | 官方基线没有 `backend/internal/smartrouter/core/` 及对应健康账本 | 移植；先 core，后接线 |
+| 2 | Smart Router 持久化、04:00 校准、图片/compact 独立健康、`174/175_smart_router_*.sql` | 官方没有自有 ledger/recovery migration；官方 scheduler 只作为接口基线 | 移植并做 schema 前向/回滚验证 |
+| 3 | 图片超时预算、空结果 failover、Responses image-generation → Images bridge、Volcengine/AIAI | 官方已有基础图片路由、URL→b64 和通用错误处理（`openai_images.go`、图片测试）；官方没有 `openai_responses_image_bridge.go` | 只移植自有差异，不覆盖官方图片核心 |
+| 4 | Responses/Anthropic/Chat 差异：item ID 终态重协调、Claude signed thinking、不完整流 fail-closed、T0 幂等/续接 | 官方已有基础 item ID 清洗、工具参数 `.done`、compact HTTP/SSE、基础 bridge；证据为 `service/openai_responses_item_id.go`、`apicompat/*stream*test.go`、`openai_gateway_response_handling.go` | 对共享文件做窄合并，仅保留官方缺失增量 |
+| 5 | 模型目录过滤、日期/下线模型归一化、GPT-5.6 精确别名、Codex manifest、`codex-auto-review` 映射 | 官方 `openai_codex_models_handler.go`/测试已覆盖目录展示和识别；自有 `model_filter.go` 与 SQL 模板才是差异 | 保留过滤/手工映射规则；删除旧 GPT-5.6 优先策略 |
+| 6 | Fast mode、第三方 URL `service_tier` 策略、operator test key guard、部署/relay runbook | 官方已有 service-tier 基础透传和 fast 基础策略；无 `operator_test_guard.go` | 只移植第三方剥离策略、guard 和运维文档 |
+| 7 | Wokey/KIE video transport、Grok reference relay | 官方已有通用 Grok media；无 Wokey/KIE profile、relay 安全边界 | 以 provider/profile 判定窄合并，保留负向测试 |
+| 8 | Veyra portal、登录桥、持久化扣款/账务 overlay、Kimi/OpenCode/部署 SQL | 官方没有 Veyra bridge；官方已有 Kimi/OpenCode 基础平台和迁移 | Veyra 作为独立自有业务批次；Kimi/OpenCode 逐文件判断，不复制官方已具备部分；所有 SQL 编号先查冲突 |
+
+### 8.1 官方已吸收与不得重复移植的增量
+
+- Responses 基础流式生命周期、工具参数 `.done`、终态文本恢复、`sequence_number=0`：官方 `backend/internal/pkg/apicompat/anthropic_to_responses_response.go`、`chatcompletions_responses_bridge.go` 及其 stream/lifecycle tests；自有旧补丁只取未覆盖的终态 ID 重协调、signed thinking 和 fail-closed。
+- Responses 输入 item ID 基础清洗：官方 `backend/internal/service/openai_responses_item_id.go` 及测试；不复制旧清洗实现。
+- Compact HTTP/SSE、失败终态和 Chat fallback：官方 `backend/internal/handler/openai_gateway_response_handling.go` 及 compact tests；只复核自有 strict contract、Smart Router capability 和幂等差异。
+- DeepSeek reasoning、Anthropic 通用桥接、基础图片错误/上传限制、Fast `service_tier`、Codex manifest 和通用 Grok media：官方基线已存在，按 8.1 的差异列表做窄合并。
+
+### 8.2 证据和覆盖缺口修复
+
+- 在第一批代码提交前生成 `docs/UPSTREAM_0.2.10_OVERLAY_AUDIT_20260930.md`，逐条列出“自有提交/文件 → 批次 → 官方文件/测试 → 保留/废弃/范围外”，每条必须带 `git show` 或测试命令证据；没有证据的项标记 `INSUFFICIENT_EVIDENCE`，不得默认为保留。
+- 记录官方基线 `go version`、Node/pnpm、依赖 lockfile SHA256、`go test`/前端测试真实退出码；文档中的“待执行”不算通过。
+- 数据库门槛增加：在临时 PostgreSQL/Redis 上从当前 schema 执行官方与自有 migration，验证重复启动幂等、旧数据可读、回滚点可恢复；发现 migration 编号冲突（例如旧的 221 文件与官方 221）时改用新的自有编号并更新 runner，不覆盖官方 migration。
+- 权限矩阵至少覆盖匿名、普通用户、管理员、operator test key、Veyra portal 五类主体；每个受保护端点有允许/拒绝测试、状态码、审计日志和“不产生客户 usage/扣费”的断言。
+- 回滚演练必须包含：停止条件、旧镜像/配置恢复、数据库备份恢复或前向兼容证明、健康检查、协议 smoke、usage/余额不变性核对；不能只依赖 Git 回退。
+
+### 8.3 文档一致性
+
+当前本地维护文档 `docs/CUSTOM_PATCHES.md` 引用了不存在的 `docs/UPSTREAM_0.1.173_AUDIT.md`。本方案不把该旧引用当作证据；迁移提交必须附带一个明确标记 `SUPERSEDED_NOT_RELEASE_EVIDENCE` 的桥接说明，或同步修正引用到本方案，避免后续审计误读旧文档。
+
+## 9. 当前状态
 
 ```yaml
-PLAN_STATUS: DRAFT_AWAITING_INDEPENDENT_AUDIT
+PLAN_STATUS: REVISED_AFTER_AUDIT_FAIL_REMEDIATION_PENDING
 CURRENT_SNAPSHOT_PUSHED: true
 OFFICIAL_BASELINE: v0.2.10@2f3fed2fd
 OVERLAY_MIGRATION: NOT_STARTED
 FULL_LOCAL_TEST: NOT_RUN_ON_MIGRATED_TREE
 LIVE_TEST: NOT_RUN_ON_MIGRATED_TREE
 VPS_DEPLOY: NOT_AUTHORIZED_IN_THIS_PHASE
+INDEPENDENT_AUDIT: INITIAL_FAIL_REMEDIATIONS_WRITTEN_REAUDIT_REQUIRED
 ```
