@@ -16,6 +16,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 )
 
 const (
@@ -781,6 +782,12 @@ func (s *AccountTestService) fetchUpstreamModelList(ctx context.Context, account
 	}
 	if len(models) == 0 {
 		return nil, nil, newUpstreamModelSyncUpstreamError("Upstream returned no supported models", nil)
+	}
+	if account != nil && account.IsOpenAI() {
+		filtered := openai.FilterAutoDiscoveredModelIDs(models)
+		if len(filtered) > 0 {
+			models = filtered
+		}
 	}
 
 	return models, body, nil
