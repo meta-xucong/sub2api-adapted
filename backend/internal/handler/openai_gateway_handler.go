@@ -219,6 +219,19 @@ func openAIModelMappedBody(body []byte, mapped bool, mappedModel string, replace
 	return replace(body, mappedModel)
 }
 
+func (h *OpenAIGatewayHandler) responsesImageBridgeEnabled(body []byte) bool {
+	if h == nil || h.cfg == nil || !h.cfg.Gateway.ResponsesImageBridge.Enabled {
+		return false
+	}
+	if !service.IsResponsesImageBridgeRequest(body) {
+		return false
+	}
+	return strings.EqualFold(
+		strings.TrimSpace(h.cfg.Gateway.ResponsesImageBridge.ApplyToProtocol),
+		"images_api_only",
+	)
+}
+
 func seedOpenAIForwardImageIntentHint(c *gin.Context, channelMapped bool, imageIntent bool) {
 	if channelMapped {
 		// 渠道映射改变了规范请求，保持 unknown，由 Forward 按映射后的 model/body 初始化。
@@ -547,6 +560,20 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		h.errorResponse(c, http.StatusForbidden, "permission_error", service.ImageGenerationPermissionMessage())
 		return
 	}
+	responsesImageBridge := false
+	var responsesImageParsed *service.OpenAIImagesRequest
+	if h.responsesImageBridgeEnabled(body) {
+		if maxBytes := h.cfg.Gateway.ResponsesImageBridge.MaxRequestBytes; maxBytes > 0 && len(body) > maxBytes {
+			h.errorResponse(c, http.StatusRequestEntityTooLarge, "invalid_request_error", "Responses image bridge request is too large")
+			return
+		}
+		_, responsesImageParsed, err = service.BuildOpenAIResponsesImageBridgeRequest(body)
+		if err != nil {
+			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+			return
+		}
+		responsesImageBridge = true
+	}
 	var imageReleaseFunc func()
 	if imageIntent {
 		var imageAcquired bool
@@ -651,20 +678,34 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		}
 		// Select account supporting the requested model
 		reqLog.Debug("openai.account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
-		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForCapability(
-			c.Request.Context(),
-			apiKey.GroupID,
-			previousResponseID,
-			sessionHash,
-			forwardModel,
-			failedAccountIDs,
-			service.OpenAIUpstreamTransportAny,
-			requiredCapability,
-			requireCompact,
-			false,
-			!imageIntent,
-			requestPlatform,
-		)
+		var selection *service.AccountSelectionResult
+		var scheduleDecision service.OpenAIAccountScheduleDecision
+		var err error
+		if responsesImageBridge {
+			selection, scheduleDecision, err = h.gatewayService.SelectAccountWithSchedulerForImages(
+				c.Request.Context(),
+				apiKey.GroupID,
+				sessionHash,
+				responsesImageParsed.Model,
+				failedAccountIDs,
+				service.OpenAIImagesCapabilityBasic,
+			)
+		} else {
+			selection, scheduleDecision, err = h.gatewayService.SelectAccountWithSchedulerForCapability(
+				c.Request.Context(),
+				apiKey.GroupID,
+				previousResponseID,
+				sessionHash,
+				forwardModel,
+				failedAccountIDs,
+				service.OpenAIUpstreamTransportAny,
+				requiredCapability,
+				requireCompact,
+				false,
+				!imageIntent,
+				requestPlatform,
+			)
+		}
 		if err != nil {
 			if failoverClientGone(c) {
 				reqLog.Info("openai.account_select_aborted_client_disconnected", zap.Error(err))
@@ -773,6 +814,15 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					accountReleaseFunc()
 				}
 			}()
+			if responsesImageBridge && account.UsesResponsesImageBridge() {
+				return h.gatewayService.ForwardResponsesImageBridge(
+					c.Request.Context(),
+					c,
+					account,
+					body,
+					h.cfg.Gateway.ResponsesImageBridge.PreserveStreaming,
+				)
+			}
 			return h.gatewayService.Forward(c.Request.Context(), c, account, attemptBody)
 		}()
 		var cyberBlockBodyHTTP []byte

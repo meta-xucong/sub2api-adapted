@@ -2005,6 +2005,16 @@ func TestValidateConfigErrors(t *testing.T) {
 			wantErr: "gateway.image_concurrency.max_waiting_requests must be non-negative",
 		},
 		{
+			name:    "gateway responses image bridge request limit invalid",
+			mutate:  func(c *Config) { c.Gateway.ResponsesImageBridge.MaxRequestBytes = 0 },
+			wantErr: "gateway.responses_image_bridge.max_request_bytes must be positive",
+		},
+		{
+			name:    "gateway responses image bridge protocol invalid",
+			mutate:  func(c *Config) { c.Gateway.ResponsesImageBridge.ApplyToProtocol = "all" },
+			wantErr: "gateway.responses_image_bridge.apply_to_protocol must be images_api_only",
+		},
+		{
 			name:    "gateway max line size",
 			mutate:  func(c *Config) { c.Gateway.MaxLineSize = 1024 },
 			wantErr: "gateway.max_line_size must be at least",
@@ -2634,6 +2644,12 @@ func TestLoad_DefaultGatewayImageStreamConfig(t *testing.T) {
 	}
 	if cfg.Gateway.ImageConcurrency.MaxWaitingRequests != 100 {
 		t.Fatalf("image_concurrency.max_waiting_requests = %d, want 100", cfg.Gateway.ImageConcurrency.MaxWaitingRequests)
+	}
+	if cfg.Gateway.ResponsesImageBridge.Enabled ||
+		cfg.Gateway.ResponsesImageBridge.ApplyToProtocol != "images_api_only" ||
+		cfg.Gateway.ResponsesImageBridge.MaxRequestBytes != 16<<20 ||
+		!cfg.Gateway.ResponsesImageBridge.PreserveStreaming {
+		t.Fatalf("unexpected responses image bridge defaults: %#v", cfg.Gateway.ResponsesImageBridge)
 	}
 	if cfg.Gateway.ImageStreamDataIntervalTimeout <= cfg.Gateway.StreamDataIntervalTimeout {
 		t.Fatalf("image stream timeout = %d, want greater than ordinary stream timeout %d", cfg.Gateway.ImageStreamDataIntervalTimeout, cfg.Gateway.StreamDataIntervalTimeout)

@@ -948,6 +948,15 @@ type ImageConcurrencyConfig struct {
 	MaxWaitingRequests int `mapstructure:"max_waiting_requests"`
 }
 
+// ResponsesImageBridgeConfig controls the opt-in Responses -> Images API
+// protocol adapter. Account-level capability marking remains mandatory.
+type ResponsesImageBridgeConfig struct {
+	Enabled           bool   `mapstructure:"enabled"`
+	ApplyToProtocol   string `mapstructure:"apply_to_protocol"`
+	MaxRequestBytes   int    `mapstructure:"max_request_bytes"`
+	PreserveStreaming bool   `mapstructure:"preserve_streaming"`
+}
+
 const (
 	ImageConcurrencyOverflowModeReject = "reject"
 	ImageConcurrencyOverflowModeWait   = "wait"
@@ -1001,6 +1010,9 @@ type GatewayConfig struct {
 	// CodexImageGenerationBridgeEnabled: 是否为 Codex `/v1/responses` 自动注入 image_generation 工具和桥接指令。
 	// 默认关闭，避免纯文本 Codex 请求被意外改写；显式携带 image_generation 工具的请求仍按分组能力转发。
 	CodexImageGenerationBridgeEnabled bool `mapstructure:"codex_image_generation_bridge_enabled"`
+	// ResponsesImageBridge adapts explicit Responses image_generation requests to
+	// accounts that expose the OpenAI Images API instead of /v1/responses.
+	ResponsesImageBridge ResponsesImageBridgeConfig `mapstructure:"responses_image_bridge"`
 	// ForcedCodexInstructionsTemplateFile: 服务端强制附加到 Codex 顶层 instructions 的模板文件路径。
 	// 模板渲染后会直接覆盖最终 instructions；若需要保留客户端 system 转换结果，请在模板中显式引用 {{ .ExistingInstructions }}。
 	ForcedCodexInstructionsTemplateFile string `mapstructure:"forced_codex_instructions_template_file"`
@@ -2390,6 +2402,10 @@ func setDefaults() {
 	viper.SetDefault("gateway.disable_codex_identity_enforcement", false)
 	viper.SetDefault("gateway.disable_codex_originator_normalization", false)
 	viper.SetDefault("gateway.codex_image_generation_bridge_enabled", false)
+	viper.SetDefault("gateway.responses_image_bridge.enabled", false)
+	viper.SetDefault("gateway.responses_image_bridge.apply_to_protocol", "images_api_only")
+	viper.SetDefault("gateway.responses_image_bridge.max_request_bytes", 16<<20)
+	viper.SetDefault("gateway.responses_image_bridge.preserve_streaming", true)
 	viper.SetDefault("gateway.openai_passthrough_allow_timeout_headers", false)
 	viper.SetDefault("gateway.openai_compact_model", "gpt-5.5")
 	viper.SetDefault("gateway.live.max_session_duration_seconds", 3600)
@@ -3341,6 +3357,14 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.ImageConcurrency.MaxWaitingRequests < 0 {
 		return fmt.Errorf("gateway.image_concurrency.max_waiting_requests must be non-negative")
+	}
+	if c.Gateway.ResponsesImageBridge.MaxRequestBytes <= 0 {
+		return fmt.Errorf("gateway.responses_image_bridge.max_request_bytes must be positive")
+	}
+	switch strings.ToLower(strings.TrimSpace(c.Gateway.ResponsesImageBridge.ApplyToProtocol)) {
+	case "images_api_only":
+	default:
+		return fmt.Errorf("gateway.responses_image_bridge.apply_to_protocol must be images_api_only")
 	}
 	if c.Gateway.MaxIdleConns <= 0 {
 		return fmt.Errorf("gateway.max_idle_conns must be positive")
