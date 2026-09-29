@@ -388,6 +388,8 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 	// Accumulate the final Anthropic response from streaming events
 	var finalResp *apicompat.AnthropicResponse
 	var usage ClaudeUsage
+	var protocolErr error
+	messageStopSeen := false
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -398,12 +400,14 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 
 		// Read the data line
 		if !scanner.Scan() {
+			protocolErr = errors.New("upstream Anthropic stream ended with an incomplete SSE frame")
 			break
 		}
 		dataLine := scanner.Text()
 		payload, ok := parseAnthropicSSEField(dataLine, "data")
 		if !ok {
-			continue
+			protocolErr = fmt.Errorf("upstream Anthropic stream event %q is missing a data field", eventType)
+			break
 		}
 
 		var event apicompat.AnthropicStreamEvent
@@ -413,7 +417,11 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 				zap.String("request_id", requestID),
 				zap.String("event_type", eventType),
 			)
-			continue
+			protocolErr = fmt.Errorf("upstream Anthropic stream event %q contains invalid JSON: %w", eventType, err)
+			break
+		}
+		if event.Type == "message_stop" {
+			messageStopSeen = true
 		}
 
 		// message_start carries the initial response structure
@@ -460,6 +468,22 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 				zap.String("request_id", requestID),
 			)
 		}
+		protocolErr = fmt.Errorf("read upstream Anthropic stream: %w", err)
+	}
+	if protocolErr == nil && !messageStopSeen {
+		protocolErr = errors.New("upstream Anthropic stream ended before message_stop")
+	}
+	if protocolErr != nil {
+		writeResponsesError(c, http.StatusBadGateway, "server_error", protocolErr.Error())
+		return &ForwardResult{
+			RequestID:       requestID,
+			UpstreamHeaders: resp.Header,
+			Usage:           usage,
+			Model:           originalModel,
+			UpstreamModel:   mappedModel,
+			Stream:          false,
+			Duration:        time.Since(startTime),
+		}, protocolErr
 	}
 
 	if finalResp == nil {
@@ -545,6 +569,8 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 	var usage ClaudeUsage
 	var firstTokenMs *int
 	firstChunk := true
+	var protocolErr error
+	messageStopSeen := false
 
 	scanner := bufio.NewScanner(resp.Body)
 	maxLineSize := defaultMaxLineSize
@@ -651,12 +677,14 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 
 		// Read data line
 		if !scanner.Scan() {
+			protocolErr = errors.New("upstream Anthropic stream ended with an incomplete SSE frame")
 			break
 		}
 		dataLine := scanner.Text()
 		payload, ok := parseAnthropicSSEField(dataLine, "data")
 		if !ok {
-			continue
+			protocolErr = fmt.Errorf("upstream Anthropic stream event %q is missing a data field", eventType)
+			break
 		}
 
 		var event apicompat.AnthropicStreamEvent
@@ -666,7 +694,11 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 				zap.String("request_id", requestID),
 				zap.String("event_type", eventType),
 			)
-			continue
+			protocolErr = fmt.Errorf("upstream Anthropic stream event %q contains invalid JSON: %w", eventType, err)
+			break
+		}
+		if event.Type == "message_stop" {
+			messageStopSeen = true
 		}
 
 		if processEvent(&event) {
@@ -681,9 +713,59 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 				zap.String("request_id", requestID),
 			)
 		}
+		protocolErr = fmt.Errorf("read upstream Anthropic stream: %w", err)
+	}
+	if protocolErr == nil && !messageStopSeen {
+		protocolErr = errors.New("upstream Anthropic stream ended before message_stop")
+	}
+	if protocolErr != nil {
+		writeAnthropicResponsesStreamFailure(c, state, usage, protocolErr.Error())
+		return resultWithUsage(), protocolErr
 	}
 
 	return finalizeStream()
+}
+
+func writeAnthropicResponsesStreamFailure(
+	c *gin.Context,
+	state *apicompat.AnthropicEventToResponsesState,
+	usage ClaudeUsage,
+	message string,
+) {
+	if state == nil || state.CompletedSent {
+		return
+	}
+	responsesUsage := &apicompat.ResponsesUsage{
+		InputTokens:              usage.InputTokens + usage.CacheReadInputTokens + usage.CacheCreationInputTokens,
+		OutputTokens:             usage.OutputTokens,
+		TotalTokens:              usage.InputTokens + usage.CacheReadInputTokens + usage.CacheCreationInputTokens + usage.OutputTokens,
+		CacheCreationInputTokens: usage.CacheCreationInputTokens,
+	}
+	if usage.CacheReadInputTokens > 0 {
+		responsesUsage.InputTokensDetails = &apicompat.ResponsesInputTokensDetails{CachedTokens: usage.CacheReadInputTokens}
+	}
+	event := apicompat.ResponsesStreamEvent{
+		Type:           "response.failed",
+		SequenceNumber: state.SequenceNumber,
+		Response: &apicompat.ResponsesResponse{
+			ID:        state.ResponseID,
+			Object:    "response",
+			CreatedAt: state.Created,
+			Model:     state.Model,
+			Status:    "failed",
+			Output:    state.Outputs,
+			Usage:     responsesUsage,
+			Error:     &apicompat.ResponsesError{Code: "upstream_stream_incomplete", Message: message},
+		},
+	}
+	state.SequenceNumber++
+	state.CompletedSent = true
+	sse, err := apicompat.ResponsesEventToSSE(event)
+	if err != nil {
+		return
+	}
+	_, _ = fmt.Fprint(c.Writer, sse)
+	c.Writer.Flush()
 }
 
 // appendRawJSON appends a JSON fragment string to existing raw JSON.
