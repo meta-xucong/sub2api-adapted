@@ -33,7 +33,7 @@ func TestResponsesCompatSession_ReplaysOutputAndDeduplicatesToolResult(t *testin
 	response := &apicompat.ResponsesResponse{
 		ID: "resp_compat_001",
 		Output: []apicompat.ResponsesOutput{
-			{Type: "reasoning", Summary: []apicompat.ResponsesSummary{{Type: "summary_text", Text: "先检查"}}},
+			{Type: "reasoning", EncryptedContent: "anthropic-signature-opaque", Summary: []apicompat.ResponsesSummary{{Type: "summary_text", Text: "先检查"}}},
 			{Type: "function_call", ID: "item_call_1", CallID: "call_exec_1", Name: "unified_exec", Arguments: `{"command":"Get-Date"}`},
 		},
 	}
@@ -56,6 +56,7 @@ func TestResponsesCompatSession_ReplaysOutputAndDeduplicatesToolResult(t *testin
 	require.Equal(t, "保留 Skills instructions", next.Instructions)
 	require.Equal(t, int64(4), gjson.GetBytes(next.Input, "#").Int())
 	require.Equal(t, "reasoning", gjson.GetBytes(next.Input, "1.type").String())
+	require.Equal(t, "anthropic-signature-opaque", gjson.GetBytes(next.Input, "1.encrypted_content").String())
 	require.Equal(t, "function_call", gjson.GetBytes(next.Input, "2.type").String())
 	require.Equal(t, "function_call_output", gjson.GetBytes(next.Input, "3.type").String())
 

@@ -420,6 +420,95 @@ func TestResponsesToAnthropic_Reasoning(t *testing.T) {
 	assert.Equal(t, "42", anth.Content[1].Text)
 }
 
+func TestAnthropicToResponsesResponse_PreservesSignatureOnlyThinking(t *testing.T) {
+	resp := &AnthropicResponse{
+		ID:    "msg_claude_signed",
+		Model: "claude-fable-5",
+		Content: []AnthropicContentBlock{{
+			Type:      "thinking",
+			Thinking:  "",
+			Signature: "anthropic-signature-opaque",
+		}},
+		StopReason: AnthropicStopReasonPtr("end_turn"),
+	}
+
+	out := AnthropicToResponsesResponse(resp)
+	require.Len(t, out.Output, 1)
+	assert.Equal(t, "reasoning", out.Output[0].Type)
+	assert.Empty(t, out.Output[0].Summary)
+	assert.Equal(t, "anthropic-signature-opaque", out.Output[0].EncryptedContent)
+}
+
+func TestAnthropicEventToResponses_PreservesThinkingSignatureInTerminalOutput(t *testing.T) {
+	state := NewAnthropicEventToResponsesState()
+	var all []ResponsesStreamEvent
+	feed := func(event *AnthropicStreamEvent) {
+		all = append(all, AnthropicEventToResponsesEvents(event, state)...)
+	}
+
+	feed(&AnthropicStreamEvent{Type: "message_start", Message: &AnthropicResponse{
+		ID: "msg_claude_stream", Model: "claude-fable-5",
+	}})
+	feed(&AnthropicStreamEvent{Type: "content_block_start", Index: intPtr(0), ContentBlock: &AnthropicContentBlock{
+		Type: "thinking",
+	}})
+	feed(&AnthropicStreamEvent{Type: "content_block_delta", Index: intPtr(0), Delta: &AnthropicDelta{
+		Type: "signature_delta", Signature: "anthropic-stream-signature",
+	}})
+	feed(&AnthropicStreamEvent{Type: "content_block_stop", Index: intPtr(0)})
+	feed(&AnthropicStreamEvent{Type: "message_delta", Delta: &AnthropicDelta{StopReason: "end_turn"}})
+	feed(&AnthropicStreamEvent{Type: "message_stop"})
+
+	var itemDone, completed *ResponsesStreamEvent
+	for i := range all {
+		switch all[i].Type {
+		case "response.output_item.done":
+			itemDone = &all[i]
+		case "response.completed":
+			completed = &all[i]
+		}
+	}
+	require.NotNil(t, itemDone)
+	require.NotNil(t, completed)
+	require.NotNil(t, itemDone.Item)
+	assert.Equal(t, "anthropic-stream-signature", itemDone.Item.EncryptedContent)
+	require.Len(t, completed.Response.Output, 1)
+	assert.Equal(t, "anthropic-stream-signature", completed.Response.Output[0].EncryptedContent)
+}
+
+func TestResponsesToAnthropicRequest_ReplaysClaudeThinkingSignatureWithToolRound(t *testing.T) {
+	req := &ResponsesRequest{
+		Model: "claude-fable-5",
+		Input: json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"inspect"}]},
+			{"type":"reasoning","id":"rs_claude_1","summary":[],"encrypted_content":"anthropic-signature-opaque"},
+			{"type":"function_call","id":"fc_1","call_id":"call_exec_1","name":"unified_exec","arguments":"{\"command\":\"Get-Date\"}"},
+			{"type":"function_call_output","call_id":"call_exec_1","output":"result"}
+		]`),
+	}
+
+	converted, err := ResponsesToAnthropicRequest(req)
+	require.NoError(t, err)
+	require.Len(t, converted.Messages, 3)
+	assert.Equal(t, "user", converted.Messages[0].Role)
+	assert.Equal(t, "assistant", converted.Messages[1].Role)
+	assert.Equal(t, "user", converted.Messages[2].Role)
+
+	var assistantBlocks []AnthropicContentBlock
+	require.NoError(t, json.Unmarshal(converted.Messages[1].Content, &assistantBlocks))
+	require.Len(t, assistantBlocks, 2)
+	assert.Equal(t, "thinking", assistantBlocks[0].Type)
+	assert.Equal(t, "anthropic-signature-opaque", assistantBlocks[0].Signature)
+	assert.Equal(t, "tool_use", assistantBlocks[1].Type)
+	assert.Equal(t, "call_exec_1", assistantBlocks[1].ID)
+
+	var resultBlocks []AnthropicContentBlock
+	require.NoError(t, json.Unmarshal(converted.Messages[2].Content, &resultBlocks))
+	require.Len(t, resultBlocks, 1)
+	assert.Equal(t, "tool_result", resultBlocks[0].Type)
+	assert.Equal(t, "call_exec_1", resultBlocks[0].ToolUseID)
+}
+
 func TestResponsesToAnthropic_StreamEmitsThinkingSignature(t *testing.T) {
 	state := NewResponsesEventToAnthropicState()
 	var all []AnthropicStreamEvent

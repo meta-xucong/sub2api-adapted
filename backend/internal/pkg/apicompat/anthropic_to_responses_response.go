@@ -34,15 +34,22 @@ func AnthropicToResponsesResponse(resp *AnthropicResponse) *ResponsesResponse {
 	for _, block := range resp.Content {
 		switch block.Type {
 		case "thinking":
-			if block.Thinking != "" {
+			// Anthropic may omit visible thinking text (for example when
+			// display=omitted) while still returning a signed thinking block.
+			// The signature is the provider state required for the next tool
+			// turn, so preserve it even when Thinking is empty.
+			if block.Thinking != "" || block.Signature != "" {
 				outputs = append(outputs, ResponsesOutput{
-					Type: "reasoning",
-					ID:   generateItemID(),
-					Summary: []ResponsesSummary{{
+					Type:             "reasoning",
+					ID:               generateItemID(),
+					EncryptedContent: block.Signature,
+				})
+				if block.Thinking != "" {
+					outputs[len(outputs)-1].Summary = []ResponsesSummary{{
 						Type: "summary_text",
 						Text: block.Thinking,
-					}},
-				})
+					}}
+				}
 			}
 		case "text":
 			if block.Text != "" {
@@ -162,9 +169,10 @@ type AnthropicEventToResponsesState struct {
 	CurrentName   string
 
 	// Content of the currently open item, folded into Outputs when it closes.
-	CurrentContent []ResponsesContentPart // message
-	CurrentArgs    string                 // function_call
-	CurrentSummary string                 // reasoning
+	CurrentContent   []ResponsesContentPart // message
+	CurrentArgs      string                 // function_call
+	CurrentSummary   string                 // reasoning
+	CurrentSignature string                 // Anthropic encrypted thinking signature
 
 	// Outputs accumulates every closed output item so that response.completed
 	// can carry the full output list. The OpenAI SDK's get_final_response()
@@ -435,7 +443,10 @@ func anthToResHandleContentBlockDelta(evt *AnthropicStreamEvent, state *Anthropi
 		})}
 
 	case "signature_delta":
-		// Anthropic signature deltas have no Responses equivalent; skip
+		// Responses has no separate signature_delta event. Keep the opaque
+		// provider state on the reasoning item so it survives output_item.done,
+		// response.completed, and previous_response_id replay.
+		state.CurrentSignature += evt.Delta.Signature
 		return nil
 	}
 
@@ -572,6 +583,7 @@ func closeCurrentResponsesItem(state *AnthropicEventToResponsesState) []Response
 		if state.CurrentSummary != "" {
 			item.Summary = []ResponsesSummary{{Type: "summary_text", Text: state.CurrentSummary}}
 		}
+		item.EncryptedContent = state.CurrentSignature
 	}
 	state.Outputs = append(state.Outputs, item)
 
@@ -583,6 +595,7 @@ func closeCurrentResponsesItem(state *AnthropicEventToResponsesState) []Response
 	state.CurrentContent = nil
 	state.CurrentArgs = ""
 	state.CurrentSummary = ""
+	state.CurrentSignature = ""
 	state.TextAccum = ""
 	state.OutputIndex++
 	state.ContentIndex = 0

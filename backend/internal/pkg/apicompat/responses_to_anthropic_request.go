@@ -183,11 +183,29 @@ func convertResponsesInputToAnthropic(instructions string, inputRaw json.RawMess
 			messages = append(messages, AnthropicMessage{Role: "user", Content: content})
 
 		case item.Type == "reasoning":
-			// Anthropic 无法摄入 OpenAI 的 reasoning：encrypted_content 是不透明的，
-			// 而 thinking 块的重放需要 Anthropic 自己签发的 signature，无法伪造。
-			// Codex 常见形态（只带 summary + encrypted_content）本来就会被丢弃，
-			// 这里让带 content 数组的形态保持同样行为——否则 reasoning_text 块会被
-			// 原样塞进 Anthropic 请求体，上游直接回 400。
+			// Only replay a signature that originated from the Anthropic adapter.
+			// OpenAI/Codex encrypted reasoning (gAAAA...) is opaque to Anthropic
+			// and must remain dropped; a summary without a provider signature is
+			// also not a valid Anthropic thinking block.
+			signature := strings.TrimSpace(item.EncryptedContent)
+			if signature == "" || strings.HasPrefix(signature, "gAAAA") {
+				continue
+			}
+			summary := ""
+			for _, part := range item.Summary {
+				if part.Type == "summary_text" {
+					summary += part.Text
+				}
+			}
+			blockJSON, _ := json.Marshal([]AnthropicContentBlock{{
+				Type:      "thinking",
+				Thinking:  summary,
+				Signature: signature,
+			}})
+			messages = append(messages, AnthropicMessage{
+				Role:    "assistant",
+				Content: blockJSON,
+			})
 
 		case item.Role == "user":
 			content, err := convertResponsesUserToAnthropicContent(item.Content)

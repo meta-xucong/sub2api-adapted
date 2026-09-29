@@ -273,15 +273,21 @@ func responsesCompatOutputItems(outputs []apicompat.ResponsesOutput) ([]json.Raw
 				item["id"] = output.ID
 			}
 		case "reasoning":
-			// Summary text is replayable reasoning. Encrypted reasoning is not
-			// portable across Chat/Anthropic adapters and is intentionally not
-			// copied as encrypted_content.
-			if len(output.Summary) == 0 {
+			// Preserve provider-signed reasoning state. The Anthropic adapter
+			// validates the signature before replay; retaining it here is required
+			// for previous_response_id continuation when visible thinking is empty.
+			if len(output.Summary) == 0 && output.EncryptedContent == "" {
 				continue
 			}
 			item = map[string]any{
 				"type":    "reasoning",
 				"summary": output.Summary,
+			}
+			if output.EncryptedContent != "" {
+				item["encrypted_content"] = output.EncryptedContent
+			}
+			if output.ID != "" {
+				item["id"] = output.ID
 			}
 		case "compaction", "compaction_summary":
 			// Keep the visible summary and the opaque item payload at the
