@@ -161,18 +161,31 @@ git merge-base --is-ancestor a60a29549 HEAD
 - 独立最终审计尚未完成；
 - Wokey/KIE worker 已纳入主分支，但专项独立审计和真实 provider 证据仍未完成；
 - Redis 跨进程证据已在前序提交测试包中通过；临时 PostgreSQL migration/restart/idempotency 复测通过，仍待将真实部署环境的数据库连接和正式 migration runner 复核纳入部署前验收。
-- aiself、404token 尚未部署和真实矩阵尚未执行。
+- aiself、404token 已部署固定提交 `d8e18642a155d1b3c8c4af3d881c047b9103d042`，但真实矩阵显示部分 provider 能力仍受上游/账号可用性限制，不能据此标记最终验收。
+
+### 7.1 部署后实测记录（2026-09-30）
+
+- AISelf：`sub2api-adapted:d8e18642...`，镜像 ID `sha256:b820d9f1...`，健康；
+- 404token：`sub2api-adapted:d8e18642...`，镜像 ID `sha256:a2419352...`，健康；两者镜像层内容来自同一固定提交，AISelf 使用兼容 Docker archive 导入，避免 2 GB 内存 VPS 再次本地构建 OOM；
+- GLM-5.2、GLM-5.3：两台普通 Responses 通过；GLM-5.2 Responses 流式生命周期和连续序号通过；
+- Claude：两台普通/流式 Responses 通过，`response.completed` 和连续序号通过；两台 compact 也返回 200/completed；
+- DeepSeek：两台普通/流式结果不稳定，出现 reasoning-only、`response.incomplete`、空事件或请求超时；DeepSeek compact 两台均返回结构化 502 `upstream_error`；这更符合上游线路/模型能力或账号可用性问题，不能归因于公共 SSE 序号转换；
+- Qwen3.8 Max：两台普通 Responses 通过；
+- Kimi K3、HY4 Preview：两台本轮普通请求超时；
+- MiniMax M3：AISelf 返回 503 `No available accounts`，404token 返回 502 `upstream_error`；属于无可用上游账号/线路，不是协议解析通过；
+- `/v1/models` 实测只返回正式模型名，历史裸 `gpt-5.6` 映射未泄漏到公开模型列表；
+- `previous_response_id` 续接仍取决于被选中的上游账号是否支持服务端状态，不能把 provider 返回 `Not found previous_response_id` 视为网关自动修复成功。
 
 ## 8. 验收状态
 
 ```yaml
-WRITER_STATUS: MIGRATION_CODE_FIXES_PUSHED_LOCAL_VERIFICATION_IN_PROGRESS
+WRITER_STATUS: MIGRATION_DEPLOYED_LIVE_MATRIX_PROVIDER_GATES_PENDING
 OFFICIAL_BASELINE: upstream/main@a60a29549
-CURRENT_VERSION: 2be93ec9e0ec2a2888063dae78200c8969ffa7d1
+CURRENT_VERSION: d8e18642a155d1b3c8c4af3d881c047b9103d042
 BACKUP_VERSION: 13430dd5209728a4a1b5523f92ed4de267d1c745
-INDEPENDENT_AUDIT: PENDING_AFTER_LATEST_FIXES
-FULL_LOCAL_TEST: PENDING_ON_FINAL_HEAD
-LIVE_TEST: NOT_STARTED
-DEPLOYMENT_STATUS: NOT_DEPLOYED
+INDEPENDENT_AUDIT: STATIC_PASS_LIVE_PROVIDER_GATES_PENDING
+FULL_LOCAL_TEST: TARGETED_PASS_FULL_REPOSITORY_BASELINE_FAILURE
+LIVE_TEST: PARTIAL_BOTH_VPS_PROVIDER_LIMITATIONS
+DEPLOYMENT_STATUS: BOTH_DEPLOYED_HEALTHY
 RELEASE_STATUS: NOT_ACCEPTED
 ```
