@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
@@ -34,15 +35,22 @@ type openAIResponsesCompatHistoryCache interface {
 // official native Responses route keeps previous_response_id and never enters
 // this helper.
 func (s *OpenAIGatewayService) prepareOpenAIResponsesCompatContinuation(req *apicompat.ResponsesRequest) error {
+	if s == nil {
+		return errOpenAIResponsesCompatHistoryUnavailable
+	}
+	return prepareOpenAIResponsesCompatContinuationWithStore(req, s.cache, &s.openaiResponsesCompatHistory)
+}
+
+func prepareOpenAIResponsesCompatContinuationWithStore(req *apicompat.ResponsesRequest, cache GatewayCache, history *sync.Map) error {
 	if req == nil || strings.TrimSpace(req.PreviousResponseID) == "" {
 		return nil
 	}
 	previousID := strings.TrimSpace(req.PreviousResponseID)
 	var entry openAIResponsesCompatHistoryEntry
 	loaded := false
-	if cache, ok := s.cache.(openAIResponsesCompatHistoryCache); ok {
+	if sharedCache, ok := cache.(openAIResponsesCompatHistoryCache); ok {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		payload, err := cache.GetOpenAIResponsesCompatHistory(ctx, previousID)
+		payload, err := sharedCache.GetOpenAIResponsesCompatHistory(ctx, previousID)
 		cancel()
 		if err != nil {
 			return fmt.Errorf("load shared Responses compatibility history: %w", err)
@@ -55,7 +63,10 @@ func (s *OpenAIGatewayService) prepareOpenAIResponsesCompatContinuation(req *api
 		}
 	}
 	if !loaded {
-		value, ok := s.openaiResponsesCompatHistory.Load(previousID)
+		if history == nil {
+			return fmt.Errorf("%w: local history is unavailable", errOpenAIResponsesCompatHistoryUnavailable)
+		}
+		value, ok := history.Load(previousID)
 		if !ok {
 			return fmt.Errorf("%w: %s", errOpenAIResponsesCompatHistoryUnavailable, previousID)
 		}
@@ -65,7 +76,9 @@ func (s *OpenAIGatewayService) prepareOpenAIResponsesCompatContinuation(req *api
 		}
 	}
 	if time.Since(entry.StoredAt) > openAIResponsesCompatHistoryTTL {
-		s.openaiResponsesCompatHistory.Delete(previousID)
+		if history != nil {
+			history.Delete(previousID)
+		}
 		return fmt.Errorf("%w: %s", errOpenAIResponsesCompatHistoryUnavailable, previousID)
 	}
 
@@ -87,7 +100,14 @@ func (s *OpenAIGatewayService) prepareOpenAIResponsesCompatContinuation(req *api
 // the assistant output under the public resp_* ID. It is deliberately only
 // used for compatibility routes whose upstream has no response store.
 func (s *OpenAIGatewayService) rememberOpenAIResponsesCompatHistory(input json.RawMessage, response *apicompat.ResponsesResponse) {
-	if s == nil || response == nil || strings.TrimSpace(response.ID) == "" {
+	if s == nil {
+		return
+	}
+	rememberOpenAIResponsesCompatHistoryWithStore(input, response, s.cache, &s.openaiResponsesCompatHistory)
+}
+
+func rememberOpenAIResponsesCompatHistoryWithStore(input json.RawMessage, response *apicompat.ResponsesResponse, cache GatewayCache, history *sync.Map) {
+	if response == nil || strings.TrimSpace(response.ID) == "" || history == nil {
 		return
 	}
 	items, err := responsesCompatInputItems(input)
@@ -104,15 +124,15 @@ func (s *OpenAIGatewayService) rememberOpenAIResponsesCompatHistory(input json.R
 		Items:    cloneResponsesCompatItems(items),
 		StoredAt: time.Now(),
 	}
-	s.openaiResponsesCompatHistory.Store(response.ID, entry)
-	if cache, ok := s.cache.(openAIResponsesCompatHistoryCache); ok {
+	history.Store(response.ID, entry)
+	if sharedCache, ok := cache.(openAIResponsesCompatHistoryCache); ok {
 		payload, marshalErr := json.Marshal(entry)
 		if marshalErr != nil {
 			return
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		if err := cache.SetOpenAIResponsesCompatHistory(ctx, response.ID, payload, openAIResponsesCompatHistoryTTL); err != nil {
+		if err := sharedCache.SetOpenAIResponsesCompatHistory(ctx, response.ID, payload, openAIResponsesCompatHistoryTTL); err != nil {
 			logger.L().Warn("openai.responses_compat_history_shared_cache_write_failed",
 				zap.Error(err),
 				zap.String("response_id_hash", openAIResponsesCompatHistoryKey(response.ID)),

@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -10,11 +11,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 // Forward forwards request to OpenAI API
@@ -1021,6 +1024,43 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		return nil, wsErr
 	}
 
+	var compatHistoryInput json.RawMessage
+	if accountUsesStatelessOpenAIResponsesHistory(account) && !compactPath {
+		var compatReq apicompat.ResponsesRequest
+		if err := json.Unmarshal(body, &compatReq); err != nil {
+			return nil, fmt.Errorf("parse Responses compatibility history request: %w", err)
+		}
+		previousResponseID := strings.TrimSpace(compatReq.PreviousResponseID)
+		if err := s.prepareOpenAIResponsesCompatContinuation(&compatReq); err != nil {
+			if !errors.Is(err, errOpenAIResponsesCompatHistoryUnavailable) {
+				writeResponsesError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+				return nil, err
+			}
+			// A stale or cross-instance response id is still a valid upstream
+			// contract failure. Preserve the original request so the provider can
+			// return its structured response instead of converting a cache miss
+			// into a gateway-side 500/400 before the request is dispatched.
+			compatHistoryInput = nil
+		} else {
+			compatHistoryInput = append(json.RawMessage(nil), compatReq.Input...)
+		}
+		if previousResponseID != "" && compatHistoryInput != nil {
+			inputJSON, marshalErr := json.Marshal(compatReq.Input)
+			if marshalErr != nil {
+				return nil, fmt.Errorf("marshal Responses compatibility history input: %w", marshalErr)
+			}
+			preparedBody, patchErr := sjson.SetRawBytes(body, "input", inputJSON)
+			if patchErr != nil {
+				return nil, fmt.Errorf("patch Responses compatibility history input: %w", patchErr)
+			}
+			body, patchErr = sjson.DeleteBytes(preparedBody, "previous_response_id")
+			if patchErr != nil {
+				return nil, fmt.Errorf("remove Responses compatibility previous_response_id: %w", patchErr)
+			}
+			requestView = newOpenAIRequestView(body)
+		}
+	}
+
 	reasoningEffort := extractOpenAIReasoningEffortFromBody(body, upstreamModel, billingModel, originalModel)
 	// 国产模型默认 effort 补充：此处 reqModel 已被 mapping 重写为 billingModel。
 	reasoningEffort = ApplyThinkingEnabledFallback(reasoningEffort, body, reqModel)
@@ -1221,7 +1261,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		searchCount := 0
 		var imageOutputSizes []string
 		if reqStream {
-			streamResult, err := s.handleStreamingResponseWithReasoning(ctx, resp, c, account, startTime, originalModel, upstreamModel, reasoningEffortValue)
+			streamResult, err := s.handleStreamingResponseWithReasoning(ctx, resp, c, account, startTime, originalModel, upstreamModel, reasoningEffortValue, compatHistoryInput)
 			if err != nil {
 				if signal, ok := asOpenAICompactFallbackSignal(err); ok {
 					if retryBody, fallbackModel, retry := s.prepareOpenAICompactFallbackRetry(
@@ -1268,7 +1308,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			imageOutputSizes = streamResult.imageOutputSizes
 			searchCount = streamResult.searchCount
 		} else {
-			nonStreamResult, err := s.handleNonStreamingResponse(ctx, resp, c, account, originalModel, upstreamModel)
+			nonStreamResult, err := s.handleNonStreamingResponse(ctx, resp, c, account, originalModel, upstreamModel, compatHistoryInput)
 			if err != nil {
 				if signal, ok := asOpenAICompactFallbackSignal(err); ok {
 					if retryBody, fallbackModel, retry := s.prepareOpenAICompactFallbackRetry(

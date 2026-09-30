@@ -18,6 +18,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
@@ -82,6 +83,9 @@ func normalizeOpenAIResponsesSSEIdentity(body []byte, currentID string) ([]byte,
 		return body, currentID, nil
 	}
 	publicID := strings.TrimSpace(currentID)
+	if !strings.HasPrefix(publicID, "resp_") {
+		publicID = ""
+	}
 	if publicID == "" {
 		publicID = id
 		if !strings.HasPrefix(publicID, "resp_") {
@@ -99,15 +103,26 @@ func normalizeOpenAIResponsesSSEIdentity(body []byte, currentID string) ([]byte,
 }
 
 func accountUsesStatelessOpenAIResponsesHistory(account *Account) bool {
-	if account == nil || !account.UsesNativeCNResponses() {
+	if account == nil {
 		return false
 	}
-	switch account.Platform {
-	case PlatformDeepseek, PlatformKimi, PlatformMiniMax:
+	if account.UsesNativeCNResponses() {
+		switch account.Platform {
+		case PlatformDeepseek, PlatformKimi, PlatformMiniMax:
+			return true
+		}
+	}
+	// A custom OpenAI-compatible Responses endpoint normally has no durable
+	// response store. Expand previous_response_id locally while preserving the
+	// official OpenAI stateful path and explicit WebSocket transport.
+	if account.Platform == PlatformOpenAI && account.Type == AccountTypeAPIKey &&
+		openai_compat.ResolveResponsesSupport(account.Extra) != openai_compat.ResponsesSupportNo &&
+		strings.TrimSpace(account.GetOpenAIBaseURL()) != "" &&
+		!isOfficialOpenAIModelsBaseURL(account.GetOpenAIBaseURL()) &&
+		!account.IsOpenAIResponsesWebSocketV2Enabled() {
 		return true
-	default:
-		return false
 	}
+	return false
 }
 
 func adaptOpenAIResponsesClientTools(body []byte) ([]byte, apicompat.ResponsesClientToolMapping, error) {
@@ -333,19 +348,27 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 			return nil, fmt.Errorf("parse stateless Responses compatibility request: %w", err)
 		}
 		if strings.TrimSpace(compatReq.PreviousResponseID) != "" {
+			historyPrepared := true
 			if err := s.prepareOpenAIResponsesCompatContinuation(&compatReq); err != nil {
-				return nil, err
+				if !errors.Is(err, errOpenAIResponsesCompatHistoryUnavailable) {
+					return nil, err
+				}
+				// Preserve a stale/cross-instance id for the upstream's structured
+				// error when the local compatibility cache has no entry.
+				historyPrepared = false
 			}
-			compatHistoryInput = append(json.RawMessage(nil), compatReq.Input...)
-			prepared, err := sjson.SetBytes(body, "input", compatReq.Input)
-			if err != nil {
-				return nil, fmt.Errorf("set expanded stateless Responses input: %w", err)
+			if historyPrepared {
+				compatHistoryInput = append(json.RawMessage(nil), compatReq.Input...)
+				prepared, err := sjson.SetBytes(body, "input", compatReq.Input)
+				if err != nil {
+					return nil, fmt.Errorf("set expanded stateless Responses input: %w", err)
+				}
+				prepared, err = sjson.DeleteBytes(prepared, "previous_response_id")
+				if err != nil {
+					return nil, fmt.Errorf("remove stateless Responses previous_response_id: %w", err)
+				}
+				body = prepared
 			}
-			prepared, err = sjson.DeleteBytes(prepared, "previous_response_id")
-			if err != nil {
-				return nil, fmt.Errorf("remove stateless Responses previous_response_id: %w", err)
-			}
-			body = prepared
 		} else {
 			compatHistoryInput = append(json.RawMessage(nil), compatReq.Input...)
 		}

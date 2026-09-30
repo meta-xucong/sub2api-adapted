@@ -48,7 +48,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 	return s.handleStreamingResponseWithReasoning(ctx, resp, c, account, startTime, originalModel, mappedModel, "")
 }
 
-func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, startTime time.Time, originalModel, mappedModel, reasoningEffort string) (*openaiStreamingResult, error) {
+func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, startTime time.Time, originalModel, mappedModel, reasoningEffort string, compatHistoryInput ...json.RawMessage) (*openaiStreamingResult, error) {
 	if resp != nil && resp.Body != nil {
 		resp.Body = newOpenAIResponsesLifecycleNormalizer(resp.Body)
 	}
@@ -163,6 +163,9 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 	usage := &OpenAIUsage{}
 	imageCounter := newOpenAIImageOutputCounter()
 	responseID := ""
+	compatInput := firstCompatInput(compatHistoryInput)
+	publicResponsesIdentity := isOpenAIResponsesEndpointPath(c) && !isOpenAIResponsesCompactPath(c)
+	var compatResponse *apicompat.ResponsesResponse
 	var firstOutputScanGuard atomic.Bool
 	firstOutputScanGuard.Store(stageFirstOutput)
 	scanner := bufio.NewScanner(resp.Body)
@@ -415,6 +418,10 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 		if sawFailedEvent {
 			return resultWithUsage(), fmt.Errorf("upstream response failed: %s", failedMessage)
 		}
+		if publicResponsesIdentity && compatResponse != nil {
+			apicompat.NormalizeResponsesResponseID(compatResponse)
+			s.rememberOpenAIResponsesCompatHistory(compatInput, compatResponse)
+		}
 		logOpenAISuccessMissingUsage(ctx, c, account, resp, usage, terminalEventType, clientDisconnected)
 		return resultWithUsage(), nil
 	}
@@ -654,6 +661,29 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 				data = string(reconciledData)
 				line = "data: " + data
 				eventType = effectiveOpenAISSEEventType(dataBytes, eventType)
+			}
+			if publicResponsesIdentity {
+				normalizedData, normalizedID, normalizeErr := normalizeOpenAIResponsesSSEIdentity(dataBytes, responseID)
+				if normalizeErr != nil {
+					streamEarlyErr = normalizeErr
+					return
+				}
+				if normalizedID != "" {
+					responseID = normalizedID
+				}
+				if !bytes.Equal(normalizedData, dataBytes) {
+					dataBytes = normalizedData
+					data = string(normalizedData)
+					line = "data: " + data
+					eventType = effectiveOpenAISSEEventType(dataBytes, eventType)
+				}
+				if eventType == "response.completed" || eventType == "response.done" {
+					var envelope apicompat.ResponsesStreamEvent
+					if err := json.Unmarshal(dataBytes, &envelope); err == nil && envelope.Response != nil {
+						responseCopy := *envelope.Response
+						compatResponse = &responseCopy
+					}
+				}
 			}
 			restoredData, restoreErr := restoreGrokResponsesClientToolPayload(c, dataBytes)
 			if restoreErr != nil {
@@ -1606,7 +1636,7 @@ func openAICacheCreationTokensFromUsage(value gjson.Result) int {
 	)
 }
 
-func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, originalModel, mappedModel string) (*openaiNonStreamingResult, error) {
+func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, originalModel, mappedModel string, compatHistoryInput ...json.RawMessage) (*openaiNonStreamingResult, error) {
 	body, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
 	if err != nil {
 		return nil, err
@@ -1615,6 +1645,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 	if observer == nil {
 		observer = beginUpstreamResponseModelObservation(c)
 	}
+	compatInput := firstCompatInput(compatHistoryInput)
 	if bodyHasSSEFraming(body) {
 		observeOpenAISSEBody(observer, string(body))
 	} else {
@@ -1625,7 +1656,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 	// Some OpenAI-compatible upstreams (including other sub2api instances)
 	// may return SSE even when stream=false was requested.
 	if isEventStreamResponse(resp.Header) {
-		return s.handleSSEToJSON(resp, c, account, body, originalModel, mappedModel)
+		return s.handleSSEToJSON(resp, c, account, body, originalModel, mappedModel, compatInput)
 	}
 	// bodyLooksLikeSSE is a line-level heuristic: real SSE framing requires
 	// "data:"/"event:" field names at the very start of a physical line. A
@@ -1641,7 +1672,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 	// positives on JSON responses that coincidentally contain "data:" or
 	// "event:" in their text content.
 	if account.Type == AccountTypeOAuth && bodyLooksLikeSSE {
-		return s.handleSSEToJSON(resp, c, account, body, originalModel, mappedModel)
+		return s.handleSSEToJSON(resp, c, account, body, originalModel, mappedModel, compatInput)
 	}
 	if account != nil && account.IsGrok() && isOpenAIResponsesCompactPath(c) {
 		body, err = convertGrokResponseToOpenAICompact(body)
@@ -1653,7 +1684,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 	usageValue, usageOK := extractOpenAIUsageFromJSONBytes(body)
 	if !usageOK {
 		if bodyLooksLikeSSE {
-			return s.handleSSEToJSON(resp, c, account, body, originalModel, mappedModel)
+			return s.handleSSEToJSON(resp, c, account, body, originalModel, mappedModel, compatInput)
 		}
 		return nil, fmt.Errorf("parse response: invalid json response")
 	}
@@ -1677,6 +1708,13 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 		return nil, fmt.Errorf("restore OpenAI namespace response: %w", err)
 	}
 	body = restoreCodexToolNamesFromContext(c, body)
+	publicResponsesIdentity := isOpenAIResponsesEndpointPath(c) && !isOpenAIResponsesCompactPath(c)
+	if publicResponsesIdentity {
+		body, _, err = normalizeOpenAIResponsesJSONIdentity(body)
+		if err != nil {
+			return nil, err
+		}
+	}
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	// Codex 协议要求 /responses/compact JSON 响应携带 x-codex-turn-state
 	// （codex-api/src/endpoint/compact.rs 从响应头捕获），显式回传。
@@ -1691,6 +1729,12 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 
 	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, body) {
 		c.Data(resp.StatusCode, contentType, body)
+	}
+	if publicResponsesIdentity {
+		var responsesResp apicompat.ResponsesResponse
+		if err := json.Unmarshal(body, &responsesResp); err == nil {
+			s.rememberOpenAIResponsesCompatHistory(compatInput, &responsesResp)
+		}
 	}
 
 	return &openaiNonStreamingResult{
@@ -1724,7 +1768,7 @@ func bodyHasSSEFraming(body []byte) bool {
 	return false
 }
 
-func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Context, account *Account, body []byte, originalModel, mappedModel string) (*openaiNonStreamingResult, error) {
+func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Context, account *Account, body []byte, originalModel, mappedModel string, compatHistoryInput ...json.RawMessage) (*openaiNonStreamingResult, error) {
 	bodyText := string(body)
 	terminalType, terminalPayload, terminalOK := extractOpenAISSETerminalEvent(bodyText)
 	if terminalOK && (terminalType == "response.failed" || terminalType == "error") {
@@ -1784,6 +1828,14 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 		}
 		body = []byte(bodyText)
 	}
+	publicResponsesIdentity := isOpenAIResponsesEndpointPath(c) && !isOpenAIResponsesCompactPath(c)
+	if publicResponsesIdentity && ok {
+		var normalizeErr error
+		body, _, normalizeErr = normalizeOpenAIResponsesJSONIdentity(body)
+		if normalizeErr != nil {
+			return nil, normalizeErr
+		}
+	}
 
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	logOpenAISuccessMissingUsage(c.Request.Context(), c, account, resp, usage, terminalType, false)
@@ -1798,6 +1850,12 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 	}
 	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, body) {
 		c.Data(resp.StatusCode, contentType, body)
+	}
+	if publicResponsesIdentity && ok {
+		var responsesResp apicompat.ResponsesResponse
+		if err := json.Unmarshal(body, &responsesResp); err == nil {
+			s.rememberOpenAIResponsesCompatHistory(firstCompatInput(compatHistoryInput), &responsesResp)
+		}
 	}
 
 	return &openaiNonStreamingResult{

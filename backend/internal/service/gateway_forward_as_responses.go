@@ -45,8 +45,24 @@ func (s *GatewayService) ForwardAsResponses(
 		body = normalizedBody
 	}
 
+	// Expand compatibility history before lowering client tools. Anthropic
+	// platform accounts are stateless from the Responses client's perspective;
+	// the gateway must materialize previous_response_id into Messages history.
+	var originalReq apicompat.ResponsesRequest
+	if err := json.Unmarshal(body, &originalReq); err != nil {
+		return nil, fmt.Errorf("parse responses request: %w", err)
+	}
+	if err := prepareOpenAIResponsesCompatContinuationWithStore(&originalReq, s.cache, &s.openaiResponsesCompatHistory); err != nil {
+		writeResponsesError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return nil, err
+	}
+	preparedBody, err := json.Marshal(&originalReq)
+	if err != nil {
+		return nil, fmt.Errorf("marshal prepared Responses request: %w", err)
+	}
+
 	// 1. Lower Codex client-side tools to function tools understood by Anthropic.
-	adaptedBody, clientToolMapping, err := adaptResponsesClientToolsForAnthropic(body)
+	adaptedBody, clientToolMapping, err := adaptResponsesClientToolsForAnthropic(preparedBody)
 	if err != nil {
 		return nil, fmt.Errorf("adapt responses client tools: %w", err)
 	}
@@ -58,6 +74,7 @@ func (s *GatewayService) ForwardAsResponses(
 	}
 	originalModel := responsesReq.Model
 	clientStream := responsesReq.Stream
+	compatInput := append(json.RawMessage(nil), responsesReq.Input...)
 
 	// 3. Convert Responses → Anthropic
 	// Resolve the final upstream model before model-specific conversion.
@@ -198,9 +215,9 @@ func (s *GatewayService) ForwardAsResponses(
 	var result *ForwardResult
 	var handleErr error
 	if clientStream {
-		result, handleErr = s.handleResponsesStreamingResponse(resp, c, originalModel, mappedModel, reasoningEffort, startTime, clientToolMapping)
+		result, handleErr = s.handleResponsesStreamingResponse(resp, c, originalModel, mappedModel, reasoningEffort, startTime, clientToolMapping, compatInput)
 	} else {
-		result, handleErr = s.handleResponsesBufferedStreamingResponse(resp, c, originalModel, mappedModel, reasoningEffort, startTime, clientToolMapping)
+		result, handleErr = s.handleResponsesBufferedStreamingResponse(resp, c, originalModel, mappedModel, reasoningEffort, startTime, clientToolMapping, compatInput)
 	}
 
 	return result, handleErr
@@ -375,6 +392,7 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 	reasoningEffort *string,
 	startTime time.Time,
 	clientToolMapping apicompat.ResponsesClientToolMapping,
+	compatInput ...json.RawMessage,
 ) (*ForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
 
@@ -528,6 +546,7 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 	} else {
 		c.JSON(http.StatusOK, responsesResp)
 	}
+	rememberOpenAIResponsesCompatHistoryWithStore(firstCompatInput(compatInput), responsesResp, s.cache, &s.openaiResponsesCompatHistory)
 
 	return &ForwardResult{
 		RequestID:       requestID,
@@ -551,6 +570,7 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 	reasoningEffort *string,
 	startTime time.Time,
 	clientToolMapping apicompat.ResponsesClientToolMapping,
+	compatInput ...json.RawMessage,
 ) (*ForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
 
@@ -572,6 +592,7 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 	firstChunk := true
 	var protocolErr error
 	messageStopSeen := false
+	compatInputRaw := firstCompatInput(compatInput)
 
 	scanner := bufio.NewScanner(resp.Body)
 	maxLineSize := defaultMaxLineSize
@@ -665,6 +686,7 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 			}
 			c.Writer.Flush()
 		}
+		rememberOpenAIResponsesCompatHistoryWithStore(compatInputRaw, apicompat.FinalAnthropicResponsesResponse(state), s.cache, &s.openaiResponsesCompatHistory)
 		return resultWithUsage(), nil
 	}
 
