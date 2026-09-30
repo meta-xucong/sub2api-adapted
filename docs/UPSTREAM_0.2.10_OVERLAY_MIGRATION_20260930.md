@@ -153,13 +153,14 @@ git merge-base --is-ancestor a60a29549 HEAD
 - 最新代码提交已推送 GitHub 分支。
 - `2be93ec9e0ec2a2888063dae78200c8969ffa7d1` 定向修复：native compact 独立 lane、映射模型健康 key、图片桥接 lifecycle、普通 Grok/Wokey/KIE 校验隔离；跨包回归退出码 0。
 - Wokey/KIE、compact、图片桥接、Smart Router 定向回归退出码均为 0；Wokey/KIE 用例使用 `-tags=unit` 执行。
+- 临时 PostgreSQL 16 容器：`241_smart_router_health_ledger.sql` 首次执行、重复执行、写入、容器重启后读取均通过；容器已删除。
 
 未通过/未完成：
 
 - 最终 HEAD 全仓测试退出码 1，但所有非 `internal/repository` 包通过；仅剩既有环境基线：`TestAliyunCaptchaVerifier_TransportError` 与 3 个 `backup_pg_dumper` 测试（Windows PATH 缺少 `sh`）。完整日志：`D:\AI\Temp\sub2api-full-test-p1-20260930.txt`；跨包目标回归退出码 0。
 - 独立最终审计尚未完成；
 - Wokey/KIE worker 已纳入主分支，但专项独立审计和真实 provider 证据仍未完成；
-- 临时 PostgreSQL/Redis 的最终重启恢复证据尚未生成；
+- Redis 跨进程证据已在前序提交测试包中通过；临时 PostgreSQL migration/restart/idempotency 复测通过，仍待将真实部署环境的数据库连接和正式 migration runner 复核纳入部署前验收。
 - aiself、404token 尚未部署和真实矩阵尚未执行。
 
 ## 8. 验收状态
