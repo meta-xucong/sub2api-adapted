@@ -77,6 +77,7 @@ type Config struct {
 	Ops                     OpsConfig                     `mapstructure:"ops"`
 	JWT                     JWTConfig                     `mapstructure:"jwt"`
 	Totp                    TotpConfig                    `mapstructure:"totp"`
+	Veyra                   VeyraConfig                   `mapstructure:"veyra"`
 	WebAuthn                WebAuthnConfig                `mapstructure:"webauthn"`
 	LinuxDo                 LinuxDoConnectConfig          `mapstructure:"linuxdo_connect"`
 	WeChat                  WeChatConnectConfig           `mapstructure:"wechat_connect"`
@@ -113,6 +114,15 @@ type Config struct {
 // SimpleModeConfig controls startup behavior in simple mode.
 type SimpleModeConfig struct {
 	AutoCreateDefaultGroups bool `mapstructure:"auto_create_default_groups" yaml:"auto_create_default_groups"`
+}
+
+// VeyraConfig controls the optional Alchemy/Veyra portal integration.
+type VeyraConfig struct {
+	Enabled               bool   `mapstructure:"enabled"`
+	PortalEnabled         bool   `mapstructure:"portal_enabled"`
+	AlchemyBaseURL        string `mapstructure:"alchemy_base_url"`
+	InternalToken         string `mapstructure:"internal_token"`
+	LoginTicketTTLSeconds int    `mapstructure:"login_ticket_ttl_seconds"`
 }
 
 // PluginConfig 控制管理员手动上传的本地进程插件。
@@ -976,6 +986,16 @@ const (
 
 // GatewayConfig API网关相关配置
 type GatewayConfig struct {
+	// UnifiedGatewayAdminUIEnabled exposes the isolated aggregate route catalog
+	// and pricing control plane. It is intentionally independent from runtime
+	// traffic so administrators can prepare a configuration before enabling it.
+	UnifiedGatewayAdminUIEnabled bool `mapstructure:"unified_gateway_admin_ui_enabled"`
+	// UnifiedGatewayRuntimeEnabled is the fail-closed production gate for the
+	// unified gateway runtime routes.
+	UnifiedGatewayRuntimeEnabled bool `mapstructure:"unified_gateway_runtime_enabled"`
+	// UnifiedGatewayAccessGroupID is the single API-key group allowed to use
+	// the isolated unified gateway. Zero keeps the runtime disabled.
+	UnifiedGatewayAccessGroupID int64 `mapstructure:"unified_gateway_access_group_id"`
 	// 等待上游响应头的超时时间（秒），0表示无超时
 	// 注意：这不影响流式数据传输，只控制等待响应头的时间
 	ResponseHeaderTimeout int `mapstructure:"response_header_timeout"`
@@ -1091,6 +1111,9 @@ type GatewayConfig struct {
 	ImageStreamKeepaliveInterval int `mapstructure:"image_stream_keepalive_interval"`
 	// ImageNonstreamKeepaliveInterval: 图片非流式 JSON keepalive 间隔（秒），0表示禁用
 	ImageNonstreamKeepaliveInterval int `mapstructure:"image_nonstream_keepalive_interval"`
+	// ImageUpstreamTimeoutSeconds bounds one unified-gateway image upstream
+	// attempt; zero disables the per-attempt deadline.
+	ImageUpstreamTimeoutSeconds int `mapstructure:"image_upstream_timeout_seconds"`
 	// MaxLineSize: 上游 SSE 单行最大字节数（0使用默认值）
 	MaxLineSize int `mapstructure:"max_line_size"`
 
@@ -2448,6 +2471,13 @@ func setDefaults() {
 	viper.SetDefault("idempotency.cleanup_interval_seconds", 60)
 	viper.SetDefault("idempotency.cleanup_batch_size", 500)
 
+	// Optional aiself/Veyra portal integration.
+	viper.SetDefault("veyra.enabled", false)
+	viper.SetDefault("veyra.portal_enabled", false)
+	viper.SetDefault("veyra.alchemy_base_url", "https://alchemy.aiself.vip")
+	viper.SetDefault("veyra.internal_token", "")
+	viper.SetDefault("veyra.login_ticket_ttl_seconds", 120)
+
 	// Gateway
 	viper.SetDefault("gateway.response_header_timeout", 600) // 600秒(10分钟)等待上游响应头，LLM高负载时可能排队较久
 	viper.SetDefault("gateway.openai_response_header_timeout", 0)
@@ -2509,6 +2539,9 @@ func setDefaults() {
 		"/chat/completions",
 	})
 	viper.SetDefault("gateway.openai_passthrough_allow_timeout_headers", false)
+	viper.SetDefault("gateway.unified_gateway_admin_ui_enabled", false)
+	viper.SetDefault("gateway.unified_gateway_runtime_enabled", false)
+	viper.SetDefault("gateway.unified_gateway_access_group_id", int64(0))
 	viper.SetDefault("gateway.openai_compact_model", "gpt-5.5")
 	viper.SetDefault("gateway.live.max_session_duration_seconds", 3600)
 	// OpenAI Responses WebSocket（默认开启；可通过 force_http 紧急回滚）
@@ -2618,6 +2651,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.image_stream_data_interval_timeout", 900)
 	viper.SetDefault("gateway.image_stream_keepalive_interval", 10)
 	viper.SetDefault("gateway.image_nonstream_keepalive_interval", 0)
+	viper.SetDefault("gateway.image_upstream_timeout_seconds", 180)
 	viper.SetDefault("gateway.max_line_size", 500*1024*1024)
 	viper.SetDefault("gateway.scheduling.sticky_session_max_waiting", 3)
 	viper.SetDefault("gateway.scheduling.sticky_session_wait_timeout", 120*time.Second)

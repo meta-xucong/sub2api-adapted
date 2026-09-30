@@ -1,0 +1,97 @@
+{
+  "source": "aiself read-only metadata probe",
+  "captured_at": "2026-09-19",
+  "credentials_included": false,
+  "accounts": [
+    {
+      "id": 105,
+      "name": "YeToken-平价",
+      "platform": "openai",
+      "type": "apikey",
+      "status": "active",
+      "schedulable": true,
+      "models": ["codex-auto-review", "gpt-5.5", "gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra"]
+    },
+    {
+      "id": 108,
+      "name": "YeToken-1K生图",
+      "platform": "openai",
+      "type": "apikey",
+      "status": "active",
+      "schedulable": true,
+      "models": ["gpt-image-2"]
+    },
+    {
+      "id": 121,
+      "name": "YeToken-guomo-text",
+      "platform": "openai",
+      "type": "apikey",
+      "status": "active",
+      "schedulable": true,
+      "models": ["deepseek-v4-flash-0731", "deepseek-v4-pro-0813", "glm-5.3", "glm-5.3-flash", "kimi-k3", "minimax-m3", "qwen3.8-max", "qwen3.8-flash", "hy4"]
+    },
+    {
+      "id": 123,
+      "name": "YeToken-claude-福利",
+      "platform": "anthropic",
+      "type": "apikey",
+      "status": "active",
+      "schedulable": true,
+      "models": ["claude-fable-5", "claude-fable-5-1", "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8", "claude-opus-5", "claude-sonnet-4-6", "claude-sonnet-5-原价"]
+    },
+    {
+      "id": 124,
+      "name": "YeToken-claude-特惠",
+      "platform": "anthropic",
+      "type": "apikey",
+      "status": "active",
+      "schedulable": true,
+      "models": ["claude-fable-5", "claude-fable-5-1", "claude-haiku-4-5-20251001", "claude-opus-4-5-20251101", "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8", "claude-opus-5", "claude-sonnet-4-5-20250929", "claude-sonnet-4-6", "claude-sonnet-5"]
+    },
+    {
+      "id": 125,
+      "name": "YeToken-claude-平价",
+      "platform": "anthropic",
+      "type": "apikey",
+      "status": "active",
+      "schedulable": true,
+      "models": ["claude-fable-5", "claude-fable-5-1", "claude-haiku-4-5-20251001", "claude-opus-4-5-20251101", "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8", "claude-opus-5", "claude-sonnet-4-5-20250929", "claude-sonnet-4-6", "claude-sonnet-5"]
+    },
+    {
+      "id": 126,
+      "name": "YeToken-claude-PRO",
+      "platform": "anthropic",
+      "type": "apikey",
+      "status": "active",
+      "schedulable": true,
+      "models": ["claude-fable-5", "claude-fable-5-1", "claude-haiku-4-5-20251001", "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8", "claude-opus-5", "claude-sonnet-4-6", "claude-sonnet-5"]
+    },
+    {
+      "id": 127,
+      "name": "YeToken-claude-无缓kiro",
+      "platform": "anthropic",
+      "type": "apikey",
+      "status": "active",
+      "schedulable": true,
+      "models": ["claude-fable-5", "claude-fable-5-1", "claude-haiku-4-5-20251001", "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8", "claude-opus-5", "claude-sonnet-4-6", "claude-sonnet-5"]
+    },
+    {
+      "id": 128,
+      "name": "流云AI-ccMax-kiro",
+      "platform": "anthropic",
+      "type": "apikey",
+      "status": "active",
+      "schedulable": true,
+      "models": ["claude-3-5-haiku-20241022", "claude-3-5-sonnet-20240620", "claude-3-5-sonnet-20241022", "claude-3-7-sonnet-20250219", "claude-fable-5", "claude-fable-5-1", "claude-haiku-4-5", "claude-haiku-4-5-20251001", "claude-opus-4-1-20250805", "claude-opus-4-20250514", "claude-opus-4-5", "claude-opus-4-5-20251101", "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8", "claude-opus-5", "claude-sonnet-4-20250514", "claude-sonnet-4-5", "claude-sonnet-4-5-20250929", "claude-sonnet-4-6", "claude-sonnet-5"]
+    },
+    {
+      "id": 107,
+      "name": "YeToken-兜底",
+      "platform": "openai",
+      "type": "apikey",
+      "status": "error",
+      "schedulable": false,
+      "models": ["gpt-5.4", "gpt-5.4-mini", "gpt-5.5"]
+    }
+  ]
+}

@@ -43,6 +43,9 @@ func RegisterAdminRoutes(
 		// 分组管理
 		registerGroupRoutes(admin, h)
 
+		// 统一网关聚合管理（运行时 gate 由配置独立控制）
+		registerUnifiedGatewayAdminRoutes(admin, h, stepUpAuth)
+
 		// 账号管理
 		registerAccountRoutes(admin, h, stepUpAuth)
 
@@ -130,6 +133,32 @@ func RegisterAdminRoutes(
 
 		// 操作审计日志
 		registerAuditLogRoutes(admin, h, stepUpAuth)
+	}
+}
+
+func registerUnifiedGatewayAdminRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpAuth middleware.StepUpAuthMiddleware) {
+	group := admin.Group("/unified-gateway")
+	{
+		group.GET("/meta", h.Admin.UnifiedGateway.Meta)
+		group.GET("/options", h.Admin.UnifiedGateway.ListOptions)
+		group.GET("/model-candidates", h.Admin.UnifiedGateway.ListModelCandidates)
+		group.GET("/configs", h.Admin.UnifiedGateway.ListConfigs)
+		group.GET("/configs/:id", h.Admin.UnifiedGateway.GetConfig)
+		group.GET("/configs/:id/revisions", h.Admin.UnifiedGateway.ListRevisions)
+		group.GET("/drafts/:id", h.Admin.UnifiedGateway.GetDraft)
+		group.GET("/snapshots", h.Admin.UnifiedGateway.ListSnapshots)
+
+		group.POST("/drafts", h.Admin.UnifiedGateway.CreateDraft)
+		group.POST("/configs/:id/draft", h.Admin.UnifiedGateway.CreateDraftFromConfig)
+		group.PUT("/drafts/:id", h.Admin.UnifiedGateway.UpdateDraft)
+		group.POST("/drafts/:id/validate", h.Admin.UnifiedGateway.ValidateDraft)
+		group.POST("/drafts/:id/preview", h.Admin.UnifiedGateway.PreviewDraft)
+		group.POST("/drafts/:id/pricing-import/preview", h.Admin.UnifiedGateway.PricingImportPreview)
+		group.POST("/drafts/:id/pricing-import/apply", h.Admin.UnifiedGateway.PricingImportApply)
+		group.POST("/drafts/:id/publish", gin.HandlerFunc(stepUpAuth), h.Admin.UnifiedGateway.PublishDraft)
+		group.POST("/configs/:id/disable", gin.HandlerFunc(stepUpAuth), h.Admin.UnifiedGateway.DisableConfig)
+		group.POST("/configs/:id/revisions/:revision/restore", gin.HandlerFunc(stepUpAuth), h.Admin.UnifiedGateway.RestoreConfig)
+		group.POST("/bindings/:binding_id/probe", gin.HandlerFunc(stepUpAuth), h.Admin.UnifiedGateway.ProbeBinding)
 	}
 }
 

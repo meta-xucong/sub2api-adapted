@@ -43,6 +43,7 @@ type AdminHandlers struct {
 	Affiliate              *admin.AffiliateHandler
 	Compliance             *admin.ComplianceHandler
 	AuditLog               *admin.AuditLogHandler
+	UnifiedGateway         *admin.UnifiedGatewayHandler
 }
 
 // Handlers contains all HTTP handlers
@@ -68,6 +69,9 @@ type Handlers struct {
 	ModelPlaza       *ModelPlazaHandler
 	AsyncImage       *AsyncImageHandler
 	BatchImage       *BatchImageHandler
+	// UnifiedGatewayRuntime is isolated under /unified/v1 and never replaces
+	// the legacy gateway handlers.
+	UnifiedGatewayRuntime *UnifiedGatewayRuntimeHandler
 }
 
 // BuildInfo contains build-time information

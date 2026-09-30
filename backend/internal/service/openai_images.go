@@ -515,7 +515,21 @@ func validateCompatibleImagesModel(model string) error {
 	if isGeminiCompatibleImageModel(model) {
 		return nil
 	}
+	// Volcengine Ark exposes Seedream through the OpenAI-compatible Images
+	// surface. Keep this provider-specific acceptance in the shared parser so
+	// unified-gateway requests are validated after their public alias is
+	// rewritten to the bound upstream model.
+	if isVolcengineArkImageModel(model) {
+		return nil
+	}
 	return validateOpenAIImagesModel(model)
+}
+
+func validateCompatibleImagesModelForAccount(account *Account, model string) error {
+	if isVolcengineArkImageModel(model) {
+		return validateOpenAIImagesModelForAccount(account, model)
+	}
+	return validateCompatibleImagesModel(model)
 }
 
 // RequiredCapabilityForModel also applies the API-key-only fence when channel
@@ -630,11 +644,11 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 	if mapped := strings.TrimSpace(channelMappedModel); mapped != "" {
 		requestModel = mapped
 	}
-	if err := validateCompatibleImagesModel(requestModel); err != nil {
+	if err := validateCompatibleImagesModelForAccount(account, requestModel); err != nil {
 		return nil, err
 	}
 	upstreamModel := account.GetMappedModel(requestModel)
-	if err := validateCompatibleImagesModel(upstreamModel); err != nil {
+	if err := validateCompatibleImagesModelForAccount(account, upstreamModel); err != nil {
 		return nil, err
 	}
 	SetOpsUpstreamModel(c, upstreamModel)
@@ -650,6 +664,19 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 	if err != nil {
 		return nil, err
 	}
+	upstreamParsed := *parsed
+	upstreamParsed.Model = upstreamModel
+	if adaptedBody, adaptedContentType, adaptedEndpoint, adapted, adaptErr := adaptVolcengineArkImagesToGeneration(account, &upstreamParsed); adaptErr != nil {
+		return nil, adaptErr
+	} else if adapted {
+		forwardBody = adaptedBody
+		forwardContentType = adaptedContentType
+		upstreamParsed.Endpoint = adaptedEndpoint
+	}
+	forwardBody, forwardContentType, err = sanitizeVolcengineArkImagesRequest(account, forwardBody, forwardContentType, &upstreamParsed)
+	if err != nil {
+		return nil, err
+	}
 	// 生图是长耗时、上游侧已产生实际成本的操作：客户端中途断开不应连带取消上游请求。
 	// detachStreamUpstreamContext 在非流式时原样返回请求 context，于是客户端一断开
 	// 就把已经在出图的上游调用打断成 context canceled，网关记 502、不扣费，而上游那边
@@ -662,7 +689,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 	if err != nil {
 		return nil, err
 	}
-	upstreamReq, err := s.buildOpenAIImagesRequest(upstreamCtx, c, account, forwardBody, forwardContentType, token, parsed.Endpoint)
+	upstreamReq, err := s.buildOpenAIImagesRequest(upstreamCtx, c, account, forwardBody, forwardContentType, token, upstreamParsed.Endpoint)
 	if err != nil {
 		return nil, err
 	}
@@ -825,6 +852,9 @@ func (s *OpenAIGatewayService) buildOpenAIImagesRequest(
 		targetURL = openAIImagesEditsURL
 	}
 	baseURL := account.GetOpenAIBaseURL()
+	if overrideBaseURL := volcengineArkImagesBaseURL(account); overrideBaseURL != "" {
+		baseURL = overrideBaseURL
+	}
 	if baseURL != "" {
 		validatedURL, err := s.validateUpstreamBaseURL(baseURL)
 		if err != nil {

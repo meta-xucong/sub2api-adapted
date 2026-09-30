@@ -514,6 +514,18 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/admin/unified-gateway',
+    name: 'AdminUnifiedGateway',
+    component: () => import('@/views/admin/UnifiedGatewayView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Unified Gateway',
+      titleKey: 'admin.unifiedGateway.title',
+      descriptionKey: 'admin.unifiedGateway.description'
+    }
+  },
+  {
     path: '/admin/accounts',
     name: 'AdminAccounts',
     component: () => import('@/views/admin/AccountsView.vue'),

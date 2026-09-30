@@ -106,6 +106,7 @@ func provideCleanup(
 	idempotencyCleanup *service.IdempotencyCleanupService,
 	batchImageCleanup *service.BatchImageCleanupService,
 	batchImageWorker *service.BatchImageWorkerRuntime,
+	unifiedGatewayRecovery *service.UnifiedGatewayRecoveryRuntime,
 	pricing *service.PricingService,
 	emailQueue *service.EmailQueueService,
 	billingCache *service.BillingCacheService,
@@ -254,6 +255,12 @@ func provideCleanup(
 			{"BatchImageWorkerRuntime", func() error {
 				if batchImageWorker != nil {
 					batchImageWorker.Stop()
+				}
+				return nil
+			}},
+			{"UnifiedGatewayRecoveryRuntime", func() error {
+				if unifiedGatewayRecovery != nil {
+					unifiedGatewayRecovery.Stop()
 				}
 				return nil
 			}},
