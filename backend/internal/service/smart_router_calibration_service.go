@@ -17,7 +17,6 @@ import (
 	smartrouter "github.com/Wei-Shaw/sub2api/internal/smartrouter/core"
 	"github.com/gin-gonic/gin"
 	"github.com/robfig/cron/v3"
-	"github.com/tidwall/gjson"
 )
 
 // SmartRouterCalibrationService owns the one daily, low-volume calibration
@@ -322,9 +321,14 @@ func (s *OpenAIGatewayService) runSmartRouterTextProbe(ctx context.Context, acco
 		path = "/v1/chat/completions"
 		payload = map[string]any{"model": model, "messages": []map[string]string{{"role": "user", "content": "Reply with OK."}}, "max_tokens": 1, "stream": false}
 	} else {
-		payload = map[string]any{"model": model, "input": "Reply with OK.", "max_output_tokens": 1, "stream": false}
 		if compact {
-			path = "/v1/responses/compact"
+			// Native remote-compaction v2 is a streaming /responses request with
+			// a compaction_trigger item. Keep the calibration request identical
+			// to the current Codex contract; the legacy unary endpoint is retired
+			// on the official upstream and must not define the compact health lane.
+			payload = createOpenAICompactProbePayload(model, account.IsOpenAIOAuthLike())
+		} else {
+			payload = map[string]any{"model": model, "input": "Reply with OK.", "max_output_tokens": 1, "stream": false}
 		}
 	}
 	body, err := json.Marshal(payload)
@@ -370,18 +374,7 @@ func smartRouterProbeStatusCode(err error) int {
 }
 
 func smartRouterCompactResponseContainsItem(body []byte) bool {
-	if len(body) == 0 || !gjson.ValidBytes(body) {
-		return false
-	}
-	if strings.TrimSpace(gjson.GetBytes(body, "compaction.encrypted_content").String()) != "" {
-		return true
-	}
-	for _, item := range gjson.GetBytes(body, "output").Array() {
-		if strings.Contains(item.Get("type").String(), "compaction") && strings.TrimSpace(item.Get("encrypted_content").String()) != "" {
-			return true
-		}
-	}
-	return false
+	return openAICompactProbeFoundCompactionItem(body)
 }
 
 func (s *OpenAIGatewayService) reportSmartRouterTextCalibrationResult(account *Account, capability smartrouter.Capability, model string, result *OpenAIForwardResult, err error, latencyMs int64) {

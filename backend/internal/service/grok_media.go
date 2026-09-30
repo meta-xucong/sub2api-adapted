@@ -680,7 +680,7 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 	if err != nil {
 		return nil, err
 	}
-	if endpoint == GrokMediaEndpointVideosGenerations {
+	if shouldValidateGrokVideoGenerationRequest(account, endpoint) {
 		if err := ValidateGrokVideoGenerationRequest(contentType, body); err != nil {
 			return nil, err
 		}
@@ -860,6 +860,13 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 		VideoResolution:      usage.VideoResolution,
 		VideoDurationSeconds: usage.VideoDurationSeconds,
 	}, nil
+}
+
+func shouldValidateGrokVideoGenerationRequest(account *Account, endpoint GrokMediaEndpoint) bool {
+	if endpoint != GrokMediaEndpointVideosGenerations || account == nil {
+		return false
+	}
+	return account.UsesWokeyVideoMultipart() || account.UsesKIEJobsVideoAPI()
 }
 
 func (s *OpenAIGatewayService) forwardGrokMediaVideoContent(

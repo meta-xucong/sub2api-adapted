@@ -104,12 +104,6 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 	}
 
 	contentType := c.GetHeader("Content-Type")
-	if endpoint == service.GrokMediaEndpointVideosGenerations {
-		if err := service.ValidateGrokVideoGenerationRequest(contentType, body); err != nil {
-			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", err.Error())
-			return
-		}
-	}
 	requestInfo := service.ParseGrokMediaRequest(contentType, body)
 	if endpoint == service.SeedanceEndpointCreate {
 		requestInfo, err = service.ParseSeedanceRequest(body)

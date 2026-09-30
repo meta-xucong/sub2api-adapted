@@ -131,8 +131,8 @@ func TestSmartRouterImageHealthUsesDedicatedCapability(t *testing.T) {
 	if got := ledger.events[0].Key.Capability; got != smartrouter.CapabilityImageGeneration {
 		t.Fatalf("image capability = %q, want %q", got, smartrouter.CapabilityImageGeneration)
 	}
-	if ledger.events[0].Key.Model != "gpt-image" {
-		t.Fatalf("image model family = %q, want gpt-image", ledger.events[0].Key.Model)
+	if ledger.events[0].Key.Model != "gpt-image-2" {
+		t.Fatalf("image model key = %q, want gpt-image-2", ledger.events[0].Key.Model)
 	}
 }
 
@@ -240,6 +240,16 @@ func TestSmartRouterCalibrationSkipsUnimplementedImageProbes(t *testing.T) {
 		if probe.Capability == smartrouter.CapabilityImageGeneration || probe.Capability == smartrouter.CapabilityImageEdit {
 			t.Fatalf("paid image probe leaked into daily text calibration: %#v", probe)
 		}
+	}
+}
+
+func TestSmartRouterNativeRemoteCompactionUsesCompactLane(t *testing.T) {
+	capability := smartRouterRouteCapability(OpenAIAccountScheduleRequest{
+		RequiredCapability: OpenAIEndpointCapabilityResponses,
+		RequireCompact:     true,
+	})
+	if capability != smartrouter.CapabilityResponsesCompact {
+		t.Fatalf("native remote-compaction capability = %q, want %q", capability, smartrouter.CapabilityResponsesCompact)
 	}
 }
 

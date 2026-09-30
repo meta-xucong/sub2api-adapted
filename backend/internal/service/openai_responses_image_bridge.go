@@ -432,21 +432,34 @@ func writeResponsesImageBridgeStream(c *gin.Context, responseID string, created 
 		flusher.Flush()
 		return nil
 	}
-	if err := writeEvent(map[string]any{
+	sequenceNumber := 0
+	writeSequencedEvent := func(event map[string]any) error {
+		event["sequence_number"] = sequenceNumber
+		sequenceNumber++
+		return writeEvent(event)
+	}
+	if err := writeSequencedEvent(map[string]any{
 		"type":     "response.created",
 		"response": map[string]any{"id": responseID, "object": "response", "status": "in_progress", "created_at": created, "output": []any{}},
 	}); err != nil {
 		return err
 	}
+	if err := writeSequencedEvent(map[string]any{
+		"type":     "response.in_progress",
+		"response": map[string]any{"id": responseID, "object": "response", "status": "in_progress", "created_at": created, "output": []any{}},
+	}); err != nil {
+		return err
+	}
 	for index, item := range output {
-		if err := writeEvent(map[string]any{"type": "response.output_item.added", "output_index": index, "item": item}); err != nil {
+		if err := writeSequencedEvent(map[string]any{"type": "response.output_item.added", "output_index": index, "item": item}); err != nil {
 			return err
 		}
-		if err := writeEvent(map[string]any{"type": "response.output_item.done", "output_index": index, "item": item}); err != nil {
+		if err := writeSequencedEvent(map[string]any{"type": "response.output_item.done", "output_index": index, "item": item}); err != nil {
 			return err
 		}
 	}
-	if err := writeEvent(map[string]any{"type": "response.completed", "response": completed}); err != nil {
+	completedEvent := map[string]any{"type": "response.completed", "response": completed}
+	if err := writeSequencedEvent(completedEvent); err != nil {
 		return err
 	}
 	n, err := io.WriteString(c.Writer, "data: [DONE]\n\n")

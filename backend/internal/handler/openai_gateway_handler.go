@@ -642,7 +642,10 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	c.Request = c.Request.WithContext(service.WithOpenAIGuardianParentAffinity(
 		c.Request.Context(), c, sessionHashBody, reqModel,
 	))
-	requireCompact := legacyCompact
+	// Native remote-compaction v2 is physically carried on /v1/responses, but
+	// it must still select/report the dedicated compact capability lane. The
+	// flag is also retained for legacy /responses/compact requests.
+	requireCompact := nativeV2 || legacyCompact
 
 	maxAccountSwitches := h.maxAccountSwitches
 	switchCount := 0
@@ -832,9 +835,11 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, err != nil, cyberBlockBodyHTTP, clientRequestedUsageFields(c, channelMapping, reqModel, ""), service.HashUsageRequestPayload(body))
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
 		if responsesImageBridge {
-			h.gatewayService.ReportSmartRouterImageResult(account, reqModel, result, err, forwardDurationMs)
+			h.gatewayService.ReportSmartRouterImageResult(account, responsesImageParsed.Model, result, err, forwardDurationMs)
+		} else if requireCompact {
+			h.gatewayService.ReportSmartRouterCompactResult(account, forwardModel, result, err, forwardDurationMs)
 		} else {
-			h.gatewayService.ReportSmartRouterResponsesResult(account, reqModel, result, err, forwardDurationMs)
+			h.gatewayService.ReportSmartRouterResponsesResult(account, forwardModel, result, err, forwardDurationMs)
 		}
 		upstreamLatencyMs, _ := getContextInt64(c, service.OpsUpstreamLatencyMsKey)
 		responseLatencyMs := forwardDurationMs

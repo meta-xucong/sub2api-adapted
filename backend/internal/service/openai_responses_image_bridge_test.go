@@ -84,8 +84,18 @@ func TestWriteResponsesImageBridgeResponse_Streaming(t *testing.T) {
 	require.NoError(t, writeResponsesImageBridgeResponse(c, requestBody, imageBody))
 	require.Equal(t, http.StatusOK, recorder.Code)
 	require.Contains(t, recorder.Header().Get("Content-Type"), "text/event-stream")
+	require.Contains(t, recorder.Body.String(), `"type":"response.in_progress"`)
 	require.Contains(t, recorder.Body.String(), "response.output_item.done")
 	require.Contains(t, recorder.Body.String(), "response.completed")
+	sequenceNumbers := []int{}
+	for _, frame := range strings.Split(recorder.Body.String(), "\n\n") {
+		line := strings.TrimSpace(strings.TrimPrefix(frame, "data: "))
+		if line == "" || line == "[DONE]" {
+			continue
+		}
+		sequenceNumbers = append(sequenceNumbers, int(gjson.Get(line, "sequence_number").Int()))
+	}
+	require.Equal(t, []int{0, 1, 2, 3, 4}, sequenceNumbers)
 	require.True(t, strings.HasSuffix(recorder.Body.String(), "data: [DONE]\n\n"))
 }
 

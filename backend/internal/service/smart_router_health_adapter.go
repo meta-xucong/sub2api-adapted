@@ -117,6 +117,13 @@ func (s *OpenAIGatewayService) ReportSmartRouterResponsesResult(account *Account
 	s.reportSmartRouterTextResult(account, smartrouter.CapabilityResponses, model, result, err, latencyMs, "production")
 }
 
+// ReportSmartRouterCompactResult keeps native remote-compaction v2 health
+// separate from ordinary Responses health. The request still uses /responses,
+// but its scheduler contract is the compact capability lane.
+func (s *OpenAIGatewayService) ReportSmartRouterCompactResult(account *Account, model string, result *OpenAIForwardResult, err error, latencyMs int64) {
+	s.reportSmartRouterTextResult(account, smartrouter.CapabilityResponsesCompact, model, result, err, latencyMs, "production")
+}
+
 // ReportSmartRouterImageResult keeps image health independent from text and
 // Responses health. A failed Images attempt must not quarantine a text lane.
 func (s *OpenAIGatewayService) ReportSmartRouterImageResult(account *Account, model string, result *OpenAIForwardResult, err error, latencyMs int64) {

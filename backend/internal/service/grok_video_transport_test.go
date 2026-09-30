@@ -51,3 +51,24 @@ func TestKIEJobsMediaEndpointGateIsNegativeForUnsupportedRoutes(t *testing.T) {
 		t.Fatal("KIE jobs account must accept status polling")
 	}
 }
+
+func TestGrokVideoValidationIsScopedToNativeTransport(t *testing.T) {
+	ordinary := &Account{Platform: PlatformGrok, Type: AccountTypeAPIKey, Credentials: map[string]any{
+		"base_url": "https://api.x.ai/v1",
+	}}
+	wokey := &Account{Platform: PlatformGrok, Type: AccountTypeAPIKey, Credentials: map[string]any{
+		"base_url": "https://api.wokey.ai/v1",
+	}}
+	kie := &Account{Platform: PlatformGrok, Type: AccountTypeAPIKey, Credentials: map[string]any{
+		"base_url": "https://api.kie.ai",
+	}}
+	for name, account := range map[string]*Account{"ordinary": ordinary, "wokey": wokey, "kie": kie} {
+		t.Run(name, func(t *testing.T) {
+			got := shouldValidateGrokVideoGenerationRequest(account, GrokMediaEndpointVideosGenerations)
+			want := name != "ordinary"
+			if got != want {
+				t.Fatalf("native validation = %v, want %v", got, want)
+			}
+		})
+	}
+}

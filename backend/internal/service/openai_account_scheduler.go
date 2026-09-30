@@ -88,8 +88,9 @@ type OpenAIAccountScheduleRequest struct {
 	RequiredTransport       OpenAIUpstreamTransport
 	RequiredCapability      OpenAIEndpointCapability
 	RequiredImageCapability OpenAIImagesCapability
-	// RequireCompact is only for legacy /responses/compact capability filtering
-	// and compact_model_mapping; native remote compaction v2 leaves it false.
+	// RequireCompact selects compact capability filtering and
+	// compact_model_mapping for both legacy /responses/compact and native
+	// remote-compaction v2 requests.
 	RequireCompact bool
 	ExcludedIDs    map[int64]struct{}
 }
