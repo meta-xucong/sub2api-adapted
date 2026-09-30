@@ -27,6 +27,19 @@ import (
 
 const openAIResponsesClientToolMappingContextKey = "openai_responses_client_tool_mapping"
 
+func isOpenAIResponsesEndpointPath(c *gin.Context) bool {
+	if c == nil || c.Request == nil || c.Request.URL == nil {
+		return false
+	}
+	path := strings.TrimRight(strings.TrimSpace(c.Request.URL.Path), "/")
+	idx := strings.LastIndex(path, "/responses")
+	if idx < 0 {
+		return false
+	}
+	suffix := path[idx+len("/responses"):]
+	return suffix == "" || strings.HasPrefix(suffix, "/")
+}
+
 func hasOpenAIResponsesClientToolMapping(mapping apicompat.ResponsesClientToolMapping) bool {
 	return len(mapping.CustomTools) > 0 || mapping.ToolSearch || len(mapping.NamespaceTools) > 0
 }
@@ -1854,6 +1867,12 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	originalModel string,
 	mappedModel string,
 ) (*openaiStreamingResultPassthrough, error) {
+	// The passthrough route handles both Chat Completions and Responses SSE.
+	// Only the Responses endpoint may receive the lifecycle repair; applying it
+	// to Chat chunks would mix two different wire contracts.
+	if isOpenAIResponsesEndpointPath(c) && resp != nil && resp.Body != nil {
+		resp.Body = newOpenAIResponsesLifecycleNormalizer(resp.Body)
+	}
 	observer := upstreamResponseModelObserverFromContext(c)
 	if observer == nil {
 		observer = beginUpstreamResponseModelObservation(c)
@@ -1897,6 +1916,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	responseFailedPending := false
 	var bareErrorPayload []byte
 	bareErrorAccountSideEffectsPending := false
+	responseItemIDReconciler := apicompat.NewResponsesStreamItemIDReconciler()
 	upstreamRequestID := strings.TrimSpace(resp.Header.Get("x-request-id"))
 	// pendingLines 在首个可见输出前保留前导事件，确保无输出失败仍可安全 failover。
 	pendingLines := make([]string, 0, 8)
@@ -2046,6 +2066,17 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 				}
 			}
 			eventType := effectiveOpenAISSEEventType(dataBytes, rawEventType)
+			// Some compatible upstreams rebuild response.completed.output item IDs
+			// after emitting output_item.added/done. Keep one item identity across
+			// the entire Responses stream so downstream tool correlation remains
+			// stable on the passthrough route as well as the native route.
+			responseItemIDReconciler.Observe(dataBytes, eventType)
+			if reconciledData, reconciled := responseItemIDReconciler.ReconcileTerminalEvent(dataBytes, eventType); reconciled {
+				dataBytes = reconciledData
+				trimmedData = strings.TrimSpace(string(reconciledData))
+				line = "data: " + string(reconciledData)
+				eventType = effectiveOpenAISSEEventType(dataBytes, eventType)
+			}
 			if codexFailureTerminal && sawBareError && !sawResponseFailed && eventType != "response.failed" {
 				suppressCurrentEvent = true
 			}

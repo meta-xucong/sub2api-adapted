@@ -71,6 +71,69 @@ func TestHandleStreamingResponsePassthroughDeduplicatesFunctionCallArguments(t *
 	requireJSONArgument(t, gjson.Get(completed, "response.output.1.arguments").String())
 }
 
+func TestHandleStreamingResponsePassthroughNormalizesResponsesLifecycle(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	upstreamBody := strings.Join([]string{
+		passthroughSSEData(`{"type":"response.created","sequence_number":0,"response":{"id":"resp_lifecycle_passthrough","status":"in_progress"}}`),
+		passthroughSSEData(`{"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"type":"message","id":"msg_lifecycle","status":"in_progress"}}`),
+		passthroughSSEData(`{"type":"response.output_text.delta","sequence_number":2,"item_id":"msg_lifecycle","output_index":0,"content_index":0,"delta":"ok"}`),
+		passthroughSSEData(`{"type":"response.completed","sequence_number":3,"response":{"id":"resp_lifecycle_passthrough","status":"completed","output":[]}}`),
+		"data: [DONE]\n\n",
+	}, "")
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(upstreamBody)),
+	}
+
+	result, err := (&OpenAIGatewayService{}).handleStreamingResponsePassthrough(
+		context.Background(), resp, c, &Account{ID: 1}, time.Now(), "model", "model",
+	)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	events := collectSSEDataPayloads(t, rec.Body.String())
+	types := make([]string, 0, len(events))
+	for _, event := range events {
+		types = append(types, gjson.Get(event, "type").String())
+	}
+	require.Equal(t, []string{"response.created", "response.in_progress", "response.output_item.added", "response.output_text.delta", "response.completed"}, types)
+	require.Equal(t, int64(0), gjson.Get(events[0], "sequence_number").Int())
+	require.Equal(t, int64(1), gjson.Get(events[1], "sequence_number").Int())
+	require.Equal(t, int64(2), gjson.Get(events[2], "sequence_number").Int())
+	require.Equal(t, int64(3), gjson.Get(events[3], "sequence_number").Int())
+	require.Equal(t, int64(4), gjson.Get(events[4], "sequence_number").Int())
+}
+
+func TestHandleStreamingResponsePassthroughReconcilesCompletedItemID(t *testing.T) {
+	upstreamBody := strings.Join([]string{
+		passthroughSSEData(`{"type":"response.created","response":{"id":"resp_item_reconcile","status":"in_progress"}}`),
+		passthroughSSEData(`{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_stream","call_id":"call_1","name":"exec","arguments":""}}`),
+		passthroughSSEData(`{"type":"response.function_call_arguments.done","output_index":0,"item_id":"fc_stream","call_id":"call_1","name":"exec","arguments":"{}"}`),
+		passthroughSSEData(`{"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_stream","call_id":"call_1","name":"exec","arguments":"{}","status":"completed"}}`),
+		passthroughSSEData(`{"type":"response.completed","response":{"id":"resp_item_reconcile","status":"completed","output":[{"type":"function_call","id":"fc_rebuilt","call_id":"call_1","name":"exec","arguments":"{}"}]}}`),
+		"data: [DONE]\n\n",
+	}, "")
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(upstreamBody)),
+	}
+
+	_, err := (&OpenAIGatewayService{}).handleStreamingResponsePassthrough(
+		context.Background(), resp, c, &Account{ID: 1}, time.Now(), "model", "model",
+	)
+	require.NoError(t, err)
+	require.Contains(t, rec.Body.String(), `"type":"response.completed"`)
+	require.Contains(t, rec.Body.String(), `"id":"fc_stream"`)
+	require.NotContains(t, rec.Body.String(), `"id":"fc_rebuilt"`)
+}
+
 func TestForwardResponsesChatCompletionsFallbackKeepsFunctionArgumentsSingle(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

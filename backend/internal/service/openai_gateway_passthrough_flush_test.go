@@ -131,17 +131,22 @@ func TestOpenAIStreamingPassthroughKeepsPreamblePendingUntilFirstOutputBoundary(
 	preamble := "event: response.created\n" +
 		`data: {"type":"response.created","response":{"id":"resp_pending"}}` + "\n\n" +
 		": waiting\n\n"
+	createdEvent := "event: response.created\n" +
+		`data: {"type":"response.created","response":{"id":"resp_pending"}}` + "\n\n"
 	firstOutput := `data: {"type":"response.output_text.delta","delta":"ready"}` + "\n\n"
 	terminalEvent := `data: {"type":"response.completed","response":{"id":"resp_pending","usage":{"input_tokens":4,"output_tokens":1,"total_tokens":5}}}` + "\n\n"
 	upstream := preamble + firstOutput + terminalEvent
+	syntheticInProgress := "event: response.in_progress\n" +
+		`data: {"response":{"id":"resp_pending","status":"in_progress"},"sequence_number":1,"type":"response.in_progress"}` + "\n\n"
+	wantBody := createdEvent + syntheticInProgress + ": waiting\n\n" + firstOutput + terminalEvent
 
 	_, recorder, writer, err := runPassthroughFlushTest(t, io.NopCloser(strings.NewReader(upstream)), -1)
 
 	require.NoError(t, err)
-	require.Equal(t, upstream, recorder.Body.String())
+	require.Equal(t, wantBody, recorder.Body.String())
 	require.Equal(t, []int{
-		len(preamble) + len(firstOutput),
-		len(upstream),
+		len(preamble) + len(syntheticInProgress) + len(firstOutput),
+		len(wantBody),
 	}, writer.flushBodyLengths)
 }
 

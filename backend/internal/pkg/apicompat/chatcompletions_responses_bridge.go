@@ -1883,17 +1883,19 @@ func ensureChatToResponsesCreated(state *ChatCompletionsToResponsesStreamState) 
 		return nil
 	}
 	state.CreatedSent = true
-	return []ResponsesStreamEvent{chatToResponsesEvent(state, "response.created", &ResponsesStreamEvent{
-		Response: &ResponsesResponse{
-			ID:          state.ResponseID,
-			Object:      "response",
-			CreatedAt:   state.Created,
-			Model:       state.Model,
-			Status:      "in_progress",
-			ServiceTier: state.ServiceTier,
-			Output:      []ResponsesOutput{},
-		},
-	})}
+	response := &ResponsesResponse{
+		ID:          state.ResponseID,
+		Object:      "response",
+		CreatedAt:   state.Created,
+		Model:       state.Model,
+		Status:      "in_progress",
+		ServiceTier: state.ServiceTier,
+		Output:      []ResponsesOutput{},
+	}
+	return []ResponsesStreamEvent{
+		chatToResponsesEvent(state, "response.created", &ResponsesStreamEvent{Response: response}),
+		chatToResponsesEvent(state, "response.in_progress", &ResponsesStreamEvent{Response: response}),
+	}
 }
 
 // ensureChatReasoningItem opens the reasoning output item (output_item.added +
