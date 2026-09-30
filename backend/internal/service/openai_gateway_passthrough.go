@@ -44,6 +44,72 @@ func hasOpenAIResponsesClientToolMapping(mapping apicompat.ResponsesClientToolMa
 	return len(mapping.CustomTools) > 0 || mapping.ToolSearch || len(mapping.NamespaceTools) > 0
 }
 
+// normalizeOpenAIResponsesJSONIdentity keeps the public /v1/responses
+// contract stable even when an explicit passthrough account returns a raw
+// provider/chat-completions identifier.  The body is patched in place so all
+// provider-specific fields remain intact.
+func normalizeOpenAIResponsesJSONIdentity(body []byte) ([]byte, string, error) {
+	path := "id"
+	id := strings.TrimSpace(gjson.GetBytes(body, path).String())
+	if id == "" {
+		path = "response.id"
+		id = strings.TrimSpace(gjson.GetBytes(body, path).String())
+	}
+	if id == "" {
+		return body, "", nil
+	}
+	publicID := id
+	if !strings.HasPrefix(publicID, "resp_") {
+		publicID = apicompat.NewResponsesID()
+	}
+	if publicID == id {
+		return body, publicID, nil
+	}
+	patched, err := sjson.SetBytes(body, path, publicID)
+	if err != nil {
+		return nil, "", fmt.Errorf("normalize Responses response id: %w", err)
+	}
+	return patched, publicID, nil
+}
+
+// normalizeOpenAIResponsesSSEIdentity applies one generated public response
+// id to every Responses SSE event that carries response.id.  This is needed
+// only for passthrough /v1/responses streams; Chat Completions streams use a
+// separate bridge and must not be rewritten by this helper.
+func normalizeOpenAIResponsesSSEIdentity(body []byte, currentID string) ([]byte, string, error) {
+	id := strings.TrimSpace(gjson.GetBytes(body, "response.id").String())
+	if id == "" {
+		return body, currentID, nil
+	}
+	publicID := strings.TrimSpace(currentID)
+	if publicID == "" {
+		publicID = id
+		if !strings.HasPrefix(publicID, "resp_") {
+			publicID = apicompat.NewResponsesID()
+		}
+	}
+	if publicID == id {
+		return body, publicID, nil
+	}
+	patched, err := sjson.SetBytes(body, "response.id", publicID)
+	if err != nil {
+		return nil, "", fmt.Errorf("normalize Responses SSE response id: %w", err)
+	}
+	return patched, publicID, nil
+}
+
+func accountUsesStatelessOpenAIResponsesHistory(account *Account) bool {
+	if account == nil || !account.UsesNativeCNResponses() {
+		return false
+	}
+	switch account.Platform {
+	case PlatformDeepseek, PlatformKimi, PlatformMiniMax:
+		return true
+	default:
+		return false
+	}
+}
+
 func adaptOpenAIResponsesClientTools(body []byte) ([]byte, apicompat.ResponsesClientToolMapping, error) {
 	if !needsOpenAIResponsesClientToolAdaptation(body) {
 		return body, apicompat.ResponsesClientToolMapping{}, nil
@@ -255,6 +321,36 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		setOpenAIResponsesClientToolMapping(c, mapping)
 	}
 
+	// DeepSeek/Kimi/MiniMax native Responses endpoints are not guaranteed to
+	// retain response state. Expand a public continuation from the gateway's
+	// history before the outbound normalizer removes or replaces the upstream
+	// previous_response_id. This keeps a stateless provider from leaking its
+	// own "not found" error to a stateful Responses client.
+	var compatHistoryInput json.RawMessage
+	if accountUsesStatelessOpenAIResponsesHistory(account) && !isOpenAIResponsesCompactPath(c) {
+		var compatReq apicompat.ResponsesRequest
+		if err := json.Unmarshal(body, &compatReq); err != nil {
+			return nil, fmt.Errorf("parse stateless Responses compatibility request: %w", err)
+		}
+		if strings.TrimSpace(compatReq.PreviousResponseID) != "" {
+			if err := s.prepareOpenAIResponsesCompatContinuation(&compatReq); err != nil {
+				return nil, err
+			}
+			compatHistoryInput = append(json.RawMessage(nil), compatReq.Input...)
+			prepared, err := sjson.SetBytes(body, "input", compatReq.Input)
+			if err != nil {
+				return nil, fmt.Errorf("set expanded stateless Responses input: %w", err)
+			}
+			prepared, err = sjson.DeleteBytes(prepared, "previous_response_id")
+			if err != nil {
+				return nil, fmt.Errorf("remove stateless Responses previous_response_id: %w", err)
+			}
+			body = prepared
+		} else {
+			compatHistoryInput = append(json.RawMessage(nil), compatReq.Input...)
+		}
+	}
+
 	sanitizedBody, sanitized, err := sanitizeEmptyBase64InputImagesInOpenAIBody(body)
 	if err != nil {
 		return nil, err
@@ -458,7 +554,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		}
 
 		if reqStream {
-			result, handleErr := s.handleStreamingResponsePassthrough(ctx, resp, c, account, startTime, reqModel, upstreamPassthroughModel)
+			result, handleErr := s.handleStreamingResponsePassthrough(ctx, resp, c, account, startTime, reqModel, upstreamPassthroughModel, compatHistoryInput)
 			if handleErr != nil {
 				if retryBody, fallbackModel, retry := s.applyOpenAIPassthroughCompactFallbackFromSignal(
 					c, account, requestedModel, body, handleErr, compactModelFallbackRetried, resp,
@@ -485,7 +581,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 			imageCount = result.imageCount
 			imageOutputSizes = result.imageOutputSizes
 		} else {
-			result, handleErr := s.handleNonStreamingResponsePassthrough(ctx, resp, c, account, reqModel, upstreamPassthroughModel)
+			result, handleErr := s.handleNonStreamingResponsePassthrough(ctx, resp, c, account, reqModel, upstreamPassthroughModel, compatHistoryInput)
 			if handleErr != nil {
 				if retryBody, fallbackModel, retry := s.applyOpenAIPassthroughCompactFallbackFromSignal(
 					c, account, requestedModel, body, handleErr, compactModelFallbackRetried, resp,
@@ -1866,7 +1962,9 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	startTime time.Time,
 	originalModel string,
 	mappedModel string,
+	compatHistoryInput ...json.RawMessage,
 ) (*openaiStreamingResultPassthrough, error) {
+	compatInput := firstCompatInput(compatHistoryInput)
 	// The passthrough route handles both Chat Completions and Responses SSE.
 	// Only the Responses endpoint may receive the lifecycle repair; applying it
 	// to Chat chunks would mix two different wire contracts.
@@ -1898,6 +1996,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	imageCounter := newOpenAIImageOutputCounter()
 	var firstTokenMs *int
 	responseID := ""
+	historyStored := false
 	ttftMode := s.openAITTFTMode(ctx)
 	clientDisconnected := false
 	sawDone := false
@@ -2066,6 +2165,21 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 				}
 			}
 			eventType := effectiveOpenAISSEEventType(dataBytes, rawEventType)
+			if isOpenAIResponsesEndpointPath(c) && !isOpenAIResponsesCompactPath(c) && trimmedData != "[DONE]" {
+				normalizedData, normalizedID, normalizeErr := normalizeOpenAIResponsesSSEIdentity(dataBytes, responseID)
+				if normalizeErr != nil {
+					return resultWithUsage(), normalizeErr
+				}
+				if normalizedID != "" {
+					responseID = normalizedID
+				}
+				if !bytes.Equal(normalizedData, dataBytes) {
+					dataBytes = normalizedData
+					trimmedData = strings.TrimSpace(string(normalizedData))
+					line = "data: " + string(normalizedData)
+					eventType = effectiveOpenAISSEEventType(dataBytes, eventType)
+				}
+			}
 			// Some compatible upstreams rebuild response.completed.output item IDs
 			// after emitting output_item.added/done. Keep one item identity across
 			// the entire Responses stream so downstream tool correlation remains
@@ -2182,6 +2296,16 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 			}
 			if responseID == "" {
 				responseID = extractOpenAIResponseIDFromJSONBytes(dataBytes)
+			}
+			if !historyStored && len(compatInput) > 0 &&
+				(eventType == "response.completed" || eventType == "response.done") {
+				var envelope struct {
+					Response *apicompat.ResponsesResponse `json:"response"`
+				}
+				if json.Unmarshal(dataBytes, &envelope) == nil && envelope.Response != nil {
+					s.rememberOpenAIResponsesCompatHistory(compatInput, envelope.Response)
+					historyStored = true
+				}
 			}
 			imageCounter.AddSSEData(dataBytes)
 			if sanitizedData, sanitized := sanitizeOpenAIResponseFailedEventForClient(
@@ -2327,7 +2451,9 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 	account *Account,
 	originalModel string,
 	mappedModel string,
+	compatHistoryInput ...json.RawMessage,
 ) (*openaiNonStreamingResultPassthrough, error) {
+	compatInput := firstCompatInput(compatHistoryInput)
 	body, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
 	if err != nil {
 		return nil, err
@@ -2347,7 +2473,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 	// stream=false was requested. Without this conversion the client would
 	// receive raw SSE text or a terminal event with empty output.
 	if isEventStreamResponse(resp.Header) {
-		return s.handlePassthroughSSEToJSON(resp, c, account, body, originalModel, mappedModel)
+		return s.handlePassthroughSSEToJSON(resp, c, account, body, originalModel, mappedModel, compatInput)
 	}
 
 	usage := &OpenAIUsage{}
@@ -2382,6 +2508,18 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 	if err != nil {
 		return nil, fmt.Errorf("restore OpenAI Responses client tools: %w", err)
 	}
+	if isOpenAIResponsesEndpointPath(c) && !isOpenAIResponsesCompactPath(c) {
+		body, _, err = normalizeOpenAIResponsesJSONIdentity(body)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(compatInput) > 0 {
+		var responsesResp apicompat.ResponsesResponse
+		if json.Unmarshal(body, &responsesResp) == nil && strings.TrimSpace(responsesResp.ID) != "" {
+			s.rememberOpenAIResponsesCompatHistory(compatInput, &responsesResp)
+		}
+	}
 	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, body) {
 		c.Data(resp.StatusCode, contentType, body)
 	}
@@ -2398,8 +2536,9 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 // response for the passthrough path. It mirrors handleSSEToJSON while
 // preserving passthrough payloads, except compact-only model remapping may
 // rewrite model fields back to the original requested model.
-func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(resp *http.Response, c *gin.Context, account *Account, body []byte, originalModel string, mappedModel string) (*openaiNonStreamingResultPassthrough, error) {
+func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(resp *http.Response, c *gin.Context, account *Account, body []byte, originalModel string, mappedModel string, compatHistoryInput ...json.RawMessage) (*openaiNonStreamingResultPassthrough, error) {
 	bodyText := string(body)
+	compatInput := firstCompatInput(compatHistoryInput)
 	terminalType, terminalPayload, terminalOK := extractOpenAISSETerminalEvent(bodyText)
 	if terminalOK && (terminalType == "response.failed" || terminalType == "error") {
 		msg := extractOpenAISSEErrorMessage(terminalPayload)
@@ -2443,6 +2582,19 @@ func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(resp *http.Response, c
 		}
 		restoredBody = restoreCodexToolNamesFromContext(c, restoredBody)
 		body = restoredBody
+		if isOpenAIResponsesEndpointPath(c) && !isOpenAIResponsesCompactPath(c) {
+			normalizedBody, _, normalizeErr := normalizeOpenAIResponsesJSONIdentity(body)
+			if normalizeErr != nil {
+				return nil, normalizeErr
+			}
+			body = normalizedBody
+		}
+		if len(compatInput) > 0 {
+			var responsesResp apicompat.ResponsesResponse
+			if json.Unmarshal(body, &responsesResp) == nil && strings.TrimSpace(responsesResp.ID) != "" {
+				s.rememberOpenAIResponsesCompatHistory(compatInput, &responsesResp)
+			}
+		}
 	} else {
 		if originalModel != "" && mappedModel != "" && originalModel != mappedModel {
 			bodyText = s.replaceModelInSSEBody(bodyText, mappedModel, originalModel)

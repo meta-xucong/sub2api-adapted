@@ -25,3 +25,11 @@ func NormalizeResponsesResponseID(resp *ResponsesResponse) {
 	}
 	resp.ID = normalizeResponsesResponseID(resp.ID)
 }
+
+// NewResponsesID returns a response-scoped identifier for adapters that must
+// normalize a raw upstream Responses event without first decoding the full
+// response object.  The returned value is safe to expose as response.id and
+// previous_response_id.
+func NewResponsesID() string {
+	return generateResponsesID()
+}
