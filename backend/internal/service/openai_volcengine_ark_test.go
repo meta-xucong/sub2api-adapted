@@ -88,6 +88,20 @@ func TestVolcengineArkImageModelValidation(t *testing.T) {
 	require.Error(t, validateCompatibleImagesModelForAccount(&Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}, "doubao-seedream-4-0-250828"))
 }
 
+func TestUnifiedGatewayRejectsSeedreamForNonArkAccount(t *testing.T) {
+	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+
+	_, _, _, err := (&HTTPUnifiedGatewayUpstreamExecutor{}).adaptUnifiedGatewayProviderRequest(
+		account,
+		unifiedGatewayUpstreamEndpointImages,
+		"doubao-seedream-4-0-250828",
+		[]byte(`{"model":"doubao-seedream-4-0-250828","prompt":"draw"}`),
+		"application/json",
+	)
+
+	require.ErrorIs(t, err, ErrUnifiedGatewayInvalidRequest)
+}
+
 func TestParseOpenAIImagesRequestAllowsVolcengineArkImageModel(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	body := []byte(`{"model":"doubao-seedream-4-0-250828","prompt":"draw"}`)

@@ -1010,6 +1010,9 @@ func (e *HTTPUnifiedGatewayUpstreamExecutor) adaptUnifiedGatewayProviderRequest(
 		}
 		return body, contentType, upstreamEndpoint, nil
 	case unifiedGatewayUpstreamEndpointImages, unifiedGatewayUpstreamEndpointImagesEdits:
+		if err := validateCompatibleImagesModelForAccount(account, upstreamModel); err != nil {
+			return nil, "", "", fmt.Errorf("%w: %v", ErrUnifiedGatewayInvalidRequest, err)
+		}
 		if !isVolcengineArkOpenAIAccount(account) || !isVolcengineArkImageModel(upstreamModel) {
 			return body, contentType, upstreamEndpoint, nil
 		}
