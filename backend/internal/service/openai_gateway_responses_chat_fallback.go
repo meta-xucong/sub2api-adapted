@@ -41,6 +41,10 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 		writeOpenAIResponsesFallbackError(c, http.StatusBadRequest, "invalid_request_error", "model is required")
 		return nil, fmt.Errorf("missing model in request")
 	}
+	if err := s.prepareOpenAIResponsesCompatContinuation(&responsesReq); err != nil {
+		writeOpenAIResponsesFallbackError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return nil, err
+	}
 
 	clientStream := responsesReq.Stream
 	// custom 工具（如 codex 的 exec）降级为 function 工具转发，回程需按名字还原为
@@ -127,13 +131,13 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 	}
 
 	if clientStream {
-		result, forwardErr := s.streamChatCompletionsAsResponses(c, resp, originalModel, customTools, functionTools, toolSearch, namespaceTools, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
+		result, forwardErr := s.streamChatCompletionsAsResponses(c, resp, originalModel, customTools, functionTools, toolSearch, namespaceTools, billingModel, upstreamModel, reasoningEffort, serviceTier, responsesReq.Input, startTime)
 		if result != nil {
 			s.bindHTTPResponseAccount(ctx, c, account, result.ResponseID)
 		}
 		return result, forwardErr
 	}
-	result, forwardErr := s.bufferChatCompletionsAsResponses(c, resp, originalModel, customTools, functionTools, toolSearch, namespaceTools, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
+	result, forwardErr := s.bufferChatCompletionsAsResponses(c, resp, originalModel, customTools, functionTools, toolSearch, namespaceTools, billingModel, upstreamModel, reasoningEffort, serviceTier, responsesReq.Input, startTime)
 	if result != nil {
 		s.bindHTTPResponseAccount(ctx, c, account, result.ResponseID)
 	}
@@ -152,6 +156,7 @@ func (s *OpenAIGatewayService) bufferChatCompletionsAsResponses(
 	upstreamModel string,
 	reasoningEffort *string,
 	serviceTier *string,
+	compatInput json.RawMessage,
 	startTime time.Time,
 ) (*OpenAIForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
@@ -166,6 +171,7 @@ func (s *OpenAIGatewayService) bufferChatCompletionsAsResponses(
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	}
 	c.JSON(http.StatusOK, responsesResp)
+	s.rememberOpenAIResponsesCompatHistory(compatInput, responsesResp)
 
 	return &OpenAIForwardResult{
 		RequestID:                   requestID,
@@ -195,6 +201,7 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 	upstreamModel string,
 	reasoningEffort *string,
 	serviceTier *string,
+	compatInput json.RawMessage,
 	startTime time.Time,
 ) (*OpenAIForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
@@ -304,6 +311,7 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 			c.Writer.Flush()
 		}
 	}
+	s.rememberOpenAIResponsesCompatHistory(compatInput, apicompat.FinalChatCompletionsResponsesResponse(state))
 	return &OpenAIForwardResult{
 		RequestID:                   requestID,
 		ResponseID:                  state.ResponseID,

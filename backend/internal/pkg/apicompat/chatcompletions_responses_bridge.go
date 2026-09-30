@@ -1340,9 +1340,7 @@ func ChatCompletionsResponseToResponses(resp *ChatCompletionsResponse, model str
 	if resp != nil {
 		id = resp.ID
 	}
-	if id == "" {
-		id = generateResponsesID()
-	}
+	id = normalizeResponsesResponseID(id)
 
 	// Carry the upstream's own creation timestamp when it sent one; otherwise
 	// stamp now, same fallback shape as the generated id above.
@@ -1697,7 +1695,7 @@ func ChatCompletionsChunkToResponsesEvents(
 	// Bind the Responses identity to the first upstream chunk only. Some
 	// providers emit a different/synthetic ID on later chunks; changing it
 	// mid-stream makes response.created and response.completed disagree.
-	if !state.CreatedSent && chunk.ID != "" {
+	if !state.CreatedSent && strings.HasPrefix(strings.TrimSpace(chunk.ID), "resp_") {
 		state.ResponseID = chunk.ID
 	}
 	if state.Model == "" && chunk.Model != "" {
@@ -1876,6 +1874,32 @@ func FinalizeChatCompletionsResponsesStream(state *ChatCompletionsToResponsesStr
 		},
 	}))
 	return events
+}
+
+// FinalChatCompletionsResponsesResponse returns the completed Responses
+// representation accumulated by the stream state. It is used by the service
+// layer to persist bridge history for previous_response_id continuation.
+func FinalChatCompletionsResponsesResponse(state *ChatCompletionsToResponsesStreamState) *ResponsesResponse {
+	if state == nil {
+		return nil
+	}
+	status := "completed"
+	var incompleteDetails *ResponsesIncompleteDetails
+	if state.FinishReason == "length" {
+		status = "incomplete"
+		incompleteDetails = &ResponsesIncompleteDetails{Reason: "max_output_tokens"}
+	}
+	return &ResponsesResponse{
+		ID:                state.ResponseID,
+		Object:            "response",
+		CreatedAt:         state.Created,
+		Model:             state.Model,
+		Status:            status,
+		ServiceTier:       state.ServiceTier,
+		Output:            state.chatOutput(),
+		Usage:             state.Usage,
+		IncompleteDetails: incompleteDetails,
+	}
 }
 
 func ensureChatToResponsesCreated(state *ChatCompletionsToResponsesStreamState) []ResponsesStreamEvent {

@@ -87,6 +87,16 @@ func ResolveResponsesSupport(extra map[string]any) AccountResponsesSupport {
 			return ResponsesSupportNo
 		}
 	}
+	// Preserve the pre-capability-probe account flag used by older persisted
+	// accounts and test fixtures.  It is an explicit positive/negative
+	// contract, not an unknown probe result, so it must win before the newer
+	// openai_responses_supported marker is considered.
+	if legacy, ok := extra["use_responses_api"].(bool); ok {
+		if legacy {
+			return ResponsesSupportYes
+		}
+		return ResponsesSupportNo
+	}
 	v, ok := extra[ExtraKeyResponsesSupported]
 	if !ok {
 		return ResponsesSupportUnknown

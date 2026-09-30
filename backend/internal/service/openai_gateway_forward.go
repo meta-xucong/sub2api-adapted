@@ -1352,6 +1352,19 @@ func shouldForwardOpenAIResponsesViaRawChatCompletions(account *Account) bool {
 		// Grok/GPT/Muse into Chat Completions.
 		return false
 	}
+	// Explicit passthrough is a caller/provider contract: keep the raw
+	// Responses route and its configured retry semantics. The unknown-capability
+	// fallback below is only for ordinary custom OpenAI-compatible accounts.
+	if account.IsOpenAIPassthroughEnabled() {
+		return false
+	}
+	// A Responses WebSocket v2 account must reach the transport resolver below.
+	// The custom-base Chat fallback is only for ordinary HTTP-compatible
+	// accounts; returning true here would short-circuit the WS branch before it
+	// can establish the upstream session.
+	if account.IsOpenAIResponsesWebSocketV2Enabled() {
+		return false
+	}
 	if account.IsCNProvider() {
 		// CN 的显式协议配置优先于异步探针 Extra；adaptive 仅 DeepSeek / Kimi
 		// 有原生 Responses，GLM 回退 Chat Completions。

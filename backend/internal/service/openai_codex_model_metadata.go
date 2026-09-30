@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/url"
 	"strings"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 )
 
 var codexToolCapabilityFields = []string{
@@ -50,8 +52,10 @@ func accountCodexToolCapabilities(account *Account, modelID string) map[string]j
 	if metadata, ok := account.GetUpstreamModelMetadata(modelID); ok {
 		applyCodexToolCapabilities(capabilities, metadata.CodexToolCapabilities, true)
 	}
-	if account.IsOpenAI() && shouldForwardOpenAIResponsesViaRawChatCompletions(account) {
-		// This bridge implements client-side tool discovery, even without a native manifest.
+	if account.IsOpenAI() && openai_compat.ResolveResponsesSupport(account.Extra) == openai_compat.ResponsesSupportNo {
+		// Only an explicit Chat Completions capability verdict enables the
+		// bridge's client-side tool discovery. Unknown custom providers must not
+		// advertise search merely because the safety fallback selected Chat.
 		applyCodexToolCapabilities(capabilities, map[string]json.RawMessage{"supports_search_tool": json.RawMessage("true")}, false)
 	}
 	// Codex 0.153's bundled Astra catalog verifies these values. API-key routes

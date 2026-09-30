@@ -513,6 +513,12 @@ func (c *IdempotencyCoordinator) conflictWithRetryAfter(base *infraerrors.Applic
 }
 
 func (c *IdempotencyCoordinator) marshalStoredResponse(data any) (string, error) {
+	// Protocol response replay payloads must remain byte-for-byte intact. They
+	// implement this narrow opt-in hook so ordinary admin/user write responses
+	// retain the existing redaction and configured truncation behavior.
+	if payload, ok := data.(interface{ MarshalIdempotencyStoredResponse() (string, error) }); ok {
+		return payload.MarshalIdempotencyStoredResponse()
+	}
 	raw, err := json.Marshal(data)
 	if err != nil {
 		return "", err

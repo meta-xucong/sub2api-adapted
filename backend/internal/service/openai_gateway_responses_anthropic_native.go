@@ -43,8 +43,22 @@ func (s *OpenAIGatewayService) forwardResponsesViaNativeAnthropic(
 ) (*OpenAIForwardResult, error) {
 	startTime := time.Now()
 
+	var originalReq apicompat.ResponsesRequest
+	if err := json.Unmarshal(body, &originalReq); err != nil {
+		writeResponsesError(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
+		return nil, fmt.Errorf("parse responses request: %w", err)
+	}
+	if err := s.prepareOpenAIResponsesCompatContinuation(&originalReq); err != nil {
+		writeResponsesError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return nil, err
+	}
+	preparedBody, err := json.Marshal(originalReq)
+	if err != nil {
+		return nil, fmt.Errorf("marshal prepared Responses request: %w", err)
+	}
+
 	// 1. Lower Codex client-side tools to function tools understood by Anthropic.
-	adaptedBody, clientToolMapping, err := adaptResponsesClientToolsForAnthropic(body)
+	adaptedBody, clientToolMapping, err := adaptResponsesClientToolsForAnthropic(preparedBody)
 	if err != nil {
 		writeResponsesError(c, http.StatusBadRequest, "invalid_request_error", "Failed to adapt request tools")
 		return nil, fmt.Errorf("adapt responses client tools: %w", err)
@@ -62,6 +76,7 @@ func (s *OpenAIGatewayService) forwardResponsesViaNativeAnthropic(
 		return nil, fmt.Errorf("missing model in request")
 	}
 	clientStream := responsesReq.Stream
+	compatInput := responsesReq.Input
 
 	// 3. Convert Responses → Anthropic
 	// Resolve the mapped model before choosing its thinking/tool protocol.
@@ -141,9 +156,17 @@ func (s *OpenAIGatewayService) forwardResponsesViaNativeAnthropic(
 	}
 
 	if clientStream {
-		return s.handleResponsesStreamingFromNativeAnthropic(resp, c, originalModel, billingModel, upstreamModel, reasoningEffort, startTime, clientToolMapping)
+		result, forwardErr := s.handleResponsesStreamingFromNativeAnthropic(resp, c, originalModel, billingModel, upstreamModel, reasoningEffort, startTime, clientToolMapping, compatInput)
+		if result != nil {
+			s.bindHTTPResponseAccount(ctx, c, account, result.ResponseID)
+		}
+		return result, forwardErr
 	}
-	return s.handleResponsesBufferedFromNativeAnthropic(resp, c, originalModel, billingModel, upstreamModel, reasoningEffort, startTime, clientToolMapping)
+	result, forwardErr := s.handleResponsesBufferedFromNativeAnthropic(resp, c, originalModel, billingModel, upstreamModel, reasoningEffort, startTime, clientToolMapping, compatInput)
+	if result != nil {
+		s.bindHTTPResponseAccount(ctx, c, account, result.ResponseID)
+	}
+	return result, forwardErr
 }
 
 // handleResponsesBufferedFromNativeAnthropic reads Anthropic SSE events, assembles
@@ -157,6 +180,7 @@ func (s *OpenAIGatewayService) handleResponsesBufferedFromNativeAnthropic(
 	reasoningEffort *string,
 	startTime time.Time,
 	clientToolMapping apicompat.ResponsesClientToolMapping,
+	compatInput ...json.RawMessage,
 ) (*OpenAIForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
 
@@ -275,6 +299,7 @@ func (s *OpenAIGatewayService) handleResponsesBufferedFromNativeAnthropic(
 		finalResp.Model = upstreamModel
 	}
 	responsesResp := apicompat.AnthropicToResponsesResponse(finalResp)
+	apicompat.NormalizeResponsesResponseID(responsesResp)
 	responsesResp.Model = originalModel
 
 	if s.responseHeaderFilter != nil {
@@ -292,9 +317,11 @@ func (s *OpenAIGatewayService) handleResponsesBufferedFromNativeAnthropic(
 	} else {
 		c.JSON(http.StatusOK, responsesResp)
 	}
+	s.rememberOpenAIResponsesCompatHistory(firstCompatInput(compatInput), responsesResp)
 
 	return &OpenAIForwardResult{
 		RequestID:        requestID,
+		ResponseID:       responsesResp.ID,
 		UpstreamHeaders:  resp.Header,
 		Usage:            claudeUsageToOpenAIUsage(&usage),
 		Model:            originalModel,
@@ -318,6 +345,7 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 	reasoningEffort *string,
 	startTime time.Time,
 	clientToolMapping apicompat.ResponsesClientToolMapping,
+	compatInput ...json.RawMessage,
 ) (*OpenAIForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
 
@@ -350,6 +378,7 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 	resultWithUsage := func() *OpenAIForwardResult {
 		return &OpenAIForwardResult{
 			RequestID:        requestID,
+			ResponseID:       state.ResponseID,
 			UpstreamHeaders:  resp.Header,
 			Usage:            claudeUsageToOpenAIUsage(&usage),
 			Model:            originalModel,
@@ -505,5 +534,13 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 		}
 	}
 
+	s.rememberOpenAIResponsesCompatHistory(firstCompatInput(compatInput), apicompat.FinalAnthropicResponsesResponse(state))
 	return resultWithUsage(), nil
+}
+
+func firstCompatInput(inputs []json.RawMessage) json.RawMessage {
+	if len(inputs) == 0 {
+		return nil
+	}
+	return inputs[0]
 }

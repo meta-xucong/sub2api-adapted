@@ -33,8 +33,13 @@ func encodeAnthropicThinking(block AnthropicContentBlock) string {
 // Responses API response. This is the reverse of ResponsesToAnthropic and
 // enables Anthropic upstream responses to be returned in OpenAI Responses format.
 func AnthropicToResponsesResponse(resp *AnthropicResponse) *ResponsesResponse {
-	id := resp.ID
-	if id == "" {
+	id := ""
+	model := ""
+	if resp != nil {
+		id = resp.ID
+		model = resp.Model
+	}
+	if strings.TrimSpace(id) == "" {
 		id = generateResponsesID()
 	}
 
@@ -44,7 +49,7 @@ func AnthropicToResponsesResponse(resp *AnthropicResponse) *ResponsesResponse {
 		ID:        id,
 		Object:    "response",
 		CreatedAt: time.Now().Unix(),
-		Model:     resp.Model,
+		Model:     model,
 	}
 
 	var outputs []ResponsesOutput
@@ -225,7 +230,8 @@ type AnthropicEventToResponsesState struct {
 // NewAnthropicEventToResponsesState returns an initialised stream state.
 func NewAnthropicEventToResponsesState() *AnthropicEventToResponsesState {
 	return &AnthropicEventToResponsesState{
-		Created: time.Now().Unix(),
+		ResponseID: generateResponsesID(),
+		Created:    time.Now().Unix(),
 	}
 }
 
@@ -284,7 +290,9 @@ func ResponsesEventToSSE(evt ResponsesStreamEvent) (string, error) {
 
 func anthToResHandleMessageStart(evt *AnthropicStreamEvent, state *AnthropicEventToResponsesState) []ResponsesStreamEvent {
 	if evt.Message != nil {
-		state.ResponseID = evt.Message.ID
+		if strings.HasPrefix(strings.TrimSpace(evt.Message.ID), "resp_") {
+			state.ResponseID = evt.Message.ID
+		}
 		state.PreserveThinkingSignatures = state.PreserveThinkingSignatures || claude.IsOpus55(evt.Message.Model) || claude.IsSonnet55(evt.Message.Model)
 		if state.Model == "" {
 			state.Model = evt.Message.Model
@@ -305,8 +313,46 @@ func anthToResHandleMessageStart(evt *AnthropicStreamEvent, state *AnthropicEven
 	}
 	state.CreatedSent = true
 
-	// Emit response.created
-	return []ResponsesStreamEvent{makeResponsesCreatedEvent(state)}
+	// Responses clients require the lifecycle transition after created and
+	// before output items. Anthropic has no equivalent event, so synthesize it
+	// in the bridge just as the Chat Completions bridge does.
+	return []ResponsesStreamEvent{
+		makeResponsesCreatedEvent(state),
+		makeResponsesInProgressEvent(state),
+	}
+}
+
+// FinalAnthropicResponsesResponse returns the completed Responses
+// representation accumulated by the Anthropic stream state.
+func FinalAnthropicResponsesResponse(state *AnthropicEventToResponsesState) *ResponsesResponse {
+	if state == nil {
+		return nil
+	}
+	status, incompleteDetails := anthropicResponsesStreamTerminalState(state.StopReason)
+	totalInputTokens := state.InputTokens + state.CacheReadInputTokens + state.CacheCreationInputTokens
+	usage := &ResponsesUsage{
+		InputTokens:              totalInputTokens,
+		OutputTokens:             state.OutputTokens,
+		TotalTokens:              totalInputTokens + state.OutputTokens,
+		CacheCreationInputTokens: state.CacheCreationInputTokens,
+	}
+	if state.CacheReadInputTokens > 0 {
+		usage.InputTokensDetails = &ResponsesInputTokensDetails{CachedTokens: state.CacheReadInputTokens}
+	}
+	outputs := state.Outputs
+	if outputs == nil {
+		outputs = []ResponsesOutput{}
+	}
+	return &ResponsesResponse{
+		ID:                state.ResponseID,
+		Object:            "response",
+		CreatedAt:         state.Created,
+		Model:             state.Model,
+		Status:            status,
+		Output:            outputs,
+		Usage:             usage,
+		IncompleteDetails: incompleteDetails,
+	}
 }
 
 func anthToResHandleContentBlockStart(evt *AnthropicStreamEvent, state *AnthropicEventToResponsesState) []ResponsesStreamEvent {
@@ -666,6 +712,23 @@ func makeResponsesCreatedEvent(state *AnthropicEventToResponsesState) ResponsesS
 	state.SequenceNumber++
 	return ResponsesStreamEvent{
 		Type:           "response.created",
+		SequenceNumber: seq,
+		Response: &ResponsesResponse{
+			ID:        state.ResponseID,
+			Object:    "response",
+			CreatedAt: state.Created,
+			Model:     state.Model,
+			Status:    "in_progress",
+			Output:    []ResponsesOutput{},
+		},
+	}
+}
+
+func makeResponsesInProgressEvent(state *AnthropicEventToResponsesState) ResponsesStreamEvent {
+	seq := state.SequenceNumber
+	state.SequenceNumber++
+	return ResponsesStreamEvent{
+		Type:           "response.in_progress",
 		SequenceNumber: seq,
 		Response: &ResponsesResponse{
 			ID:        state.ResponseID,

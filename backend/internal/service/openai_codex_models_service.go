@@ -21,6 +21,7 @@ import (
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"golang.org/x/net/http2"
 	"golang.org/x/sync/singleflight"
@@ -1183,7 +1184,11 @@ func groupCodexModelSupportsSearchTool(
 			continue
 		}
 		candidates++
-		if !shouldForwardOpenAIResponsesViaRawChatCompletions(account) {
+		// Unknown custom hosts must not inherit a guessed search capability. The
+		// capability is safe to advertise here only after the account has an
+		// explicit Chat Completions verdict; official/native routes derive it
+		// from their own model metadata below.
+		if openai_compat.ResolveResponsesSupport(account.Extra) != openai_compat.ResponsesSupportNo {
 			return false
 		}
 	}
@@ -2403,7 +2408,13 @@ func completeAPIKeyCodexModelsManifestMetadata(body []byte, completeAll bool, ac
 		}
 
 		descriptor := newConfiguredCodexModelDescriptor(slug)
-		descriptor.SupportsSearchTool = shouldForwardOpenAIResponsesViaRawChatCompletions(account)
+		// Advertise search only for the official OpenAI catalog or an account
+		// explicitly proven to use the Chat Completions bridge.  An unknown
+		// custom host must not inherit a guessed capability merely because the
+		// completion manifest is being filled in here.
+		descriptor.SupportsSearchTool = officialOpenAI ||
+			(account != nil && account.IsOpenAI() &&
+				openai_compat.ResolveResponsesSupport(account.Extra) == openai_compat.ResponsesSupportNo)
 		if accountCodexModelSupportsImageInput(account, slug) {
 			descriptor.InputModalities = []string{"text", "image"}
 		}

@@ -154,6 +154,10 @@ func TestOpenAIGatewayService_ForwardAsAnthropic_CapacityShedReturnsRequestScope
 	account := &Account{
 		ID: 5099, Name: "temporary-unschedulable", Platform: PlatformOpenAI,
 		Type: AccountTypeAPIKey, Concurrency: 1,
+		// This fixture returns Responses SSE from the custom endpoint; declare
+		// that capability explicitly so the unknown-provider Chat fallback does
+		// not intentionally reinterpret the fixture as Chat Completions.
+		Extra: map[string]any{"openai_responses_supported": true},
 		Credentials: map[string]any{
 			"api_key":                    "sk-test",
 			"base_url":                   "http://upstream.example",

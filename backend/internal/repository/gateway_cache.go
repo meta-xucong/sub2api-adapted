@@ -17,6 +17,7 @@ import (
 const stickySessionPrefix = "sticky_session:"
 const openAIResponsesSessionWindowPrefix = "openai_responses_session_window:"
 const liveCallPrefix = "live:call:"
+const openAIResponsesCompatHistoryPrefix = "openai_responses_compat_history:"
 
 type gatewayCache struct {
 	rdb *redis.Client
@@ -46,6 +47,33 @@ func (c *gatewayCache) GetSessionAccountID(ctx context.Context, groupID int64, s
 		return 0, err
 	}
 	return accountID, nil
+}
+
+func openAIResponsesCompatHistoryKey(responseID string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(responseID)))
+	return openAIResponsesCompatHistoryPrefix + hex.EncodeToString(sum[:])
+}
+
+// SetOpenAIResponsesCompatHistory is an optional shared-store extension used
+// by the Responses-to-Chat/Anthropic compatibility bridge. It is deliberately
+// not part of GatewayCache so existing test doubles and other cache users keep
+// their original contract.
+func (c *gatewayCache) SetOpenAIResponsesCompatHistory(ctx context.Context, responseID string, payload []byte, ttl time.Duration) error {
+	if c == nil || c.rdb == nil || strings.TrimSpace(responseID) == "" || len(payload) == 0 || ttl <= 0 {
+		return errors.New("invalid Responses compatibility history write")
+	}
+	return c.rdb.Set(ctx, openAIResponsesCompatHistoryKey(responseID), payload, ttl).Err()
+}
+
+func (c *gatewayCache) GetOpenAIResponsesCompatHistory(ctx context.Context, responseID string) ([]byte, error) {
+	if c == nil || c.rdb == nil || strings.TrimSpace(responseID) == "" {
+		return nil, errors.New("invalid Responses compatibility history read")
+	}
+	payload, err := c.rdb.Get(ctx, openAIResponsesCompatHistoryKey(responseID)).Bytes()
+	if errors.Is(err, redis.Nil) {
+		return nil, nil
+	}
+	return payload, err
 }
 
 func (c *gatewayCache) SetSessionAccountID(ctx context.Context, groupID int64, sessionHash string, accountID int64, ttl time.Duration) error {
