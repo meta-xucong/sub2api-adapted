@@ -127,9 +127,17 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 	}
 
 	if clientStream {
-		return s.streamChatCompletionsAsResponses(c, resp, originalModel, customTools, functionTools, toolSearch, namespaceTools, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
+		result, forwardErr := s.streamChatCompletionsAsResponses(c, resp, originalModel, customTools, functionTools, toolSearch, namespaceTools, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
+		if result != nil {
+			s.bindHTTPResponseAccount(ctx, c, account, result.ResponseID)
+		}
+		return result, forwardErr
 	}
-	return s.bufferChatCompletionsAsResponses(c, resp, originalModel, customTools, functionTools, toolSearch, namespaceTools, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
+	result, forwardErr := s.bufferChatCompletionsAsResponses(c, resp, originalModel, customTools, functionTools, toolSearch, namespaceTools, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
+	if result != nil {
+		s.bindHTTPResponseAccount(ctx, c, account, result.ResponseID)
+	}
+	return result, forwardErr
 }
 
 func (s *OpenAIGatewayService) bufferChatCompletionsAsResponses(
