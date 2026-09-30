@@ -109,9 +109,19 @@ func (n *openAIResponsesLifecycleNormalizer) fillOutput() error {
 				}
 				_, _ = firstFrame.WriteString(line)
 				if strings.TrimSpace(line) == "" {
-					n.initialized = true
 					first := firstFrame.Bytes()
-					if openAIResponsesSSEFrameType(first) != "response.created" {
+					firstType := openAIResponsesSSEFrameType(first)
+					// SSE comments/keepalives may precede response.created. Keep
+					// them in order, but do not switch to passthrough yet: doing
+					// so would make the normalizer miss a later missing
+					// response.in_progress event.
+					if firstType == "" {
+						n.output = append(n.output, first...)
+						firstFrame.Reset()
+						continue
+					}
+					n.initialized = true
+					if firstType != "response.created" {
 						n.passthrough = true
 						n.output = append(n.output, first...)
 						return nil

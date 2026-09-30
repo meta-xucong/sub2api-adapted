@@ -67,6 +67,30 @@ func TestOpenAIResponsesLifecycleNormalizerPreservesExistingLifecycle(t *testing
 	require.Equal(t, input, string(body))
 }
 
+func TestOpenAIResponsesLifecycleNormalizerKeepsKeepaliveBeforeCreated(t *testing.T) {
+	input := strings.Join([]string{
+		`: PING`,
+		"",
+		`event: response.created`,
+		`data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_keepalive","status":"in_progress"}}`,
+		"",
+		`event: response.output_item.added`,
+		`data: {"type":"response.output_item.added","sequence_number":1,"output_index":0}`,
+		"",
+		`event: response.completed`,
+		`data: {"type":"response.completed","sequence_number":2,"response":{"id":"resp_keepalive","status":"completed","output":[]}}`,
+		"",
+	}, "\n")
+
+	normalized := newOpenAIResponsesLifecycleNormalizer(io.NopCloser(strings.NewReader(input)))
+	body, err := io.ReadAll(normalized)
+	require.NoError(t, err)
+	types, sequences := collectNormalizedResponseEvents(t, body)
+	require.Equal(t, []string{"response.created", "response.in_progress", "response.output_item.added", "response.completed"}, types)
+	require.Equal(t, []int{0, 1, 2, 3}, sequences)
+	require.Contains(t, string(body), ": PING\n\n")
+}
+
 func TestOpenAIResponsesLifecycleNormalizerPassesNonResponsesSSEThrough(t *testing.T) {
 	input := "data: {\"id\":\"chatcmpl_1\",\"object\":\"chat.completion.chunk\"}\n\n"
 	normalized := newOpenAIResponsesLifecycleNormalizer(io.NopCloser(strings.NewReader(input)))

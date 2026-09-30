@@ -1364,6 +1364,18 @@ func shouldForwardOpenAIResponsesViaRawChatCompletions(account *Account) bool {
 			return false
 		}
 	}
+	// A custom OpenAI-compatible base URL is not the official OpenAI
+	// Responses service. When capability probing has not produced a verdict
+	// yet, prefer the broadly supported Chat Completions contract instead of
+	// sending /v1/responses to a provider that only implements Chat. Explicit
+	// force_responses or a positive probe still wins through
+	// ShouldUseResponsesAPI above.
+	if account.Platform == PlatformOpenAI && account.Type == AccountTypeAPIKey &&
+		openai_compat.ResolveResponsesSupport(account.Extra) == openai_compat.ResponsesSupportUnknown &&
+		strings.TrimSpace(account.GetOpenAIBaseURL()) != "" &&
+		!isOfficialOpenAIModelsBaseURL(account.GetOpenAIBaseURL()) {
+		return true
+	}
 	return !openai_compat.ShouldUseResponsesAPI(account.Extra)
 }
 

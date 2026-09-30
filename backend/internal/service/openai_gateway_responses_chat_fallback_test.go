@@ -343,6 +343,21 @@ func forceChatResponsesFallbackAccount() *Account {
 	return account
 }
 
+func TestShouldForwardOpenAIResponsesViaRawChatCompletions_CustomUnknownBaseDefaultsToChat(t *testing.T) {
+	account := rawChatCompletionsTestAccount()
+	account.Extra = nil
+	require.True(t, shouldForwardOpenAIResponsesViaRawChatCompletions(account))
+
+	account.Credentials["base_url"] = "https://api.openai.com"
+	require.False(t, shouldForwardOpenAIResponsesViaRawChatCompletions(account))
+
+	account.Credentials["base_url"] = "https://third-party.example/v1"
+	account.Extra = map[string]any{
+		openai_compat.ExtraKeyResponsesMode: string(openai_compat.ResponsesSupportModeForceResponses),
+	}
+	require.False(t, shouldForwardOpenAIResponsesViaRawChatCompletions(account))
+}
+
 // reasoningRecordingCache 记录 reasoning 缓存写入、并按需响应回查。
 type reasoningRecordingCache struct {
 	stubGatewayCache
