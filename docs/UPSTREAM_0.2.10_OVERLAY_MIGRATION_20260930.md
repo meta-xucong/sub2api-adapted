@@ -15,7 +15,7 @@
 | 项目 | 固定值 |
 |---|---|
 | 迁移分支 | `upgrade/v0210-overlay-migration-20260930` |
-| 当前 HEAD | `bfae17a20d33aabb61c2e08ac4d8199bd5bbf63d` |
+| 当前 HEAD | `2be93ec9e0ec2a2888063dae78200c8969ffa7d1` |
 | 当前 HEAD 已推送 | `origin/upgrade/v0210-overlay-migration-20260930` |
 | 官方来源 | `upstream/main@a60a29549f488a854966aaec9541abbe006cac22` |
 | 官方版本 | `0.2.10` |
@@ -68,6 +68,7 @@
 - compact 持续失败使用独立隔离窗口；
 - SQL health ledger、重启恢复和 04:00 校准调度；
 - 图片真实请求单独记入 image lane，不污染文字/Responses lane；
+- native remote-compaction v2 使用与 Codex 同构的流式 `/v1/responses` + `compaction_trigger` 探测，并进入独立 Compact lane；
 - 默认 Smart Router 安全关闭，开启后才接入生产路由。
 
 主要提交：`014b69f61`、`d3158818e`、`f2fb1dd99`、`0121027e8`、`f3372897d`。
@@ -84,7 +85,7 @@
 
 ### 4.6 Wokey/KIE/Grok 自定义媒体增量
 
-已集成 worker 的独立提交 `2d3d03963`（当前主线为 cherry-pick 后的 `bfae17a20`）：普通 Grok 继续走官方 OpenAI-compatible 路径；只有精确 provider/profile 判定时才进入 Wokey/KIE transport；包含 KIE createTask/recordInfo、状态/内容代理、公开图片 URL 预检、relay 图片安全下载/上传、multipart 和 billing 状态归一化，并有负向测试阻止不支持的编辑/扩展接口误进 KIE。
+已集成 worker 的独立提交 `2d3d03963`（当前主线为 cherry-pick 后的 `bfae17a20`）：普通 Grok 继续走官方 OpenAI-compatible 路径；只有精确 provider/profile 判定时才进入 Wokey/KIE transport；包含 KIE createTask/recordInfo、状态/内容代理、公开图片 URL 预检、relay 图片安全下载/上传、multipart 和 billing 状态归一化，并有负向测试阻止不支持的编辑/扩展接口误进 KIE。后续修复将 `reference_images` 校验限制在 Wokey/KIE 账号，避免改变普通 Grok 默认契约。
 
 当前只完成代码和模拟/定向测试，真实 provider 网络、异步状态、真实用量和失败计费仍待受控实测；未把该增量视为已上线。
 
@@ -117,6 +118,7 @@
 
 ```powershell
 go.cmd test -count=1 -timeout=900s ./internal/smartrouter/core
+go.cmd test -tags=unit -count=1 -timeout=900s ./internal/service -run 'TestGrokVideo|TestKIE'
 go.cmd test -count=1 -timeout=900s ./internal/pkg/apicompat ./internal/service ./internal/handler ./internal/server/routes ./internal/repository ./internal/config ./migrations
 go.cmd test -count=1 -timeout=900s ./...
 git diff --check
@@ -149,10 +151,12 @@ git merge-base --is-ancestor a60a29549 HEAD
 - Smart Router service、config、migrations、handler 编译/定向测试：此前退出码 0；
 - `git merge-base --is-ancestor a60a29549 HEAD`：退出码 0；
 - 最新代码提交已推送 GitHub 分支。
+- `2be93ec9e0ec2a2888063dae78200c8969ffa7d1` 定向修复：native compact 独立 lane、映射模型健康 key、图片桥接 lifecycle、普通 Grok/Wokey/KIE 校验隔离；跨包回归退出码 0。
+- Wokey/KIE、compact、图片桥接、Smart Router 定向回归退出码均为 0；Wokey/KIE 用例使用 `-tags=unit` 执行。
 
 未通过/未完成：
 
-- 迁移后全仓测试尚未在最终 HEAD 上形成完整日志；
+- 最终 HEAD 全仓测试退出码 1，但所有非 `internal/repository` 包通过；仅剩既有环境基线：`TestAliyunCaptchaVerifier_TransportError` 与 3 个 `backup_pg_dumper` 测试（Windows PATH 缺少 `sh`）。完整日志：`D:\AI\Temp\sub2api-full-test-p1-20260930.txt`；跨包目标回归退出码 0。
 - 独立最终审计尚未完成；
 - Wokey/KIE worker 已纳入主分支，但专项独立审计和真实 provider 证据仍未完成；
 - 临时 PostgreSQL/Redis 的最终重启恢复证据尚未生成；
@@ -161,9 +165,9 @@ git merge-base --is-ancestor a60a29549 HEAD
 ## 8. 验收状态
 
 ```yaml
-WRITER_STATUS: MIGRATION_IMPLEMENTATION_PUSHED_LOCAL_VERIFICATION_IN_PROGRESS
+WRITER_STATUS: MIGRATION_CODE_FIXES_PUSHED_LOCAL_VERIFICATION_IN_PROGRESS
 OFFICIAL_BASELINE: upstream/main@a60a29549
-CURRENT_VERSION: bfae17a20d33aabb61c2e08ac4d8199bd5bbf63d
+CURRENT_VERSION: 2be93ec9e0ec2a2888063dae78200c8969ffa7d1
 BACKUP_VERSION: 13430dd5209728a4a1b5523f92ed4de267d1c745
 INDEPENDENT_AUDIT: PENDING_AFTER_LATEST_FIXES
 FULL_LOCAL_TEST: PENDING_ON_FINAL_HEAD
