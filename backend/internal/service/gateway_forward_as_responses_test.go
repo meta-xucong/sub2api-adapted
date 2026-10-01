@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -597,6 +598,66 @@ func TestHandleResponsesBufferedStreamingResponse_CompactSSEFormat(t *testing.T)
 	require.NotNil(t, result)
 	require.Equal(t, 10, result.Usage.InputTokens)
 	require.Equal(t, 5, result.Usage.OutputTokens)
+}
+
+func TestForwardAsResponses_AnthropicCompactReturnsCompactionForUnaryAndStreamClients(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	upstreamPayload := strings.Join([]string{
+		`event: message_start`,
+		`data: {"type":"message_start","message":{"id":"msg_compact_generic","type":"message","role":"assistant","content":[],"model":"claude-fable-5","usage":{"input_tokens":10}}}`,
+		``,
+		`event: content_block_start`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":"<summary>The user selected the blue square.</summary>"}}`,
+		``,
+		`event: message_delta`,
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}`,
+		``,
+		`event: message_stop`,
+		`data: {"type":"message_stop"}`,
+		``,
+	}, "\n")
+
+	for _, stream := range []bool{false, true} {
+		t.Run(strconv.FormatBool(stream), func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			body := `{"model":"claude-fable-5","input":"The user selected a blue square.","stream":` + strconv.FormatBool(stream) + `}`
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses/compact", strings.NewReader(body))
+			upstream := &anthropicHTTPUpstreamRecorder{resp: &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"x-request-id": []string{"req_compact_generic"}},
+				Body:       io.NopCloser(strings.NewReader(upstreamPayload)),
+			}}
+			svc := &GatewayService{cfg: &config.Config{}, httpUpstream: upstream}
+			account := newAnthropicAPIKeyAccountForTest()
+
+			result, err := svc.ForwardAsResponses(context.Background(), c, account, []byte(body), nil)
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.NotNil(t, upstream.lastReq)
+			require.Equal(t, "/v1/messages", upstream.lastReq.URL.Path)
+			require.Contains(t, string(upstream.lastBody), "Summarize the conversation so far for a successor assistant")
+			require.NotContains(t, string(upstream.lastBody), `"tools"`)
+
+			if stream {
+				require.Equal(t, "text/event-stream", rec.Header().Get("Content-Type"))
+				require.Contains(t, rec.Body.String(), `"type":"compaction"`)
+				require.Contains(t, rec.Body.String(), "response.completed")
+				require.NotContains(t, rec.Body.String(), "response.output_text.delta")
+				return
+			}
+
+			require.Equal(t, "application/json; charset=utf-8", rec.Header().Get("Content-Type"))
+			require.Equal(t, "compaction", gjson.Get(rec.Body.String(), "output.0.type").String())
+			require.Equal(t, "completed", gjson.Get(rec.Body.String(), "output.0.status").String())
+			require.Contains(t, gjson.Get(rec.Body.String(), "output.0.summary.0.text").String(), "blue square")
+
+			var continuation apicompat.ResponsesRequest
+			require.NoError(t, json.Unmarshal([]byte(`{"model":"claude-fable-5","previous_response_id":"`+gjson.Get(rec.Body.String(), "id").String()+`","input":"Continue."}`), &continuation))
+			require.NoError(t, prepareOpenAIResponsesCompatContinuationWithStore(&continuation, svc.cache, &svc.openaiResponsesCompatHistory))
+			require.Contains(t, string(continuation.Input), "blue square")
+		})
+	}
 }
 
 func TestHandleResponsesStreamingResponse_CompactSSEFormat(t *testing.T) {

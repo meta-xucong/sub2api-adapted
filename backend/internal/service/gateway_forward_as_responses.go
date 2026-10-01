@@ -56,6 +56,24 @@ func (s *GatewayService) ForwardAsResponses(
 		writeResponsesError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return nil, err
 	}
+	compactPath := IsOpenAIResponsesCompactPath(c)
+	clientStream := originalReq.Stream
+	compatInput := append(json.RawMessage(nil), originalReq.Input...)
+	if compactPath {
+		compactReq, compactErr := buildResponsesCompatCompactRequest(&originalReq)
+		if compactErr != nil {
+			writeResponsesError(c, http.StatusBadRequest, "invalid_request_error", compactErr.Error())
+			return nil, compactErr
+		}
+		originalReq = *compactReq
+		if clientStream {
+			MarkOpenAICompactClientStream(c)
+		}
+		// Anthropic has no standalone compact stream. Buffer its forced upstream
+		// stream, then return the compact result in the client's requested wire
+		// format (JSON or the compatibility SSE bridge).
+		clientStream = false
+	}
 	preparedBody, err := json.Marshal(&originalReq)
 	if err != nil {
 		return nil, fmt.Errorf("marshal prepared Responses request: %w", err)
@@ -73,8 +91,6 @@ func (s *GatewayService) ForwardAsResponses(
 		return nil, fmt.Errorf("parse responses request: %w", err)
 	}
 	originalModel := responsesReq.Model
-	clientStream := responsesReq.Stream
-	compatInput := append(json.RawMessage(nil), responsesReq.Input...)
 
 	// 3. Convert Responses → Anthropic
 	// Resolve the final upstream model before model-specific conversion.
@@ -526,6 +542,15 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 	responsesResp := apicompat.AnthropicToResponsesResponse(finalResp)
 	apicompat.NormalizeResponsesResponseID(responsesResp)
 	responsesResp.Model = originalModel // Use original model name
+	compactPath := IsOpenAIResponsesCompactPath(c)
+	if compactPath {
+		compactResp, compactErr := responsesCompatCompactResponseFromResponses(responsesResp, originalModel)
+		if compactErr != nil {
+			writeResponsesError(c, http.StatusBadGateway, "server_error", "Upstream compact summary was empty or incomplete")
+			return nil, compactErr
+		}
+		responsesResp = compactResp
+	}
 
 	if s.responseHeaderFilter != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
@@ -536,7 +561,11 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 	// 无法覆盖已存在的 SSE 头。这里显式 Set 强制改回 JSON，避免下游中间层
 	// （如 new-api）按 Content-Type 误判为流式。
 	c.Writer.Header().Set("Content-Type", "application/json; charset=utf-8")
-	if respBytes, err := json.Marshal(responsesResp); err == nil {
+	if compactPath {
+		if err := writeResponsesCompatCompactResult(c, responsesResp); err != nil {
+			return nil, fmt.Errorf("write Anthropic compatibility compact response: %w", err)
+		}
+	} else if respBytes, err := json.Marshal(responsesResp); err == nil {
 		respBytes = reverseToolNamesIfPresent(c, respBytes)
 		respBytes, _, err = apicompat.RestoreResponsesClientToolPayload(respBytes, clientToolMapping)
 		if err != nil {
@@ -546,7 +575,15 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 	} else {
 		c.JSON(http.StatusOK, responsesResp)
 	}
-	rememberOpenAIResponsesCompatHistoryWithStore(firstCompatInput(compatInput), responsesResp, s.cache, &s.openaiResponsesCompatHistory)
+	if compactPath {
+		compactedHistoryInput, historyErr := responsesCompatCompactionHistoryInput(responsesResp)
+		if historyErr != nil {
+			return nil, historyErr
+		}
+		rememberOpenAIResponsesCompatHistoryWithStore(compactedHistoryInput, responsesResp, s.cache, &s.openaiResponsesCompatHistory)
+	} else {
+		rememberOpenAIResponsesCompatHistoryWithStore(firstCompatInput(compatInput), responsesResp, s.cache, &s.openaiResponsesCompatHistory)
+	}
 
 	return &ForwardResult{
 		RequestID:       requestID,
