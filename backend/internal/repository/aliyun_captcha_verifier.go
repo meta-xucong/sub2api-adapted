@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	captcha "github.com/alibabacloud-go/captcha-20230305/client"
 	openapiutil "github.com/alibabacloud-go/darabonba-openapi/v2/utils"
@@ -65,6 +66,16 @@ func (v *aliyunCaptchaVerifier) VerifyCaptcha(ctx context.Context, cred service.
 func normalizeAliyunCaptchaError(err error) error {
 	var teaErr *tea.SDKError
 	if errors.As(err, &teaErr) {
+		// The Alibaba SDK also wraps dial/transport failures in SDKError with
+		// no HTTP status. Only a response-backed SDKError is an API error;
+		// preserve transport failures so callers can classify them correctly.
+		code := ""
+		if teaErr != nil {
+			code = strings.TrimSpace(tea.StringValue(teaErr.Code))
+		}
+		if teaErr == nil || tea.IntValue(teaErr.StatusCode) <= 0 || code == "" || strings.EqualFold(code, "<nil>") {
+			return err
+		}
 		return &service.AliyunCaptchaAPIError{
 			Code:    tea.StringValue(teaErr.Code),
 			Message: tea.StringValue(teaErr.Message),
@@ -72,6 +83,13 @@ func normalizeAliyunCaptchaError(err error) error {
 	}
 	var daraErr *dara.SDKError
 	if errors.As(err, &daraErr) {
+		code := ""
+		if daraErr != nil {
+			code = strings.TrimSpace(dara.StringValue(daraErr.Code))
+		}
+		if daraErr == nil || dara.IntValue(daraErr.StatusCode) <= 0 || code == "" || strings.EqualFold(code, "<nil>") {
+			return err
+		}
 		return &service.AliyunCaptchaAPIError{
 			Code:    dara.StringValue(daraErr.Code),
 			Message: dara.StringValue(daraErr.Message),
