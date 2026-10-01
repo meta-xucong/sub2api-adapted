@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -24,6 +25,67 @@ func newOpenAICompactFallbackTestContext(t *testing.T, path string) *gin.Context
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, path, nil)
 	return c
+}
+
+func TestResponsesCompatCompactResponseProducesPortableCompactionItem(t *testing.T) {
+	resp := &apicompat.ResponsesResponse{
+		ID:     "resp_anthropic_summary",
+		Status: "completed",
+		Output: []apicompat.ResponsesOutput{{
+			Type:    "message",
+			Content: []apicompat.ResponsesContentPart{{Type: "output_text", Text: "The user selected the blue square."}},
+		}},
+	}
+
+	compact, err := responsesCompatCompactResponseFromResponses(resp, "claude-fable-5")
+	require.NoError(t, err)
+	require.Equal(t, "claude-fable-5", compact.Model)
+	require.Len(t, compact.Output, 1)
+	require.Equal(t, "compaction", compact.Output[0].Type)
+	require.Equal(t, "completed", compact.Output[0].Status)
+	require.True(t, strings.HasPrefix(compact.Output[0].EncryptedContent, responsesCompatCompactEnvelopePrefix))
+
+	history, err := responsesCompatCompactionHistoryInput(compact)
+	require.NoError(t, err)
+	require.Equal(t, "message", gjson.GetBytes(history, "0.type").String())
+	require.Equal(t, "assistant", gjson.GetBytes(history, "0.role").String())
+	require.Contains(t, gjson.GetBytes(history, "0.content.0.text").String(), "blue square")
+}
+
+func TestHandleResponsesBufferedFromNativeAnthropicCompactProducesCompactionSSE(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses/compact", strings.NewReader(`{"model":"claude-fable-5","stream":true}`))
+	MarkOpenAICompactClientStream(c)
+
+	upstream := strings.Join([]string{
+		`event: message_start`,
+		`data: {"type":"message_start","message":{"id":"msg_compact","type":"message","role":"assistant","content":[],"model":"claude-fable-5","usage":{"input_tokens":10}}}`,
+		``,
+		`event: content_block_start`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":"The user selected the blue square."}}`,
+		``,
+		`event: message_delta`,
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}`,
+		``,
+		`event: message_stop`,
+		`data: {"type":"message_stop"}`,
+		``,
+	}, "\n")
+
+	result, err := (&OpenAIGatewayService{}).handleResponsesBufferedFromNativeAnthropic(
+		&http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(upstream))},
+		c, "claude-fable-5", "claude-fable-5", "claude-fable-5", nil, time.Now(), apicompat.ResponsesClientToolMapping{},
+	)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, "text/event-stream", rec.Header().Get("Content-Type"))
+	body := rec.Body.String()
+	require.Contains(t, body, "response.output_item.done")
+	require.Contains(t, body, `"type":"compaction"`)
+	require.Contains(t, body, "response.completed")
+	require.NotContains(t, body, "response.output_text.delta")
 }
 
 func TestPrepareOpenAICompactFallbackRetryRequiresExplicitCompact(t *testing.T) {

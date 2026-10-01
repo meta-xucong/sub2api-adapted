@@ -77,6 +77,18 @@ func (s *OpenAIGatewayService) forwardResponsesViaNativeAnthropic(
 	}
 	clientStream := responsesReq.Stream
 	compatInput := responsesReq.Input
+	compactPath := IsOpenAIResponsesCompactPath(c)
+	if compactPath {
+		// Native Anthropic has no OpenAI standalone compact wire. Lower the
+		// request to the same portable summary lane used by Chat fallback,
+		// then wrap the summary as an opaque compatibility compaction item.
+		compactReq, compactErr := buildResponsesCompatCompactRequest(&responsesReq)
+		if compactErr != nil {
+			writeResponsesError(c, http.StatusBadRequest, "invalid_request_error", compactErr.Error())
+			return nil, compactErr
+		}
+		responsesReq = *compactReq
+	}
 
 	// 3. Convert Responses → Anthropic
 	// Resolve the mapped model before choosing its thinking/tool protocol.
@@ -155,7 +167,7 @@ func (s *OpenAIGatewayService) forwardResponsesViaNativeAnthropic(
 		return nil, fmt.Errorf("upstream error: %d %s", resp.StatusCode, upstreamMsg)
 	}
 
-	if clientStream {
+	if clientStream && !compactPath {
 		result, forwardErr := s.handleResponsesStreamingFromNativeAnthropic(resp, c, originalModel, billingModel, upstreamModel, reasoningEffort, startTime, clientToolMapping, compatInput)
 		if result != nil {
 			s.bindHTTPResponseAccount(ctx, c, account, result.ResponseID)
@@ -301,13 +313,25 @@ func (s *OpenAIGatewayService) handleResponsesBufferedFromNativeAnthropic(
 	responsesResp := apicompat.AnthropicToResponsesResponse(finalResp)
 	apicompat.NormalizeResponsesResponseID(responsesResp)
 	responsesResp.Model = originalModel
+	if IsOpenAIResponsesCompactPath(c) {
+		compactResp, compactErr := responsesCompatCompactResponseFromResponses(responsesResp, originalModel)
+		if compactErr != nil {
+			writeResponsesError(c, http.StatusBadGateway, "server_error", "Upstream compact summary was empty")
+			return nil, compactErr
+		}
+		responsesResp = compactResp
+	}
 
 	if s.responseHeaderFilter != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	}
 	// 非流式响应必须是 application/json（上游被强制流式，透传头会污染）。
 	c.Writer.Header().Set("Content-Type", "application/json; charset=utf-8")
-	if respBytes, err := json.Marshal(responsesResp); err == nil {
+	if IsOpenAIResponsesCompactPath(c) {
+		if err := writeResponsesCompatCompactResult(c, responsesResp); err != nil {
+			return nil, fmt.Errorf("write Anthropic compatibility compact response: %w", err)
+		}
+	} else if respBytes, err := json.Marshal(responsesResp); err == nil {
 		respBytes = reverseToolNamesIfPresent(c, respBytes)
 		respBytes, _, err = apicompat.RestoreResponsesClientToolPayload(respBytes, clientToolMapping)
 		if err != nil {
@@ -317,7 +341,15 @@ func (s *OpenAIGatewayService) handleResponsesBufferedFromNativeAnthropic(
 	} else {
 		c.JSON(http.StatusOK, responsesResp)
 	}
-	s.rememberOpenAIResponsesCompatHistory(firstCompatInput(compatInput), responsesResp)
+	if IsOpenAIResponsesCompactPath(c) {
+		compactedHistoryInput, historyErr := responsesCompatCompactionHistoryInput(responsesResp)
+		if historyErr != nil {
+			return nil, historyErr
+		}
+		s.rememberOpenAIResponsesCompatHistory(compactedHistoryInput, responsesResp)
+	} else {
+		s.rememberOpenAIResponsesCompatHistory(firstCompatInput(compatInput), responsesResp)
+	}
 
 	return &OpenAIForwardResult{
 		RequestID:        requestID,
