@@ -52,11 +52,12 @@ func TestResponsesCompatCompactResponseProducesPortableCompactionItem(t *testing
 	require.Contains(t, gjson.GetBytes(history, "0.content.0.text").String(), "blue square")
 }
 
-func TestHandleResponsesBufferedFromNativeAnthropicCompactProducesCompactionSSE(t *testing.T) {
+func TestHandleResponsesBufferedFromNativeAnthropicCompactIntentSurvivesPathRewrite(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses/compact", strings.NewReader(`{"model":"claude-fable-5","stream":true}`))
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"claude-fable-5","stream":true}`))
+	c.Request = c.Request.WithContext(WithOpenAIForwardModel(c.Request.Context(), "claude-fable-5", true))
 	MarkOpenAICompactClientStream(c)
 
 	upstream := strings.Join([]string{

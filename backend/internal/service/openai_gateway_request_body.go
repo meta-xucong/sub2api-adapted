@@ -589,6 +589,16 @@ func NormalizeOpenAICompactRequestBodyForTest(body []byte) ([]byte, bool, error)
 }
 
 func isOpenAIResponsesCompactPath(c *gin.Context) bool {
+	// The Responses handler classifies legacy /responses/compact before request
+	// forwarding and carries that intent in the request context. Prefer the
+	// explicit marker because middleware or an internal adapter may normalize
+	// URL.Path after routing; compact semantics must not depend on that mutable
+	// path surviving every forwarding layer.
+	if c != nil && c.Request != nil {
+		if forwardModel, ok := openAIForwardModelFromContext(c.Request.Context()); ok && forwardModel.useCompactModelMapping {
+			return true
+		}
+	}
 	suffix := strings.TrimSpace(openAIResponsesRequestPathSuffix(c))
 	return suffix == "/compact" || strings.HasPrefix(suffix, "/compact/")
 }
