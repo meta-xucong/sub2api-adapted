@@ -1093,6 +1093,12 @@ func (h *OpenAIGatewayHandler) normalizeOpenAIResponsesCompactRequest(c *gin.Con
 	if !isCompactRequest {
 		return body, true
 	}
+	// The compact normalizer intentionally removes stream from the upstream
+	// payload. Preserve the client's wire intent before that normalization so a
+	// portable Chat fallback can still emit the Responses SSE bridge.
+	if gjson.GetBytes(body, "stream").Bool() {
+		service.MarkOpenAICompactClientStream(c)
+	}
 	if compactSeed := strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String()); compactSeed != "" {
 		c.Set(service.OpenAICompactSessionSeedKeyForTest(), compactSeed)
 	}

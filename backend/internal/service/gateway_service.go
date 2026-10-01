@@ -1505,12 +1505,23 @@ func (s *GatewayService) resolveCompositeModelOwnership(ctx context.Context, gro
 	}
 
 	platforms := make(map[string]struct{})
+	var bestRank compositeModelOwnershipRank
+	bestRankSet := false
 	for _, account := range accounts {
 		platform := strings.TrimSpace(account.Platform)
 		if !isConcreteRequestPlatform(platform) || !explicitModelMappingClaims(account, model) {
 			continue
 		}
-		platforms[platform] = struct{}{}
+		rank := compositeModelOwnershipRankFor(account, groupID)
+		if !bestRankSet || rank.less(bestRank) {
+			bestRank = rank
+			bestRankSet = true
+			platforms = map[string]struct{}{platform: {}}
+			continue
+		}
+		if rank == bestRank {
+			platforms[platform] = struct{}{}
+		}
 	}
 
 	ownership := CompositeModelOwnership{}
@@ -1527,6 +1538,36 @@ func (s *GatewayService) resolveCompositeModelOwnership(ctx context.Context, gro
 		s.modelsListCache.Set(cacheKey, ownership, s.modelsListCacheTTL)
 	}
 	return ownership, nil
+}
+
+// compositeModelOwnershipRank follows the scheduler's lower-number-first
+// ordering. A composite group may expose the same public model through more
+// than one provider; use configured group/account priority to select the
+// canonical provider. Equal-priority claims stay ambiguous and fail closed.
+type compositeModelOwnershipRank struct {
+	groupPriority   int
+	accountPriority int
+}
+
+func compositeModelOwnershipRankFor(account Account, groupID int64) compositeModelOwnershipRank {
+	groupPriority := 0
+	for _, accountGroup := range account.AccountGroups {
+		if accountGroup.GroupID == groupID {
+			groupPriority = accountGroup.Priority
+			break
+		}
+	}
+	return compositeModelOwnershipRank{
+		groupPriority:   groupPriority,
+		accountPriority: account.Priority,
+	}
+}
+
+func (r compositeModelOwnershipRank) less(other compositeModelOwnershipRank) bool {
+	if r.groupPriority != other.groupPriority {
+		return r.groupPriority < other.groupPriority
+	}
+	return r.accountPriority < other.accountPriority
 }
 
 func explicitModelMappingClaims(account Account, model string) bool {

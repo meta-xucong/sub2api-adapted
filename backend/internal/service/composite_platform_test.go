@@ -103,6 +103,43 @@ func TestResolveCompositeModelOwnershipAllowsSamePlatformAndRejectsCrossPlatform
 	require.Equal(t, CompositeModelOwnership{Ambiguous: true}, ambiguous)
 }
 
+func TestResolveCompositeModelOwnershipUsesConfiguredPriorityAcrossProviders(t *testing.T) {
+	groupID := int64(7)
+	repo := &compositeOwnershipAccountRepo{
+		accounts: []Account{
+			{
+				ID:       1,
+				Platform: PlatformAnthropic,
+				Priority: 10,
+				AccountGroups: []AccountGroup{{
+					GroupID:  groupID,
+					Priority: 80,
+				}},
+				Credentials: map[string]any{
+					"model_mapping": map[string]any{"minimax-m3": "minimax-m3"},
+				},
+			},
+			{
+				ID:       2,
+				Platform: PlatformOpenAI,
+				Priority: 80,
+				AccountGroups: []AccountGroup{{
+					GroupID:  groupID,
+					Priority: 10,
+				}},
+				Credentials: map[string]any{
+					"model_mapping": map[string]any{"minimax-m3": "minimax-m3"},
+				},
+			},
+		},
+	}
+	svc := &GatewayService{accountRepo: repo}
+
+	ownership, err := svc.resolveCompositeModelOwnership(context.Background(), groupID, "minimax-m3")
+	require.NoError(t, err)
+	require.Equal(t, CompositeModelOwnership{TargetPlatform: PlatformOpenAI, Matched: true}, ownership)
+}
+
 func TestNewGatewayServiceWiresCompositeModelOwnershipResolver(t *testing.T) {
 	groupID := int64(7)
 	repo := &compositeOwnershipAccountRepo{

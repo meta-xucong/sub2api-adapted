@@ -139,6 +139,16 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			return nil, err
 		}
 	}
+	// Compact capability is independent from ordinary Responses capability.
+	// Third-party OpenAI-compatible accounts commonly expose /responses while
+	// rejecting /responses/compact; use the portable summary lane after the
+	// ordinary input sanitation above and before native Responses transport is
+	// selected. Explicit force-on/probe-positive accounts, CN-native accounts,
+	// passthrough, and WS contracts retain their native path.
+	if compactPath && account.IsOpenAI() && account.Type == AccountTypeAPIKey && !passthroughEnabled &&
+		!account.IsOpenAIResponsesWebSocketV2Enabled() && !account.UsesNativeOpenAICompact() {
+		return s.forwardResponsesCompactViaRawChatCompletions(ctx, c, account, body)
+	}
 
 	nativeCNResponses := account.UsesNativeCNResponses()
 	nativeDeepSeekResponses := account.Platform == PlatformDeepseek && nativeCNResponses

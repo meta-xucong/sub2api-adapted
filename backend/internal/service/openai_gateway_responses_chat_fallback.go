@@ -144,6 +144,140 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 	return result, forwardErr
 }
 
+// forwardResponsesCompactViaRawChatCompletions implements /responses/compact
+// for API-key accounts whose upstream exposes Chat Completions but not the
+// standalone compact endpoint. The upstream receives a tool-free summary turn;
+// the client receives a portable Responses compaction item.
+func (s *OpenAIGatewayService) forwardResponsesCompactViaRawChatCompletions(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	body []byte,
+) (*OpenAIForwardResult, error) {
+	startTime := time.Now()
+
+	var responsesReq apicompat.ResponsesRequest
+	if err := json.Unmarshal(body, &responsesReq); err != nil {
+		writeOpenAIResponsesFallbackError(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse compact request body")
+		return nil, fmt.Errorf("parse Responses compact request: %w", err)
+	}
+	if strings.TrimSpace(responsesReq.PreviousResponseID) != "" {
+		if err := s.prepareOpenAIResponsesCompatContinuation(&responsesReq); err != nil {
+			writeOpenAIResponsesFallbackError(c, http.StatusBadRequest, "previous_response_not_found", err.Error())
+			return nil, err
+		}
+	}
+	canonicalReq := responsesReq
+	originalModel := strings.TrimSpace(canonicalReq.Model)
+	if originalModel == "" {
+		writeOpenAIResponsesFallbackError(c, http.StatusBadRequest, "invalid_request_error", "model is required")
+		return nil, fmt.Errorf("missing model in compact request")
+	}
+
+	compactReq, err := buildResponsesCompatCompactRequest(&canonicalReq)
+	if err != nil {
+		writeOpenAIResponsesFallbackError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return nil, err
+	}
+	chatReq, err := apicompat.ResponsesToChatCompletionsRequest(compactReq)
+	if err != nil {
+		writeOpenAIResponsesFallbackError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return nil, fmt.Errorf("convert Responses compact request to Chat Completions: %w", err)
+	}
+
+	serviceTier := extractOpenAIServiceTierFromBody(body)
+	billingModel := resolveOpenAIForwardModel(account, originalModel, "")
+	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
+	reasoningEffort := extractOpenAIReasoningEffortFromBody(body, upstreamModel, billingModel, originalModel)
+	reasoningEffort = ApplyThinkingEnabledFallback(reasoningEffort, body, billingModel)
+	chatReq.Model = upstreamModel
+	chatReq.Stream = false
+	chatReq.Tools = nil
+	chatReq.ToolChoice = nil
+
+	chatBody, err := json.Marshal(chatReq)
+	if err != nil {
+		return nil, fmt.Errorf("marshal Chat Completions compact request: %w", err)
+	}
+	chatBody, err = s.applyOpenAIFastPolicyToBody(ctx, account, upstreamModel, chatBody)
+	if err != nil {
+		var blocked *OpenAIFastBlockedError
+		if errors.As(err, &blocked) {
+			writeOpenAIFastPolicyBlockedResponse(c, blocked)
+		}
+		return nil, err
+	}
+	if serviceTier == nil {
+		serviceTier = extractOpenAIServiceTierFromBody(chatBody)
+	}
+	SetOpsUpstreamModel(c, upstreamModel)
+
+	apiKey, targetURL, err := s.resolveCCFallbackTarget(account)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := s.sendCCUpstreamRequest(ctx, c, account, targetURL, chatBody, false, apiKey, account.GetOpenAIUserAgent(), "")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode >= 400 {
+		respBody, upstreamMsg := s.readOpenAIUpstreamError(resp)
+		if foErr := s.failoverOpenAIUpstreamHTTPError(ctx, c, account, resp, respBody, upstreamMsg, upstreamModel); foErr != nil {
+			return nil, foErr
+		}
+		return s.handleErrorResponse(ctx, resp, c, account, chatBody, billingModel)
+	}
+
+	ccResp, usage, err := s.readCCUpstreamJSONResponse(c, resp, writeOpenAIResponsesFallbackError)
+	if err != nil {
+		return nil, err
+	}
+	responsesResp, err := responsesCompatCompactResponseFromChat(ccResp, originalModel)
+	if err != nil {
+		writeOpenAIResponsesFallbackError(c, http.StatusBadGateway, "api_error", "Failed to build compatibility compaction response")
+		return nil, err
+	}
+	if s.responseHeaderFilter != nil {
+		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+	}
+	if err := writeResponsesCompatCompactResult(c, responsesResp); err != nil {
+		writeOpenAIResponsesFallbackError(c, http.StatusBadGateway, "api_error", "Failed to encode compatibility compact response")
+		return nil, err
+	}
+
+	result := &OpenAIForwardResult{
+		RequestID:                     resp.Header.Get("x-request-id"),
+		ResponseID:                    responsesResp.ID,
+		UpstreamHeaders:               resp.Header,
+		Usage:                         usage,
+		Model:                         originalModel,
+		BillingModel:                  billingModel,
+		UpstreamModel:                 upstreamModel,
+		UpstreamResponseModel:         observedUpstreamResponseModel(c),
+		UpstreamResponseModelConflict: observedUpstreamResponseModelConflict(c),
+		UpstreamResponseServiceTier:   observedUpstreamResponseServiceTier(c),
+		ReasoningEffort:               reasoningEffort,
+		ServiceTier:                   resolvedOpenAIUpstreamServiceTier(c, serviceTier),
+		Stream:                        openAICompactClientWantsStream(c),
+		Duration:                      time.Since(startTime),
+	}
+	if result.ResponseID != "" {
+		s.bindHTTPResponseAccount(ctx, c, account, result.ResponseID)
+	}
+	// The portable response ID must remain usable by the next compatibility
+	// request, including when the client sends previous_response_id. Store the
+	// generated summary as the replay base; retaining canonicalReq.Input would
+	// make compaction a no-op and grow the stateless history indefinitely.
+	compactedHistoryInput, err := responsesCompatCompactionHistoryInput(responsesResp)
+	if err != nil {
+		return nil, err
+	}
+	s.rememberOpenAIResponsesCompatHistory(compactedHistoryInput, responsesResp)
+	return result, nil
+}
+
 func (s *OpenAIGatewayService) bufferChatCompletionsAsResponses(
 	c *gin.Context,
 	resp *http.Response,

@@ -155,6 +155,73 @@ func TestAccountOpenAICompactSupportKnown(t *testing.T) {
 	}
 }
 
+func TestAccountUsesNativeOpenAICompactSeparatesResponsesAndCompactSupport(t *testing.T) {
+	tests := []struct {
+		name    string
+		account *Account
+		want    bool
+	}{
+		{
+			name: "custom endpoint with unknown compact support uses portable lane",
+			account: &Account{
+				Platform: PlatformOpenAI,
+				Type:     AccountTypeAPIKey,
+				Credentials: map[string]any{
+					"base_url": "https://yetoken.example/v1",
+				},
+				Extra: map[string]any{
+					"openai_responses_supported": true,
+				},
+			},
+			want: false,
+		},
+		{
+			name: "official endpoint with unknown compact support stays native",
+			account: &Account{
+				Platform:    PlatformOpenAI,
+				Type:        AccountTypeAPIKey,
+				Credentials: map[string]any{"base_url": "https://api.openai.com/v1"},
+			},
+			want: true,
+		},
+		{
+			name: "explicit positive capability stays native",
+			account: &Account{
+				Platform:    PlatformOpenAI,
+				Type:        AccountTypeAPIKey,
+				Credentials: map[string]any{"base_url": "https://yetoken.example/v1"},
+				Extra:       map[string]any{"openai_compact_supported": true},
+			},
+			want: true,
+		},
+		{
+			name: "explicit negative capability uses portable lane",
+			account: &Account{
+				Platform:    PlatformOpenAI,
+				Type:        AccountTypeAPIKey,
+				Credentials: map[string]any{"base_url": "https://yetoken.example/v1"},
+				Extra:       map[string]any{"openai_compact_supported": false},
+			},
+			want: false,
+		},
+		{
+			name: "non API-key account never enters API-key compact lane",
+			account: &Account{
+				Platform: PlatformOpenAI,
+				Type:     AccountTypeOAuth,
+			},
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.account.UsesNativeOpenAICompact(); got != tt.want {
+				t.Fatalf("UsesNativeOpenAICompact() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestAccountAllowsOpenAICompact(t *testing.T) {
 	tests := []struct {
 		name    string

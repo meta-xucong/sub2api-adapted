@@ -339,9 +339,9 @@ func TestNormalizeOpenAIResponsesCompactRequest_SubpathNotPromoted(t *testing.T)
 	require.Equal(t, body, normalized)
 }
 
-// path-based compact（Codex v1 unary 协议）即使 body 带 stream:true 也不标记，
-// 保持 JSON 写回行为不变。
-func TestNormalizeOpenAIResponsesCompactRequest_PathBasedStreamTrueNotMarked(t *testing.T) {
+// path-based compact 的 normalizer 会删除 stream 字段，但必须保留客户
+// 端的流式意图，供第三方 Chat fallback 合成 Responses SSE。
+func TestNormalizeOpenAIResponsesCompactRequest_PathBasedStreamTrueMarked(t *testing.T) {
 	h := &OpenAIGatewayHandler{}
 	body := []byte(`{"model":"gpt-5.5","stream":true,"input":[{"type":"message","role":"user","content":"hello"}]}`)
 	c := newCompactBodySignalTestContext(t, "/v1/responses/compact", body)
@@ -349,5 +349,5 @@ func TestNormalizeOpenAIResponsesCompactRequest_PathBasedStreamTrueNotMarked(t *
 	_, ok := h.normalizeOpenAIResponsesCompactRequest(c, zap.NewNop(), body)
 	require.True(t, ok)
 	_, exists := c.Get(service.OpenAICompactClientStreamKeyForTest())
-	require.False(t, exists)
+	require.True(t, exists)
 }

@@ -937,6 +937,23 @@ func (a *Account) OpenAICompactSupportKnown() (supported bool, known bool) {
 	return supported, true
 }
 
+// UsesNativeOpenAICompact reports whether an API-key account should receive
+// /responses/compact directly. Responses support and compact support are
+// independent: third-party OpenAI-compatible providers often expose
+// /responses but not the standalone compact endpoint. Unknown capability is
+// native only for the official OpenAI endpoint; a custom endpoint uses the
+// portable Chat Completions summary lane instead.
+func (a *Account) UsesNativeOpenAICompact() bool {
+	if a == nil || !a.IsOpenAI() || a.Type != AccountTypeAPIKey {
+		return false
+	}
+	supported, known := a.OpenAICompactSupportKnown()
+	if known {
+		return supported
+	}
+	return isOfficialOpenAIModelsBaseURL(a.GetOpenAIBaseURL())
+}
+
 // AllowsOpenAICompact reports whether the account may be considered for compact
 // requests. Unknown capability remains allowed to avoid breaking older accounts
 // before an explicit probe has been run.

@@ -47,6 +47,14 @@ func (r *unifiedGatewayRouteCatalogRepository) List(ctx context.Context, accessG
 			b.upstream_model, b.endpoint, b.account_rule, b.probe_snapshot,
 			b.priority
 		FROM unified_route_targets t
+		JOIN unified_gateway_model_configs c
+			ON c.id = t.unified_config_id
+			AND c.access_group_id = t.access_group_id
+			AND c.public_model = t.public_model
+			AND c.endpoint = t.endpoint
+			AND c.enabled = TRUE
+			AND c.lifecycle = 'published'
+			AND c.revision = t.unified_revision
 		JOIN unified_route_account_bindings b ON b.route_target_id = t.id
 		WHERE t.access_group_id = $1
 			AND ($2 = '' OR t.public_model = $2)
