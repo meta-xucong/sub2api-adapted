@@ -783,7 +783,8 @@ func (s *AccountTestService) fetchUpstreamModelList(ctx context.Context, account
 	if len(models) == 0 {
 		return nil, nil, newUpstreamModelSyncUpstreamError("Upstream returned no supported models", nil)
 	}
-	if account != nil && account.IsOpenAI() {
+	if account != nil && account.IsOpenAI() &&
+		(account.IsOpenAIOAuth() || DetectUpstreamModelSourceProfile(account).Kind == "openai") {
 		filtered := openai.FilterAutoDiscoveredModelIDs(models)
 		if len(filtered) == 0 {
 			return nil, nil, newUpstreamModelSyncUpstreamError("Upstream returned no current supported models", nil)
@@ -1199,6 +1200,12 @@ func (s *AccountTestService) fetchAntigravityOAuthUpstreamModels(ctx context.Con
 }
 
 func (s *AccountTestService) doUpstreamModelsRequest(req *http.Request, proxyURL string, account *Account) (*http.Response, error) {
+	// Catalog probes carry account credentials. Do not follow redirects: even a
+	// same-origin check after the response is too late to prevent credentials
+	// being sent to a redirect target.
+	if req != nil {
+		req = req.WithContext(WithHTTPUpstreamRedirectsDisabled(req.Context()))
+	}
 	if s.tlsFPProfileService == nil {
 		return s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, nil)
 	}

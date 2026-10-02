@@ -151,7 +151,7 @@ func TestCodexModelsAppliesLocalFiltersBeforeClientETag(t *testing.T) {
 		},
 	}}
 	upstream := &codexModelsFailoverHTTPUpstream{
-		firstBody: `{"object":"list","data":[{"id":"codex-auto-review"},{"id":"gpt-5.6"}]}`,
+		firstBody: `{"object":"list","data":[{"id":"codex-auto-review"},{"id":"gpt-5.6"},{"id":"gpt-5.5"}]}`,
 	}
 	gatewayService := service.NewOpenAIGatewayService(
 		repo,
@@ -173,8 +173,8 @@ func TestCodexModelsAppliesLocalFiltersBeforeClientETag(t *testing.T) {
 	if first.Code != http.StatusOK {
 		t.Fatalf("first status: got %d, want %d; body=%s", first.Code, http.StatusOK, first.Body.String())
 	}
-	if body := first.Body.String(); !strings.Contains(body, "codex-auto-review") || !strings.Contains(body, "gpt-5.6") {
-		t.Fatalf("first body did not include the explicitly selected models: %s", body)
+	if body := first.Body.String(); strings.Contains(body, "codex-auto-review") || !strings.Contains(body, "gpt-5.6") || strings.Contains(body, "gpt-5.5") {
+		t.Fatalf("first body should hide internal probes but preserve the custom source's exact gpt-5.6 ID: %s", body)
 	}
 	oldETag := first.Header().Get("ETag")
 	if oldETag == "" {
@@ -186,7 +186,7 @@ func TestCodexModelsAppliesLocalFiltersBeforeClientETag(t *testing.T) {
 	if second.Code != http.StatusOK {
 		t.Fatalf("second status: got %d, want %d; body=%s", second.Code, http.StatusOK, second.Body.String())
 	}
-	if body := second.Body.String(); strings.Contains(body, "codex-auto-review") || !strings.Contains(body, "gpt-5.6") {
+	if body := second.Body.String(); strings.Contains(body, "codex-auto-review") || !strings.Contains(body, "gpt-5.6") || !strings.Contains(body, "gpt-5.5") {
 		t.Fatalf("second body was not the filtered manifest: %s", body)
 	}
 	if newETag := second.Header().Get("ETag"); newETag == "" || newETag == oldETag {
@@ -292,7 +292,7 @@ func TestCodexModelsAPIKeyCacheDoesNotLeakGroupFilters(t *testing.T) {
 	require.True(t, sawGroupB)
 }
 
-func TestCodexModelsSupplementsConfiguredModelsWithUnmappedAccountDefaults(t *testing.T) {
+func TestCodexModelsDoesNotSupplementUnmappedAccountDefaults(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	groupID := int64(44)
 	repo := &codexModelsFailoverAccountRepo{accounts: []service.Account{
@@ -353,7 +353,7 @@ func TestCodexModelsSupplementsConfiguredModelsWithUnmappedAccountDefaults(t *te
 	if err := json.Unmarshal(recorder.Body.Bytes(), &envelope); err != nil {
 		t.Fatalf("decode body: %v; body=%s", err, recorder.Body.String())
 	}
-	require.Contains(t, codexHandlerManifestSlugs(t, recorder), "gpt-5.6-sol")
+	require.NotContains(t, codexHandlerManifestSlugs(t, recorder), "gpt-5.6-sol")
 	require.Contains(t, codexHandlerManifestSlugs(t, recorder), "glm-5.3")
 	for _, model := range envelope.Models {
 		require.Contains(t, model, "supported_reasoning_levels")
@@ -388,7 +388,7 @@ func TestCodexModelsUnmappedParentAndSparkShadowHonorCustomListAndETag(t *testin
 	first := performCodexModelsRequestForGroup(t, handler, group, "")
 	require.Equal(t, http.StatusOK, first.Code, first.Body.String())
 	slugs := codexHandlerManifestSlugs(t, first)
-	require.Contains(t, slugs, "gpt-5.6-sol")
+	require.NotContains(t, slugs, "gpt-5.6-sol")
 	require.Contains(t, slugs, sparkModel)
 	require.NotContains(t, slugs, "gpt-image-2")
 	require.NotContains(t, slugs, "codex-auto-review")
@@ -399,10 +399,13 @@ func TestCodexModelsUnmappedParentAndSparkShadowHonorCustomListAndETag(t *testin
 		Enabled: true, Models: []string{"gpt-5.6-sol", sparkModel, "unknown-model"},
 	}
 	second := performCodexModelsRequestForGroup(t, handler, group, firstETag)
-	require.Equal(t, http.StatusOK, second.Code, second.Body.String())
-	require.ElementsMatch(t, []string{"gpt-5.6-sol", sparkModel}, codexHandlerManifestSlugs(t, second))
-	require.NotEqual(t, firstETag, second.Header().Get("ETag"))
-	third := performCodexModelsRequestForGroup(t, handler, group, second.Header().Get("ETag"))
+	// The allowlist retains the only model actually present in this account's
+	// catalog. Since gpt-5.6-sol is not inferred from a static default, the final
+	// body is unchanged and the matching ETag correctly yields 304.
+	require.Equal(t, http.StatusNotModified, second.Code, second.Body.String())
+	require.Equal(t, firstETag, second.Header().Get("ETag"))
+	require.Empty(t, second.Body.Bytes())
+	third := performCodexModelsRequestForGroup(t, handler, group, firstETag)
 	require.Equal(t, http.StatusNotModified, third.Code)
 	require.Empty(t, third.Body.Bytes())
 	require.Empty(t, upstream.calls())

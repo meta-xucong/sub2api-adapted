@@ -3864,7 +3864,8 @@ func TestHandleNonStreamingResponse_OAuthJSONBodyWithDataEventTextKeepsJSONUsage
 	// This must NOT be misdetected as SSE framing: it has a top-level usage
 	// object and no upstream text/event-stream Content-Type.
 	jsonBody := `{"id":"resp_oauth_compact","object":"response","model":"gpt-5.4","status":"completed",` +
-		`"output":[{"type":"message","content":[{"type":"output_text",` +
+		`"output":[{"type":"compaction_summary","encrypted_content":"opaque"},` +
+		`{"type":"message","content":[{"type":"output_text",` +
 		`"text":"processing data: 1,2,3 then event: click finished"}]}],` +
 		`"usage":{"input_tokens":11,"output_tokens":22,"total_tokens":33}}`
 	resp := &http.Response{

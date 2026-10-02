@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/gin-gonic/gin"
@@ -32,6 +33,22 @@ func newCompactBridgeTestService() *OpenAIGatewayService {
 		cfg:           cfg,
 		toolCorrector: NewCodexToolCorrector(),
 	}
+}
+
+func newCompactStreamUpstreamResponse(body string) *http.Response {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"req_compact_stream_test"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+}
+
+func newResponsesStreamTestContext(path string) (*gin.Context, *httptest.ResponseRecorder) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, path, nil)
+	return c, rec
 }
 
 // parseCompactBridgeSSE 把合成的 SSE 文本拆成 (eventType, dataJSON) 序列。
@@ -484,6 +501,192 @@ func TestSupplementCompactionItemFromSSE_Gating(t *testing.T) {
 	require.Len(t, items, 2)
 	require.Equal(t, "compaction", items[1].Get("type").String())
 	require.Equal(t, "g", items[1].Get("encrypted_content").String())
+}
+
+func TestCompactStreamingHandlersRequireUsableCompactionTerminal(t *testing.T) {
+	compaction := `{"id":"cmp_stream_1","type":"compaction","status":"completed","encrypted_content":"compact-stream-payload"}`
+	valid := "event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":" + compaction + "}\n\n" +
+		"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_compact_stream\",\"status\":\"completed\",\"output\":[" + compaction + "]}}\n\n"
+	missingItem := "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_compact_missing\",\"status\":\"completed\",\"output\":[{\"id\":\"msg_1\",\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"not a compaction result\"}]}]}}\n\n"
+	truncated := "event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":" + compaction + "}\n\n"
+
+	handlers := []struct {
+		name string
+		run  func(*gin.Context, *http.Response) error
+	}{
+		{
+			name: "native",
+			run: func(c *gin.Context, resp *http.Response) error {
+				_, err := newCompactBridgeTestService().handleStreamingResponseWithReasoning(
+					context.Background(), resp, c, &Account{ID: 1, Platform: PlatformOpenAI}, time.Now(), "gpt-test", "gpt-test", "",
+				)
+				return err
+			},
+		},
+		{
+			name: "passthrough",
+			run: func(c *gin.Context, resp *http.Response) error {
+				_, err := newCompactBridgeTestService().handleStreamingResponsePassthrough(
+					context.Background(), resp, c, &Account{ID: 1, Platform: PlatformOpenAI}, time.Now(), "gpt-test", "gpt-test",
+				)
+				return err
+			},
+		},
+	}
+
+	for _, handler := range handlers {
+		t.Run(handler.name, func(t *testing.T) {
+			t.Run("valid compaction preserves completed event", func(t *testing.T) {
+				c, rec := newCompactBridgeTestContext(t, true)
+				err := handler.run(c, newCompactStreamUpstreamResponse(valid))
+				require.NoError(t, err)
+				require.Contains(t, rec.Body.String(), "event: response.completed")
+				require.Contains(t, rec.Body.String(), "compact-stream-payload")
+				require.NotContains(t, rec.Body.String(), "event: response.failed")
+			})
+
+			t.Run("ordinary text terminal fails closed", func(t *testing.T) {
+				c, rec := newCompactBridgeTestContext(t, true)
+				err := handler.run(c, newCompactStreamUpstreamResponse(missingItem))
+				require.Error(t, err)
+				require.NotContains(t, rec.Body.String(), "event: response.completed")
+				require.Contains(t, rec.Body.String(), "event: response.failed")
+				require.Contains(t, rec.Body.String(), "missing a usable compaction item")
+			})
+
+			t.Run("truncated stream fails closed", func(t *testing.T) {
+				c, rec := newCompactBridgeTestContext(t, true)
+				err := handler.run(c, newCompactStreamUpstreamResponse(truncated))
+				require.Error(t, err)
+				require.NotContains(t, rec.Body.String(), "event: response.completed")
+				require.Contains(t, rec.Body.String(), "event: response.failed")
+				require.Contains(t, rec.Body.String(), "ended before a terminal event")
+			})
+		})
+	}
+}
+
+func TestCompactStreamingHandlersPreserveDoneItemWhenTerminalOutputIsEmpty(t *testing.T) {
+	upstream := "event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"id\":\"cmp_empty_terminal\",\"type\":\"compaction\",\"status\":\"completed\",\"encrypted_content\":\"compact-stream-state\"}}\n\n" +
+		"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_empty_terminal\",\"status\":\"completed\",\"output\":[]}}\n\n"
+	handlers := []struct {
+		name string
+		run  func(*gin.Context, *http.Response) error
+	}{
+		{
+			name: "native",
+			run: func(c *gin.Context, resp *http.Response) error {
+				_, err := newCompactBridgeTestService().handleStreamingResponseWithReasoning(
+					context.Background(), resp, c, &Account{ID: 1, Platform: PlatformOpenAI}, time.Now(), "gpt-test", "gpt-test", "",
+				)
+				return err
+			},
+		},
+		{
+			name: "passthrough",
+			run: func(c *gin.Context, resp *http.Response) error {
+				_, err := newCompactBridgeTestService().handleStreamingResponsePassthrough(
+					context.Background(), resp, c, &Account{ID: 1, Platform: PlatformOpenAI}, time.Now(), "gpt-test", "gpt-test",
+				)
+				return err
+			},
+		},
+	}
+	for _, handler := range handlers {
+		t.Run(handler.name, func(t *testing.T) {
+			c, rec := newCompactBridgeTestContext(t, true)
+			err := handler.run(c, newCompactStreamUpstreamResponse(upstream))
+			require.NoError(t, err)
+			events := parseCompactBridgeSSE(t, rec.Body.String())
+			require.Len(t, events, 2)
+			require.Equal(t, "response.output_item.done", events[0][0])
+			require.Equal(t, "response.completed", events[1][0])
+			require.Len(t, gjson.Get(events[1][1], "response.output").Array(), 1)
+			require.Equal(t, "compact-stream-state", gjson.Get(events[1][1], "response.output.0.encrypted_content").String())
+			require.NotContains(t, rec.Body.String(), "response.failed")
+		})
+	}
+}
+
+func TestCompactStreamingHandlersSupplementMissingDoneItemInNonEmptyTerminal(t *testing.T) {
+	upstream := "event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"id\":\"cmp_nonempty_terminal\",\"type\":\"compaction\",\"status\":\"completed\",\"encrypted_content\":\"compact-stream-state\"}}\n\n" +
+		"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_nonempty_terminal\",\"status\":\"completed\",\"output\":[{\"id\":\"msg_0\",\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"summary\"}]}]}}\n\n"
+	handlers := []struct {
+		name string
+		run  func(*gin.Context, *http.Response) error
+	}{
+		{
+			name: "native",
+			run: func(c *gin.Context, resp *http.Response) error {
+				_, err := newCompactBridgeTestService().handleStreamingResponseWithReasoning(
+					context.Background(), resp, c, &Account{ID: 1, Platform: PlatformOpenAI}, time.Now(), "gpt-test", "gpt-test", "",
+				)
+				return err
+			},
+		},
+		{
+			name: "passthrough",
+			run: func(c *gin.Context, resp *http.Response) error {
+				_, err := newCompactBridgeTestService().handleStreamingResponsePassthrough(
+					context.Background(), resp, c, &Account{ID: 1, Platform: PlatformOpenAI}, time.Now(), "gpt-test", "gpt-test",
+				)
+				return err
+			},
+		},
+	}
+	for _, handler := range handlers {
+		t.Run(handler.name, func(t *testing.T) {
+			c, rec := newCompactBridgeTestContext(t, true)
+			err := handler.run(c, newCompactStreamUpstreamResponse(upstream))
+			require.NoError(t, err)
+			events := parseCompactBridgeSSE(t, rec.Body.String())
+			require.Len(t, events, 2)
+			require.Equal(t, "response.completed", events[1][0])
+			output := gjson.Get(events[1][1], "response.output").Array()
+			require.Len(t, output, 2)
+			require.Equal(t, "msg_0", output[0].Get("id").String())
+			require.Equal(t, "compaction", output[1].Get("type").String())
+			require.Equal(t, "compact-stream-state", output[1].Get("encrypted_content").String())
+			require.NotContains(t, rec.Body.String(), "response.failed")
+		})
+	}
+}
+
+func TestCompactStreamingHandlersDoNotAffectOrdinaryResponses(t *testing.T) {
+	body := "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_ordinary\",\"status\":\"completed\",\"output\":[{\"id\":\"msg_1\",\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"ordinary response\"}]}]}}\n\n"
+	handlers := []struct {
+		name string
+		run  func(*gin.Context, *http.Response) error
+	}{
+		{
+			name: "native",
+			run: func(c *gin.Context, resp *http.Response) error {
+				_, err := newCompactBridgeTestService().handleStreamingResponseWithReasoning(
+					context.Background(), resp, c, &Account{ID: 1, Platform: PlatformOpenAI}, time.Now(), "gpt-test", "gpt-test", "",
+				)
+				return err
+			},
+		},
+		{
+			name: "passthrough",
+			run: func(c *gin.Context, resp *http.Response) error {
+				_, err := newCompactBridgeTestService().handleStreamingResponsePassthrough(
+					context.Background(), resp, c, &Account{ID: 1, Platform: PlatformOpenAI}, time.Now(), "gpt-test", "gpt-test",
+				)
+				return err
+			},
+		},
+	}
+	for _, handler := range handlers {
+		t.Run(handler.name, func(t *testing.T) {
+			c, rec := newResponsesStreamTestContext("/v1/responses")
+			err := handler.run(c, newCompactStreamUpstreamResponse(body))
+			require.NoError(t, err)
+			require.Contains(t, rec.Body.String(), "event: response.completed")
+			require.Contains(t, rec.Body.String(), "ordinary response")
+			require.NotContains(t, rec.Body.String(), "event: response.failed")
+		})
+	}
 }
 
 // 非 compaction 的 output_item.added 不参与回退收集（added 阶段的 message

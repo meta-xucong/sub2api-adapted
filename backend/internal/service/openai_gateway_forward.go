@@ -1273,42 +1273,6 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		if reqStream {
 			streamResult, err := s.handleStreamingResponseWithReasoning(ctx, resp, c, account, startTime, originalModel, upstreamModel, reasoningEffortValue, compatHistoryInput)
 			if err != nil {
-				if signal, ok := asOpenAICompactFallbackSignal(err); ok {
-					if retryBody, fallbackModel, retry := s.prepareOpenAICompactFallbackRetry(
-						c, account, requestedModel, body, http.StatusBadRequest, signal.message, signal.payload, compactModelFallbackRetried,
-					); retry {
-						s.appendOpenAICompactFallbackRetryOps(c, account, resp, signal.payload, signal.message, false)
-						body = retryBody
-						requestView = newOpenAIRequestView(body)
-						upstreamModel = fallbackModel
-						compactModelFallbackRetried = true
-						SetOpsUpstreamModel(c, fallbackModel)
-						continue
-					}
-					if resp.Body != nil {
-						_ = resp.Body.Close()
-					}
-					compactResp, compactBody := openAICompactFallbackErrorResponse(resp, signal)
-					if s.shouldFailoverOpenAIUpstreamResponse(account, compactResp.StatusCode, signal.message, compactBody) {
-						appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
-							ProxyID:            opsUpstreamProxyID(account),
-							ProxyName:          opsUpstreamProxyName(account),
-							Platform:           account.Platform,
-							AccountID:          account.ID,
-							AccountName:        account.Name,
-							UpstreamStatusCode: compactResp.StatusCode,
-							UpstreamRequestID:  compactResp.Header.Get("x-request-id"),
-							Kind:               "failover",
-							Message:            signal.message,
-						})
-						shouldDisable := s.handleFailoverSideEffects(ctx, compactResp, account, compactBody, upstreamModel)
-						return nil, s.newOpenAIAccountFailoverError(
-							account, compactResp.StatusCode, compactResp.Header, compactBody, signal.message, shouldDisable,
-							!shouldDisable && account.IsPoolMode() && (account.IsPoolModeRetryableStatus(compactResp.StatusCode) || isOpenAITransientProcessingError(compactResp.StatusCode, signal.message, compactBody)),
-						)
-					}
-					return s.handleErrorResponse(ctx, compactResp, c, account, body, resolveOpenAIErrorSchedulingModel(billingModel, upstreamModel))
-				}
 				return nil, err
 			}
 			usage = streamResult.usage
@@ -1320,19 +1284,6 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		} else {
 			nonStreamResult, err := s.handleNonStreamingResponse(ctx, resp, c, account, originalModel, upstreamModel, compatHistoryInput)
 			if err != nil {
-				if signal, ok := asOpenAICompactFallbackSignal(err); ok {
-					if retryBody, fallbackModel, retry := s.prepareOpenAICompactFallbackRetry(
-						c, account, requestedModel, body, http.StatusBadRequest, signal.message, signal.payload, compactModelFallbackRetried,
-					); retry {
-						s.appendOpenAICompactFallbackRetryOps(c, account, resp, signal.payload, signal.message, false)
-						body = retryBody
-						requestView = newOpenAIRequestView(body)
-						upstreamModel = fallbackModel
-						compactModelFallbackRetried = true
-						SetOpsUpstreamModel(c, fallbackModel)
-						continue
-					}
-				}
 				return nil, err
 			}
 			usage = nonStreamResult.usage

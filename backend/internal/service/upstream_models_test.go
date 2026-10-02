@@ -434,11 +434,30 @@ func TestFetchUpstreamSupportedModelsRejectsOnlyStaleOpenAIModels(t *testing.T) 
 		Type:     AccountTypeAPIKey,
 		Credentials: map[string]any{
 			"api_key":  "openai-key",
-			"base_url": "https://openai.example.com/v1",
+			"base_url": "https://api.openai.com/v1",
 		},
 	})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "no current supported models")
+}
+
+func TestFetchUpstreamSupportedModelsPreservesCustomOpenAICompatibleIDs(t *testing.T) {
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"data":[{"id":"gpt-5.6-sol-2026-07-09"},{"id":"ft:tenant:model"}]}`)),
+	}}
+	svc := &AccountTestService{httpUpstream: upstream, cfg: upstreamModelSyncTestConfig()}
+
+	models, err := svc.FetchUpstreamSupportedModels(context.Background(), &Account{
+		ID: 9, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key": "gateway-key", "base_url": "https://gateway.example/v1",
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"ft:tenant:model", "gpt-5.6-sol-2026-07-09"}, models,
+		"custom OpenAI-compatible providers own their exact model IDs and naming rules")
 }
 
 // Scenario: ID-only 模型列表从 Models.dev 补齐能力。

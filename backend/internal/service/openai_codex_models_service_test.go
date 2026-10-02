@@ -165,10 +165,10 @@ func TestFilterCodexModelIDsForGroupOmitsWildcardKeys(t *testing.T) {
 	t.Parallel()
 
 	got := FilterCodexModelIDsForGroup(
-		[]string{"deepseek-v4-pro", "foo-*", "  bar-*  ", "gpt-5.5"},
+		[]string{"deepseek-v4-pro", "foo-*", "  bar-*  ", "gpt-5.5", "gpt-5.6", "gpt-6", "codex-auto-review"},
 		&Group{Platform: PlatformDeepseek},
 	)
-	require.Equal(t, []string{"deepseek-v4-pro", "gpt-5.5"}, got)
+	require.Equal(t, []string{"deepseek-v4-pro", "gpt-5.5", "gpt-5.6", "gpt-6"}, got, "third-party model IDs are exact source-owned names; OpenAI aliases are filtered only at an official OpenAI boundary")
 }
 
 func decodeCodexManifestModels(t *testing.T, body []byte) []map[string]any {
@@ -1190,7 +1190,7 @@ func TestMergeGroupConfiguredCodexModelsInjectsCurrentGroupAliases(t *testing.T)
 		},
 	}}
 	manifest := &OpenAIModelsResponse{
-		Body: []byte(`{"models":[{"slug":"gpt-5.6","display_name":"GPT-5.6","unknown":{"kept":true}}],"metadata":{"version":1}}`),
+		Body: []byte(`{"models":[{"slug":"gpt-5.6-sol","display_name":"GPT-5.6 Sol","unknown":{"kept":true}}],"metadata":{"version":1}}`),
 	}
 
 	err := svc.MergeGroupConfiguredCodexModels(
@@ -1202,7 +1202,7 @@ func TestMergeGroupConfiguredCodexModelsInjectsCurrentGroupAliases(t *testing.T)
 	require.NoError(t, err)
 	models := decodeCodexManifestModels(t, manifest.Body)
 	require.Len(t, models, 2)
-	require.Equal(t, "gpt-5.6", models[0]["slug"])
+	require.Equal(t, "gpt-5.6-sol", models[0]["slug"])
 	require.Equal(t, map[string]any{"kept": true}, models[0]["unknown"])
 	requireCompleteConfiguredCodexModel(t, models[1], "deepseek-4-pro")
 	require.EqualValues(t, 1_000_000, models[1]["context_window"])
@@ -1259,7 +1259,7 @@ func TestBuildGroupConfiguredCodexModelsManifestUsesAdministratorConfiguration(t
 	require.True(t, configured)
 	models := decodeCodexManifestModels(t, manifest.Body)
 	require.Equal(t, "glm-5.3", models[0]["slug"])
-	require.Contains(t, codexManifestModelSlugs(t, manifest.Body), "gpt-5.6-sol")
+	require.NotContains(t, codexManifestModelSlugs(t, manifest.Body), "gpt-5.6-sol", "an unmapped account must not contribute fabricated static catalog entries")
 	require.NotContains(t, codexManifestModelSlugs(t, manifest.Body), "gpt-image-2")
 	require.NotContains(t, codexManifestModelSlugs(t, manifest.Body), "codex-auto-review")
 	require.Equal(t, "GLM 5.3", models[0]["display_name"])
@@ -1308,9 +1308,8 @@ func TestBuildGroupConfiguredCodexModelsManifestExpandsSelectedModelCoveredByWil
 
 	manifest, configured, err := svc.BuildGroupConfiguredCodexModelsManifest(context.Background(), group, "")
 	require.NoError(t, err)
-	require.True(t, configured)
-	require.Equal(t, []string{"gpt-5.6"}, codexManifestModelSlugs(t, manifest.Body))
-	require.NotContains(t, string(manifest.Body), "gpt-*")
+	require.False(t, configured, "a wildcard mapping is not evidence that a source account serves a concrete model")
+	require.Nil(t, manifest)
 }
 
 // Scenario: OpenAI 配置目录对仅因瞬态状态退出当前调度池的账号取能力交集，
@@ -1433,18 +1432,19 @@ func TestMergeGroupConfiguredCodexModelsFiltersAutoReviewByDefault(t *testing.T)
 	const groupID int64 = 74
 	svc := &OpenAIGatewayService{accountRepo: codexModelsVisibilityAccountRepo{}}
 	manifest := &OpenAIModelsResponse{
-		Body: []byte(`{"models":[{"slug":"codex-auto-review","visibility":"list"},{"slug":"codex-auto-future","visibility":"list"},{"slug":"gpt-image-2","visibility":"list"},{"slug":"gpt-5.6","visibility":"list"}]}`),
+		Body: []byte(`{"models":[{"slug":"codex-auto-review","visibility":"list"},{"slug":"codex-auto-future","visibility":"list"},{"slug":"gpt-image-2","visibility":"list"},{"slug":"gpt-5.6","visibility":"list"},{"slug":"gpt-5.6-sol","visibility":"list"},{"slug":"gpt-6","visibility":"list"}]}`),
 	}
 
-	require.NoError(t, svc.MergeGroupConfiguredCodexModels(
+	require.NoError(t, svc.MergeGroupConfiguredCodexModelsForAccount(
 		context.Background(),
 		&Group{ID: groupID, Platform: PlatformOpenAI},
 		manifest,
 		"",
+		newCodexModelsAPIKeyTestAccount("https://api.openai.com/v1"),
 	))
 	models := decodeCodexManifestModels(t, manifest.Body)
 	require.Len(t, models, 1)
-	require.Equal(t, "gpt-5.6", models[0]["slug"])
+	require.Equal(t, "gpt-5.6-sol", models[0]["slug"])
 	require.Equal(t, codexModelsManifestBodyETag(manifest.Body), manifest.ETag)
 }
 
@@ -1468,26 +1468,41 @@ func TestMergeGroupConfiguredCodexModelsFiltersAccountMappedAutoReviewByDefault(
 		},
 	}}
 	manifest := &OpenAIModelsResponse{
-		Body: []byte(`{"models":[{"slug":"codex-auto-review","visibility":"hide","model_messages":{"auto_review":{"enabled":true}}},{"slug":"gpt-5.6","visibility":"list"}]}`),
+		Body: []byte(`{"models":[{"slug":"codex-auto-review","visibility":"hide","model_messages":{"auto_review":{"enabled":true}}},{"slug":"gpt-5.6","visibility":"list"},{"slug":"gpt-5.6-sol","visibility":"list"}]}`),
 	}
 
-	require.NoError(t, svc.MergeGroupConfiguredCodexModels(
+	require.NoError(t, svc.MergeGroupConfiguredCodexModelsForAccount(
 		context.Background(),
 		&Group{ID: groupID, Platform: PlatformOpenAI},
 		manifest,
 		"",
+		newCodexModelsAPIKeyTestAccount("https://api.openai.com/v1"),
 	))
-	require.Equal(t, []string{"gpt-5.6"}, codexManifestModelSlugs(t, manifest.Body))
+	require.Equal(t, []string{"gpt-5.6-sol"}, codexManifestModelSlugs(t, manifest.Body))
 }
 
-// Scenario: 启用的分组自定义列表允许 Auto Review。
-func TestMergeGroupConfiguredCodexModelsKeepsExplicitAutoReviewSelection(t *testing.T) {
+func TestMergeGroupConfiguredCodexModelsPreservesCustomProviderGPTLikeIDs(t *testing.T) {
+	t.Parallel()
+
+	const groupID int64 = 781
+	svc := &OpenAIGatewayService{accountRepo: codexModelsVisibilityAccountRepo{}}
+	manifest := &OpenAIModelsResponse{Body: []byte(`{"models":[{"slug":"gpt-5.6"},{"slug":"gpt-6"},{"slug":"gpt-6-astra-20261001"}]}`)}
+	customSource := newCodexModelsAPIKeyTestAccount("https://gateway.example/v1")
+
+	require.NoError(t, svc.MergeGroupConfiguredCodexModelsForAccount(
+		context.Background(), &Group{ID: groupID, Platform: PlatformOpenAI}, manifest, "", customSource,
+	))
+	require.Equal(t, []string{"gpt-5.6", "gpt-6", "gpt-6-astra-20261001"}, codexManifestModelSlugs(t, manifest.Body))
+}
+
+// Internal usage-probe models stay hidden even when accidentally allowlisted.
+func TestMergeGroupConfiguredCodexModelsHidesExplicitAutoReviewSelection(t *testing.T) {
 	t.Parallel()
 
 	const groupID int64 = 76
 	svc := &OpenAIGatewayService{accountRepo: codexModelsVisibilityAccountRepo{}}
 	manifest := &OpenAIModelsResponse{
-		Body: []byte(`{"models":[{"slug":"codex-auto-review","visibility":"list"},{"slug":"gpt-5.6","visibility":"list"}]}`),
+		Body: []byte(`{"models":[{"slug":"codex-auto-review","visibility":"list"},{"slug":"gpt-5.6","visibility":"list"},{"slug":"gpt-5.6-sol","visibility":"list"}]}`),
 	}
 	group := &Group{
 		ID:       groupID,
@@ -1499,7 +1514,7 @@ func TestMergeGroupConfiguredCodexModelsKeepsExplicitAutoReviewSelection(t *test
 	}
 
 	require.NoError(t, svc.MergeGroupConfiguredCodexModels(context.Background(), group, manifest, ""))
-	require.Equal(t, []string{"codex-auto-review"}, codexManifestModelSlugs(t, manifest.Body))
+	require.Empty(t, codexManifestModelSlugs(t, manifest.Body))
 }
 
 func TestMergeGroupConfiguredCodexModelsHonorsCustomListAndFinalETag(t *testing.T) {
@@ -2312,7 +2327,7 @@ func TestCompleteAPIKeyCodexModelsManifestForClientMarksOnlyOfficialVisionGPTIma
 
 	svc := &OpenAIGatewayService{}
 	manifest := &OpenAIModelsResponse{Body: []byte(`{"models":[{"slug":"gpt-6-astra"},{"slug":"gpt-5.6-sol"},{"slug":"gpt-4o"},{"slug":"gpt-3.5-turbo"},{"slug":"gpt-4"}]}`)}
-	account := newCodexModelsAPIKeyTestAccount("")
+	account := newCodexModelsAPIKeyTestAccount("https://api.openai.com/v1")
 
 	require.NoError(t, svc.CompleteAPIKeyCodexModelsManifestForClient(manifest, account))
 	models := decodeCodexManifestModels(t, manifest.Body)
@@ -2339,12 +2354,23 @@ func TestCompleteAPIKeyCodexModelsManifestForClientFiltersOfficialNonAgentModels
 	t.Parallel()
 
 	svc := &OpenAIGatewayService{}
-	manifest := &OpenAIModelsResponse{Body: []byte(`{"models":[{"slug":"gpt-5.6-sol"},{"slug":"gpt-4o-realtime-preview"},{"slug":"gpt-4o-mini-tts"},{"slug":"text-embedding-3-large"},{"slug":"omni-moderation-latest"},{"slug":"o4-mini"},{"slug":"codex-mini-latest"}]}`)}
-	account := newCodexModelsAPIKeyTestAccount("")
+	manifest := &OpenAIModelsResponse{Body: []byte(`{"models":[{"slug":"gpt-5.6-sol"},{"slug":"gpt-5.6"},{"slug":"gpt-5.6-sol-2026-07-09"},{"slug":"gpt-4o-realtime-preview"},{"slug":"gpt-4o-mini-tts"},{"slug":"text-embedding-3-large"},{"slug":"omni-moderation-latest"},{"slug":"o4-mini"},{"slug":"codex-mini-latest"}]}`)}
+	account := newCodexModelsAPIKeyTestAccount("https://api.openai.com/v1")
 
 	require.NoError(t, svc.CompleteAPIKeyCodexModelsManifestForClient(manifest, account))
 	require.Equal(t, []string{"gpt-5.6-sol", "o4-mini", "codex-mini-latest"}, codexManifestModelSlugs(t, manifest.Body))
 	require.Equal(t, codexModelsManifestBodyETag(manifest.Body), manifest.ETag)
+}
+
+func TestCompleteAPIKeyCodexModelsManifestForClientKeepsCustomDatedIDs(t *testing.T) {
+	t.Parallel()
+
+	svc := &OpenAIGatewayService{}
+	manifest := &OpenAIModelsResponse{Body: []byte(`{"models":[{"slug":"gpt-5.6-sol-2026-07-09"},{"slug":"gpt-5.6"}]}`)}
+	account := newCodexModelsAPIKeyTestAccount("https://gateway.example/v1")
+
+	require.NoError(t, svc.CompleteAPIKeyCodexModelsManifestForClient(manifest, account))
+	require.Equal(t, []string{"gpt-5.6-sol-2026-07-09", "gpt-5.6"}, codexManifestModelSlugs(t, manifest.Body))
 }
 
 func TestAdjustAPIKeyCodexModelsManifest(t *testing.T) {

@@ -491,6 +491,10 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 	if err := ValidateUpstreamRequestIDHeaderExtra(accountExtra); err != nil {
 		return nil, err
 	}
+	// Model discovery policy is an explicit, audited opt-in. Generic account
+	// creation must always start in manual mode and cannot inject a stale snapshot.
+	delete(accountExtra, UpstreamModelPolicyExtraKey)
+	delete(accountExtra, UpstreamModelAvailabilityExtraKey)
 
 	// 绑定分组
 	groupIDs := input.GroupIDs
@@ -572,6 +576,11 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 }
 
 func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *UpdateAccountInput) (*Account, error) {
+	if input.Extra != nil {
+		if _, supplied := input.Extra[UpstreamModelPolicyExtraKey]; supplied {
+			return nil, infraerrors.BadRequest("UPSTREAM_MODEL_POLICY_REQUIRES_PREVIEW", "upstream model policy must be changed through the audited preview endpoint")
+		}
+	}
 	account, err := s.accountRepo.GetByID(ctx, id)
 	if err != nil {
 		return nil, err
@@ -679,6 +688,7 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		delete(normalizedExtra, OllamaCloudUsageSnapshotExtraKey)
 		delete(normalizedExtra, OpenCodeGoUsageAutoRefreshExtraKey)
 		delete(normalizedExtra, OpenCodeGoUsageSnapshotExtraKey)
+		delete(normalizedExtra, UpstreamModelAvailabilityExtraKey)
 		// 保留配额用量和专用服务受管字段，防止普通账号编辑意外覆盖。
 		for _, key := range []string{
 			"quota_used",
@@ -696,6 +706,8 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 			OpenAIAutoResetCreditStateExtraKey,
 			OpenCodeGoUsageAutoRefreshExtraKey,
 			OpenCodeGoUsageSnapshotExtraKey,
+			UpstreamModelAvailabilityExtraKey,
+			UpstreamModelPolicyExtraKey,
 		} {
 			if v, ok := account.Extra[key]; ok {
 				normalizedExtra[key] = v
@@ -920,6 +932,12 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 // UpdateAccountExtra 仅对 Extra JSONB 做 key 级合并，避免覆盖其它运行态键
 // （如 model_rate_limits / passive_usage_* 等）。
 func (s *adminServiceImpl) UpdateAccountExtra(ctx context.Context, id int64, updates map[string]any) error {
+	if _, supplied := updates[UpstreamModelPolicyExtraKey]; supplied {
+		return infraerrors.BadRequest("UPSTREAM_MODEL_POLICY_REQUIRES_PREVIEW", "upstream model policy must be changed through the audited preview endpoint")
+	}
+	if _, supplied := updates[UpstreamModelAvailabilityExtraKey]; supplied {
+		return infraerrors.BadRequest("UPSTREAM_MODEL_AVAILABILITY_MANAGED", "upstream model availability is managed by the refresh service")
+	}
 	updates = sanitizedCodexFingerprintExtraUpdates(updates)
 	updates = stripOpenAIAutoResetCreditManagedExtra(updates, true)
 	delete(updates, UpstreamBillingProbeEnabledExtraKey)
@@ -948,6 +966,12 @@ func (s *adminServiceImpl) UpdateAccountExtra(ctx context.Context, id int64, upd
 // BulkUpdateAccounts updates multiple accounts in one request.
 // It merges credentials/extra keys instead of overwriting the whole object.
 func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUpdateAccountsInput) (*BulkUpdateAccountsResult, error) {
+	if _, supplied := input.Extra[UpstreamModelPolicyExtraKey]; supplied {
+		return nil, infraerrors.BadRequest("UPSTREAM_MODEL_POLICY_REQUIRES_PREVIEW", "upstream model policy must be changed through the audited preview endpoint")
+	}
+	if _, supplied := input.Extra[UpstreamModelAvailabilityExtraKey]; supplied {
+		return nil, infraerrors.BadRequest("UPSTREAM_MODEL_AVAILABILITY_MANAGED", "upstream model availability is managed by the refresh service")
+	}
 	// Managed probe/session state may only enter through dedicated typed endpoints.
 	input.Extra = sanitizedCodexFingerprintExtraUpdates(input.Extra)
 	input.Extra = stripOpenAIAutoResetCreditManagedExtra(input.Extra, true)

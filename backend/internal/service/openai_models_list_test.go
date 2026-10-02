@@ -208,6 +208,21 @@ func TestProjectAccountModelsPassthroughIgnoresStaleMappings(t *testing.T) {
 	require.JSONEq(t, string(body), string(projected))
 }
 
+func TestProjectAccountModelsNormalizesOnlyOfficialOpenAICatalog(t *testing.T) {
+	body := []byte(`{"object":"list","data":[{"id":"gpt-5.6"},{"id":"gpt-5.6-sol"},{"id":"gpt-5.6-sol-2026-07-09"},{"id":"gpt-6"},{"id":"codex-auto-review"}]}`)
+	official := newCodexModelsAPIKeyTestAccount("https://api.openai.com/v1")
+	official.Credentials["model_mapping"] = map[string]any{"gpt-5.6-sol": "gpt-5.6-sol"}
+	projected, err := projectAccountModelsBody(body, official, nil, false)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"object":"list","data":[{"id":"gpt-5.6-sol"}]}`, string(projected))
+
+	custom := newCodexModelsAPIKeyTestAccount("https://gateway.example/v1")
+	customBody := []byte(`{"object":"list","data":[{"id":"gpt-5.6"},{"id":"gpt-5.6-sol-2026-07-09"},{"id":"codex-auto-review"}]}`)
+	projected, err = projectAccountModelsBody(customBody, custom, nil, false)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"object":"list","data":[{"id":"gpt-5.6"},{"id":"gpt-5.6-sol-2026-07-09"}]}`, string(projected))
+}
+
 func TestFetchOpenAIModelsListEmptyAndMalformedResponses(t *testing.T) {
 	for _, body := range []string{`{"data":[]}`, `{"data":null}`, `{}`, `{"data":{}}`, `{"data":[{}]}`, `{"data":[null]}`} {
 		t.Run(body, func(t *testing.T) {

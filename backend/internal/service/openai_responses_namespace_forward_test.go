@@ -135,7 +135,7 @@ func TestOpenAIGatewayService_APIKeyPreservesLiteDeclaredNamespaceToolCalls(t *t
 func TestOpenAIGatewayService_OAuthCompactKeepsFlattening(t *testing.T) {
 	body := []byte(codexNamespaceRequestBody)
 	upstream := &httpUpstreamRecorder{responses: []*http.Response{
-		newOpenAIRejectedFieldTestResponse(http.StatusOK, namespaceForwardOKResponse),
+		newOpenAIRejectedFieldTestResponse(http.StatusOK, `{"id":"resp_ns","output":[{"type":"compaction","encrypted_content":"opaque"}],"usage":{"input_tokens":1,"output_tokens":1,"input_tokens_details":{"cached_tokens":0}}}`),
 	}}
 	c := newOpenAIRejectedFieldTestContext(body)
 	c.Request.URL.Path = "/v1/responses/compact"

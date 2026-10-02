@@ -1,52 +1,47 @@
 package service
 
 import (
-	"bytes"
-	"encoding/json"
-	"errors"
-	"io"
+	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 
-	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 )
 
-type openAICompactFallbackSignal struct {
-	payload []byte
-	message string
+func isExplicitOpenAICompactRequest(c *gin.Context) bool {
+	// Only the normalized legacy /responses/compact request class may use the
+	// compact-only mapping or fallback. A compaction_trigger on /responses is
+	// native compaction v2 and must keep its selected model and error semantics.
+	return isOpenAIResponsesCompactPath(c)
 }
 
-func (e *openAICompactFallbackSignal) Error() string {
-	if e == nil || strings.TrimSpace(e.message) == "" {
-		return "upstream compact request failed"
+var openAICompactAvailabilityMessagePatterns = []*regexp.Regexp{
+	regexp.MustCompile(`^(?:the )?requested model (?:is )?(?:not supported|unsupported)$`),
+	regexp.MustCompile(`^(?:the )?model(?:\s+['"\x60]?[a-z0-9][a-z0-9._:/-]*['"\x60]?)?\s+(?:was not found|not found|does not exist|is unavailable|is not available|is unsupported|is not supported)$`),
+	regexp.MustCompile(`^unsupported model(?:\s*:\s*[a-z0-9][a-z0-9._:/-]*)?$`),
+}
+
+func validateOpenAICompactResponse(body []byte) error {
+	status := gjson.GetBytes(body, "status")
+	if status.Exists() && !strings.EqualFold(strings.TrimSpace(status.String()), "completed") {
+		return fmt.Errorf("compact response is not completed")
 	}
-	return e.message
-}
-
-func asOpenAICompactFallbackSignal(err error) (*openAICompactFallbackSignal, bool) {
-	var signal *openAICompactFallbackSignal
-	return signal, errors.As(err, &signal) && signal != nil
-}
-
-func isExplicitOpenAICompactContext(c *gin.Context) bool {
-	return isOpenAIResponsesCompactPath(c) || isOpenAINativeCompactionV2(c)
-}
-
-func newOpenAICompactFallbackSignal(c *gin.Context, payload []byte, message string) error {
-	if !isExplicitOpenAICompactContext(c) ||
-		!isOpenAICompactModelFailure(http.StatusBadRequest, message, payload) {
-		return nil
+	for _, item := range gjson.GetBytes(body, "output").Array() {
+		itemType := strings.TrimSpace(item.Get("type").String())
+		if itemType != "compaction" && itemType != "compaction_summary" {
+			continue
+		}
+		itemStatus := item.Get("status")
+		if itemStatus.Exists() && !strings.EqualFold(strings.TrimSpace(itemStatus.String()), "completed") {
+			continue
+		}
+		if strings.TrimSpace(item.Get("encrypted_content").String()) != "" {
+			return nil
+		}
 	}
-	return &openAICompactFallbackSignal{
-		payload: append([]byte(nil), payload...),
-		message: sanitizeUpstreamErrorMessage(strings.TrimSpace(message)),
-	}
-}
-
-func isExplicitOpenAICompactRequest(c *gin.Context, body []byte) bool {
-	return isOpenAIResponsesCompactPath(c) || HasCompactionTriggerInInput(body)
+	return fmt.Errorf("compact response is missing a usable compaction item")
 }
 
 // resolveOpenAICompactFallbackModel prefers the account's compact-only rule
@@ -72,9 +67,6 @@ func (s *OpenAIGatewayService) resolveOpenAICompactFallbackModel(account *Accoun
 }
 
 func isOpenAICompactModelFailure(statusCode int, upstreamMsg string, upstreamBody []byte) bool {
-	if isOpenAIContextWindowError(upstreamMsg, upstreamBody) {
-		return true
-	}
 	if statusCode != http.StatusBadRequest && statusCode != http.StatusNotFound {
 		return false
 	}
@@ -119,74 +111,12 @@ func isExplicitOpenAIModelAvailabilityMessage(value string) bool {
 	if value == "" {
 		return false
 	}
-	for _, phrase := range []string{
-		"model not found",
-		"model does not exist",
-		"model is unavailable",
-		"model is not available",
-		"model is unsupported",
-		"model is not supported",
-		"unsupported model",
-	} {
-		if strings.Contains(value, phrase) {
+	for _, pattern := range openAICompactAvailabilityMessagePatterns {
+		if pattern.MatchString(value) {
 			return true
 		}
 	}
-	// OpenAI commonly identifies the missing model between the word "model"
-	// and the terminal availability phrase, for example: "The model `x` does
-	// not exist". Requiring the message to start with the model subject avoids
-	// treating unrelated feature errors such as "model output is not supported"
-	// as a signal to change models.
-	if strings.HasPrefix(value, "the model ") || strings.HasPrefix(value, "model ") {
-		return strings.Contains(value, " does not exist") ||
-			strings.Contains(value, " was not found") ||
-			strings.Contains(value, " is unavailable") ||
-			strings.Contains(value, " is not available")
-	}
 	return false
-}
-
-func openAICompactFallbackErrorResponse(resp *http.Response, signal *openAICompactFallbackSignal) (*http.Response, []byte) {
-	headers := make(http.Header)
-	if resp != nil {
-		headers = resp.Header.Clone()
-	}
-	if headers.Get("Content-Type") == "" {
-		headers.Set("Content-Type", "application/json")
-	}
-	payload := normalizeOpenAICompactFallbackHTTPErrorPayload(signal)
-	return &http.Response{
-		StatusCode: http.StatusBadRequest,
-		Header:     headers,
-		Body:       io.NopCloser(bytes.NewReader(payload)),
-	}, payload
-}
-
-func normalizeOpenAICompactFallbackHTTPErrorPayload(signal *openAICompactFallbackSignal) []byte {
-	if signal == nil {
-		return nil
-	}
-	payload := append([]byte(nil), signal.payload...)
-	var terminal struct {
-		Error    json.RawMessage `json:"error"`
-		Response struct {
-			Error json.RawMessage `json:"error"`
-		} `json:"response"`
-	}
-	if json.Unmarshal(payload, &terminal) != nil || len(bytes.TrimSpace(terminal.Response.Error)) == 0 ||
-		bytes.Equal(bytes.TrimSpace(terminal.Response.Error), []byte("null")) {
-		return payload
-	}
-	// Standard HTTP error handlers consume error.message/type/code. A streamed
-	// response.failed terminal nests the same object under response.error, so
-	// normalize only that envelope at the stream-to-HTTP boundary.
-	normalized, err := json.Marshal(struct {
-		Error json.RawMessage `json:"error"`
-	}{Error: terminal.Response.Error})
-	if err != nil {
-		return payload
-	}
-	return normalized
 }
 
 func (s *OpenAIGatewayService) appendOpenAICompactFallbackRetryOps(
@@ -245,7 +175,7 @@ func (s *OpenAIGatewayService) prepareOpenAICompactFallbackRetry(
 	upstreamBody []byte,
 	alreadyRetried bool,
 ) ([]byte, string, bool) {
-	if alreadyRetried || !isExplicitOpenAICompactRequest(c, currentBody) ||
+	if alreadyRetried || !isExplicitOpenAICompactRequest(c) ||
 		!isOpenAICompactModelFailure(statusCode, upstreamMsg, upstreamBody) {
 		return currentBody, "", false
 	}
@@ -258,42 +188,5 @@ func (s *OpenAIGatewayService) prepareOpenAICompactFallbackRetry(
 	if strings.EqualFold(strings.TrimSpace(gjson.GetBytes(retryBody, "model").String()), currentModel) {
 		return currentBody, "", false
 	}
-	return retryBody, fallbackModel, true
-}
-
-func (s *OpenAIGatewayService) applyOpenAIPassthroughCompactFallbackFromSignal(
-	c *gin.Context,
-	account *Account,
-	requestedModel string,
-	body []byte,
-	err error,
-	alreadyRetried bool,
-	resp *http.Response,
-) ([]byte, string, bool) {
-	signal, ok := asOpenAICompactFallbackSignal(err)
-	if !ok {
-		return body, "", false
-	}
-	retryBody, fallbackModel, retry := s.prepareOpenAICompactFallbackRetry(
-		c, account, requestedModel, body, http.StatusBadRequest, signal.message, signal.payload, alreadyRetried,
-	)
-	if !retry {
-		return body, "", false
-	}
-	s.appendOpenAICompactFallbackRetryOps(c, account, resp, signal.payload, signal.message, true)
-	if resp != nil && resp.Body != nil {
-		_ = resp.Body.Close()
-	}
-	fromModel := strings.TrimSpace(gjson.GetBytes(body, "model").String())
-	accountName := ""
-	if account != nil {
-		accountName = account.Name
-	}
-	SetOpsUpstreamModel(c, fallbackModel)
-	logger.LegacyPrintf(
-		"service.openai_gateway",
-		"[OpenAI passthrough] Retrying explicit compact request once with fallback model (account: %s, from: %s, to: %s, upstream_code: %s)",
-		accountName, fromModel, fallbackModel, extractUpstreamErrorCode(signal.payload),
-	)
 	return retryBody, fallbackModel, true
 }

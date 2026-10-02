@@ -24,29 +24,84 @@ sha256sum "sub2api-<commit-short-sha>.tar"
 
 ## VPS 原子替换
 
-在 VPS 上执行的远程脚本必须使用 `set -euo pipefail`，并按以下顺序完成：
+先只读取得运行容器的 Compose 工作目录和配置文件列表，不能假定目录是 `/opt/sub2api`，也不能根据目录名猜正在使用的项目：
+
+```bash
+docker inspect --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' sub2api
+docker inspect --format '{{index .Config.Labels "com.docker.compose.project.config_files"}}' sub2api
+```
+
+验证目录与文件均存在后，使用标签列出的**相同 Compose 文件及顺序**、相同 project name，并检测主机实际支持的 `docker compose` 或 `docker-compose`。本次只读预检发现两台 VPS 的目录和 Compose CLI 不同，且应用二进制不在宿主机 bind mount 中；不能安全地原位覆盖 `/app/sub2api` 作为热更新。仍按本节只替换单个应用容器，不触碰数据库、Redis 或代理。
+
+部署前检查、部署和发布后验收脚本必须使用 `set -euo pipefail`，并用下面的 helper 从运行容器取得绝对工作目录、project name、配置文件（含顺序），确认 CLI/文件存在；标签缺失就停止，禁止猜目录或回退到默认 Compose 文件。回滚脚本不依赖可能已丢失的运行容器，使用发布前另行记录的上下文，见下节：
+
+```bash
+resolve_compose() {
+  APP_DIR=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' sub2api)
+  PROJECT=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' sub2api)
+  CONFIG_FILES=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project.config_files"}}' sub2api)
+  test -n "$APP_DIR" && test -d "$APP_DIR"
+  test -n "$PROJECT" && test -n "$CONFIG_FILES"
+  cd "$APP_DIR"
+  if docker compose version >/dev/null 2>&1; then COMPOSE=(docker compose)
+  elif command -v docker-compose >/dev/null 2>&1; then COMPOSE=(docker-compose)
+  else echo 'Compose CLI unavailable' >&2; return 1
+  fi
+  COMPOSE_ARGS=(-p "$PROJECT")
+  IFS=',' read -r -a FILES <<< "$CONFIG_FILES"
+  for file in "${FILES[@]}"; do
+    [[ "$file" = /* ]] || file="$APP_DIR/$file"
+    test -f "$file"
+    COMPOSE_ARGS+=(-f "$file")
+  done
+}
+```
+
+Before building, record `DEPLOY_REF=$(docker inspect --format '{{.Config.Image}}' sub2api)` on both hosts; stop if they differ. Build locally with the immutable commit tag **and** current `DEPLOY_REF`, then save both tags in one tar. Pass the full source commit into the binary metadata. This lets Compose keep its existing image reference while the new image is loaded; preserve the prior image ID under a separate rollback tag before loading:
+
+```bash
+COMMIT=$(git rev-parse HEAD)
+TAG=sub2api-adapted:<commit-short-sha>
+docker build -f deploy/Dockerfile --build-arg COMMIT="$COMMIT" -t "$TAG" -t "$DEPLOY_REF" .
+docker image inspect "$TAG" --format '{{.Id}} {{.Size}}'
+docker save "$TAG" "$DEPLOY_REF" -o "sub2api-<commit-short-sha>.tar"
+sha256sum "sub2api-<commit-short-sha>.tar"
+```
+
+On each host, ensure available disk exceeds image size plus a safety buffer. Then use one remote script:
 
 ```bash
 set -euo pipefail
-cd /opt/sub2api
-test -f docker-compose.yml
-test -f .env
-df -h /opt /var/lib/docker
-df -i /opt /var/lib/docker
+resolve_compose
+DEPLOY_REF=$(docker inspect --format '{{.Config.Image}}' sub2api)
+TAG=sub2api-adapted:<commit-short-sha>
+DOCKER_ROOT=$(docker info --format '{{.DockerRootDir}}')
+df -h "$APP_DIR" "$DOCKER_ROOT"
+df -i "$APP_DIR" "$DOCKER_ROOT"
 free -h
 docker system df
+"${COMPOSE[@]}" "${COMPOSE_ARGS[@]}" config --images
+OLD_IMAGE_ID=$(docker inspect --format '{{.Image}}' sub2api)
+ROLLBACK_REF=sub2api-adapted:rollback-<commit-short-sha>
+docker image tag "$OLD_IMAGE_ID" "$ROLLBACK_REF"
+echo '<tar-sha256>  /tmp/sub2api-<commit-short-sha>.tar' | sha256sum -c -
 docker load -i /tmp/sub2api-<commit-short-sha>.tar
-docker image inspect sub2api-adapted:<commit-short-sha> --format '{{.Id}}'
-docker compose config >/tmp/sub2api-compose-<commit-short-sha>.yaml
-docker compose up -d --no-deps sub2api
+docker image inspect "$TAG" --format '{{.Id}}'
+docker image inspect "$DEPLOY_REF" --format '{{.Id}}'
+"${COMPOSE[@]}" "${COMPOSE_ARGS[@]}" up -d --no-deps --force-recreate sub2api
 ```
 
 不得重启 PostgreSQL、Redis、反向代理或其它业务容器。应用容器健康后再删除 `/tmp` 中精确匹配本次发布的 tar；保留上一版镜像作为回滚对象。
 
 ## 发布后验收
 
+使用同一 helper 检查服务，禁止重启依赖容器：
+
 ```bash
-docker compose ps sub2api
+set -euo pipefail
+DEPLOY_REF=$(docker inspect --format '{{.Config.Image}}' sub2api)
+resolve_compose
+"${COMPOSE[@]}" "${COMPOSE_ARGS[@]}" ps sub2api
 docker inspect --format '{{.State.Health.Status}}' sub2api
 docker exec sub2api sha256sum /app/sub2api
 curl --fail --max-time 15 https://<host>/health
@@ -68,12 +123,24 @@ curl --fail --max-time 15 https://<host>/health
 
 ```bash
 set -euo pipefail
-cd /opt/sub2api
-docker compose up -d --no-deps sub2api
-docker compose ps sub2api
+APP_DIR='<recorded-absolute-compose-working-dir>'
+PROJECT='<recorded-compose-project-name>'
+DEPLOY_REF='<recorded-pre-release-image-reference>'
+ROLLBACK_REF=sub2api-adapted:rollback-<commit-short-sha>
+COMPOSE_FILES=('<recorded-compose-file-1>' '<recorded-compose-file-2-if-any>')
+cd "$APP_DIR"
+if docker compose version >/dev/null 2>&1; then COMPOSE=(docker compose)
+elif command -v docker-compose >/dev/null 2>&1; then COMPOSE=(docker-compose)
+else echo 'Compose CLI unavailable' >&2; exit 1
+fi
+COMPOSE_ARGS=(-p "$PROJECT")
+for file in "${COMPOSE_FILES[@]}"; do test -f "$file"; COMPOSE_ARGS+=(-f "$file"); done
+docker image tag "$ROLLBACK_REF" "$DEPLOY_REF"
+"${COMPOSE[@]}" "${COMPOSE_ARGS[@]}" up -d --no-deps --force-recreate sub2api
+"${COMPOSE[@]}" "${COMPOSE_ARGS[@]}" ps sub2api
 ```
 
-实际回滚前必须把 compose 使用的镜像标签恢复为上一版，并重新执行健康检查。不要删除数据库、Redis 数据卷，不要改生产配置或清空 Docker 全局缓存。
+`ROLLBACK_REF` 和 `DEPLOY_REF` 必须是本次发布前记录的值。重新执行健康检查后才能结束回滚。不要删除数据库、Redis 数据卷，不要改生产配置或清空 Docker 全局缓存。
 
 ## SSH 约定
 

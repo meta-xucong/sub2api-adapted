@@ -60,7 +60,7 @@ func (h *OpenAIGatewayHandler) CodexModels(c *gin.Context) {
 		} else {
 			// 让 ops 错误日志携带实际拉取成功的首个固定账号。
 			setOpsSelectedAccount(c, pinnedAccount.ID, pinnedAccount.Platform)
-			if err := h.gatewayService.MergeGroupConfiguredCodexModels(c.Request.Context(), apiKey.Group, pinnedManifest, ifNoneMatch); err != nil {
+			if err := h.gatewayService.MergeGroupConfiguredCodexModelsForAccount(c.Request.Context(), apiKey.Group, pinnedManifest, ifNoneMatch, pinnedAccount); err != nil {
 				h.errorResponse(c, http.StatusInternalServerError, "api_error", "Failed to build Codex models manifest")
 				return
 			}
@@ -139,7 +139,7 @@ func (h *OpenAIGatewayHandler) CodexModels(c *gin.Context) {
 			h.errorResponse(c, http.StatusInternalServerError, "api_error", "Failed to apply model mappings")
 			return
 		}
-		if err := h.gatewayService.MergeGroupConfiguredCodexModels(c.Request.Context(), apiKey.Group, manifest, ifNoneMatch); err != nil {
+		if err := h.gatewayService.MergeGroupConfiguredCodexModelsForAccount(c.Request.Context(), apiKey.Group, manifest, ifNoneMatch, account); err != nil {
 			h.errorResponse(c, http.StatusInternalServerError, "api_error", "Failed to build Codex models manifest")
 			return
 		}

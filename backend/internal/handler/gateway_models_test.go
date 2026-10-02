@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
@@ -183,8 +182,9 @@ func TestGatewayCodexModels_NonOpenAIGroupsUseMappedModels(t *testing.T) {
 	}
 }
 
-// Composite manifests include defaults from unmapped accounts and explicit mappings.
-func TestGatewayCodexModels_CompositeUsesCompleteEffectiveModelList(t *testing.T) {
+// Composite manifests include explicit mappings but do not synthesize defaults
+// for accounts whose upstream catalog has not been verified.
+func TestGatewayCodexModels_CompositeUsesConfiguredModelsWithoutStaticDefaults(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	const groupID int64 = 120
 	h := newGatewayModelsHandlerForTest(&gatewayModelsAccountRepoStub{
@@ -227,8 +227,7 @@ func TestGatewayCodexModels_CompositeUsesCompleteEffectiveModelList(t *testing.T
 	require.Equal(t, http.StatusOK, rec.Code)
 	var got codexModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	want := service.FilterCodexModelIDsForGroup(openai.DefaultModelIDs(), nil)
-	require.ElementsMatch(t, append(want, "grok-4.6"), codexModelSlugsForTest(got.Models))
+	require.ElementsMatch(t, []string{"gpt-5.5", "grok-4.6"}, codexModelSlugsForTest(got.Models))
 }
 
 func TestGatewayModels_UnmappedOpenAIAccountsSupplementMappedModels(t *testing.T) {
@@ -256,25 +255,25 @@ func TestGatewayModels_UnmappedOpenAIAccountsSupplementMappedModels(t *testing.T
 		want     []string
 	}{
 		{
-			name:     "unmapped parent and Spark shadow retain defaults and aliases",
+			name:     "unmapped parent contributes no static defaults",
 			accounts: accounts,
-			want:     append(openai.DefaultModelIDs(), alias),
+			want:     []string{sparkModel, alias},
 		},
 		{
-			name:     "unmapped API key account also contributes defaults",
+			name:     "unmapped API key account contributes no static defaults",
 			accounts: append([]service.Account{{ID: 4, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey}}, accounts[1:]...),
-			want:     append(openai.DefaultModelIDs(), alias),
+			want:     []string{sparkModel, alias},
 		},
 		{
-			name:     "unmapped accounts alone retain default response shape",
+			name:     "unmapped account alone has an empty catalog",
 			accounts: accounts[:1],
-			want:     openai.DefaultModelIDs(),
+			want:     []string{},
 		},
 		{
-			name:     "custom list can select defaults and aliases",
+			name:     "custom list selects only explicitly mapped models",
 			accounts: accounts,
 			config:   service.GroupModelAllowlist{Enabled: true, Models: []string{alias, "gpt-5.6-sol", sparkModel, "unknown-model"}},
-			want:     []string{alias, "gpt-5.6-sol", sparkModel},
+			want:     []string{alias, sparkModel},
 		},
 		{
 			name:     "unavailable custom selection remains empty",
@@ -289,15 +288,15 @@ func TestGatewayModels_UnmappedOpenAIAccountsSupplementMappedModels(t *testing.T
 		},
 		{
 			// A passthrough account with a stale mapping behaves like an unmapped
-			// one: it adds the defaults but never its own mapping keys, and it no
-			// longer hides the aliases declared on ordinary accounts.
-			name: "passthrough account contributes defaults without hiding mapped aliases",
+			// one: it contributes no static defaults and does not hide explicit
+			// aliases declared on ordinary accounts.
+			name: "passthrough account contributes no defaults but keeps mapped aliases",
 			accounts: append([]service.Account{{
 				ID: 5, Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth,
 				Credentials: map[string]any{"model_mapping": map[string]any{"stale-model": "stale-model"}},
 				Extra:       map[string]any{"openai_passthrough": true},
 			}}, accounts[1:]...),
-			want: append(openai.DefaultModelIDs(), alias),
+			want: []string{sparkModel, alias},
 		},
 		{
 			name:     "unmapped accounts from another platform do not add defaults",
@@ -450,7 +449,7 @@ func codexReasoningEffortsForTest(levels []codexReasoningLevelForTest) []string 
 	return efforts
 }
 
-func TestGatewayModels_GeminiGroupFallsBackToGeminiModels(t *testing.T) {
+func TestGatewayModels_GeminiGroupWithoutCatalogDoesNotInventDefaults(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	groupID := int64(20)
@@ -478,8 +477,7 @@ func TestGatewayModels_GeminiGroupFallsBackToGeminiModels(t *testing.T) {
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 	require.Equal(t, "list", got.Object)
-	require.Contains(t, modelIDsForTest(got.Data), "gemini-2.5-flash")
-	require.NotContains(t, modelIDsForTest(got.Data), "claude-sonnet-4-6")
+	require.Empty(t, modelIDsForTest(got.Data))
 }
 
 func TestGatewayModels_Grok45AdvertisesReasoningEffortForGrokBuild(t *testing.T) {
@@ -622,7 +620,7 @@ func TestGatewayCodexModels_CompositeAnthropicDoesNotAdvertiseAntigravityDefault
 	var got codexModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 	slugs := codexModelSlugsForTest(got.Models)
-	require.Contains(t, slugs, "claude-opus-4-6")
+	require.Empty(t, slugs)
 	require.NotContains(t, slugs, "gemini-2.5-flash")
 }
 
@@ -839,7 +837,7 @@ func TestGatewayModels_CompositeCustomModelsListFiltersAcrossConcretePlatforms(t
 	require.Equal(t, []string{"gemini-2.5-flash", "ag-custom-model", "gpt-5.5", "kimi-custom", "glm-custom", "deepseek-custom", "minimax-custom"}, modelIDsForTest(got.Data))
 }
 
-func TestGatewayModels_CompositeUnmappedAccountsFallbackToLinkedPlatformsOnly(t *testing.T) {
+func TestGatewayModels_CompositeUnmappedAccountsDoNotInventCatalogDefaults(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	groupID := int64(34)
@@ -869,7 +867,7 @@ func TestGatewayModels_CompositeUnmappedAccountsFallbackToLinkedPlatformsOnly(t 
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 
 	ids := modelIDsForTest(got.Data)
-	require.Contains(t, ids, "gpt-5.5")
+	require.NotContains(t, ids, "gpt-5.5")
 	require.Contains(t, ids, "grok-4.3")
 	require.NotContains(t, ids, "claude-sonnet-4-6")
 	require.NotContains(t, ids, "gemini-2.5-flash")
@@ -910,7 +908,7 @@ func TestGatewayModels_CompositeUnmappedCNAccountsContributeNoDefaults(t *testin
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 
 	ids := modelIDsForTest(got.Data)
-	require.Contains(t, ids, "gpt-5.5")
+	require.Empty(t, ids)
 	require.NotContains(t, ids, "claude-sonnet-4-6")
 }
 
@@ -932,7 +930,7 @@ func TestDefaultCodexModelIDsForPlatform_DeepSeekUsesDeepSeekModels(t *testing.T
 	require.Equal(t, defaultModelIDsForPlatform(service.PlatformAnthropic), defaultCodexModelIDsForPlatform(service.PlatformAnthropic))
 }
 
-func TestGatewayCodexModels_DeepSeekWithoutMappingUsesDeepSeekDefaults(t *testing.T) {
+func TestGatewayCodexModels_DeepSeekWithoutMappingDoesNotInventDefaults(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	const groupID int64 = 130
 	h := newGatewayModelsHandlerForTest(&gatewayModelsAccountRepoStub{
@@ -965,10 +963,7 @@ func TestGatewayCodexModels_DeepSeekWithoutMappingUsesDeepSeekDefaults(t *testin
 	for _, model := range got.Models {
 		slugs = append(slugs, model.Slug)
 	}
-	require.Contains(t, slugs, "deepseek-v4-pro")
-	require.Contains(t, slugs, "deepseek-v4-flash")
-	require.NotContains(t, slugs, "claude-sonnet-4-6")
-	require.NotContains(t, slugs, "claude-opus-4-6")
+	require.Empty(t, slugs)
 }
 
 func TestGatewayCodexModels_OmitsWildcardMappingKeys(t *testing.T) {
@@ -1010,7 +1005,7 @@ func TestGatewayCodexModels_OmitsWildcardMappingKeys(t *testing.T) {
 	require.Equal(t, []string{"deepseek-v4-pro"}, slugs)
 }
 
-func TestGatewayModels_CustomModelsListKeepsConcreteModelAllowedByWildcardMapping(t *testing.T) {
+func TestGatewayModels_CustomModelsListDoesNotInventModelsFromWildcardMapping(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	groupID := int64(26)
@@ -1052,7 +1047,7 @@ func TestGatewayModels_CustomModelsListKeepsConcreteModelAllowedByWildcardMappin
 
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	require.Equal(t, []string{"claude-sonnet-4-6"}, modelIDsForTest(got.Data))
+	require.Empty(t, modelIDsForTest(got.Data))
 }
 
 func TestGatewayModels_AnthropicCustomModelsListIncludesOAuthClaudeAndMappedDeepSeek(t *testing.T) {
@@ -1103,7 +1098,7 @@ func TestGatewayModels_AnthropicCustomModelsListIncludesOAuthClaudeAndMappedDeep
 
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	require.Equal(t, []string{"claude-fable-5", "claude-opus-4-8", "deepseek-v4-pro"}, modelIDsForTest(got.Data))
+	require.Equal(t, []string{"deepseek-v4-pro"}, modelIDsForTest(got.Data))
 }
 
 func TestGatewayModels_AnthropicCustomModelsListDisabledKeepsMappedModelList(t *testing.T) {
@@ -1157,7 +1152,7 @@ func TestGatewayModels_AnthropicCustomModelsListDisabledKeepsMappedModelList(t *
 	require.Equal(t, []string{"deepseek-v4-pro"}, modelIDsForTest(got.Data))
 }
 
-func TestGatewayModels_AnthropicCustomModelsListIncludesOAuthClaudeWithoutMappings(t *testing.T) {
+func TestGatewayModels_AnthropicCustomModelsListDoesNotInventOAuthModelsWithoutMappings(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	groupID := int64(30)
@@ -1195,7 +1190,7 @@ func TestGatewayModels_AnthropicCustomModelsListIncludesOAuthClaudeWithoutMappin
 
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	require.Equal(t, []string{"claude-opus-4-6-thinking", "claude-sonnet-4-5"}, modelIDsForTest(got.Data))
+	require.Empty(t, modelIDsForTest(got.Data))
 }
 
 func TestGatewayModels_CustomModelsListCanReturnEmptyWhenSelectionsUnavailable(t *testing.T) {
@@ -1243,7 +1238,7 @@ func TestGatewayModels_CustomModelsListCanReturnEmptyWhenSelectionsUnavailable(t
 	require.Empty(t, modelIDsForTest(got.Data))
 }
 
-func TestGatewayModels_CustomModelsListFiltersDefaultFallbackModels(t *testing.T) {
+func TestGatewayModels_CustomModelsListDoesNotSelectUnavailableStaticFallbackModels(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	groupID := int64(25)
@@ -1277,7 +1272,7 @@ func TestGatewayModels_CustomModelsListFiltersDefaultFallbackModels(t *testing.T
 
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	require.Equal(t, []string{"gpt-5.5", "gpt-5.4"}, modelIDsForTest(got.Data))
+	require.Empty(t, modelIDsForTest(got.Data))
 }
 
 func TestGatewayModels_OpenAICustomModelsListKeepsOpenAIResponseShapeForDefaultFallback(t *testing.T) {
@@ -1288,7 +1283,9 @@ func TestGatewayModels_OpenAICustomModelsListKeepsOpenAIResponseShapeForDefaultF
 		&gatewayModelsAccountRepoStub{
 			byGroup: map[int64][]service.Account{
 				groupID: {
-					{ID: 1, Platform: service.PlatformOpenAI},
+					{ID: 1, Platform: service.PlatformOpenAI, Credentials: map[string]any{
+						"model_mapping": map[string]any{"gpt-5.5": "gpt-5.5", "gpt-5.4": "gpt-5.4"},
+					}},
 				},
 			},
 		},
@@ -1505,7 +1502,11 @@ func TestGatewayModels_GPT6SolLunaDiscoveryRespectsGroupAndAccountRestrictions(t
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			groupID := int64(25)
-			account := service.Account{ID: 1, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey}
+			account := service.Account{ID: 1, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey, Credentials: map[string]any{
+				"model_mapping": map[string]any{
+					"gpt-6.1-sol": "gpt-6.1-sol", "gpt-6-luna": "gpt-6-luna", "gpt-6-sol": "gpt-6-sol", "gpt-5.6-sol": "gpt-5.6-sol",
+				},
+			}}
 			if tc.restricted {
 				account.Credentials = map[string]any{"model_mapping": map[string]any{"gpt-5.6-sol": "gpt-5.6-sol"}}
 			}

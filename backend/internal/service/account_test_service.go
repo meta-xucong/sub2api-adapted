@@ -188,46 +188,57 @@ func (s *AccountTestService) FetchOpenAIAccountModels(ctx context.Context, accou
 	if err != nil {
 		return nil, err
 	}
-	// The shared discovery response is the raw upstream catalog. Project it
-	// through the account mapping before exposing it in the admin picker so
-	// configured aliases remain public names and unconfigured models stay out.
-	projectedBody, err := projectAccountModelsBody(response.Body, account, nil, false)
-	if err != nil {
-		return nil, fmt.Errorf("project OpenAI account models: %w", err)
+	if account == nil {
+		return nil, errors.New("OpenAI account is required")
 	}
-	var payload struct {
-		Data []openai.Model `json:"data"`
-	}
-	if err := json.Unmarshal(projectedBody, &payload); err != nil {
-		return nil, fmt.Errorf("decode OpenAI account models: %w", err)
-	}
-	// The picker must not expose stale bare aliases or dated OpenAI snapshots.
-	// Explicit account mappings remain visible, including wildcard mappings;
-	// this preserves intentional routing without reintroducing stale defaults.
-	if account != nil && !account.IsOpenAIPassthroughEnabled() {
-		mapping := account.GetModelMapping()
-		filtered := make([]openai.Model, 0, len(payload.Data))
-		for _, model := range payload.Data {
-			if openai.IsAdminSelectableModelID(model.ID) || (len(mapping) > 0 && account.IsModelSupported(model.ID)) {
-				filtered = append(filtered, model)
-			}
-		}
-		payload.Data = filtered
+	mapping := account.GetModelMapping()
+	var models []openai.Model
+	if len(mapping) == 0 || account.IsOpenAIPassthroughEnabled() {
+		// This is an administrator mapping picker, not a public availability
+		// surface. With no explicit mapping it must show safe upstream candidates
+		// so an operator can configure a mapping. Public listings and routing stay
+		// fail-closed under the manual account policy.
+		models, err = adminSelectableModelsFromCatalog(response.Body, account)
 	} else {
-		filtered := make([]openai.Model, 0, len(payload.Data))
-		for _, model := range payload.Data {
-			if openai.IsAdminSelectableModelID(model.ID) {
-				filtered = append(filtered, model)
+		// Once mappings exist, show only configured public names whose exact
+		// upstream target is present in the fetched source catalog.
+		var projectedBody []byte
+		projectedBody, err = projectAccountModelsBody(response.Body, account, nil, false)
+		if err == nil {
+			var payload struct {
+				Data []openai.Model `json:"data"`
 			}
+			err = json.Unmarshal(projectedBody, &payload)
+			models = payload.Data
 		}
-		payload.Data = filtered
 	}
+	if err != nil {
+		return nil, fmt.Errorf("project OpenAI account models for admin picker: %w", err)
+	}
+	// The picker must not expose internal probe IDs, retired aliases, bare GPT
+	// aliases or dated OpenAI snapshots. Custom provider model names remain
+	// available for deliberate administrator mapping.
+	filtered := make([]openai.Model, 0, len(models))
+	for _, model := range models {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(model.ID)), "codex-auto-") {
+			continue
+		}
+		_, configured := resolveRequestedModelInMapping(mapping, model.ID)
+		if len(mapping) > 0 && !account.IsOpenAIPassthroughEnabled() && !configured {
+			continue
+		}
+		if !configured && !isAdminSelectableModelForAccount(account, model.ID) {
+			continue
+		}
+		filtered = append(filtered, model)
+	}
+	models = filtered
 	// Every entry in the picker is labelled by the same rule: the upstream display
 	// name when the catalog has one, otherwise the local catalog name for that model
 	// ID, otherwise the raw ID. Without this the picker mixes "GPT-5.6 Sol" with
 	// "gpt-5.6-sol" for the same catalog.
-	for i := range payload.Data {
-		model := &payload.Data[i]
+	for i := range models {
+		model := &models[i]
 		if strings.TrimSpace(model.DisplayName) == "" {
 			model.DisplayName = openaiCodexDisplayName(model.ID)
 		}
@@ -240,16 +251,19 @@ func (s *AccountTestService) FetchOpenAIAccountModels(ctx context.Context, accou
 	// shared upstream catalog and API-key discovery authoritative.
 	if account != nil && account.IsOpenAIOAuthLike() {
 		passthrough := account.IsOpenAIPassthroughEnabled()
-		seen := make(map[string]bool, len(payload.Data))
-		for _, model := range payload.Data {
+		seen := make(map[string]bool, len(models))
+		for _, model := range models {
 			seen[model.ID] = true
 		}
 		for _, model := range openai.AdminSelectableModels() {
 			if IsGPTImageGenerationModel(model.ID) && account.IsModelSupported(model.ID) && !seen[model.ID] {
-				if !passthrough && !IsGPTImageGenerationModel(account.GetMappedModel(model.ID)) {
-					continue
+				if !passthrough && len(mapping) > 0 {
+					target, mapped := resolveRequestedModelInMapping(mapping, model.ID)
+					if !mapped || !IsGPTImageGenerationModel(target) {
+						continue
+					}
 				}
-				payload.Data = append(payload.Data, model)
+				models = append(models, model)
 				seen[model.ID] = true
 			}
 		}
@@ -271,11 +285,63 @@ func (s *AccountTestService) FetchOpenAIAccountModels(ctx context.Context, accou
 			if !IsGPTImageGenerationModel(target) {
 				continue
 			}
-			payload.Data = append(payload.Data, openai.Model{ID: publicID, Object: "model", Type: "model", OwnedBy: "openai", DisplayName: openaiCodexDisplayName(publicID)})
+			models = append(models, openai.Model{ID: publicID, Object: "model", Type: "model", OwnedBy: "openai", DisplayName: openaiCodexDisplayName(publicID)})
 			seen[publicID] = true
 		}
 	}
-	return payload.Data, nil
+	return models, nil
+}
+
+func adminSelectableModelsFromCatalog(body []byte, account *Account) ([]openai.Model, error) {
+	_, entries, err := modelCatalogEntries(body, "data")
+	if err != nil {
+		return nil, err
+	}
+	models := make([]openai.Model, 0, len(entries))
+	seen := make(map[string]struct{}, len(entries))
+	for _, raw := range entries {
+		var entry map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &entry); err != nil || entry == nil {
+			return nil, errors.New("model entry must be an object")
+		}
+		var id string
+		if err := json.Unmarshal(entry["id"], &id); err != nil || strings.TrimSpace(id) == "" {
+			return nil, errors.New("model entry has no valid id")
+		}
+		id = strings.TrimSpace(id)
+		if _, duplicate := seen[id]; duplicate || !isAdminSelectableModelForAccount(account, id) {
+			continue
+		}
+		seen[id] = struct{}{}
+		encoded, err := json.Marshal(entry)
+		if err != nil {
+			return nil, err
+		}
+		var model openai.Model
+		if err := json.Unmarshal(encoded, &model); err != nil {
+			return nil, err
+		}
+		models = append(models, model)
+	}
+	return models, nil
+}
+
+func isAdminSelectableModelForAccount(account *Account, modelID string) bool {
+	modelID = strings.TrimSpace(modelID)
+	if modelID == "" || strings.HasPrefix(strings.ToLower(modelID), "codex-auto-") {
+		return false
+	}
+	if account == nil {
+		return false
+	}
+	// Apply OpenAI's curated public-name rules only to first-party OpenAI
+	// catalogs. A reseller's/custom gateway's GPT-shaped IDs are source IDs,
+	// not evidence that they are aliases or retired OpenAI snapshots.
+	profile := DetectUpstreamModelSourceProfile(account)
+	if profile.ID == "openai-platform-api-key" || account.IsOpenAIOAuth() {
+		return openai.IsAdminSelectableModelID(modelID)
+	}
+	return true
 }
 
 // NewAccountTestService creates a new AccountTestService

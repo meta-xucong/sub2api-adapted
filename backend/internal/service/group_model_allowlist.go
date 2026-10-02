@@ -2,13 +2,11 @@ package service
 
 import (
 	"net/http"
-	"slices"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 )
 
 // GroupModelAllowlist 是 service 层的分组模型白名单（与 domain.GroupModelAllowlist
@@ -26,24 +24,6 @@ func DomainGroupModelAllowlist(cfg GroupModelAllowlist) domain.GroupModelAllowli
 // GroupModelAllowlistFromDomain 把 ent 读出的 domain 白名单转换为 service 类型。
 func GroupModelAllowlistFromDomain(cfg domain.GroupModelAllowlist) GroupModelAllowlist {
 	return GroupModelAllowlist{Enabled: cfg.Enabled, Models: cfg.Models}
-}
-
-// supplementUnmappedOpenAIModels ensures a partial mapping catalog does not
-// hide models from unmapped or passthrough OpenAI accounts (passthrough routing
-// ignores model_mapping, so it serves the same default set as an unmapped
-// account). An empty catalog is left unchanged so callers retain their existing
-// discovery fallback.
-func supplementUnmappedOpenAIModels(accounts []Account, models []string) []string {
-	if len(models) == 0 {
-		return models
-	}
-	for i := range accounts {
-		account := &accounts[i]
-		if account.Platform == PlatformOpenAI && (account.IsOpenAIPassthroughEnabled() || len(account.GetModelMapping()) == 0) {
-			return dedupeAndSortModelIDs(slices.Concat(models, openai.DefaultModelIDs()))
-		}
-	}
-	return models
 }
 
 // normalizeGroupModelAllowlist 归一化管理端提交的分组模型白名单：
@@ -89,7 +69,7 @@ func (g *Group) ModelAllowlistEnabled() bool {
 
 // Allows 判断客户端请求的模型是否命中白名单。
 // 准入只看客户端书写的模型名，与账号映射、渠道映射、合成路由改写无关；
-// 候选形式覆盖代码中已有的模型名等价规则（Gemini models/ 前缀、
+// 候选形式覆盖平台中立的模型名等价规则（Gemini models/ 前缀、
 // Antigravity/Claude -thinking 宽容规则、OpenAI 推理后缀），不做模糊匹配。
 func (a GroupModelAllowlist) Allows(model string) bool {
 	if !a.Enabled {

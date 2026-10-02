@@ -1430,22 +1430,13 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 		accounts = filtered
 	}
 
-	// Collect unique models from all accounts
+	// Collect models from the same account-level resolver used by routing. A
+	// static platform default is not proof that a currently schedulable account
+	// can serve that model.
 	modelSet := make(map[string]struct{})
-	hasAnyMapping := false
 
 	for _, acc := range accounts {
-		// Passthrough routing accepts models independently of model_mapping, so a
-		// stale mapping on a passthrough account must not narrow the public list.
-		// Treat it like an unmapped account: skip its mapping here and let
-		// supplementUnmappedOpenAIModels contribute the default set. Mappings on
-		// the ordinary accounts in the same group still count.
-		if platform == PlatformOpenAI && acc.IsOpenAIPassthroughEnabled() {
-			continue
-		}
-
-		mapping := acc.GetModelMapping()
-		for model := range mapping {
+		for _, model := range acc.upstreamAvailabilityListingModels(time.Now()) {
 			// Accounts pulled in through mixed scheduling only contribute the
 			// models that belong to the listing platform (e.g. an antigravity
 			// account's claude-* mappings must not surface on a gemini group).
@@ -1453,12 +1444,10 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 				continue
 			}
 			modelSet[model] = struct{}{}
-			hasAnyMapping = true
 		}
 	}
 
-	// If no account has model_mapping, return nil (use default)
-	if !hasAnyMapping {
+	if len(modelSet) == 0 {
 		if s.modelsListCache != nil {
 			s.modelsListCache.Set(cacheKey, []string(nil), s.modelsListCacheTTL)
 			modelsListCacheStoreTotal.Add(1)
@@ -1472,10 +1461,6 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 		models = append(models, model)
 	}
 	sort.Strings(models)
-
-	if platform == PlatformOpenAI {
-		models = supplementUnmappedOpenAIModels(accounts, models)
-	}
 
 	if s.modelsListCache != nil {
 		s.modelsListCache.Set(cacheKey, cloneStringSlice(models), s.modelsListCacheTTL)
@@ -1637,6 +1622,17 @@ func (s *GatewayService) InvalidateAvailableModelsCache(groupID *int64, platform
 		}
 		s.modelsListCache.Delete(key)
 	}
+}
+
+// InvalidateModelAvailabilityForAccount clears every group/platform listing and
+// composite ownership entry. An account can belong to several groups, and the
+// account repository does not expose a safe reverse lookup here; broad
+// invalidation avoids leaving a stale route visible after a catalog commit.
+func (s *GatewayService) InvalidateModelAvailabilityForAccount(_ *Account) {
+	if s == nil {
+		return
+	}
+	s.InvalidateAvailableModelsCache(nil, "")
 }
 
 func (s *GatewayService) invalidateCompositeModelOwnershipCache(groupID *int64) {

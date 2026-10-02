@@ -579,22 +579,6 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		if reqStream {
 			result, handleErr := s.handleStreamingResponsePassthrough(ctx, resp, c, account, startTime, reqModel, upstreamPassthroughModel, compatHistoryInput)
 			if handleErr != nil {
-				if retryBody, fallbackModel, retry := s.applyOpenAIPassthroughCompactFallbackFromSignal(
-					c, account, requestedModel, body, handleErr, compactModelFallbackRetried, resp,
-				); retry {
-					body = retryBody
-					upstreamPassthroughModel = fallbackModel
-					compactModelFallbackRetried = true
-					continue
-				}
-				if signal, ok := asOpenAICompactFallbackSignal(handleErr); ok {
-					_ = resp.Body.Close()
-					compactResp, compactBody := openAICompactFallbackErrorResponse(resp, signal)
-					if shouldFailoverOpenAIPassthroughResponse(account, compactResp.StatusCode, compactBody) {
-						return nil, s.handleFailoverErrorResponsePassthrough(ctx, compactResp, c, account, body, compactBody)
-					}
-					return nil, s.handleErrorResponsePassthrough(ctx, compactResp, c, account, body, compactBody)
-				}
 				_ = resp.Body.Close()
 				return nil, handleErr
 			}
@@ -606,22 +590,6 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		} else {
 			result, handleErr := s.handleNonStreamingResponsePassthrough(ctx, resp, c, account, reqModel, upstreamPassthroughModel, compatHistoryInput)
 			if handleErr != nil {
-				if retryBody, fallbackModel, retry := s.applyOpenAIPassthroughCompactFallbackFromSignal(
-					c, account, requestedModel, body, handleErr, compactModelFallbackRetried, resp,
-				); retry {
-					body = retryBody
-					upstreamPassthroughModel = fallbackModel
-					compactModelFallbackRetried = true
-					continue
-				}
-				if signal, ok := asOpenAICompactFallbackSignal(handleErr); ok {
-					_ = resp.Body.Close()
-					compactResp, compactBody := openAICompactFallbackErrorResponse(resp, signal)
-					if shouldFailoverOpenAIPassthroughResponse(account, compactResp.StatusCode, compactBody) {
-						return nil, s.handleFailoverErrorResponsePassthrough(ctx, compactResp, c, account, body, compactBody)
-					}
-					return nil, s.handleErrorResponsePassthrough(ctx, compactResp, c, account, body, compactBody)
-				}
 				_ = resp.Body.Close()
 				return nil, handleErr
 			}
@@ -2039,6 +2007,10 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	var bareErrorPayload []byte
 	bareErrorAccountSideEffectsPending := false
 	responseItemIDReconciler := apicompat.NewResponsesStreamItemIDReconciler()
+	var compactStreamDoneItems *responsesStreamOutputItems
+	if isOpenAIResponsesCompactPath(c) {
+		compactStreamDoneItems = newResponsesStreamOutputItems()
+	}
 	upstreamRequestID := strings.TrimSpace(resp.Header.Get("x-request-id"))
 	// pendingLines 在首个可见输出前保留前导事件，确保无输出失败仍可安全 failover。
 	pendingLines := make([]string, 0, 8)
@@ -2143,20 +2115,57 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 			imageOutputSizes: imageCounter.Sizes(),
 		}
 	}
+	compactPendingTerminalEventLine := ""
+	emitCompactFailureTerminal := func(message string) {
+		compactPendingTerminalEventLine = ""
+		failedMessage = message
+		sawTerminalEvent = true
+		sawFailedEvent = true
+		terminalEventType = "response.failed"
+		if clientDisconnected || failureDelivered {
+			return
+		}
+		if !writePendingLines() {
+			return
+		}
+		if _, err := fmt.Fprint(w, buildOpenAIResponseFailedSSE(responseID, originalModel, nil, message)); err != nil {
+			clientDisconnected = true
+			return
+		}
+		MarkResponseCommitted(c)
+		clientOutputStarted = true
+		failureDelivered = true
+		flushPending = true
+		flushPendingOutput()
+	}
 
 	for documentScanner.Scan() {
 		line := documentScanner.Text()
 		if eventType, ok := extractOpenAISSEEventLine(line); ok {
 			pendingSSEEventType = eventType
 			eventType = strings.TrimSpace(eventType)
+			if isOpenAIResponsesCompactPath(c) && (eventType == "response.completed" || eventType == "response.done") {
+				// Do not expose the success event name until the complete data frame
+				// has passed the compact-output contract check.
+				compactPendingTerminalEventLine = line
+				continue
+			}
 			suppressCurrentEvent = codexFailureTerminal && (eventType == "error" || (sawBareError && !sawResponseFailed && eventType != "response.failed"))
 		}
 		lineStartsClientOutput := false
 		forceFlushFailedEvent := false
+		compactTerminalFrameValidated := false
 		if data, ok := extractOpenAISSEDataLine(line); ok {
 			dataBytes := []byte(data)
 			trimmedData := strings.TrimSpace(data)
 			rawEventType := effectiveOpenAISSEEventType(dataBytes, pendingSSEEventType)
+			if isOpenAIResponsesCompactPath(c) && trimmedData == "[DONE]" {
+				emitCompactFailureTerminal("Upstream compact response stream ended without a Responses completion event")
+				break
+			}
+			if compactPendingTerminalEventLine != "" && rawEventType != "response.completed" && rawEventType != "response.done" {
+				compactPendingTerminalEventLine = ""
+			}
 			observer.ObserveOpenAI(dataBytes, rawEventType)
 			if needModelReplace {
 				line = s.replaceModelInSSELine(line, mappedModel, originalModel)
@@ -2214,6 +2223,30 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 				line = "data: " + string(reconciledData)
 				eventType = effectiveOpenAISSEEventType(dataBytes, eventType)
 			}
+			compactStreamDoneItems.Observe(dataBytes)
+			if responseID == "" {
+				responseID = extractOpenAIResponseIDFromJSONBytes(dataBytes)
+			}
+			if isOpenAIResponsesCompactPath(c) && (eventType == "response.completed" || eventType == "response.done") {
+				if normalizedData, normalized := normalizeResponsesStreamingTerminalOutput(dataBytes, nil, compactStreamDoneItems, nil); normalized {
+					dataBytes = normalizedData
+					trimmedData = strings.TrimSpace(string(normalizedData))
+					line = "data: " + string(normalizedData)
+					eventType = effectiveOpenAISSEEventType(normalizedData, eventType)
+				}
+				if supplementedData, supplemented := supplementOpenAICompactTerminalWithDoneItems(dataBytes, compactStreamDoneItems); supplemented {
+					dataBytes = supplementedData
+					trimmedData = strings.TrimSpace(string(supplementedData))
+					line = "data: " + string(supplementedData)
+					eventType = effectiveOpenAISSEEventType(supplementedData, eventType)
+				}
+				if compactErr := validateOpenAICompactSSETerminal(dataBytes); compactErr != nil {
+					s.parseSSEUsageBytesWithType(dataBytes, eventType, usage)
+					emitCompactFailureTerminal("Upstream compact response is missing a usable compaction item")
+					break
+				}
+				compactTerminalFrameValidated = true
+			}
 			if codexFailureTerminal && sawBareError && !sawResponseFailed && eventType != "response.failed" {
 				suppressCurrentEvent = true
 			}
@@ -2254,11 +2287,6 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 					})
 				}
 				outputStarted := openAIStreamClientOutputStarted(c, clientOutputStarted)
-				if !outputStarted && !cyberHit {
-					if compactErr := newOpenAICompactFallbackSignal(c, dataBytes, failedMessage); compactErr != nil {
-						return resultWithUsage(), compactErr
-					}
-				}
 				if outputStarted && !cyberHit {
 					if codexFailureTerminal && eventType == "error" {
 						// Wait for the authoritative response.failed before mutating
@@ -2317,6 +2345,13 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 					terminalEventType = eventType
 				}
 			}
+			if isOpenAIResponsesCompactPath(c) && (eventType == "response.incomplete" || eventType == "response.cancelled" || eventType == "response.canceled") {
+				sawFailedEvent = true
+				failedMessage = extractOpenAISSEErrorMessage(dataBytes)
+				if failedMessage == "" {
+					failedMessage = "Upstream compact response did not complete"
+				}
+			}
 			if responseID == "" {
 				responseID = extractOpenAIResponseIDFromJSONBytes(dataBytes)
 			}
@@ -2341,6 +2376,19 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 				line = "data: " + string(sanitizedData)
 			}
 			lineStartsClientOutput = forceFlushFailedEvent || openAIStreamDataStartsClientOutput(trimmedData, eventType)
+			if compactTerminalFrameValidated {
+				lineStartsClientOutput = true
+				if compactPendingTerminalEventLine != "" {
+					if clientOutputStarted {
+						if _, err := fmt.Fprintln(w, compactPendingTerminalEventLine); err != nil {
+							clientDisconnected = true
+						}
+					} else {
+						pendingLines = append(pendingLines, compactPendingTerminalEventLine)
+					}
+					compactPendingTerminalEventLine = ""
+				}
+			}
 			if lineStartsClientOutput && trimmedData != "[DONE]" && !openAIStreamEventTypeIsTerminal(eventType) {
 				semanticOutputSeen = true
 			}
@@ -2361,6 +2409,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 		}
 		if line == "" {
 			pendingSSEEventType = ""
+			compactPendingTerminalEventLine = ""
 			if suppressCurrentEvent {
 				suppressCurrentEvent = false
 				responseFailedPending = false
@@ -2409,6 +2458,11 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	}
 	ensureResponseFailedTerminal()
 	if err := documentScanner.Err(); err != nil {
+		if isOpenAIResponsesCompactPath(c) && !sawTerminalEvent &&
+			!errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			emitCompactFailureTerminal("Upstream compact response stream was interrupted before a terminal event")
+			return resultWithUsage(), fmt.Errorf("compact response stream interrupted: %w", err)
+		}
 		if (sawDone || sawTerminalEvent) && !sawFailedEvent {
 			s.clearOpenAIProxyStreamDisconnect(account)
 			return resultWithUsage(), nil
@@ -2447,6 +2501,10 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 		return resultWithUsage(), fmt.Errorf("upstream response failed: %s", failedMessage)
 	}
 	if !clientDisconnected && !sawDone && !sawTerminalEvent && ctx.Err() == nil {
+		if isOpenAIResponsesCompactPath(c) {
+			emitCompactFailureTerminal("Upstream compact response stream ended before a terminal event")
+			return resultWithUsage(), fmt.Errorf("compact response stream ended before a terminal event")
+		}
 		logger.FromContext(ctx).With(
 			zap.String("component", "service.openai_gateway"),
 			zap.Int64("account_id", account.ID),
@@ -2497,6 +2555,11 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 	// receive raw SSE text or a terminal event with empty output.
 	if isEventStreamResponse(resp.Header) {
 		return s.handlePassthroughSSEToJSON(resp, c, account, body, originalModel, mappedModel, compatInput)
+	}
+	if isOpenAIResponsesCompactPath(c) {
+		if err := validateOpenAICompactResponse(body); err != nil {
+			return nil, err
+		}
 	}
 
 	usage := &OpenAIUsage{}
@@ -2568,15 +2631,15 @@ func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(resp *http.Response, c
 		if msg == "" {
 			msg = "Upstream compact response failed"
 		}
-		if compactErr := newOpenAICompactFallbackSignal(c, terminalPayload, msg); compactErr != nil {
-			return nil, compactErr
-		}
 		if failoverErr := s.nonStreamingTerminalFailureFailover(c, resp, account, true, terminalType, terminalPayload, msg, mappedModel); failoverErr != nil {
 			return nil, failoverErr
 		}
 		return nil, s.writeOpenAINonStreamingProtocolError(resp, c, msg)
 	}
 	finalResponse, ok := extractCodexFinalResponse(bodyText)
+	if isOpenAIResponsesCompactPath(c) && !ok {
+		return nil, fmt.Errorf("upstream compact response did not complete")
+	}
 
 	usage := s.parseSSEUsageFromBody(bodyText)
 	if ok {
@@ -2593,6 +2656,11 @@ func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(resp *http.Response, c
 			}
 		}
 		finalResponse = supplementCompactionItemFromSSE(c, finalResponse, bodyText)
+		if isOpenAIResponsesCompactPath(c) {
+			if err := validateOpenAICompactResponse(finalResponse); err != nil {
+				return nil, err
+			}
+		}
 		body = finalResponse
 		if originalModel != "" && mappedModel != "" && originalModel != mappedModel {
 			body = s.replaceModelInResponseBody(body, mappedModel, originalModel)

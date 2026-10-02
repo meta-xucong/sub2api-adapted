@@ -1,0 +1,352 @@
+{
+  "schema_version": 2,
+  "contract": "MODEL-CATALOG-COMPACT-REPAIR-002",
+  "normalization_policy": "provider-specific-evidence-only",
+  "field_semantics": {
+    "expected_public_id": "canonical ID emitted to authorized clients; null means hidden/quarantined",
+    "accepted_input_canonical_id": "canonical request model after accepting an evidenced input alias",
+    "account_catalog_ids": "when present, exact raw IDs from this account's last complete snapshot; if omitted, default to the singleton [raw_id]",
+    "requested_input_id": "exact model ID submitted by the client for this case",
+    "raw_id": "one exact ID returned by the account catalog, not a display name or billing alias",
+    "expected_route_id": "exact raw model ID sent upstream; if non-null it must be present in effective account_catalog_ids (explicit or [raw_id])"
+  },
+  "source_profile_cases": [
+    { "profile": "openai-platform-api-key", "origin": "https://api.openai.com", "path": "/v1/models", "response_shape": "data[].id", "credentials": "openai_api_key", "expected_adapter": "platform_models", "expected_initial_policy": "manual", "expected_policy_after_explicit_opt_in": "follow_upstream" },
+    { "profile": "openai-platform-api-key", "origin": "https://custom-gateway.example", "path": "/v1/models", "response_shape": "data[].id", "credentials": "api_key", "expected_adapter": "no_official_origin_match", "expected_initial_policy": "manual_only" },
+    { "profile": "openai-platform-api-key", "origin": "https://api.openai.com", "redirect_origin": "https://proxy.example", "expected_result": "reject_redirect_preserve_last_good" },
+    { "profile": "openai-chatgpt-codex-manifest", "endpoint": "https://chatgpt.com/backend-api/codex/models", "credentials": "chatgpt_oauth", "response_shape": "unverified-manifest", "expected_adapter": "separate_manifest_parser", "expected_initial_policy": "manual_only" },
+    { "profile": "deepseek-official", "origin": "https://api.deepseek.com", "path": "/models", "credentials": "deepseek_api_key", "expected_adapter": "deepseek_models", "expected_initial_policy": "manual", "expected_policy_after_explicit_opt_in": "follow_upstream" },
+    { "profile": "deepseek-official", "origin": "https://reseller.example", "path": "/v1/models", "credentials": "api_key", "expected_adapter": "no_official_origin_match", "expected_initial_policy": "manual_only" },
+    { "profile": "anthropic-official", "origin": "https://api.anthropic.com", "path": "/v1/models", "credentials": "anthropic_api_key", "expected_adapter": "anthropic_cursor_models", "expected_initial_policy": "manual", "expected_policy_after_explicit_opt_in": "follow_upstream" },
+    { "profile": "anthropic-official", "response_shape": "cursor-paginated-models", "availability_is_lifecycle": false, "expected_adapter": "complete_cursor_pagination" }
+  ],
+  "surface_visibility_cases": [
+    { "surface": "openai-platform-api-key-models", "source_profile": "openai-platform-api-key", "visible_ids": ["gpt-6-sol"], "expected_route_profile": "openai-platform-api-key" },
+    { "surface": "codex-oauth-manifest", "source_profile": "openai-chatgpt-codex-manifest", "profile_contract_state": "verified-fixture-only", "visible_ids": ["gpt-6-astra"], "expected_route_profile": "openai-chatgpt-codex-manifest", "production_policy_until_verified": "manual_only" },
+    { "cross_surface_equal_sets_required": false, "cross_profile_parser_reuse_allowed": false, "expected_rule": "shared-normalization-and-acl-semantics-only" },
+    { "surface": "legacy-v1-models-and-request", "account_catalog_ids": ["deepseek-flash"], "requested_input_id": "deepseek-v4-flash", "group_allowlist": ["gpt-*"], "expected_public_id": null, "expected_request": "model_not_found", "expected_rule": "alias-cannot-bypass-group-allowlist" },
+    { "surface": "anthropic-source-account", "account_catalog_ids": ["claude-retired-fixture"], "lifecycle_state": "retired", "other_fresh_account_with_same_canonical": false, "expected_public_id": null, "expected_route_id": null },
+    { "surface": "anthropic-group-union", "account_catalog_ids": ["claude-retired-fixture"], "lifecycle_state": "retired", "other_fresh_account_with_same_canonical": true, "expected_public_id": "claude-fixture-canonical", "expected_route_source": "other-fresh-account-only" }
+  ],
+  "pagination_and_resource_limit_cases": [
+    { "profile": "anthropic-official", "has_more": true, "next_cursor": "page-2", "expected_snapshot_commit": false },
+    { "profile": "anthropic-official", "has_more": false, "all_cursors_unique": true, "expected_snapshot_commit": true },
+    { "profile": "anthropic-official", "has_more": true, "cursor_repeated": true, "expected_snapshot_commit": false },
+    { "bound": "single_page_body_bytes", "value": 8388608, "valid_complete_response": true, "expected_snapshot_commit": true },
+    { "bound": "single_page_body_bytes", "value": 8388609, "valid_complete_response": true, "expected_result": "over_limit", "expected_preserve_last_good": true },
+    { "bound": "aggregate_body_bytes", "value": 8388608, "page_count": 1, "expected_snapshot_commit": true },
+    { "bound": "aggregate_body_bytes", "value": 8388609, "expected_result": "over_limit", "expected_preserve_last_good": true },
+    { "bound": "page_count", "value": 100, "has_more": false, "all_cursors_unique": true, "expected_snapshot_commit": true },
+    { "bound": "page_count", "value": 101, "has_more": true, "expected_result": "incomplete", "expected_preserve_last_good": true },
+    { "bound": "distinct_model_ids", "value": 2048, "all_ids_unique": true, "expected_snapshot_commit": true },
+    { "bound": "distinct_model_ids", "value": 2049, "expected_result": "over_limit", "expected_preserve_last_good": true },
+    { "bound": "model_id_utf8_bytes", "value": 256, "valid_utf8": true, "expected_snapshot_commit": true },
+    { "bound": "model_id_utf8_bytes", "value": 257, "expected_result": "over_limit", "expected_preserve_last_good": true },
+    { "bound": "snapshot_json_bytes", "value": 2097152, "valid_snapshot": true, "expected_snapshot_commit": true },
+    { "bound": "snapshot_json_bytes", "value": 2097153, "expected_result": "over_limit", "expected_preserve_last_good": true }
+  ],
+  "cases": [
+    {
+      "provider": "openai-compatible-formal",
+      "raw_id": "gpt-5.6-sol",
+      "expected_public_id": "gpt-5.6-sol",
+      "expected_route_id": "gpt-5.6-sol",
+      "decision": "exact-formal"
+    },
+    {
+      "provider": "openai-official",
+      "raw_id": "gpt-5.6",
+      "expected_public_id": null,
+      "expected_route_id": "gpt-5.6",
+      "accepted_input_canonical_id": "gpt-5.6-sol",
+      "decision": "official-input-alias-hidden-from-listing",
+      "evidence_url": "https://developers.openai.com/api/docs/models/gpt-5.6-sol"
+    },
+    {
+      "provider": "openai-official",
+      "account_catalog_ids": ["gpt-5.6-sol"],
+      "raw_id": "gpt-5.6-sol",
+      "requested_input_id": "gpt-5.6",
+      "expected_public_id": "gpt-5.6-sol",
+      "expected_route_id": "gpt-5.6-sol",
+      "accepted_input_canonical_id": "gpt-5.6-sol",
+      "decision": "official-alias-input-routes-to-present-canonical-account-catalog-id",
+      "evidence_url": "https://developers.openai.com/api/docs/models/gpt-5.6-sol"
+    },
+    {
+      "provider": "openai-compatible-formal",
+      "raw_id": "gpt-5.6-terra",
+      "expected_public_id": "gpt-5.6-terra",
+      "expected_route_id": "gpt-5.6-terra",
+      "decision": "exact-formal-variant"
+    },
+    {
+      "provider": "openai-compatible-formal",
+      "raw_id": "gpt-5.6-luna",
+      "expected_public_id": "gpt-5.6-luna",
+      "expected_route_id": "gpt-5.6-luna",
+      "decision": "exact-formal-variant"
+    },
+    {
+      "provider": "openai-official",
+      "raw_id": "gpt-6-astra",
+      "expected_public_id": "gpt-6-astra",
+      "expected_route_id": "gpt-6-astra",
+      "decision": "exact-official-canonical-id",
+      "evidence_url": "https://developers.openai.com/api/docs/models/gpt-6-astra"
+    },
+    {
+      "provider": "openai-official",
+      "raw_id": "gpt-6-sol",
+      "expected_public_id": "gpt-6-sol",
+      "expected_route_id": "gpt-6-sol",
+      "decision": "exact-official-canonical-id",
+      "evidence_url": "https://developers.openai.com/api/docs/models/gpt-6-sol"
+    },
+    {
+      "provider": "openai-official",
+      "raw_id": "gpt-6-luna",
+      "expected_public_id": "gpt-6-luna",
+      "expected_route_id": "gpt-6-luna",
+      "decision": "exact-official-canonical-id",
+      "evidence_url": "https://developers.openai.com/api/docs/models/gpt-6-luna"
+    },
+    {
+      "provider": "openai-official",
+      "raw_id": "gpt-6.1-sol",
+      "expected_public_id": "gpt-6.1-sol",
+      "expected_route_id": "gpt-6.1-sol",
+      "decision": "exact-official-canonical-id",
+      "evidence_url": "https://developers.openai.com/api/docs/models"
+    },
+    {
+      "provider": "openai-compatible-formal",
+      "raw_id": "gpt-6",
+      "expected_public_id": null,
+      "expected_route_id": null,
+      "decision": "do-not-infer-bare-alias-to-astra"
+    },
+    {
+      "provider": "sub2api-internal",
+      "raw_id": "codex-auto-review",
+      "expected_public_id": null,
+      "expected_route_id": null,
+      "decision": "internal-probe-only"
+    },
+    {
+      "provider": "openai-official",
+      "account_catalog_ids": ["ft:gpt-4o-mini:org-fixture::custom-model"],
+      "raw_id": "ft:gpt-4o-mini:org-fixture::custom-model",
+      "expected_public_id": null,
+      "expected_route_id": null,
+      "decision": "private-finetuned-id-not-auto-published",
+      "evidence_url": "https://developers.openai.com/api/docs/guides/supervised-fine-tuning"
+    },
+    {
+      "provider": "openai-official",
+      "account_catalog_ids": ["ft:gpt-4o-mini:org-fixture::custom-model"],
+      "raw_id": "ft:gpt-4o-mini:org-fixture::custom-model",
+      "requested_input_id": "my-approved-finetune",
+      "expected_public_id": "my-approved-finetune",
+      "expected_route_id": "ft:gpt-4o-mini:org-fixture::custom-model",
+      "decision": "private-finetuned-id-only-through-explicit-admin-mapping"
+    },
+    {
+      "provider": "deepseek-reseller-conditional",
+      "account_catalog_ids": ["deepseek-v4-flash"],
+      "raw_id": "deepseek-v4-flash",
+      "requested_input_id": "deepseek-v4-flash",
+      "expected_public_id": "deepseek-flash",
+      "expected_route_id": "deepseek-v4-flash",
+      "accepted_input_canonical_id": "deepseek-flash",
+      "standalone_model_lifecycle": "retired",
+      "input_alias_state": "accepted_compatibility",
+      "route_mode": "raw_compat_alias",
+      "source_specific_alias_route_verified": true,
+      "catalog_observation": "synthetic-exact-account-snapshot; not a claim about official GET /models membership",
+      "decision": "only-if-this-specific-reseller-account-lists-legacy-raw-id-keep-it-as-internal-route-and-publish-canonical",
+      "evidence_url": "https://api-docs.deepseek.com/quick_start/pricing/",
+      "third_party_live_verification_required": true
+    },
+    {
+      "provider": "deepseek-official",
+      "account_catalog_ids": ["deepseek-flash"],
+      "raw_id": "deepseek-flash",
+      "requested_input_id": "deepseek-v4-flash-vision-exp",
+      "expected_public_id": "deepseek-flash",
+      "expected_route_id": "deepseek-flash",
+      "accepted_input_canonical_id": "deepseek-flash",
+      "standalone_model_lifecycle": "retired",
+      "input_alias_state": "accepted_compatibility",
+      "route_mode": "canonical_target",
+      "decision": "official-legacy-input-alias-routes-to-present-canonical-account-catalog-id",
+      "evidence_url": "https://api-docs.deepseek.com/quick_start/pricing/",
+      "third_party_live_verification_required": true
+    },
+    {
+      "provider": "deepseek-reseller-conditional",
+      "account_catalog_ids": ["deepseek-v4-flash", "deepseek-flash"],
+      "raw_id": "deepseek-v4-flash",
+      "requested_input_id": "deepseek-v4-flash",
+      "expected_public_id": "deepseek-flash",
+      "expected_route_id": "deepseek-flash",
+      "standalone_model_lifecycle": "retired",
+      "input_alias_state": "accepted_compatibility",
+      "route_mode": "canonical_target",
+      "catalog_observation": "synthetic-exact-account-snapshot; not a claim about official GET /models membership",
+      "decision": "prefer-present-exact-canonical-route-when-both-raw-ids-exist",
+      "third_party_live_verification_required": true
+    },
+    {
+      "provider": "deepseek-official",
+      "raw_id": "deepseek-v4-pro",
+      "expected_public_id": "deepseek-v4-pro",
+      "expected_route_id": "deepseek-v4-pro",
+      "model_version_metadata": "DeepSeek-V4-Pro-0813",
+      "decision": "exact-current-api-id-version-is-metadata",
+      "evidence_url": "https://api-docs.deepseek.com/api/list-models/",
+      "runtime_routing_and_billing_confirmation_required": true
+    },
+    {
+      "provider": "deepseek-source-gated",
+      "raw_id": "deepseek-v4-pro-0813",
+      "expected_public_id": null,
+      "expected_route_id": null,
+      "decision": "quarantine-until-this-exact-api-id-is-source-verified",
+      "evidence_url": "https://api-docs.deepseek.com/quick_start/pricing/",
+      "third_party_live_verification_required": true
+    },
+    {
+      "provider": "generic",
+      "raw_id": "provider-model-20260901",
+      "expected_public_id": null,
+      "expected_route_id": null,
+      "decision": "quarantine-unless-exact-provider-registry-rule"
+    },
+    {
+      "provider": "generic",
+      "raw_id": "vendor-preview-model",
+      "expected_public_id": null,
+      "expected_route_id": null,
+      "decision": "quarantine-unless-explicitly-official"
+    },
+    {
+      "provider": "generic",
+      "raw_id": "vendor-model-2026-09-01",
+      "expected_public_id": "vendor-model-2026-09-01",
+      "expected_route_id": "vendor-model-2026-09-01",
+      "decision": "retain-if-authoritative-source-marks-this-exact-id-formal"
+    }
+  ],
+  "refresh_cases": [
+    { "previous": ["A"], "result": "authoritative-success", "current": ["B"], "expected_public": ["B"] },
+    { "previous": ["A"], "result": "timeout-within-grace", "current": null, "expected_public": ["A"], "expected_status": "stale" },
+    { "previous": ["A"], "result": "timeout-after-grace", "current": null, "expected_public": [], "expected_status": "expired" },
+    { "previous": ["A"], "result": "ambiguous-empty", "current": [], "expected_public": ["A"], "expected_status": "stale" },
+    { "previous": ["A"], "result": "unsupported-endpoint", "current": null, "expected_status": "unsupported" }
+  ],
+  "manual_policy_cases": [
+    { "snapshot_state": "fresh_complete", "raw_catalog_ids": ["provider-model-a"], "explicit_mapping": { "public-model-a": "provider-model-a" }, "expected_public_ids": ["public-model-a"], "expected_route": "provider-model-a", "expected_status": "verified" },
+    { "snapshot_state": "fresh_complete", "raw_catalog_ids": [], "explicit_mapping": { "public-model-a": "provider-model-a" }, "expected_public_ids": [], "expected_route": "model_not_found", "mapping_preserved": true, "expected_status": "confirmed_absent" },
+    { "snapshot_state": "stale_within_grace", "last_good_raw_catalog_ids": ["provider-model-a"], "explicit_mapping": { "public-model-a": "provider-model-a" }, "expected_public_ids": ["public-model-a"], "expected_route": "provider-model-a", "expected_status": "stale" },
+    { "snapshot_state": "expired", "last_good_raw_catalog_ids": ["provider-model-a"], "explicit_mapping": { "public-model-a": "provider-model-a" }, "expected_public_ids": ["public-model-a"], "expected_route": "provider-model-a", "expected_status": "manual_unverified" },
+    { "snapshot_state": "never_fetched_or_unsupported_or_manual_only", "raw_catalog_ids": null, "explicit_mapping": { "public-model-a": "provider-model-a" }, "expected_public_ids": ["public-model-a"], "expected_route": "provider-model-a", "expected_status": "manual_unverified" },
+    { "snapshot_state": "any", "raw_catalog_ids": null, "explicit_mapping": {}, "expected_public_ids": [], "expected_route": "model_not_found", "expected_status": "not_configured" },
+    { "snapshot_state": "any", "raw_catalog_ids": ["provider-model-a"], "explicit_mapping": { "public-model-a": "provider-model-a" }, "canonical_lifecycle": "retired", "alias_state": "withdrawn", "expected_public_ids": [], "expected_route": "model_not_found", "expected_status": "retired_or_alias_withdrawn" }
+  ],
+  "refresh_fencing_cases": [
+    { "scenario": "stale-owner-after-new-owner-committed", "latest_issued_token": 12, "last_applied_token": 12, "incoming_token": 11, "expected_snapshot_commit": false },
+    { "scenario": "stale-owner-after-new-token-issued-before-new-snapshot", "latest_issued_token": 12, "last_applied_token": 10, "incoming_token": 11, "new_owner_snapshot_committed": false, "expected_snapshot_commit": false, "decision": "incoming-token-must-equal-latest-issued-even-when-greater-than-last-applied" },
+    { "scenario": "current-owner-commit", "latest_issued_token": 12, "last_applied_token": 10, "incoming_token": 12, "expected_snapshot_commit": true, "expected_last_applied_token": 12 }
+  ],
+  "policy_opt_in_concurrency_cases": [
+    { "scenario": "revision-writer-locks-and-commits-before-opt-in-lock", "isolation": "ordered-row-lock-and-reread", "selected_account_ids": [101, 102], "changed_revision": "group_acl", "expected_result": "409_stale_preview", "expected_policy_updates": 0, "expected_success_audit": false, "expected_refresh_enqueue": false },
+    { "scenario": "opt-in-locks-first-revision-writer-waits", "isolation": "ordered-row-lock-held-through-commit", "selected_account_ids": [101, 102], "revision_writer_order": "after-opt-in-commit", "expected_result": "opt-in-then-revision-update", "expected_policy_updates": 2 },
+    { "scenario": "one-conditional-account-update-affects-zero-rows", "isolation": "conditional-update-all-or-nothing", "selected_account_ids": [101, 102], "matched_accounts": 1, "expected_result": "rollback_batch_stale_preview", "expected_policy_updates": 0, "expected_success_audit": false, "expected_refresh_enqueue": false },
+    { "scenario": "deadlock-retry-reacquires-all-locks-and-revalidates", "isolation": "ordered-row-lock-with-optional-serializable", "first_attempt": "deadlock", "expected_retry": "restart-transaction-reacquire-all-locks-and-revalidate-entire-preview", "reuse_old_read_set": false },
+    { "scenario": "serialization-retry-reloads-preview-and-all-revisions", "isolation": "ordered-row-lock-with-optional-serializable", "first_attempt": "serialization_failure", "expected_retry": "restart-transaction-reacquire-all-locks-and-revalidate-entire-preview", "reuse_old_read_set": false }
+  ],
+  "lifecycle_cases": [
+    { "provider": "openai-platform-api-key", "shutdown_date": "2026-10-03", "now": "2026-10-02T23:59:59Z", "expected_lifecycle": "scheduled_shutdown", "expected_routable": true },
+    { "provider": "openai-platform-api-key", "shutdown_date": "2026-10-03", "now": "2026-10-03T23:59:59Z", "expected_lifecycle": "scheduled_shutdown", "expected_routable": true },
+    { "provider": "openai-platform-api-key", "shutdown_date": "2026-10-03", "now": "2026-10-04T00:00:00Z", "expected_lifecycle": "retired", "expected_routable": false },
+    { "provider": "openai-platform-api-key", "shutdown_date": null, "now": "2026-10-03T00:00:00Z", "expected_lifecycle": "unknown", "expected_routable": "availability-and-policy-only" },
+    { "provider": "openai-platform-api-key", "shutdown_date": "invalid", "now": "2026-10-03T00:00:00Z", "expected_lifecycle": "unknown", "expected_routable": "availability-and-policy-only" },
+    { "provider": "anthropic-official", "lifecycle_state": "active", "list_contains_id": true, "expected_routable": true },
+    { "provider": "anthropic-official", "lifecycle_state": "legacy", "list_contains_id": true, "expected_routable": true },
+    { "provider": "anthropic-official", "lifecycle_state": "deprecated", "retirement_date": "2026-11-30", "now": "2026-10-02T00:00:00Z", "list_contains_id": true, "expected_routable": true },
+    { "provider": "anthropic-official", "lifecycle_state": "deprecated", "retirement_date": "2026-11-30", "now": "2026-12-01T00:00:00Z", "list_contains_id": true, "expected_routable": false },
+    { "provider": "anthropic-official", "lifecycle_state": "retired", "list_contains_id": true, "expected_routable": false },
+    { "provider": "deepseek-official", "raw_standalone_model_id": "deepseek-v4-flash", "model_lifecycle_state": "retired", "input_alias_state": "accepted_compatibility", "canonical_target": "deepseek-flash", "account_catalog_ids": ["deepseek-flash"], "route_mode": "canonical_target", "expected_retired_standalone_route": false, "expected_alias_request_route": "deepseek-flash" },
+    { "provider": "deepseek-official", "raw_standalone_model_id": "deepseek-v4-flash", "model_lifecycle_state": "retired", "input_alias_state": "withdrawn", "canonical_target": "deepseek-flash", "account_catalog_ids": ["deepseek-flash"], "expected_alias_request": "model_not_found", "expected_canonical_request_route": "deepseek-flash" },
+    { "provider": "deepseek-reseller-manual-only", "raw_standalone_model_id": "deepseek-v4-flash", "model_lifecycle_state": "retired", "input_alias_state": "unverified", "account_catalog_ids": ["deepseek-v4-flash"], "expected_public_id": null, "expected_route_id": null, "decision": "do_not_infer_compat_alias_from_raw_catalog_string_alone" },
+    { "provider": "anthropic-partner-platform", "lifecycle_state": "retired", "source_lifecycle_revision": "partner-specific", "expected_routable": "partner-specific-policy" },
+    { "provider": "anthropic-official", "list_result_missing_id": true, "lifecycle_source": "not-retirement-authority", "expected_lifecycle": "unknown" }
+  ],
+  "compact_cases": [
+    { "path": "/v1/responses/compact", "transport": "native", "requested_model": "gpt-5.6-sol", "account_mapping": null, "global_override": "", "expected_upstream_model": "gpt-5.6-sol" },
+    { "path": "/v1/responses/compact", "transport": "native", "requested_model": "gpt-5.6-sol", "account_mapping": "provider-compact-sol", "global_override": "gpt-5.5", "expected_upstream_model": "provider-compact-sol" },
+    { "path": "/v1/responses/compact", "transport": "native", "requested_model": "gpt-5.6-sol", "account_mapping": null, "global_override": "gpt-5.5", "expected_upstream_model": "gpt-5.5" },
+    { "path": "/v1/responses/compact", "transport": "passthrough", "requested_model": "gpt-5.6-sol", "account_mapping": "provider-compact-sol", "global_override": "gpt-5.5", "expected_upstream_model": "provider-compact-sol" },
+    { "path": "/v1/responses/compact", "transport": "raw_chat_summary", "requested_model": "gpt-5.6-sol", "normal_model_mapping": "provider-model-sol", "account_mapping": "provider-compact-sol", "global_override": "gpt-5.5", "expected_upstream_model": "provider-model-sol" },
+    { "path": "/v1/responses", "transport": "ordinary", "requested_model": "gpt-5.6-sol", "account_mapping": "provider-compact-sol", "global_override": "gpt-5.5", "expected_upstream_model": "gpt-5.6-sol" },
+    { "path": "/v1/responses", "transport": "native_v2", "native_compaction_v2": true, "requested_model": "gpt-5.6-sol", "account_mapping": "provider-compact-sol", "global_override": "gpt-5.5", "expected_upstream_model": "gpt-5.6-sol" }
+  ],
+  "billing_cases": [
+    {
+      "requested_input_id": "gpt-5.6",
+      "canonical_public_id": "gpt-5.6-sol",
+      "billing_model_id": "gpt-5.6-sol",
+      "input_price_per_token": 0.000003,
+      "output_price_per_token": 0.000015,
+      "input_tokens": 1000,
+      "output_tokens": 500,
+      "rate_multiplier": 1.5,
+      "actual_upstream_model": "gpt-5.5",
+      "rewrite_reason": "explicit_compact_model_mapping",
+      "expected_total_cost": 0.0105,
+      "expected_user_charge": 0.01575,
+      "provider_cost_amount": null,
+      "decision": "canonical-request-tariff-stays-stable-across-compact-rewrite"
+    },
+    {
+      "requested_input_id": "deepseek-v4-flash-vision-exp",
+      "canonical_public_id": "deepseek-flash",
+      "billing_model_id": "deepseek-flash",
+      "account_catalog_ids": ["deepseek-flash"],
+      "actual_upstream_model": "deepseek-flash",
+      "decision": "accepted-alias-bills-as-canonical-public-tariff"
+    },
+    {
+      "surface": "unified-gateway",
+      "catalog_refresh_changes_route_or_price": false,
+      "expected_billing_source": "explicit-unified-billing-lane"
+    }
+  ],
+  "compact_fallback_cases": [
+    { "request_kind": "responses_compact", "delivery": "http", "http_status": 400, "error": "model_not_found", "expected_retry": true },
+    { "request_kind": "responses_compact", "delivery": "http", "http_status": 404, "error": "unsupported_model", "expected_retry": true },
+    { "request_kind": "responses_compact", "delivery": "http", "http_status": 400, "error": "context_length_exceeded", "expected_retry": false },
+    { "request_kind": "responses_compact", "delivery": "http", "http_status": 429, "error": "context window exceeded", "expected_retry": false },
+    { "request_kind": "responses_compact", "delivery": "http", "http_status": 503, "error": "model not found", "expected_retry": false },
+    { "request_kind": "responses_compact", "delivery": "http", "http_status": 400, "error": "invalid_request_error", "expected_retry": false },
+    { "request_kind": "responses_compact", "delivery": "http", "http_status": 400, "error": "message:model `x` does not exist", "expected_retry": true },
+    { "request_kind": "responses_compact", "delivery": "http", "http_status": 404, "error": "message:unsupported model `x`", "expected_retry": true },
+    { "request_kind": "responses_compact", "delivery": "http", "http_status": 400, "error": "message:model output is not supported", "expected_retry": false },
+    { "request_kind": "responses_compact", "delivery": "http", "http_status": 400, "error": "message:request says model not found is not the failure", "expected_retry": false },
+    { "request_kind": "responses_compact", "delivery": "http", "http_status": 429, "error": "message:model not found", "expected_retry": false },
+    { "request_kind": "responses_compact", "delivery": "http", "http_status": 400, "error": "empty_failed_shell", "expected_retry": true },
+    { "request_kind": "responses_compact", "delivery": "http", "http_status": 400, "error": "failed_shell_with_business_error", "expected_retry": false },
+    { "request_kind": "responses_compact", "delivery": "sse", "outer_http_status": 200, "event": "response.failed", "event_error_code": "model_not_found", "expected_retry": false },
+    { "request_kind": "responses_compact", "delivery": "sse", "outer_http_status": 200, "event": "response.failed", "event_error_code": null, "expected_retry": false },
+    { "request_kind": "responses_compact", "delivery": "sse", "outer_http_status": 200, "event": "response.failed", "empty_failed_shell": true, "expected_retry": false },
+    { "request_kind": "native_v2", "delivery": "http", "http_status": 400, "error": "context_length_exceeded", "expected_retry": false },
+    { "request_kind": "native_v2", "delivery": "http", "http_status": 400, "error": "model_not_found", "expected_retry": false },
+    { "request_kind": "native_v2", "delivery": "http", "http_status": 404, "error": "unsupported_model", "expected_retry": false },
+    { "request_kind": "native_v2", "delivery": "sse", "outer_http_status": 200, "event": "response.failed", "event_error_code": "model_not_found", "expected_retry": false },
+    { "request_kind": "native_v2", "delivery": "sse", "outer_http_status": 200, "event": "response.failed", "event_error_code": "server_error", "expected_retry": false },
+    { "request_kind": "native_v2", "delivery": "http", "http_status": 429, "error": "rate_limit_error", "expected_retry": false },
+    { "request_kind": "native_v2", "delivery": "http", "http_status": 503, "error": "internal_error", "expected_retry": false },
+    { "request_kind": "native_v2", "delivery": "transport", "error": "network_disconnect", "expected_retry": false }
+  ]
+}

@@ -268,6 +268,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 	var bareErrorPayload []byte
 	bareErrorAccountSideEffectsPending := false
 	pendingSSEEventType := ""
+	compactPendingTerminalEventLine := ""
 	eventInProgress := false
 	eventStartsClientOutput := false
 	eventStartsTTFTOutput := false
@@ -345,6 +346,26 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 		// The handler must not append its generic failure after this error event.
 		MarkResponseCommitted(c)
 	}
+	emitCompactFailureTerminal := func(message string) error {
+		compactPendingTerminalEventLine = ""
+		failedMessage = message
+		sawTerminalEvent = true
+		sawFailedEvent = true
+		terminalEventType = "response.failed"
+		if !clientDisconnected && !failureDelivered {
+			if err := flushBuffered(); err != nil {
+				clientDisconnected = true
+			} else if _, err := writePendingString(buildOpenAIResponseFailedSSE(responseID, originalModel, nil, message)); err != nil {
+				clientDisconnected = true
+			} else if err := flushBuffered(); err != nil {
+				clientDisconnected = true
+			} else {
+				failureDelivered = true
+				MarkResponseCommitted(c)
+			}
+		}
+		return fmt.Errorf("compact response stream failed closed: %s", message)
+	}
 
 	needModelReplace := originalModel != mappedModel
 	streamOutputAccumulator := apicompat.NewBufferedResponseAccumulator()
@@ -397,6 +418,9 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 		}
 		if sawTerminalEvent && !sawFailedEvent {
 			s.clearOpenAIProxyStreamDisconnect(account)
+		}
+		if isOpenAIResponsesCompactPath(c) && !sawTerminalEvent {
+			return resultWithUsage(), emitCompactFailureTerminal("Upstream compact response stream ended before a terminal event")
 		}
 		if !sawTerminalEvent && !openAIStreamClientOutputStarted(c, clientOutputStarted) && !eventShouldFlush {
 			return resultWithUsage(), s.newOpenAIStreamFailoverError(
@@ -463,6 +487,9 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 			}
 			return resultWithUsage(), fmt.Errorf("stream usage incomplete: %w", scanErr), true
 		}
+		if isOpenAIResponsesCompactPath(c) && !sawTerminalEvent {
+			return resultWithUsage(), emitCompactFailureTerminal("Upstream compact response stream was interrupted before a terminal event"), true
+		}
 		if errors.Is(scanErr, bufio.ErrTooLong) {
 			logger.LegacyPrintf("service.openai_gateway", "SSE line too long: account=%d max_size=%d error=%v", account.ID, maxLineSize, scanErr)
 			sendErrorEvent("response_too_large", "Upstream response exceeded the size limit")
@@ -491,12 +518,25 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 		if eventType, ok := extractOpenAISSEEventLine(line); ok {
 			pendingSSEEventType = eventType
 			eventType = strings.TrimSpace(eventType)
+			if isOpenAIResponsesCompactPath(c) && (eventType == "response.completed" || eventType == "response.done") {
+				// Hold the event header until its data payload is validated. Otherwise
+				// a failed compact response could already expose a success terminal.
+				compactPendingTerminalEventLine = line
+				return
+			}
 			suppressCurrentEvent = codexFailureTerminal && (eventType == "error" || (sawBareError && !sawResponseFailed && eventType != "response.failed"))
 		}
 		// Extract data from SSE line (supports both "data: " and "data:" formats)
 		if data, ok := extractOpenAISSEDataLine(line); ok {
 			dataBytes := []byte(data)
 			eventType := effectiveOpenAISSEEventType(dataBytes, pendingSSEEventType)
+			if isOpenAIResponsesCompactPath(c) && strings.TrimSpace(data) == "[DONE]" {
+				streamEarlyErr = emitCompactFailureTerminal("Upstream compact response stream ended without a Responses completion event")
+				return
+			}
+			if compactPendingTerminalEventLine != "" && eventType != "response.completed" && eventType != "response.done" {
+				compactPendingTerminalEventLine = ""
+			}
 			if codexFailureTerminal && sawBareError && !sawResponseFailed &&
 				(eventType == "response.completed" || eventType == "response.done") {
 				// A later successful terminal is authoritative over a pending bare
@@ -519,6 +559,13 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 				terminalEventType = eventType
 				if strings.TrimSpace(data) == "[DONE]" {
 					terminalEventType = "[DONE]"
+				}
+			}
+			if isOpenAIResponsesCompactPath(c) && (eventType == "response.incomplete" || eventType == "response.cancelled" || eventType == "response.canceled") {
+				sawFailedEvent = true
+				failedMessage = extractOpenAISSEErrorMessage(dataBytes)
+				if failedMessage == "" {
+					failedMessage = "Upstream compact response did not complete"
 				}
 			}
 			if responseID == "" {
@@ -561,13 +608,6 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 					})
 				}
 				outputStarted := openAIStreamClientOutputStarted(c, clientOutputStarted)
-				if !outputStarted && !cyberHit {
-					if compactErr := newOpenAICompactFallbackSignal(c, dataBytes, failedMessage); compactErr != nil {
-						sawFailedEvent = true
-						streamEarlyErr = compactErr
-						return
-					}
-				}
 				if outputStarted && !cyberHit {
 					if codexFailureTerminal && eventType == "error" {
 						// OpenAI commonly follows a bare error with response.failed.
@@ -652,6 +692,14 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 				line = "data: " + data
 				eventType = effectiveOpenAISSEEventType(dataBytes, eventType)
 			}
+			if isOpenAIResponsesCompactPath(c) && (eventType == "response.completed" || eventType == "response.done") {
+				if supplementedData, supplemented := supplementOpenAICompactTerminalWithDoneItems(dataBytes, streamDoneItems); supplemented {
+					dataBytes = supplementedData
+					data = string(supplementedData)
+					line = "data: " + data
+					eventType = effectiveOpenAISSEEventType(dataBytes, eventType)
+				}
+			}
 			// Some compatible upstreams rebuild response.completed.output item IDs
 			// after emitting output_item.added/done. Reconcile only terminal
 			// Responses events, using identities observed in this same stream.
@@ -715,7 +763,30 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 			if needModelReplace {
 				line = s.replaceModelInSSELine(line, mappedModel, originalModel)
 			}
+			compactTerminalValidated := false
+			if isOpenAIResponsesCompactPath(c) && (eventType == "response.completed" || eventType == "response.done") {
+				if compactErr := validateOpenAICompactSSETerminal(dataBytes); compactErr != nil {
+					s.parseSSEUsageBytesWithType(dataBytes, eventType, usage)
+					streamEarlyErr = emitCompactFailureTerminal("Upstream compact response is missing a usable compaction item")
+					return
+				}
+				compactTerminalValidated = true
+				if compactPendingTerminalEventLine != "" {
+					if _, err := writePendingString(compactPendingTerminalEventLine); err != nil {
+						handlePendingWriteError(err)
+						return
+					}
+					if _, err := writePendingString("\n"); err != nil {
+						handlePendingWriteError(err)
+						return
+					}
+					compactPendingTerminalEventLine = ""
+				}
+			}
 			startsClientOutput := forceFlushFailedEvent || openAIStreamDataStartsClientOutput(data, eventType)
+			if compactTerminalValidated {
+				startsClientOutput = true
+			}
 			startsVisibleOutput := openAIStreamDataStartsVisibleOutput(data, eventType)
 			startsTTFTOutput := openAIStreamDataStartsTTFT(data, eventType, forceFlushFailedEvent, ttftMode)
 			if stageFirstOutput {
@@ -743,7 +814,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 
 			// 写入客户端（客户端断开后继续 drain 上游）
 			if !clientDisconnected && !failureDelivered && !suppressCurrentEvent {
-				shouldFlush := queueDrained && (clientOutputStarted || startsClientOutput)
+				shouldFlush := compactTerminalValidated || (queueDrained && (clientOutputStarted || startsClientOutput))
 				if firstTokenMs == nil && startsVisibleOutput {
 					// 保证首个 token 事件尽快出站，避免影响 TTFT。
 					shouldFlush = true
@@ -769,6 +840,9 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 		}
 
 		// A blank line dispatches a guarded event from the attempt-local stage.
+		if line == "" && compactPendingTerminalEventLine != "" {
+			compactPendingTerminalEventLine = ""
+		}
 		if stageFirstOutput && line == "" {
 			pendingSSEEventType = ""
 			if suppressCurrentEvent {
@@ -1681,6 +1755,12 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 		}
 	}
 
+	if isOpenAIResponsesCompactPath(c) {
+		if err := validateOpenAICompactResponse(body); err != nil {
+			return nil, err
+		}
+	}
+
 	usageValue, usageOK := extractOpenAIUsageFromJSONBytes(body)
 	if !usageOK {
 		if bodyLooksLikeSSE {
@@ -1776,15 +1856,15 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 		if msg == "" {
 			msg = "Upstream compact response failed"
 		}
-		if compactErr := newOpenAICompactFallbackSignal(c, terminalPayload, msg); compactErr != nil {
-			return nil, compactErr
-		}
 		if failoverErr := s.nonStreamingTerminalFailureFailover(c, resp, account, false, terminalType, terminalPayload, msg, mappedModel); failoverErr != nil {
 			return nil, failoverErr
 		}
 		return nil, s.writeOpenAINonStreamingProtocolError(resp, c, msg)
 	}
 	finalResponse, ok := extractCodexFinalResponse(bodyText)
+	if isOpenAIResponsesCompactPath(c) && !ok {
+		return nil, fmt.Errorf("upstream compact response did not complete")
+	}
 
 	usage := s.parseSSEUsageFromBody(bodyText)
 	if ok {
@@ -1802,6 +1882,11 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 			}
 		}
 		finalResponse = supplementCompactionItemFromSSE(c, finalResponse, bodyText)
+		if isOpenAIResponsesCompactPath(c) {
+			if err := validateOpenAICompactResponse(finalResponse); err != nil {
+				return nil, err
+			}
+		}
 		body = finalResponse
 		if originalModel != mappedModel {
 			body = s.replaceModelInResponseBody(body, mappedModel, originalModel)
@@ -1882,6 +1967,17 @@ func extractOpenAISSETerminalEvent(body string) (string, []byte, bool) {
 		return terminalType, terminalPayload, true
 	}
 	return "", nil, false
+}
+
+func validateOpenAICompactSSETerminal(data []byte) error {
+	if len(data) == 0 || !gjson.ValidBytes(data) {
+		return fmt.Errorf("compact SSE terminal is not valid JSON")
+	}
+	response := gjson.GetBytes(data, "response")
+	if !response.Exists() || !response.IsObject() {
+		return fmt.Errorf("compact SSE terminal is missing response object")
+	}
+	return validateOpenAICompactResponse([]byte(response.Raw))
 }
 
 func extractOpenAISSEErrorMessage(payload []byte) string {
@@ -2206,6 +2302,86 @@ func normalizeResponsesStreamingTerminalOutput(data []byte, acc *apicompat.Buffe
 		outputJSON = reconstructed
 	}
 	updated, err := sjson.SetRawBytes(data, "response.output", outputJSON)
+	if err != nil {
+		return data, false
+	}
+	return updated, true
+}
+
+// supplementOpenAICompactTerminalWithDoneItems restores completed compaction
+// items that an upstream omitted from a non-empty terminal output. It is
+// deliberately called only by the compact streaming handlers; ordinary
+// Responses output keeps the upstream terminal contract unchanged.
+func supplementOpenAICompactTerminalWithDoneItems(data []byte, doneItems *responsesStreamOutputItems) ([]byte, bool) {
+	if len(data) == 0 || !gjson.ValidBytes(data) || doneItems == nil || len(doneItems.items) == 0 {
+		return data, false
+	}
+	output := gjson.GetBytes(data, "response.output")
+	if !output.Exists() || !output.IsArray() {
+		return data, false
+	}
+
+	items := make([]json.RawMessage, 0, len(output.Array())+len(doneItems.items))
+	seenIDs := make(map[string]struct{}, len(output.Array())+len(doneItems.items))
+	for _, item := range output.Array() {
+		items = append(items, json.RawMessage(append([]byte(nil), item.Raw...)))
+		if strings.TrimSpace(item.Get("type").String()) == "compaction" {
+			if id := strings.TrimSpace(item.Get("id").String()); id != "" {
+				seenIDs[id] = struct{}{}
+			}
+		}
+	}
+
+	indexes := make([]int, 0, len(doneItems.items))
+	for index, raw := range doneItems.items {
+		if strings.TrimSpace(gjson.GetBytes(raw, "type").String()) != "compaction" {
+			continue
+		}
+		id := strings.TrimSpace(gjson.GetBytes(raw, "id").String())
+		if id != "" {
+			if _, exists := seenIDs[id]; exists {
+				continue
+			}
+		} else {
+			alreadyPresent := false
+			for _, existing := range items {
+				if bytes.Equal(existing, raw) {
+					alreadyPresent = true
+					break
+				}
+			}
+			if alreadyPresent {
+				continue
+			}
+		}
+		indexes = append(indexes, index)
+	}
+	if len(indexes) == 0 {
+		return data, false
+	}
+	sort.Ints(indexes)
+	for _, index := range indexes {
+		raw := doneItems.items[index]
+		insertAt := index
+		if insertAt < 0 {
+			insertAt = 0
+		}
+		if insertAt > len(items) {
+			insertAt = len(items)
+		}
+		items = append(items, nil)
+		copy(items[insertAt+1:], items[insertAt:])
+		items[insertAt] = append(json.RawMessage(nil), raw...)
+		if id := strings.TrimSpace(gjson.GetBytes(raw, "id").String()); id != "" {
+			seenIDs[id] = struct{}{}
+		}
+	}
+
+	encoded, err := json.Marshal(items)
+	if err != nil {
+		return data, false
+	}
+	updated, err := sjson.SetRawBytes(data, "response.output", encoded)
 	if err != nil {
 		return data, false
 	}

@@ -49,40 +49,27 @@ const (
 )
 
 // FilterCodexModelIDsForGroup removes dedicated media-generation models,
-// wildcard mapping keys, and Codex automatic modes from a client catalog.
-// Automatic modes are retained only when the group's enabled model allowlist
-// explicitly selects the exact slug; account model mappings describe routing
-// and are not feature opt-ins. Wildcard keys such as "foo-*" are routing
+// wildcard mapping keys, and internal Codex automatic modes from a client catalog.
+// Account model mappings and group allowlists do not turn internal probes into
+// public models. Wildcard keys such as "foo-*" are routing
 // patterns, not concrete Codex models. When the allowlist is enabled the
 // catalog is additionally restricted by FilterForListing (wildcard entries
 // expand against the catalog).
 func FilterCodexModelIDsForGroup(modelIDs []string, group *Group) []string {
-	explicitlyEnabled := make(map[string]struct{})
-	if group != nil && group.ModelAllowlistEnabled() {
-		for _, modelID := range group.ModelAllowlist.Models {
-			modelID = strings.TrimSpace(modelID)
-			if strings.HasPrefix(modelID, codexAutoModelPrefix) {
-				explicitlyEnabled[modelID] = struct{}{}
-			}
-		}
-	}
-
 	filtered := make([]string, 0, len(modelIDs))
 	for _, modelID := range modelIDs {
 		modelID = strings.TrimSpace(modelID)
 		if modelID == "" {
 			continue
 		}
-		if isCodexDedicatedMediaModel(modelID) {
+		if isCodexDedicatedMediaModel(modelID) || isCodexInternalModelID(modelID) {
 			continue
 		}
 		if strings.Contains(modelID, "*") {
 			continue
 		}
 		if strings.HasPrefix(modelID, codexAutoModelPrefix) {
-			if _, ok := explicitlyEnabled[modelID]; !ok {
-				continue
-			}
+			continue
 		}
 		filtered = append(filtered, modelID)
 	}
@@ -90,6 +77,15 @@ func FilterCodexModelIDsForGroup(modelIDs []string, group *Group) []string {
 		filtered = group.ModelAllowlist.FilterForListing(filtered)
 	}
 	return filtered
+}
+
+func isForbiddenPublicCodexModelID(modelID string) bool {
+	return isCodexInternalModelID(modelID)
+}
+
+func isCodexInternalModelID(modelID string) bool {
+	normalized := strings.ToLower(codexProviderQualifiedModelID(modelID))
+	return strings.HasPrefix(normalized, codexAutoModelPrefix)
 }
 
 func isCodexDedicatedMediaModel(modelID string) bool {
@@ -156,6 +152,7 @@ func (s *OpenAIGatewayService) BuildGroupConfiguredCodexModelsManifest(
 		nil,
 		group.ModelAllowlist.Models,
 		group.ModelAllowlistEnabled(),
+		false,
 	)
 	if err != nil {
 		return nil, false, fmt.Errorf("build group configured Codex models: %w", err)
@@ -181,6 +178,19 @@ func (s *OpenAIGatewayService) MergeGroupConfiguredCodexModels(
 	manifest *OpenAIModelsResponse,
 	ifNoneMatch string,
 ) error {
+	return s.MergeGroupConfiguredCodexModelsForAccount(ctx, group, manifest, ifNoneMatch, nil)
+}
+
+// MergeGroupConfiguredCodexModelsForAccount scopes official OpenAI catalog
+// cleanup to the source that supplied this manifest. Custom OpenAI-compatible
+// providers may use the same-looking IDs as their own exact model names.
+func (s *OpenAIGatewayService) MergeGroupConfiguredCodexModelsForAccount(
+	ctx context.Context,
+	group *Group,
+	manifest *OpenAIModelsResponse,
+	ifNoneMatch string,
+	sourceAccount *Account,
+) error {
 	if s == nil || s.accountRepo == nil || group == nil || manifest == nil || manifest.NotModified {
 		return nil
 	}
@@ -201,6 +211,7 @@ func (s *OpenAIGatewayService) MergeGroupConfiguredCodexModels(
 		configuredModels,
 		group.ModelAllowlist.Models,
 		group.ModelAllowlistEnabled(),
+		isOfficialOpenAICodexAccount(sourceAccount),
 	)
 	if err != nil {
 		return fmt.Errorf("merge group configured Codex models: %w", err)
@@ -282,7 +293,7 @@ func openAIConfiguredCodexModelIDs(accounts []Account) []string {
 		if account.Platform != PlatformOpenAI {
 			continue
 		}
-		for modelID := range account.GetModelMapping() {
+		for _, modelID := range account.upstreamAvailabilityListingModels(time.Now()) {
 			modelID = strings.TrimSpace(modelID)
 			if modelID == "" || strings.Contains(modelID, "*") {
 				continue
@@ -299,7 +310,7 @@ func openAIConfiguredCodexModelIDs(accounts []Account) []string {
 }
 
 func openAIConfiguredCodexModelIDsForGroup(accounts []Account, group *Group) []string {
-	models := supplementUnmappedOpenAIModels(accounts, openAIConfiguredCodexModelIDs(accounts))
+	models := openAIConfiguredCodexModelIDs(accounts)
 	if group == nil || !group.ModelAllowlistEnabled() {
 		return models
 	}
@@ -318,8 +329,21 @@ func openAIConfiguredCodexModelIDsForGroup(accounts []Account, group *Group) []s
 			if account.Platform != PlatformOpenAI {
 				continue
 			}
-			mappedModel, matched := account.ResolveMappedModel(selectedModel)
-			if !matched || strings.TrimSpace(mappedModel) == "" {
+			// A wildcard mapping authorizes request matching, but it is not
+			// evidence that this account serves every allowlisted model. Only
+			// expand concrete models already present in the account's catalog
+			// projection (snapshot or exact explicit mapping).
+			catalogContainsModel := false
+			for _, catalogModel := range account.upstreamAvailabilityListingModels(time.Now()) {
+				if strings.EqualFold(strings.TrimSpace(catalogModel), selectedModel) {
+					catalogContainsModel = true
+					break
+				}
+			}
+			if !catalogContainsModel {
+				continue
+			}
+			if !account.IsModelSupported(selectedModel) {
 				continue
 			}
 			if _, exists := seen[selectedModel]; !exists {
@@ -1362,6 +1386,7 @@ func mergeConfiguredCodexModelsManifest(
 	configuredModels []string,
 	selectedModels []string,
 	filterBySelection bool,
+	filterOfficialOpenAIIDs bool,
 ) ([]byte, bool, error) {
 	var envelope map[string]json.RawMessage
 	if err := json.Unmarshal(body, &envelope); err != nil {
@@ -1405,19 +1430,9 @@ func mergeConfiguredCodexModelsManifest(
 			changed = true
 			continue
 		}
-		if strings.HasPrefix(descriptor.Slug, codexAutoModelPrefix) {
-			_, explicitlyEnabled := selected[descriptor.Slug]
-			explicitlyEnabled = filterBySelection && explicitlyEnabled
-			if !explicitlyEnabled {
-				changed = true
-				continue
-			}
-			visibleModel, visibilityChanged, err := codexModelWithVisibility(rawModel, "list")
-			if err != nil {
-				return nil, false, err
-			}
-			rawModel = visibleModel
-			changed = changed || visibilityChanged
+		if isCodexInternalModelID(descriptor.Slug) || (filterOfficialOpenAIIDs && isForbiddenOfficialOpenAICodexModelID(descriptor.Slug)) {
+			changed = true
+			continue
 		}
 		seen[descriptor.Slug] = struct{}{}
 		merged = append(merged, rawModel)
@@ -1430,10 +1445,8 @@ func mergeConfiguredCodexModelsManifest(
 		if filterBySelection && !allowlist.Allows(modelID) {
 			continue
 		}
-		if strings.HasPrefix(modelID, codexAutoModelPrefix) {
-			if _, explicitlyEnabled := selected[modelID]; !filterBySelection || !explicitlyEnabled {
-				continue
-			}
+		if isCodexInternalModelID(modelID) {
+			continue
 		}
 		if _, exists := seen[modelID]; exists {
 			continue
@@ -2376,7 +2389,7 @@ func completeAPIKeyCodexModelsManifestMetadata(body []byte, completeAll bool, ac
 		return nil, fmt.Errorf("decode top-level models array: %w", err)
 	}
 
-	officialOpenAI := account != nil && isOfficialOpenAIModelsBaseURL(account.GetOpenAIBaseURL())
+	officialOpenAI := account != nil && account.IsOpenAIApiKey() && DetectUpstreamModelSourceProfile(account).Kind == "openai"
 	changed := false
 	if officialOpenAI {
 		filtered := make([]json.RawMessage, 0, len(models))
@@ -2388,7 +2401,8 @@ func completeAPIKeyCodexModelsManifestMetadata(body []byte, completeAll bool, ac
 				filtered = append(filtered, rawModel)
 				continue
 			}
-			if !isOfficialOpenAICodexCatalogModel(model.Slug) {
+			if !isOfficialOpenAICodexCatalogModel(model.Slug) ||
+				(strings.HasPrefix(strings.ToLower(strings.TrimSpace(model.Slug)), "gpt-") && !openai.IsAutoDiscoveredModelID(model.Slug)) {
 				changed = true
 				continue
 			}
@@ -2622,12 +2636,7 @@ func CodexModelsManifestETagMatches(ifNoneMatch, etag string) bool {
 }
 
 func isOfficialOpenAIModelsBaseURL(raw string) bool {
-	parsed, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil {
-		return false
-	}
-	hostname := strings.TrimSuffix(parsed.Hostname(), ".")
-	return strings.EqualFold(hostname, "api.openai.com")
+	return exactHTTPSOrigin(raw, "api.openai.com", "", "/", "/v1")
 }
 
 func buildCodexModelsManifestURL(endpoint string, appendModelsPath bool, clientVersion string) (*url.URL, error) {

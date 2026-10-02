@@ -38,14 +38,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_CompactPrefersSupported
 			Extra:       map[string]any{"openai_compact_supported": true}, // tier=2
 		},
 	}
-	cfg := &config.Config{}
-	cfg.Gateway.Scheduling.LoadBatchEnabled = false
-	svc := &OpenAIGatewayService{
-		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
-		cache:              &schedulerTestGatewayCache{},
-		cfg:                cfg,
-		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
-	}
+	svc := newOpenAICompactionSchedulerTestService(accounts, false)
 
 	selection, _, err := svc.SelectAccountWithScheduler(
 		ctx,
@@ -92,14 +85,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_CompactRejectsExplicitl
 			Extra:       map[string]any{"openai_compact_supported": false},
 		},
 	}
-	cfg := &config.Config{}
-	cfg.Gateway.Scheduling.LoadBatchEnabled = false
-	svc := &OpenAIGatewayService{
-		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
-		cache:              &schedulerTestGatewayCache{},
-		cfg:                cfg,
-		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
-	}
+	svc := newOpenAICompactionSchedulerTestService(accounts, false)
 
 	selection, _, err := svc.SelectAccountWithScheduler(
 		ctx,
@@ -284,14 +270,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_CompactRequiresResponse
 			"openai_responses_supported": false,
 		},
 	}}
-	cfg := &config.Config{}
-	cfg.Gateway.Scheduling.LoadBatchEnabled = false
-	svc := &OpenAIGatewayService{
-		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
-		cache:              &schedulerTestGatewayCache{},
-		cfg:                cfg,
-		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
-	}
+	svc := newOpenAICompactionSchedulerTestService(accounts, false)
 
 	selection, _, err := svc.SelectAccountWithSchedulerForCapability(
 		ctx,
@@ -344,14 +323,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_CompactSkipsChatOnlyAcc
 			},
 		},
 	}
-	cfg := &config.Config{}
-	cfg.Gateway.Scheduling.LoadBatchEnabled = false
-	svc := &OpenAIGatewayService{
-		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
-		cache:              &schedulerTestGatewayCache{},
-		cfg:                cfg,
-		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
-	}
+	svc := newOpenAICompactionSchedulerTestService(accounts, false)
 
 	selection, _, err := svc.SelectAccountWithSchedulerForCapability(
 		ctx,
@@ -401,14 +373,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_CompactFallsBackToUnkno
 			Extra:       map[string]any{}, // unknown -> tier=1
 		},
 	}
-	cfg := &config.Config{}
-	cfg.Gateway.Scheduling.LoadBatchEnabled = false
-	svc := &OpenAIGatewayService{
-		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
-		cache:              &schedulerTestGatewayCache{},
-		cfg:                cfg,
-		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
-	}
+	svc := newOpenAICompactionSchedulerTestService(accounts, false)
 
 	selection, _, err := svc.SelectAccountWithScheduler(
 		ctx,

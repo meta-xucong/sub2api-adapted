@@ -40,7 +40,7 @@ type smartRouterCalibrationAccountSource interface {
 }
 
 type smartRouterCalibrationModelRefresher interface {
-	SyncUpstreamModelCatalog(ctx context.Context, account *Account) (*UpstreamModelCatalog, error)
+	RefreshAccountIfDue(ctx context.Context, account *Account) error
 }
 
 func NewSmartRouterCalibrationService(accountRepo smartRouterCalibrationAccountSource, modelRefresh smartRouterCalibrationModelRefresher, gateway *OpenAIGatewayService, ledger SmartRouterHealthLedger, cfg *config.Config) *SmartRouterCalibrationService {
@@ -49,8 +49,8 @@ func NewSmartRouterCalibrationService(accountRepo smartRouterCalibrationAccountS
 
 // ProvideSmartRouterCalibrationService is kept in service wire.go so the
 // scheduler, ledger and daily job are part of the production dependency graph.
-func ProvideSmartRouterCalibrationService(accountRepo AccountRepository, accountTest *AccountTestService, gateway *OpenAIGatewayService, ledger SmartRouterHealthLedger, cfg *config.Config) *SmartRouterCalibrationService {
-	svc := NewSmartRouterCalibrationService(accountRepo, accountTest, gateway, ledger, cfg)
+func ProvideSmartRouterCalibrationService(accountRepo AccountRepository, refresh *UpstreamModelRefreshService, gateway *OpenAIGatewayService, ledger SmartRouterHealthLedger, cfg *config.Config) *SmartRouterCalibrationService {
+	svc := NewSmartRouterCalibrationService(accountRepo, refresh, gateway, ledger, cfg)
 	svc.Start()
 	return svc
 }
@@ -201,9 +201,9 @@ func textCalibrationProbes(probes []smartrouter.CalibrationProbe) []smartrouter.
 	return filtered
 }
 
-// refreshOpenAIModelCatalog is deliberately best-effort. SyncUpstreamModelCatalog
-// persists a new snapshot only after a complete refresh; on an error, the
-// account's existing catalog remains the fallback for the subsequent probes.
+// refreshOpenAIModelCatalog is deliberately best-effort and delegates to the
+// shared per-account refresh coordinator. It never performs an independent
+// provider model-list fetch.
 func (s *SmartRouterCalibrationService) refreshOpenAIModelCatalog(ctx context.Context, accounts []Account) bool {
 	if s == nil || s.modelRefresh == nil {
 		return true
@@ -216,7 +216,7 @@ func (s *SmartRouterCalibrationService) refreshOpenAIModelCatalog(ctx context.Co
 		if !accounts[i].IsOpenAI() {
 			continue
 		}
-		if _, err := s.modelRefresh.SyncUpstreamModelCatalog(ctx, &accounts[i]); err != nil {
+		if err := s.modelRefresh.RefreshAccountIfDue(ctx, &accounts[i]); err != nil {
 			success = false
 			slog.Warn("smart router model catalog refresh failed", "account_id", accounts[i].ID, "error", err)
 		}

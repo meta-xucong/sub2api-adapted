@@ -164,8 +164,8 @@ func standardOpenAIModelsBody(body []byte, fromManifest bool) ([]byte, error) {
 // representations while retaining the source entry's metadata. It never changes
 // the shared response and never synthesizes models absent from this account.
 func projectAccountModelsBody(body []byte, account *Account, group *Group, codex bool) ([]byte, error) {
-	if account.IsOpenAIPassthroughEnabled() || len(account.GetModelMapping()) == 0 {
-		return body, nil
+	if account == nil {
+		return nil, fmt.Errorf("account is required to project model catalogue")
 	}
 	field, idField := "data", "id"
 	if codex {
@@ -175,11 +175,12 @@ func projectAccountModelsBody(body []byte, account *Account, group *Group, codex
 	if err != nil {
 		return nil, err
 	}
-	byID := make(map[string]json.RawMessage, len(entries))
-	candidates := make([]string, 0, len(entries))
+	rawIDs := make([]string, 0, len(entries))
+	rawEntries := make(map[string]json.RawMessage, len(entries))
+	rawSet := make(map[string]string, len(entries))
 	for _, raw := range entries {
 		var entry map[string]json.RawMessage
-		if json.Unmarshal(raw, &entry) != nil {
+		if json.Unmarshal(raw, &entry) != nil || entry == nil {
 			continue
 		}
 		var id string
@@ -190,17 +191,30 @@ func projectAccountModelsBody(body []byte, account *Account, group *Group, codex
 		if id == "" || strings.Contains(id, "*") {
 			continue
 		}
-		// Apply the allowlist to public names after mapping, not upstream targets.
-		if codex {
-			if isCodexDedicatedMediaModel(id) {
-				continue
-			}
-			if strings.HasPrefix(id, codexAutoModelPrefix) && len(FilterCodexModelIDsForGroup([]string{id}, group)) == 0 {
-				continue
-			}
+		key := strings.ToLower(id)
+		if _, exists := rawEntries[key]; exists {
+			continue
 		}
-		if _, ok := byID[id]; !ok {
-			byID[id] = raw
+		rawIDs = append(rawIDs, id)
+		rawEntries[key] = raw
+		rawSet[key] = id
+	}
+	byPublicID := make(map[string]json.RawMessage, len(entries))
+	routeByPublicID := make(map[string]string, len(entries))
+	candidates := make([]string, 0, len(entries))
+	for _, rawID := range rawIDs {
+		id, routeID, publish := normalizeListedModelIDForAccount(account, rawID, rawSet)
+		if !publish || id == "" || strings.Contains(id, "*") {
+			continue
+		}
+		// Apply the allowlist to public names after mapping, not upstream targets.
+		if codex && (isCodexDedicatedMediaModel(id) || isForbiddenPublicCodexModelID(id)) {
+			continue
+		}
+		key := strings.ToLower(id)
+		if _, ok := byPublicID[key]; !ok {
+			byPublicID[key] = rawEntries[strings.ToLower(rawID)]
+			routeByPublicID[key] = routeID
 			candidates = append(candidates, id)
 		}
 	}
@@ -210,7 +224,7 @@ func projectAccountModelsBody(body []byte, account *Account, group *Group, codex
 	}
 	sort.Strings(aliases)
 	candidates = append(candidates, aliases...)
-	if group.ModelAllowlistEnabled() {
+	if group != nil && group.ModelAllowlistEnabled() {
 		candidates = append(candidates, group.ModelAllowlist.Models...)
 	}
 	projected := make([]json.RawMessage, 0, len(candidates))
@@ -220,12 +234,34 @@ func projectAccountModelsBody(body []byte, account *Account, group *Group, codex
 		if id == "" || strings.Contains(id, "*") {
 			continue
 		}
+		if group != nil && group.ModelAllowlistEnabled() && !group.ModelAllowlist.Allows(id) {
+			continue
+		}
+		if codex && len(FilterCodexModelIDsForGroup([]string{id}, group)) == 0 {
+			continue
+		}
 		if _, ok := seen[id]; ok {
 			continue
 		}
 		target, matched := account.ResolveMappedModel(id)
-		raw, available := byID[strings.TrimSpace(target)]
-		if !matched || !available {
+		if !account.IsModelSupported(id) {
+			continue
+		}
+		if !matched {
+			if account.GetUpstreamModelPolicy() == UpstreamModelPolicyFollow ||
+				(len(account.GetModelMapping()) > 0 && !account.IsOpenAIPassthroughEnabled()) {
+				continue
+			}
+			target = routeByPublicID[strings.ToLower(id)]
+		}
+		if codex && (isCodexDedicatedMediaModel(target) || isForbiddenPublicCodexModelID(target)) {
+			continue
+		}
+		raw, available := rawEntries[strings.ToLower(strings.TrimSpace(target))]
+		if !available {
+			raw, available = byPublicID[strings.ToLower(strings.TrimSpace(target))]
+		}
+		if !available {
 			continue
 		}
 		seen[id] = struct{}{}

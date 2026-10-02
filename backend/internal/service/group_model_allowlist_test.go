@@ -154,6 +154,20 @@ func TestGroupModelAllowlistAllows(t *testing.T) {
 	})
 }
 
+func TestGroupModelAllowlistDoesNotApplyOpenAIInputAliasesGlobally(t *testing.T) {
+	allowlist := GroupModelAllowlist{Enabled: true, Models: []string{"gpt-5.6"}}
+
+	if !allowlist.Allows("gpt-5.6") {
+		t.Fatal("an explicitly allowlisted input ID must remain allowed")
+	}
+	if allowlist.Allows("gpt-5.6-sol") {
+		t.Fatal("an OpenAI-only input alias must not authorize a similarly named model from another source")
+	}
+	if got := allowlist.FilterForListing([]string{"gpt-5.6-sol"}); len(got) != 0 {
+		t.Fatalf("the alias must not add a canonical model from an unrelated source to the listing: %#v", got)
+	}
+}
+
 func TestGroupModelAllowlistEnabled(t *testing.T) {
 	var nilGroup *Group
 	if nilGroup.ModelAllowlistEnabled() {

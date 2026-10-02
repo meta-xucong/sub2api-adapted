@@ -580,7 +580,11 @@ func TestOpenAIGatewayService_OpenAIHTTPStripsInputNamespacesBeforeFirstForward(
 				body := []byte(`{"model":"gpt-5.5","stream":false,"instructions":"test","input":[{"type":"message","role":"user","namespace":"remove","content":[{"type":"input_text","text":"hello","namespace":"nested-keep"}]}]}`)
 				responseBody := `{"id":"resp_namespace_ok","output":[],"usage":{"input_tokens":1,"output_tokens":1,"input_tokens_details":{"cached_tokens":0}}}`
 				if path == "/v1/responses/compact" {
-					responseBody = `{"id":"chat_namespace_ok","choices":[{"index":0,"message":{"role":"assistant","content":"<summary>namespace-safe</summary>"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`
+					if tt.name == "oauth" {
+						responseBody = `{"id":"resp_namespace_compact_ok","output":[{"type":"compaction_summary","encrypted_content":"opaque-state"}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`
+					} else {
+						responseBody = `{"id":"chat_namespace_ok","choices":[{"index":0,"message":{"role":"assistant","content":"<summary>namespace-safe</summary>"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`
+					}
 				}
 				upstream := &httpUpstreamRecorder{responses: []*http.Response{
 					newOpenAIRejectedFieldTestResponse(http.StatusOK, responseBody),

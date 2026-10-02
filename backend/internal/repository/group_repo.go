@@ -62,6 +62,65 @@ func lockLiveGroups(ctx context.Context, exec sqlExecutor, groupIDs []int64) err
 	return nil
 }
 
+// lockLiveAccounts serializes account-group membership changes with model
+// policy previews. Callers must acquire account locks before group locks so
+// policy confirmation and membership writes use the same lock order.
+func lockLiveAccounts(ctx context.Context, exec sqlExecutor, accountIDs []int64) error {
+	if len(accountIDs) == 0 {
+		return nil
+	}
+	unique := make(map[int64]struct{}, len(accountIDs))
+	for _, id := range accountIDs {
+		unique[id] = struct{}{}
+	}
+	rows, err := exec.QueryContext(ctx, `/* account_group_account_revision_lock */
+		SELECT id FROM accounts
+		WHERE id = ANY($1)
+		ORDER BY id
+		FOR UPDATE`, pq.Array(accountIDs))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+	locked := 0
+	for rows.Next() {
+		locked++
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if locked != len(unique) {
+		return service.ErrAccountNotFound
+	}
+	return nil
+}
+
+func lockLiveGroupForUpdate(ctx context.Context, exec sqlExecutor, groupID int64) error {
+	rows, err := exec.QueryContext(ctx, `
+		SELECT id FROM groups WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, groupID)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		return service.ErrGroupNotFound
+	}
+	return rows.Err()
+}
+
+func bumpAccountGroupRevision(ctx context.Context, exec sqlExecutor, accountIDs []int64) error {
+	if len(accountIDs) == 0 {
+		return nil
+	}
+	_, err := exec.ExecContext(ctx, `
+		UPDATE accounts SET updated_at = NOW()
+		WHERE id = ANY($1) AND deleted_at IS NULL`, pq.Array(accountIDs))
+	return err
+}
+
 func NewGroupRepository(client *dbent.Client, sqlDB *sql.DB) service.GroupRepository {
 	return newGroupRepositoryWithSQL(client, sqlDB)
 }
@@ -837,11 +896,80 @@ func (r *groupRepository) GetAccountCount(ctx context.Context, groupID int64) (t
 }
 
 func (r *groupRepository) DeleteAccountGroupsByGroupID(ctx context.Context, groupID int64) (int64, error) {
-	res, err := r.sql.ExecContext(ctx, "DELETE FROM account_groups WHERE group_id = $1", groupID)
+	tx, err := r.client.Tx(ctx)
+	if err != nil && !errors.Is(err, dbent.ErrTxStarted) {
+		return 0, err
+	}
+	exec := sqlExecutor(r.client)
+	if tx != nil {
+		defer func() { _ = tx.Rollback() }()
+		exec = tx.Client()
+	}
+	rows, err := exec.QueryContext(ctx, "SELECT account_id FROM account_groups WHERE group_id = $1 ORDER BY account_id", groupID)
+	if err != nil {
+		return 0, err
+	}
+	var accountIDs []int64
+	for rows.Next() {
+		var accountID int64
+		if err := rows.Scan(&accountID); err != nil {
+			_ = rows.Close()
+			return 0, err
+		}
+		accountIDs = append(accountIDs, accountID)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return 0, err
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	if err := lockLiveAccounts(ctx, exec, accountIDs); err != nil {
+		return 0, err
+	}
+	if err := lockLiveGroupForUpdate(ctx, exec, groupID); err != nil {
+		return 0, err
+	}
+	currentRows, err := exec.QueryContext(ctx, "SELECT account_id FROM account_groups WHERE group_id = $1 ORDER BY account_id", groupID)
+	if err != nil {
+		return 0, err
+	}
+	lockedAccounts := make(map[int64]struct{}, len(accountIDs))
+	for _, accountID := range accountIDs {
+		lockedAccounts[accountID] = struct{}{}
+	}
+	for currentRows.Next() {
+		var accountID int64
+		if err := currentRows.Scan(&accountID); err != nil {
+			_ = currentRows.Close()
+			return 0, err
+		}
+		if _, locked := lockedAccounts[accountID]; !locked {
+			_ = currentRows.Close()
+			return 0, errors.New("group membership changed concurrently; retry the operation")
+		}
+	}
+	if err := currentRows.Err(); err != nil {
+		_ = currentRows.Close()
+		return 0, err
+	}
+	if err := currentRows.Close(); err != nil {
+		return 0, err
+	}
+	res, err := exec.ExecContext(ctx, "DELETE FROM account_groups WHERE group_id = $1", groupID)
 	if err != nil {
 		return 0, err
 	}
 	affected, _ := res.RowsAffected()
+	if err := bumpAccountGroupRevision(ctx, exec, accountIDs); err != nil {
+		return 0, err
+	}
+	if tx != nil {
+		if err := tx.Commit(); err != nil {
+			return 0, err
+		}
+	}
 	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventGroupChanged, nil, &groupID, nil); err != nil {
 		logger.LegacyPrintf("repository.group", "[SchedulerOutbox] enqueue group account clear failed: group=%d err=%v", groupID, err)
 	}
@@ -872,6 +1000,31 @@ func (r *groupRepository) deleteCascade(ctx context.Context, id int64, requireEm
 	}
 	// err 为 dbent.ErrTxStarted 时，复用当前 client 参与同一事务。
 
+	// Lock account revisions before the group row so policy previews and
+	// membership writes use the same account-then-group lock order.
+	preRows, err := exec.QueryContext(ctx, "SELECT account_id FROM account_groups WHERE group_id = $1 ORDER BY account_id", id)
+	if err != nil {
+		return nil, err
+	}
+	var lockedAccountIDs []int64
+	for preRows.Next() {
+		var accountID int64
+		if err := preRows.Scan(&accountID); err != nil {
+			_ = preRows.Close()
+			return nil, err
+		}
+		lockedAccountIDs = append(lockedAccountIDs, accountID)
+	}
+	if err := preRows.Err(); err != nil {
+		_ = preRows.Close()
+		return nil, err
+	}
+	if err := preRows.Close(); err != nil {
+		return nil, err
+	}
+	if err := lockLiveAccounts(ctx, exec, lockedAccountIDs); err != nil {
+		return nil, err
+	}
 	// Lock the group row to avoid concurrent writes while we cascade.
 	// 这里使用 exec.QueryContext 手动扫描，确保同一事务内加锁并能区分"未找到"与其他错误。
 	rows, err := exec.QueryContext(ctx, "SELECT id, subscription_type FROM groups WHERE id = $1 AND deleted_at IS NULL FOR UPDATE", id)
@@ -894,6 +1047,32 @@ func (r *groupRepository) deleteCascade(ctx context.Context, id int64, requireEm
 	}
 	if lockedID == 0 {
 		return nil, service.ErrGroupNotFound
+	}
+	currentRows, err := exec.QueryContext(ctx, "SELECT account_id FROM account_groups WHERE group_id = $1 ORDER BY account_id", id)
+	if err != nil {
+		return nil, err
+	}
+	lockedAccounts := make(map[int64]struct{}, len(lockedAccountIDs))
+	for _, accountID := range lockedAccountIDs {
+		lockedAccounts[accountID] = struct{}{}
+	}
+	for currentRows.Next() {
+		var accountID int64
+		if err := currentRows.Scan(&accountID); err != nil {
+			_ = currentRows.Close()
+			return nil, err
+		}
+		if _, locked := lockedAccounts[accountID]; !locked {
+			_ = currentRows.Close()
+			return nil, errors.New("group membership changed concurrently; retry the operation")
+		}
+	}
+	if err := currentRows.Err(); err != nil {
+		_ = currentRows.Close()
+		return nil, err
+	}
+	if err := currentRows.Close(); err != nil {
+		return nil, err
 	}
 	if requireEmpty {
 		var hasAccount bool
@@ -945,6 +1124,9 @@ func (r *groupRepository) deleteCascade(ctx context.Context, id int64, requireEm
 
 	// 3. Delete account_groups join rows.
 	if _, err := exec.ExecContext(ctx, "DELETE FROM account_groups WHERE group_id = $1", id); err != nil {
+		return nil, err
+	}
+	if err := bumpAccountGroupRevision(ctx, exec, lockedAccountIDs); err != nil {
 		return nil, err
 	}
 
@@ -1087,6 +1269,9 @@ func (r *groupRepository) BindAccountsToGroup(ctx context.Context, groupID int64
 		defer func() { _ = tx.Rollback() }()
 		exec = tx.Client()
 	}
+	if err := lockLiveAccounts(ctx, exec, accountIDs); err != nil {
+		return err
+	}
 	if err := lockLiveGroups(ctx, exec, []int64{groupID}); err != nil {
 		return err
 	}
@@ -1101,6 +1286,9 @@ func (r *groupRepository) BindAccountsToGroup(ctx context.Context, groupID int64
 		groupID,
 	)
 	if err != nil {
+		return err
+	}
+	if err := bumpAccountGroupRevision(ctx, exec, accountIDs); err != nil {
 		return err
 	}
 	if tx != nil {

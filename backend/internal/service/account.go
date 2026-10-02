@@ -853,14 +853,41 @@ func resolveRequestedModelInMapping(mapping map[string]string, requestedModel st
 // （isDeepseekServableModel）——未知模型名透传上游只会得到 404/400，并误触发
 // per-(账号,模型) 30 分钟冷却；带 [1m] 上下文后缀的写法先归一化再比对。
 func (a *Account) IsModelSupported(requestedModel string) bool {
-	// 透传模式仅替换认证、模型语义完全交由上游决定，因此放行所有模型。
-	// 该短路必须在 model_mapping 判定之前：账号从"白名单模式"切换到透传后，
-	// credentials 里常残留旧的非空 model_mapping，若不在此放行，透传账号会被
-	// model_mapping 白名单错误排除出候选集，导致 no available accounts / 404（issue #4936）。
+	if a == nil {
+		return false
+	}
+	requestedModel = canonicalizeAccountRequestedModelID(a, requestedModel)
+	if isForbiddenOpenAIRequestModelIDForAccount(a, requestedModel) {
+		return false
+	}
+	mapping := a.GetModelMapping()
+	mappedModel, mapped := resolveRequestedModelInMapping(mapping, requestedModel)
+	snapshot, profile, usable := a.usableUpstreamModelAvailabilitySnapshot(time.Now())
+	if a.GetUpstreamModelPolicy() == UpstreamModelPolicyFollow {
+		if !usable {
+			return false
+		}
+		if mapped {
+			_, ok := resolveAvailabilityCatalogModel(snapshot, profile, mappedModel, true)
+			return ok
+		}
+		_, ok := resolveAvailabilityCatalogModel(snapshot, profile, requestedModel, false)
+		return ok
+	}
+	// Passthrough means that the account's upstream owns model semantics. Ignore
+	// any stale mapping left behind when the account was switched from mapping
+	// mode. The opt-in follow_upstream policy above remains the explicit strict
+	// catalog gate.
 	if a.IsOpenAIPassthroughEnabled() {
 		return true
 	}
-	mapping := a.GetModelMapping()
+	if mapped {
+		if usable {
+			_, ok := resolveAvailabilityCatalogModel(snapshot, profile, mappedModel, true)
+			return ok
+		}
+		return upstreamSnapshotModelLifecycleRoutable(snapshot, profile, mappedModel, time.Now())
+	}
 	if len(mapping) == 0 {
 		if a.IsOpenAIOAuth() {
 			return isOpenAIOAuthServableModel(requestedModel)
@@ -868,7 +895,10 @@ func (a *Account) IsModelSupported(requestedModel string) bool {
 		if a.Platform == PlatformDeepseek {
 			return isDeepseekServableModel(requestedModel)
 		}
-		return true // 无映射 = 允许所有
+		if a.Platform == PlatformOpenAI && profile.Kind == "openai" {
+			return false
+		}
+		return true
 	}
 	if mappingSupportsRequestedModel(mapping, requestedModel) {
 		return true
@@ -887,12 +917,57 @@ func (a *Account) GetMappedModel(requestedModel string) string {
 // ResolveMappedModel 获取映射后的模型名，并返回是否命中了账号级映射。
 // matched=true 表示命中了精确映射或通配符映射，即使映射结果与原模型名相同。
 func (a *Account) ResolveMappedModel(requestedModel string) (mappedModel string, matched bool) {
-	mapping := a.GetModelMapping()
-	if len(mapping) == 0 {
+	if a == nil {
 		return requestedModel, false
 	}
-	if mappedModel, matched := resolveRequestedModelInMapping(mapping, requestedModel); matched {
-		return mappedModel, true
+	requestedModel = canonicalizeAccountRequestedModelID(a, requestedModel)
+	if isForbiddenOpenAIRequestModelIDForAccount(a, requestedModel) {
+		return requestedModel, false
+	}
+	mapping := a.GetModelMapping()
+	configuredModel, configured := resolveRequestedModelInMapping(mapping, requestedModel)
+	snapshot, profile, usable := a.usableUpstreamModelAvailabilitySnapshot(time.Now())
+	if a.GetUpstreamModelPolicy() == UpstreamModelPolicyFollow {
+		if !usable {
+			return requestedModel, false
+		}
+		if configured {
+			if route, ok := resolveAvailabilityCatalogModel(snapshot, profile, configuredModel, true); ok {
+				return route, true
+			}
+			return requestedModel, false
+		}
+		if route, ok := resolveAvailabilityCatalogModel(snapshot, profile, requestedModel, false); ok {
+			return route, true
+		}
+		return requestedModel, false
+	}
+	if a.IsOpenAIPassthroughEnabled() {
+		if usable {
+			if route, ok := resolveAvailabilityCatalogModel(snapshot, profile, requestedModel, false); ok {
+				return route, true
+			}
+			return requestedModel, false
+		}
+		return requestedModel, false
+	}
+	if configured {
+		if usable {
+			if route, ok := resolveAvailabilityCatalogModel(snapshot, profile, configuredModel, true); ok {
+				return route, true
+			}
+			return requestedModel, false
+		}
+		if !upstreamSnapshotModelLifecycleRoutable(snapshot, profile, configuredModel, time.Now()) {
+			return requestedModel, false
+		}
+		return configuredModel, true
+	}
+	if len(mapping) == 0 {
+		if a.Platform == PlatformOpenAI && profile.Kind == "openai" {
+			return requestedModel, false
+		}
+		return requestedModel, false
 	}
 	normalized := normalizeRequestedModelForLookup(a.Platform, requestedModel)
 	if normalized != requestedModel {
@@ -901,6 +976,58 @@ func (a *Account) ResolveMappedModel(requestedModel string) (mappedModel string,
 		}
 	}
 	return requestedModel, false
+}
+
+func canonicalizeAccountRequestedModelID(account *Account, model string) string {
+	if account == nil || account.Platform != PlatformOpenAI {
+		return model
+	}
+	if account.IsOpenAIOAuth() {
+		return canonicalizeOpenAIRequestModelID(account.Platform, model)
+	}
+	profile := DetectUpstreamModelSourceProfile(account)
+	if profile.Kind == "openai" {
+		return canonicalizeOpenAIRequestModelID(account.Platform, model)
+	}
+	return model
+}
+
+func isForbiddenOpenAIRequestModelIDForAccount(account *Account, model string) bool {
+	if account == nil || account.Platform != PlatformOpenAI {
+		return false
+	}
+	model = strings.ToLower(strings.TrimSpace(model))
+	if account.IsOpenAIOAuth() || DetectUpstreamModelSourceProfile(account).Kind == "openai" {
+		return model == "gpt-6"
+	}
+	return false
+}
+
+// isForbiddenPublicModelIDForAccount filters names that must not appear in
+// model catalogs. This is intentionally separate from request eligibility:
+// internal Codex modes such as codex-auto-review are hidden from discovery,
+// while existing explicit/internal request routing remains compatible.
+func isForbiddenPublicModelIDForAccount(account *Account, model string) bool {
+	if isForbiddenOpenAIRequestModelIDForAccount(account, model) {
+		return true
+	}
+	return account != nil && account.Platform == PlatformOpenAI &&
+		strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "codex-auto-")
+}
+
+func canonicalizeOpenAIRequestModelID(platform, model string) string {
+	if platform == PlatformOpenAI && strings.EqualFold(strings.TrimSpace(model), "gpt-5.6") {
+		return "gpt-5.6-sol"
+	}
+	return model
+}
+
+func isForbiddenOpenAIRequestModelID(platform, model string) bool {
+	if platform != PlatformOpenAI {
+		return false
+	}
+	model = strings.ToLower(strings.TrimSpace(model))
+	return model == "gpt-6"
 }
 
 // GetOpenAICompactMode returns the compact routing mode for an OpenAI account.

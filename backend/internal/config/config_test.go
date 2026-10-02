@@ -583,7 +583,41 @@ func TestLoadDefaultOpenAICompactModel(t *testing.T) {
 
 	cfg, err := Load()
 	require.NoError(t, err)
-	require.Equal(t, "gpt-5.5", cfg.Gateway.OpenAICompactModel)
+	require.Empty(t, cfg.Gateway.OpenAICompactModel)
+}
+
+func TestLoadDefaultUpstreamModelRefreshSchedule(t *testing.T) {
+	resetViperWithJWTSecret(t)
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.True(t, cfg.Gateway.UpstreamModelRefresh.Enabled)
+	require.Equal(t, 4, cfg.Gateway.UpstreamModelRefresh.Hour)
+	require.Equal(t, 0, cfg.Gateway.UpstreamModelRefresh.Minute)
+	require.Equal(t, 30, cfg.Gateway.UpstreamModelRefresh.AccountTimeoutSeconds)
+	require.Equal(t, 1800, cfg.Gateway.UpstreamModelRefresh.TotalBudgetSeconds)
+	require.Equal(t, 4, cfg.Gateway.UpstreamModelRefresh.MaxConcurrency)
+}
+
+func TestValidateUpstreamModelRefreshScheduleBounds(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	cfg.Gateway.UpstreamModelRefresh.Hour = 24
+	require.ErrorContains(t, cfg.Validate(), "upstream_model_refresh.hour")
+	cfg.Gateway.UpstreamModelRefresh.Hour = 4
+	cfg.Gateway.UpstreamModelRefresh.Minute = 60
+	require.ErrorContains(t, cfg.Validate(), "upstream_model_refresh.minute")
+	cfg.Gateway.UpstreamModelRefresh.Minute = 0
+	cfg.Gateway.UpstreamModelRefresh.AccountTimeoutSeconds = 301
+	require.ErrorContains(t, cfg.Validate(), "upstream_model_refresh.account_timeout_seconds")
+	cfg.Gateway.UpstreamModelRefresh.AccountTimeoutSeconds = 30
+	cfg.Gateway.UpstreamModelRefresh.TotalBudgetSeconds = 59
+	require.ErrorContains(t, cfg.Validate(), "upstream_model_refresh.total_budget_seconds")
+	cfg.Gateway.UpstreamModelRefresh.TotalBudgetSeconds = 1800
+	cfg.Gateway.UpstreamModelRefresh.MaxConcurrency = 9
+	require.ErrorContains(t, cfg.Validate(), "upstream_model_refresh.max_concurrency")
 }
 
 func TestLoadOpenAICompactModelFromEnv(t *testing.T) {

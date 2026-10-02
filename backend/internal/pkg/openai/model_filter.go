@@ -7,7 +7,6 @@ import (
 )
 
 var stableAutoDiscoveryModels = map[string]struct{}{
-	"codex-auto-review":      {},
 	"gpt-5.3-codex-spark":    {},
 	"gpt-5.4":                {},
 	"gpt-5.4-mini":           {},
@@ -107,6 +106,9 @@ func IsAdminSelectableModelID(model string) bool {
 		return false
 	}
 	lower := strings.ToLower(model)
+	if strings.HasPrefix(lower, "codex-auto-") {
+		return false
+	}
 	if _, ok := adminHiddenOpenAIModels[lower]; ok {
 		return false
 	}
@@ -151,6 +153,9 @@ func IsAutoDiscoveredModelID(model string) bool {
 		return false
 	}
 	lower := strings.ToLower(model)
+	if strings.HasPrefix(lower, "codex-auto-") {
+		return false
+	}
 	if _, ok := stableAutoDiscoveryModels[lower]; ok {
 		return true
 	}

@@ -31,6 +31,11 @@ func RegisterAdminRoutes(
 	admin.Use(gin.HandlerFunc(auditLog))
 	admin.Use(middleware.AdminComplianceGuard(settingService))
 	{
+		// Keep this top-level path outside /accounts/:id routing.
+		admin.GET("/model-catalog-refresh/status", h.Admin.Account.GetUpstreamModelRefreshStatus)
+		admin.POST("/model-catalog-refresh/policy-preview", h.Admin.Account.PreviewUpstreamModelPolicies)
+		admin.POST("/model-catalog-refresh/policy-opt-in", h.Admin.Account.OptInUpstreamModelPolicies)
+
 		// 部署与运营合规确认
 		registerAdminComplianceRoutes(admin, h)
 

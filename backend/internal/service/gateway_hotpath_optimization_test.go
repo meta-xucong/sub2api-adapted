@@ -10,7 +10,6 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 	gocache "github.com/patrickmn/go-cache"
 	"github.com/stretchr/testify/require"
@@ -650,7 +649,7 @@ func TestGetAvailableModels_ErrorAndGlobalListBranches(t *testing.T) {
 	require.Equal(t, int64(1), okRepo.listAllCalls.Load())
 }
 
-func TestGetAvailableModels_OpenAIPassthroughUsesDefaultFallback(t *testing.T) {
+func TestGetAvailableModels_OpenAIPassthroughDoesNotInventCandidates(t *testing.T) {
 	groupID := int64(10)
 
 	tests := []struct {
@@ -671,9 +670,9 @@ func TestGetAvailableModels_OpenAIPassthroughUsesDefaultFallback(t *testing.T) {
 			want: nil,
 		},
 		{
-			// The passthrough account serves the default set (its stale mapping is
-			// ignored), while the ordinary account's mapping still reaches the list.
-			name: "passthrough contributes defaults alongside ordinary account mapping",
+			// A passthrough account with no trusted catalog contributes no
+			// synthetic static IDs; ordinary explicit mapping remains listed.
+			name: "passthrough does not contribute unverified static defaults",
 			accounts: []Account{
 				{
 					ID:          2,
@@ -687,7 +686,7 @@ func TestGetAvailableModels_OpenAIPassthroughUsesDefaultFallback(t *testing.T) {
 					Extra:       map[string]any{"openai_passthrough": true},
 				},
 			},
-			want: dedupeAndSortModelIDs(append([]string{"configured-model"}, openai.DefaultModelIDs()...)),
+			want: []string{"configured-model"},
 		},
 		{
 			name: "ordinary accounts preserve mapped whitelist",

@@ -231,13 +231,16 @@ func (s *AccountService) Create(ctx context.Context, req CreateAccountRequest) (
 	}
 
 	// 创建账号
+	createdExtra := prepareCodexFingerprintExtraForCreate(req.Platform, req.Type, req.Extra)
+	delete(createdExtra, UpstreamModelPolicyExtraKey)
+	delete(createdExtra, UpstreamModelAvailabilityExtraKey)
 	account := &Account{
 		Name:        req.Name,
 		Notes:       normalizeAccountNotes(req.Notes),
 		Platform:    req.Platform,
 		Type:        req.Type,
 		Credentials: SanitizeStoredCredentials(req.Platform, req.Credentials),
-		Extra:       prepareCodexFingerprintExtraForCreate(req.Platform, req.Type, req.Extra),
+		Extra:       createdExtra,
 		ProxyID:     req.ProxyID,
 		Concurrency: req.Concurrency,
 		Priority:    req.Priority,
@@ -315,6 +318,14 @@ func (s *AccountService) ListByGroup(ctx context.Context, groupID int64) ([]Acco
 
 // Update 更新账号
 func (s *AccountService) Update(ctx context.Context, id int64, req UpdateAccountRequest) (*Account, error) {
+	if req.Extra != nil {
+		if _, supplied := (*req.Extra)[UpstreamModelPolicyExtraKey]; supplied {
+			return nil, fmt.Errorf("upstream model policy must be changed through the audited preview endpoint")
+		}
+		if _, supplied := (*req.Extra)[UpstreamModelAvailabilityExtraKey]; supplied {
+			return nil, fmt.Errorf("upstream model availability is managed by the refresh service")
+		}
+	}
 	account, err := s.accountRepo.GetByID(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("get account: %w", err)
@@ -340,6 +351,12 @@ func (s *AccountService) Update(ctx context.Context, id int64, req UpdateAccount
 		delete(extra, OllamaCloudUsageSessionExtraKey)
 		delete(extra, OllamaCloudUsageAutoRefreshExtraKey)
 		delete(extra, OllamaCloudUsageSnapshotExtraKey)
+		if value, exists := account.Extra[UpstreamModelAvailabilityExtraKey]; exists {
+			extra[UpstreamModelAvailabilityExtraKey] = value
+		}
+		if value, exists := account.Extra[UpstreamModelPolicyExtraKey]; exists {
+			extra[UpstreamModelPolicyExtraKey] = value
+		}
 		account.Extra = prepareCodexFingerprintExtraForUpdate(account, extra)
 	} else {
 		account.Extra = prepareCodexFingerprintExtraForUpdate(account, account.Extra)

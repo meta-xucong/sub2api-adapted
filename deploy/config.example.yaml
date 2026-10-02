@@ -314,11 +314,20 @@ gateway:
   # OpenAI 透传模式是否放行客户端超时头（如 x-stainless-timeout）
   # 默认 false：过滤超时头，降低上游提前断流风险。
   openai_passthrough_allow_timeout_headers: false
-  # Model used for OpenAI /responses/compact upstream requests (default: gpt-5.5).
-  # OpenAI /responses/compact 上游模型（默认 gpt-5.5）。
+  # Optional override for OpenAI /responses/compact upstream requests; empty uses the requested model.
+  # OpenAI /responses/compact 上游模型覆盖值；留空时沿用请求模型。
   # Use this to avoid compact failures when newer models are not yet supported by the compact endpoint.
   # 当 compact 端点暂未支持更新模型时，可通过这里降级规避失败。
-  openai_compact_model: "gpt-5.5"
+  openai_compact_model: ""
+  # Daily trusted-source model catalog refresh. Only accounts explicitly opted
+  # into follow_upstream are queried; the distributed schedule is Asia/Shanghai.
+  upstream_model_refresh:
+    enabled: true
+    hour: 4
+    minute: 0
+    account_timeout_seconds: 30
+    total_budget_seconds: 1800
+    max_concurrency: 4
   # ChatGPT Frameless Live 单会话硬上限（秒）。
   live:
     max_session_duration_seconds: 3600

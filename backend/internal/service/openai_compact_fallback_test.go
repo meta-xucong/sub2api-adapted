@@ -3,7 +3,6 @@ package service
 import (
 	"bytes"
 	"context"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -50,6 +49,48 @@ func TestResponsesCompatCompactResponseProducesPortableCompactionItem(t *testing
 	require.Equal(t, "message", gjson.GetBytes(history, "0.type").String())
 	require.Equal(t, "assistant", gjson.GetBytes(history, "0.role").String())
 	require.Contains(t, gjson.GetBytes(history, "0.content.0.text").String(), "blue square")
+}
+
+func TestValidateOpenAICompactResponseRequiresUsableCompactionItem(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{name: "native item", body: `{"output":[{"type":"compaction","encrypted_content":"opaque"}]}`, want: true},
+		{name: "legacy alias", body: `{"output":[{"type":"compaction_summary","encrypted_content":"opaque"}]}`, want: true},
+		{name: "completed response and item", body: `{"status":"completed","output":[{"type":"compaction","status":"completed","encrypted_content":"opaque"}]}`, want: true},
+		{name: "failed response with partial compaction item", body: `{"status":"failed","output":[{"type":"compaction","status":"completed","encrypted_content":"partial"}]}`},
+		{name: "in progress response with partial compaction item", body: `{"status":"in_progress","output":[{"type":"compaction","encrypted_content":"partial"}]}`},
+		{name: "in progress compaction item", body: `{"status":"completed","output":[{"type":"compaction","status":"in_progress","encrypted_content":"partial"}]}`},
+		{name: "ordinary text is not compact success", body: `{"output":[{"type":"message","content":[{"type":"output_text","text":"summary"}]}]}`},
+		{name: "empty output", body: `{"output":[]}`},
+		{name: "missing opaque continuation state", body: `{"output":[{"type":"compaction"}]}`},
+		{name: "malformed json", body: `not-json`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateOpenAICompactResponse([]byte(tt.body))
+			if tt.want {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+			}
+		})
+	}
+}
+
+func TestExplicitCompactFallbackIsLimitedToNormalizedLegacyCompactRequest(t *testing.T) {
+	legacy := newOpenAICompactFallbackTestContext(t, "/v1/responses/compact")
+	require.True(t, isExplicitOpenAICompactRequest(legacy))
+
+	native := newOpenAICompactFallbackTestContext(t, "/v1/responses")
+	MarkOpenAINativeCompactionV2(native)
+	require.False(t, isExplicitOpenAICompactRequest(native))
+
+	promoted := newOpenAICompactFallbackTestContext(t, "/v1/responses")
+	promoted.Request = promoted.Request.WithContext(WithOpenAIForwardModel(promoted.Request.Context(), "gpt-5.5", true))
+	require.True(t, isExplicitOpenAICompactRequest(promoted))
 }
 
 func TestHandleResponsesBufferedFromNativeAnthropicCompactIntentSurvivesPathRewrite(t *testing.T) {
@@ -105,7 +146,7 @@ func TestPrepareOpenAICompactFallbackRetryRequiresExplicitCompact(t *testing.T) 
 	require.Equal(t, body, retryBody)
 }
 
-func TestPrepareOpenAICompactFallbackRetryPreservesNativeTriggerAndContext(t *testing.T) {
+func TestPrepareOpenAICompactFallbackRetryNeverAppliesToNativeCompactionV2(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{OpenAICompactModel: "gpt-5.4"}}}
 	c := newOpenAICompactFallbackTestContext(t, "/v1/responses")
@@ -118,9 +159,9 @@ func TestPrepareOpenAICompactFallbackRetryPreservesNativeTriggerAndContext(t *te
 		c, nil, "gpt-5.5", body, http.StatusBadRequest, "context window exceeded", errorBody, false,
 	)
 
-	require.True(t, retry)
-	require.Equal(t, "gpt-5.4", fallbackModel)
-	require.Equal(t, "gpt-5.4", gjson.GetBytes(retryBody, "model").String())
+	require.False(t, retry)
+	require.Empty(t, fallbackModel)
+	require.Equal(t, body, retryBody)
 	require.True(t, HasCompactionTriggerInInput(retryBody))
 	require.True(t, isOpenAINativeCompactionV2(c))
 	require.Equal(t, pathBefore, openAIResponsesRequestPathSuffix(c))
@@ -145,7 +186,7 @@ func TestOpenAIGatewayForwardUsesGlobalCompactModelOnInitialLegacyRequest(t *tes
 	upstream := &httpUpstreamRecorder{resp: &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"application/json"}},
-		Body:       io.NopCloser(strings.NewReader(`{"id":"resp_compact","status":"completed","model":"global-compact","output":[],"usage":{"input_tokens":1,"output_tokens":1}}`)),
+		Body:       io.NopCloser(strings.NewReader(`{"id":"resp_compact","status":"completed","model":"global-compact","output":[{"type":"compaction","encrypted_content":"opaque"}],"usage":{"input_tokens":1,"output_tokens":1}}`)),
 	}}
 	svc := &OpenAIGatewayService{
 		cfg:          &config.Config{Gateway: config.GatewayConfig{OpenAICompactModel: "global-compact"}},
@@ -208,23 +249,32 @@ func TestIsOpenAICompactModelFailureRequiresExplicitModelAvailabilityMessage(t *
 	tests := []struct {
 		name    string
 		message string
+		status  int
 		want    bool
 	}{
-		{name: "explicit unsupported model", message: "The requested model is not supported", want: true},
-		{name: "named missing model", message: "The model `gpt-5.5` does not exist", want: true},
-		{name: "unsupported model code-like message", message: "unsupported model: gpt-5.5", want: true},
-		{name: "unsupported model feature", message: "This model output format is not supported", want: false},
-		{name: "unsupported parameter for model", message: "Parameter tools is not supported for this model", want: false},
+		{name: "explicit unsupported model", status: http.StatusBadRequest, message: "The requested model is not supported", want: true},
+		{name: "named missing model", status: http.StatusBadRequest, message: "The model `gpt-5.5` does not exist", want: true},
+		{name: "unsupported model code-like message", status: http.StatusBadRequest, message: "unsupported model: gpt-5.5", want: true},
+		{name: "unsupported model feature", status: http.StatusBadRequest, message: "This model output format is not supported", want: false},
+		{name: "unsupported parameter for model", status: http.StatusBadRequest, message: "Parameter tools is not supported for this model", want: false},
+		{name: "availability phrase in unrelated context", status: http.StatusBadRequest, message: "request says model not found is not the failure", want: false},
+		{name: "context error is not model availability", status: http.StatusBadRequest, message: "context window exceeded", want: false},
+		{name: "structured model error on 429 is not compact fallback", status: http.StatusTooManyRequests, message: "model not found", want: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			require.Equal(t, tt.want, isOpenAICompactModelFailure(
-				http.StatusBadRequest,
+				tt.status,
 				tt.message,
 				[]byte(`{"error":{"message":`+strconv.Quote(tt.message)+`}}`),
 			))
 		})
 	}
+}
+
+func TestStructuredModelNotFoundOn429NeverTriggersCompactFallback(t *testing.T) {
+	body := []byte(`{"error":{"type":"invalid_request_error","code":"model_not_found","message":"model not found"}}`)
+	require.False(t, isOpenAICompactModelFailure(http.StatusTooManyRequests, "model not found", body))
 }
 
 func TestPrepareOpenAICompactFallbackRetrySkipsSameModel(t *testing.T) {
@@ -240,7 +290,7 @@ func TestPrepareOpenAICompactFallbackRetrySkipsSameModel(t *testing.T) {
 	require.False(t, retry)
 }
 
-func TestOpenAIGatewayForwardRetriesExplicitNativeCompactHTTPFailureOnce(t *testing.T) {
+func TestOpenAIGatewayForwardDoesNotSwitchModelOnNativeCompactHTTPFailure(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	body := []byte(`{"model":"gpt-5.5","stream":false,"instructions":"compact-test","input":[{"type":"message","role":"user","content":"hello"},{"type":"compaction_trigger"}]}`)
 	c := newOpenAICompactFallbackTestContext(t, "/v1/responses")
@@ -272,24 +322,11 @@ func TestOpenAIGatewayForwardRetriesExplicitNativeCompactHTTPFailureOnce(t *test
 
 	result, err := svc.Forward(context.Background(), c, account, body)
 
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	require.Len(t, upstream.bodies, 2)
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.Len(t, upstream.bodies, 1)
 	require.Equal(t, "gpt-5.5", gjson.GetBytes(upstream.bodies[0], "model").String())
-	require.Equal(t, "gpt-5.4", gjson.GetBytes(upstream.bodies[1], "model").String())
-	require.True(t, HasCompactionTriggerInInput(upstream.bodies[1]))
-	require.Equal(t, upstream.requests[0].URL.Path, upstream.requests[1].URL.Path)
-	require.NotContains(t, upstream.requests[1].URL.Path, "/compact")
-	rawEvents, ok := c.Get(OpsUpstreamErrorsKey)
-	require.True(t, ok)
-	events, ok := rawEvents.([]*OpsUpstreamErrorEvent)
-	require.True(t, ok)
-	require.Len(t, events, 1)
-	require.Equal(t, "retry", events[0].Kind)
-	require.Equal(t, "compact_model_fallback", events[0].Reason)
-	require.Equal(t, http.StatusBadRequest, events[0].UpstreamStatusCode)
-	require.Nil(t, events[0].ProxyID)
-	require.Equal(t, opsProxyNameDirect, events[0].ProxyName)
+	require.True(t, HasCompactionTriggerInInput(upstream.bodies[0]))
 }
 
 func compactFallbackManagedProxyAccount() (*Account, *Proxy) {
@@ -311,13 +348,13 @@ func requireCompactEventsAttributedTo(t *testing.T, events []*OpsUpstreamErrorEv
 	}
 }
 
-// Non-streaming SSE compact retry: the first attempt's failure must be recorded
-// as its own attempt (it previously vanished on `continue`), carrying the
-// managed proxy the transport actually used.
-func TestOpenAIGatewayForwardNonStreamCompactRetryRecordsAttemptWithManagedProxy(t *testing.T) {
+// Native-v2 stream failures must not be converted into compact-model retries.
+func TestOpenAIGatewayForwardNativeCompactSSEFailureDoesNotSwitchModel(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	body := []byte(`{"model":"gpt-5.5","stream":false,"instructions":"compact-test","input":[{"type":"message","role":"user","content":"hello"},{"type":"compaction_trigger"}]}`)
-	c := newOpenAICompactFallbackTestContext(t, "/v1/responses")
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 	c.Request.Body = io.NopCloser(bytes.NewReader(body))
 	c.Request.Header.Set("Content-Type", "application/json")
 	MarkOpenAINativeCompactionV2(c)
@@ -343,24 +380,17 @@ func TestOpenAIGatewayForwardNonStreamCompactRetryRecordsAttemptWithManagedProxy
 
 	result, err := svc.Forward(context.Background(), c, account, body)
 
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	require.Len(t, upstream.bodies, 2)
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.Len(t, upstream.bodies, 1)
+	require.Equal(t, "gpt-5.5", gjson.GetBytes(upstream.bodies[0], "model").String())
 	require.Equal(t, proxy.URL(), upstream.lastProxyURL)
-	rawEvents, ok := c.Get(OpsUpstreamErrorsKey)
-	require.True(t, ok)
-	events, ok := rawEvents.([]*OpsUpstreamErrorEvent)
-	require.True(t, ok)
-	require.Len(t, events, 1)
-	require.Equal(t, "retry", events[0].Kind)
-	require.Equal(t, "compact_model_fallback", events[0].Reason)
-	require.Equal(t, "rid_compact_1", events[0].UpstreamRequestID)
-	requireCompactEventsAttributedTo(t, events, proxy)
+	require.Contains(t, recorder.Body.String(), "context window exceeded")
 }
 
 // Streaming compact fallback whose second attempt fails with a failover-class
 // error: both the retry event and the failover event must carry the proxy.
-func TestOpenAIGatewayForwardCompactFailoverEventCarriesManagedProxy(t *testing.T) {
+func TestOpenAIGatewayForwardNativeCompactFailurePreservesFailoverEvent(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	body := []byte(`{"model":"gpt-5.5","stream":true,"instructions":"compact-test","input":[{"type":"message","role":"user","content":"hello"},{"type":"compaction_trigger"}]}`)
 	recorder := httptest.NewRecorder()
@@ -370,14 +400,9 @@ func TestOpenAIGatewayForwardCompactFailoverEventCarriesManagedProxy(t *testing.
 	c.Request.Header.Set("Content-Type", "application/json")
 	MarkOpenAINativeCompactionV2(c)
 
-	contextFailed := "event: response.failed\n" +
-		`data: {"type":"response.failed","response":{"status":"failed","error":{"code":"context_length_exceeded","message":"context window exceeded"}}}` + "\n\n"
-	// The fallback model's failure is an account-state error, which
-	// shouldFailoverOpenAIUpstreamResponse classifies as failover-worthy.
 	workspaceFailed := "event: response.failed\n" +
 		`data: {"type":"response.failed","response":{"status":"failed","error":{"code":"deactivated_workspace","message":"workspace deactivated"}}}` + "\n\n"
 	upstream := &httpUpstreamRecorder{responses: []*http.Response{
-		{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(contextFailed))},
 		{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(workspaceFailed))},
 	}}
 	svc := &OpenAIGatewayService{
@@ -392,22 +417,23 @@ func TestOpenAIGatewayForwardCompactFailoverEventCarriesManagedProxy(t *testing.
 	require.Nil(t, result)
 	var failoverErr *UpstreamFailoverError
 	require.ErrorAs(t, err, &failoverErr)
-	require.Len(t, upstream.bodies, 2)
+	require.Len(t, upstream.bodies, 1)
+	require.Equal(t, "gpt-5.5", gjson.GetBytes(upstream.bodies[0], "model").String())
 	rawEvents, ok := c.Get(OpsUpstreamErrorsKey)
 	require.True(t, ok)
 	events, ok := rawEvents.([]*OpsUpstreamErrorEvent)
 	require.True(t, ok)
-	require.Len(t, events, 2)
-	require.Equal(t, "retry", events[0].Kind)
-	require.Equal(t, "compact_model_fallback", events[0].Reason)
-	require.Equal(t, "failover", events[1].Kind)
+	require.Len(t, events, 1)
+	require.Equal(t, "failover", events[0].Kind)
 	requireCompactEventsAttributedTo(t, events, proxy)
 }
 
-func TestOpenAIGatewayForwardRetriesExplicitNativeCompactSSEFailureBeforeOutput(t *testing.T) {
+func TestOpenAIGatewayForwardDoesNotRetryNativeCompactSSEFailureBeforeOutput(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	body := []byte(`{"model":"gpt-5.5","stream":false,"instructions":"compact-test","input":[{"type":"message","role":"user","content":"hello"},{"type":"compaction_trigger"}]}`)
-	c := newOpenAICompactFallbackTestContext(t, "/v1/responses")
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 	c.Request.Body = io.NopCloser(bytes.NewReader(body))
 	c.Request.Header.Set("Content-Type", "application/json")
 	MarkOpenAINativeCompactionV2(c)
@@ -437,16 +463,14 @@ func TestOpenAIGatewayForwardRetriesExplicitNativeCompactSSEFailureBeforeOutput(
 
 	result, err := svc.Forward(context.Background(), c, account, body)
 
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	require.Len(t, upstream.bodies, 2)
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.Len(t, upstream.bodies, 1)
 	require.Equal(t, "gpt-5.5", gjson.GetBytes(upstream.bodies[0], "model").String())
-	require.Equal(t, "gpt-5.4", gjson.GetBytes(upstream.bodies[1], "model").String())
-	require.Equal(t, upstream.requests[0].URL.Path, upstream.requests[1].URL.Path)
-	require.NotContains(t, upstream.requests[1].URL.Path, "/compact")
+	require.Contains(t, recorder.Body.String(), "context window exceeded")
 }
 
-func TestOpenAIGatewayForwardRetriesStreamingCompactFailureBeforeOutput(t *testing.T) {
+func TestOpenAIGatewayForwardDoesNotRetryStreamingNativeCompactFailureBeforeOutput(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	body := []byte(`{"model":"gpt-5.5","stream":true,"instructions":"compact-test","input":[{"type":"message","role":"user","content":"hello"},{"type":"compaction_trigger"}]}`)
 	recorder := httptest.NewRecorder()
@@ -476,15 +500,15 @@ func TestOpenAIGatewayForwardRetriesStreamingCompactFailureBeforeOutput(t *testi
 
 	result, err := svc.Forward(context.Background(), c, account, body)
 
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	require.Len(t, upstream.bodies, 2)
-	require.Equal(t, "gpt-5.4", gjson.GetBytes(upstream.bodies[1], "model").String())
-	require.NotContains(t, recorder.Body.String(), "context_length_exceeded")
-	require.Contains(t, recorder.Body.String(), "response.completed")
+	_ = err
+	_ = result
+	require.Len(t, upstream.bodies, 1)
+	require.Equal(t, "gpt-5.5", gjson.GetBytes(upstream.bodies[0], "model").String())
+	require.Contains(t, recorder.Body.String(), "context_length_exceeded")
+	require.NotContains(t, recorder.Body.String(), "response.completed")
 }
 
-func TestOpenAIGatewayForwardDoesNotRecurseWhenCompactFallbackAlsoFails(t *testing.T) {
+func TestOpenAIGatewayForwardDoesNotFallbackOnNativeCompactSSEFailure(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	body := []byte(`{"model":"gpt-5.5","stream":true,"instructions":"compact-test","input":[{"type":"message","role":"user","content":"hello"},{"type":"compaction_trigger"}]}`)
 	recorder := httptest.NewRecorder()
@@ -517,28 +541,15 @@ func TestOpenAIGatewayForwardDoesNotRecurseWhenCompactFallbackAlsoFails(t *testi
 
 	require.Error(t, err)
 	require.Nil(t, result)
-	require.Len(t, upstream.bodies, 2)
+	require.Len(t, upstream.bodies, 1)
 	require.Equal(t, "gpt-5.5", gjson.GetBytes(upstream.bodies[0], "model").String())
-	require.Equal(t, "gpt-5.4", gjson.GetBytes(upstream.bodies[1], "model").String())
-	var compactSignal *openAICompactFallbackSignal
-	require.False(t, errors.As(err, &compactSignal))
-	require.Equal(t, http.StatusBadRequest, recorder.Code)
-	require.Contains(t, recorder.Body.String(), "model not found")
-	rawEvents, ok := c.Get(OpsUpstreamErrorsKey)
-	require.True(t, ok)
-	events, ok := rawEvents.([]*OpsUpstreamErrorEvent)
-	require.True(t, ok)
-	require.Len(t, events, 2)
-	require.Equal(t, "retry", events[0].Kind)
-	require.Equal(t, "compact_model_fallback", events[0].Reason)
-	require.Equal(t, "http_error", events[1].Kind)
-	for _, ev := range events {
-		require.Nil(t, ev.ProxyID)
-		require.Equal(t, opsProxyNameDirect, ev.ProxyName)
-	}
+	require.True(t, HasCompactionTriggerInInput(upstream.bodies[0]))
+	// The error wrapper may classify the failed response as failover; the stable
+	// contract here is that it was not retried with another model.
+	require.Error(t, err)
 }
 
-func TestOpenAIPassthroughCompactFallbackSecondStreamFailureUsesStandardErrorPath(t *testing.T) {
+func TestOpenAIPassthroughNativeCompactStreamFailureDoesNotFallback(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	body := []byte(`{"model":"gpt-5.5","stream":true,"input":[{"type":"compaction_trigger"}]}`)
 	recorder := httptest.NewRecorder()
@@ -550,7 +561,6 @@ func TestOpenAIPassthroughCompactFallbackSecondStreamFailureUsesStandardErrorPat
 	failed := "event: response.failed\n" +
 		`data: {"type":"response.failed","response":{"status":"failed","error":{"code":"context_length_exceeded","message":"context window exceeded"}}}` + "\n\n"
 	upstream := &httpUpstreamRecorder{responses: []*http.Response{
-		{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(failed))},
 		{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(failed))},
 	}}
 	svc := &OpenAIGatewayService{
@@ -565,20 +575,8 @@ func TestOpenAIPassthroughCompactFallbackSecondStreamFailureUsesStandardErrorPat
 
 	require.Error(t, err)
 	require.Nil(t, result)
-	require.Len(t, upstream.bodies, 2)
-	var compactSignal *openAICompactFallbackSignal
-	require.False(t, errors.As(err, &compactSignal))
-	require.Equal(t, http.StatusBadRequest, recorder.Code)
+	require.Len(t, upstream.bodies, 1)
+	require.Equal(t, "gpt-5.5", gjson.GetBytes(upstream.bodies[0], "model").String())
 	require.Contains(t, recorder.Body.String(), "context window exceeded")
-	rawEvents, ok := c.Get(OpsUpstreamErrorsKey)
-	require.True(t, ok)
-	events, ok := rawEvents.([]*OpsUpstreamErrorEvent)
-	require.True(t, ok)
-	require.Len(t, events, 2)
-	require.Equal(t, "retry", events[0].Kind)
-	require.Equal(t, "compact_model_fallback", events[0].Reason)
-	require.Equal(t, "http_error", events[1].Kind)
-	require.True(t, events[1].Passthrough)
 	require.Equal(t, proxy.URL(), upstream.lastProxyURL)
-	requireCompactEventsAttributedTo(t, events, proxy)
 }

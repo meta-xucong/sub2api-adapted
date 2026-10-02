@@ -45,6 +45,7 @@ func TestFilterAdminSelectableModelIDsPreservesCustomAliases(t *testing.T) {
 		"gpt-5.5-pro",
 		"gpt-5.4-2026-03-05",
 		"codex-auto-review",
+		"codex-auto-calibration",
 		"aiai-gpt-image-2",
 		"models/gpt-5.6-luna",
 		"aiai-gpt-image-2",
@@ -58,8 +59,9 @@ func TestFilterAdminSelectableModelIDsPreservesCustomAliases(t *testing.T) {
 
 func TestAdminSelectableModelIDDoesNotChangeRoutingCompatibility(t *testing.T) {
 	require.Contains(t, DefaultModelIDs(), "gpt-5.6")
-	require.True(t, IsAutoDiscoveredModelID("codex-auto-review"))
+	require.False(t, IsAutoDiscoveredModelID("codex-auto-review"))
 	require.False(t, IsAdminSelectableModelID("codex-auto-review"))
+	require.False(t, IsAdminSelectableModelID("codex-auto-calibration"))
 	require.False(t, IsAdminSelectableModelID("gpt-5.6"))
 }
 

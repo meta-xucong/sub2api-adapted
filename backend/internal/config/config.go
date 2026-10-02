@@ -1091,7 +1091,8 @@ type GatewayConfig struct {
 	OpenAIScheduler GatewayOpenAISchedulerConfig `mapstructure:"openai_scheduler"`
 	// SmartRouter: optional text-capability health-aware routing and calibration.
 	// Image routing remains outside this batch.
-	SmartRouter GatewaySmartRouterConfig `mapstructure:"smart_router"`
+	SmartRouter          GatewaySmartRouterConfig          `mapstructure:"smart_router"`
+	UpstreamModelRefresh GatewayUpstreamModelRefreshConfig `mapstructure:"upstream_model_refresh"`
 	// OpenAIHTTP2: OpenAI HTTP 上游协议策略（默认启用 HTTP/2，可按代理能力回退 HTTP/1.1）
 	OpenAIHTTP2 GatewayOpenAIHTTP2Config `mapstructure:"openai_http2"`
 	// OpenAIProxyStreamCircuit: Responses SSE 代理断流熔断策略。
@@ -1184,6 +1185,17 @@ type GatewayConfig struct {
 	// CNProviders: 国产 OpenAI 兼容供应商（kimi/zhipu/deepseek）的余额检测配置。
 	// 仅作用于 payg（按量付费）账号：周期探测余额，低于阈值则临时停调。
 	CNProviders GatewayCNProvidersConfig `mapstructure:"cn_providers"`
+}
+
+// GatewayUpstreamModelRefreshConfig controls the daily refresh of accounts
+// explicitly opted into trusted upstream model catalogs.
+type GatewayUpstreamModelRefreshConfig struct {
+	Enabled               bool `mapstructure:"enabled"`
+	Hour                  int  `mapstructure:"hour"`
+	Minute                int  `mapstructure:"minute"`
+	AccountTimeoutSeconds int  `mapstructure:"account_timeout_seconds"`
+	TotalBudgetSeconds    int  `mapstructure:"total_budget_seconds"`
+	MaxConcurrency        int  `mapstructure:"max_concurrency"`
 }
 
 // GatewaySmartRouterConfig is deliberately limited to text routing in this
@@ -2583,7 +2595,15 @@ func setDefaults() {
 	viper.SetDefault("gateway.unified_gateway_admin_ui_enabled", false)
 	viper.SetDefault("gateway.unified_gateway_runtime_enabled", false)
 	viper.SetDefault("gateway.unified_gateway_access_group_id", int64(0))
-	viper.SetDefault("gateway.openai_compact_model", "gpt-5.5")
+	// Empty keeps native Responses compaction on the requested model. Operators
+	// may still set this explicitly for providers that require a compact-only ID.
+	viper.SetDefault("gateway.openai_compact_model", "")
+	viper.SetDefault("gateway.upstream_model_refresh.enabled", true)
+	viper.SetDefault("gateway.upstream_model_refresh.hour", 4)
+	viper.SetDefault("gateway.upstream_model_refresh.minute", 0)
+	viper.SetDefault("gateway.upstream_model_refresh.account_timeout_seconds", 30)
+	viper.SetDefault("gateway.upstream_model_refresh.total_budget_seconds", 1800)
+	viper.SetDefault("gateway.upstream_model_refresh.max_concurrency", 4)
 	viper.SetDefault("gateway.live.max_session_duration_seconds", 3600)
 	// OpenAI Responses WebSocket（默认开启；可通过 force_http 紧急回滚）
 	viper.SetDefault("gateway.openai_ws.enabled", true)
@@ -2855,6 +2875,21 @@ func setEnvReachableDefaults() {
 }
 
 func (c *Config) Validate() error {
+	if c.Gateway.UpstreamModelRefresh.Hour < 0 || c.Gateway.UpstreamModelRefresh.Hour > 23 {
+		return fmt.Errorf("gateway.upstream_model_refresh.hour must be between 0 and 23")
+	}
+	if c.Gateway.UpstreamModelRefresh.Minute < 0 || c.Gateway.UpstreamModelRefresh.Minute > 59 {
+		return fmt.Errorf("gateway.upstream_model_refresh.minute must be between 0 and 59")
+	}
+	if c.Gateway.UpstreamModelRefresh.AccountTimeoutSeconds < 1 || c.Gateway.UpstreamModelRefresh.AccountTimeoutSeconds > 300 {
+		return fmt.Errorf("gateway.upstream_model_refresh.account_timeout_seconds must be between 1 and 300")
+	}
+	if c.Gateway.UpstreamModelRefresh.TotalBudgetSeconds < 60 || c.Gateway.UpstreamModelRefresh.TotalBudgetSeconds > 3600 {
+		return fmt.Errorf("gateway.upstream_model_refresh.total_budget_seconds must be between 60 and 3600")
+	}
+	if c.Gateway.UpstreamModelRefresh.MaxConcurrency < 1 || c.Gateway.UpstreamModelRefresh.MaxConcurrency > 8 {
+		return fmt.Errorf("gateway.upstream_model_refresh.max_concurrency must be between 1 and 8")
+	}
 	forwardedClientIPHeaders, err := NormalizeForwardedClientIPHeaders(c.Security.ForwardedClientIPHeaders)
 	if err != nil {
 		return fmt.Errorf("security.forwarded_client_ip_headers: %w", err)

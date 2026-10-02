@@ -71,6 +71,7 @@ var ProviderSet = wire.NewSet(
 	NewAdminGroupRepository,
 	NewCompositeModelRouteRepository,
 	NewAccountRepository,
+	NewUpstreamModelRefreshFenceRepository,
 	NewSmartRouterHealthRepository,
 	NewUnifiedGatewayAdminRepository,
 	NewUnifiedGatewayRouteCatalogRepository,

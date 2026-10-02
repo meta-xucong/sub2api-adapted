@@ -32,12 +32,12 @@ type smartRouterModelRefreshStub struct {
 	calls int
 }
 
-func (s *smartRouterModelRefreshStub) SyncUpstreamModelCatalog(context.Context, *Account) (*UpstreamModelCatalog, error) {
+func (s *smartRouterModelRefreshStub) RefreshAccountIfDue(context.Context, *Account) error {
 	s.calls++
 	if s.err != nil {
-		return nil, s.err
+		return s.err
 	}
-	return &UpstreamModelCatalog{}, nil
+	return nil
 }
 
 type smartRouterCalibrationLedgerStub struct {

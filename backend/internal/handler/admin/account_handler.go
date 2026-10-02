@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"log/slog"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/domain"
@@ -68,6 +70,7 @@ type AccountHandler struct {
 	ollamaCloudUsage        *service.OllamaCloudUsageService
 	cfg                     *config.Config
 	opencodeGoUsage         *service.OpenCodeGoUsageService
+	upstreamModelRefresh    *service.UpstreamModelRefreshService
 }
 
 // SetUpstreamBillingProbeService attaches the optional remote billing probe service.
@@ -81,6 +84,11 @@ func (h *AccountHandler) SetOllamaCloudUsageService(usage *service.OllamaCloudUs
 
 func (h *AccountHandler) SetOpenCodeGoUsageService(usage *service.OpenCodeGoUsageService) {
 	h.opencodeGoUsage = usage
+}
+
+// SetUpstreamModelRefreshService attaches the optional catalog refresh service.
+func (h *AccountHandler) SetUpstreamModelRefreshService(refresh *service.UpstreamModelRefreshService) {
+	h.upstreamModelRefresh = refresh
 }
 
 // NewAccountHandler creates a new admin account handler
@@ -2827,9 +2835,17 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 
 		// Return mapped models
 		var models []openai.Model
+		profile := service.DetectUpstreamModelSourceProfile(account)
 		for requestedModel := range mapping {
+			requestedModel = strings.TrimSpace(requestedModel)
+			if requestedModel == "" || strings.HasPrefix(strings.ToLower(requestedModel), "codex-auto-") {
+				continue
+			}
+			if (account.IsOpenAIOAuth() || profile.Kind == "openai") && !openai.IsAutoDiscoveredModelID(requestedModel) {
+				continue
+			}
 			var found bool
-			for _, dm := range openai.DefaultModels {
+			for _, dm := range openai.AdminSelectableModels() {
 				if dm.ID == requestedModel {
 					models = append(models, dm)
 					found = true
@@ -3006,12 +3022,23 @@ func (h *AccountHandler) SyncUpstreamModels(c *gin.Context) {
 		return
 	}
 
-	if h.accountTestService == nil {
-		response.InternalError(c, "Account test service is not configured")
-		return
+	var catalog *service.UpstreamModelCatalog
+	if service.DetectUpstreamModelSourceProfile(account).ManualOnly {
+		// Unknown gateways/resellers are not authoritative refresh sources, but an
+		// administrator may still inspect their live list and capability metadata.
+		// This diagnostic path does not publish availability or enable follow mode.
+		if h.accountTestService == nil {
+			response.Error(c, http.StatusServiceUnavailable, "Account model discovery service is not configured")
+			return
+		}
+		catalog, err = h.accountTestService.SyncUpstreamModelCatalog(c.Request.Context(), account)
+	} else {
+		if h.upstreamModelRefresh == nil {
+			response.Error(c, http.StatusServiceUnavailable, "Model catalog refresh service is not configured")
+			return
+		}
+		catalog, err = h.upstreamModelRefresh.RefreshAccountCatalogNow(c.Request.Context(), account)
 	}
-
-	catalog, err := h.accountTestService.SyncUpstreamModelCatalog(c.Request.Context(), account)
 	if err != nil {
 		var syncErr *service.UpstreamModelSyncError
 		if errors.As(err, &syncErr) {
@@ -3091,6 +3118,185 @@ func (h *AccountHandler) SyncUpstreamModelsPreview(c *gin.Context) {
 	}
 
 	response.Success(c, catalog)
+}
+
+// GetUpstreamModelRefreshStatus returns the redacted scheduler status.
+// GET /api/v1/admin/model-catalog-refresh/status
+func (h *AccountHandler) GetUpstreamModelRefreshStatus(c *gin.Context) {
+	if h == nil || h.upstreamModelRefresh == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Model catalog refresh service unavailable")
+		return
+	}
+
+	status := h.upstreamModelRefresh.GetRunStatus(c.Request.Context())
+	data, ok := sanitizeModelCatalogRefreshData(status)
+	if !ok {
+		response.Error(c, http.StatusServiceUnavailable, "Model catalog refresh status unavailable")
+		return
+	}
+	response.Success(c, data)
+}
+
+type upstreamModelPolicyPreviewRequest struct {
+	AccountIDs []int64 `json:"account_ids"`
+}
+
+type upstreamModelPolicyOptInRequest struct {
+	PreviewID         string  `json:"preview_id"`
+	PlanHash          string  `json:"plan_hash"`
+	ConfirmAccountIDs []int64 `json:"confirm_account_ids"`
+}
+
+// PreviewUpstreamModelPolicies returns a local, read-only preview for 1-100 accounts.
+// POST /api/v1/admin/model-catalog-refresh/policy-preview
+func (h *AccountHandler) PreviewUpstreamModelPolicies(c *gin.Context) {
+	var req upstreamModelPolicyPreviewRequest
+	if err := decodeStrictModelCatalogRequest(c, &req); err != nil || !validModelCatalogAccountIDs(req.AccountIDs) {
+		response.BadRequest(c, "account_ids must contain 1-100 unique positive account IDs")
+		return
+	}
+	if h == nil || h.upstreamModelRefresh == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Model catalog refresh service unavailable")
+		return
+	}
+
+	preview, err := h.upstreamModelRefresh.PreviewAccountPolicies(c.Request.Context(), req.AccountIDs)
+	if err != nil {
+		response.Error(c, http.StatusInternalServerError, "Unable to preview account model policies")
+		return
+	}
+	data, ok := sanitizeModelCatalogRefreshData(preview)
+	if !ok {
+		response.Error(c, http.StatusInternalServerError, "Unable to preview account model policies")
+		return
+	}
+	response.Success(c, data)
+}
+
+// OptInUpstreamModelPolicies confirms a complete batch preview.
+// POST /api/v1/admin/model-catalog-refresh/policy-opt-in
+func (h *AccountHandler) OptInUpstreamModelPolicies(c *gin.Context) {
+	var req upstreamModelPolicyOptInRequest
+	if err := decodeStrictModelCatalogRequest(c, &req); err != nil ||
+		!validOpaqueModelCatalogToken(req.PreviewID, 256) || !validUpstreamModelPreviewHash(req.PlanHash) ||
+		!validModelCatalogAccountIDs(req.ConfirmAccountIDs) {
+		response.BadRequest(c, "preview_id, plan_hash, and 1-100 unique confirm_account_ids are required")
+		return
+	}
+	actorID := getAdminIDFromContext(c)
+	if actorID <= 0 {
+		response.Unauthorized(c, "Authorization required")
+		return
+	}
+	if h == nil || h.upstreamModelRefresh == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Model catalog refresh service unavailable")
+		return
+	}
+	// The service must verify that confirm_account_ids exactly matches the full
+	// account set and revisions sealed into preview_id/plan_hash, atomically.
+	if err := h.upstreamModelRefresh.SetAccountPolicies(c.Request.Context(), req.PreviewID, req.PlanHash, req.ConfirmAccountIDs, actorID); err != nil {
+		// Never return a raw service error: it may contain URLs or credentials.
+		response.Error(c, http.StatusConflict, "Policy confirmation failed; request a fresh preview")
+		return
+	}
+	response.Success(c, gin.H{"confirmed_account_ids": req.ConfirmAccountIDs})
+}
+
+func decodeStrictModelCatalogRequest(c *gin.Context, dst any) error {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 32<<10)
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(dst); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return errors.New("multiple JSON values")
+		}
+		return err
+	}
+	return nil
+}
+
+func validUpstreamModelPreviewHash(value string) bool {
+	if !validOpaqueModelCatalogToken(value, 128) || !strings.HasPrefix(value, "sha256:") {
+		return false
+	}
+	_, err := hex.DecodeString(strings.TrimPrefix(value, "sha256:"))
+	return len(value) == len("sha256:")+sha256.Size*2 && err == nil
+}
+
+func validOpaqueModelCatalogToken(value string, maxLength int) bool {
+	return value != "" && len(value) <= maxLength && strings.TrimSpace(value) == value && strings.IndexFunc(value, unicode.IsControl) < 0
+}
+
+func validModelCatalogAccountIDs(accountIDs []int64) bool {
+	if len(accountIDs) == 0 || len(accountIDs) > 100 {
+		return false
+	}
+	seen := make(map[int64]struct{}, len(accountIDs))
+	for _, accountID := range accountIDs {
+		if accountID <= 0 {
+			return false
+		}
+		if _, exists := seen[accountID]; exists {
+			return false
+		}
+		seen[accountID] = struct{}{}
+	}
+	return true
+}
+
+// sanitizeModelCatalogRefreshData strips fields that must never cross the
+// admin API boundary, including when nested in a service DTO or map.
+func sanitizeModelCatalogRefreshData(value any) (any, bool) {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return nil, false
+	}
+	var payload any
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.UseNumber()
+	if err := decoder.Decode(&payload); err != nil {
+		return nil, false
+	}
+	return redactModelCatalogRefreshFields(payload), true
+}
+
+func redactModelCatalogRefreshFields(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		clean := make(map[string]any, len(typed))
+		for key, item := range typed {
+			normalized := strings.NewReplacer("_", "", "-", "", ".", "").Replace(strings.ToLower(key))
+			if strings.Contains(normalized, "credential") || strings.Contains(normalized, "baseurl") || strings.Contains(normalized, "url") || strings.Contains(normalized, "uri") ||
+				strings.Contains(normalized, "query") || strings.Contains(normalized, "apikey") ||
+				strings.Contains(normalized, "authorization") || strings.Contains(normalized, "secret") || strings.Contains(normalized, "origin") || strings.Contains(normalized, "host") ||
+				strings.Contains(normalized, "password") || strings.Contains(normalized, "token") || strings.Contains(normalized, "endpoint") ||
+				normalized == "lasterror" || normalized == "error" || normalized == "errormessage" {
+				continue
+			}
+			clean[key] = redactModelCatalogRefreshFields(item)
+		}
+		return clean
+	case []any:
+		clean := make([]any, len(typed))
+		for index, item := range typed {
+			clean[index] = redactModelCatalogRefreshFields(item)
+		}
+		return clean
+	case string:
+		lowered := strings.ToLower(typed)
+		if strings.Contains(lowered, "://") || strings.Contains(lowered, "?") || strings.Contains(lowered, "api_key=") ||
+			strings.Contains(lowered, "access_token=") || strings.Contains(lowered, "token=") || strings.Contains(lowered, "key=") ||
+			strings.Contains(lowered, "authorization:") || strings.Contains(lowered, "credential=") || strings.Contains(lowered, "secret=") || strings.Contains(lowered, "password=") {
+			return "[redacted]"
+		}
+		return typed
+	default:
+		return value
+	}
 }
 
 // SetPrivacy handles setting privacy for a single OpenAI/Antigravity OAuth account

@@ -52,6 +52,16 @@ func TestRetrieveModelMatchesVisibleCatalogue(t *testing.T) {
 					Data []json.RawMessage `json:"data"`
 				}
 				require.NoError(t, json.Unmarshal(list.Body.Bytes(), &catalog))
+				if !mapped && platform != service.PlatformGrok {
+					// Static platform defaults are not evidence that a configured
+					// account can serve a model. With no upstream snapshot or
+					// explicit mapping, ordinary API-key accounts must not receive
+					// synthesized models. Grok retains its legacy provider-owned
+					// default route map until that adapter has an authoritative catalog.
+					require.Empty(t, catalog.Data)
+					require.Equal(t, http.StatusNotFound, requestModelForTest(h, group, "unconfigured-model", "").Code)
+					return
+				}
 				require.NotEmpty(t, catalog.Data)
 				var model struct {
 					ID string `json:"id"`
