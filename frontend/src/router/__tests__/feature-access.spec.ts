@@ -86,7 +86,7 @@ function createDeferred<T>() {
   return { promise, resolve }
 }
 
-function runGuard(meta: Record<string, unknown>, path: string) {
+function runGuard(meta: Record<string, unknown>, path: string, query: Record<string, unknown> = {}) {
   if (!routerHarness.guard) {
     throw new Error('router guard was not registered')
   }
@@ -98,6 +98,7 @@ function runGuard(meta: Record<string, unknown>, path: string) {
       fullPath: path,
       name: 'FeatureRoute',
       params: {},
+      query,
       meta: { requiresAuth: true, ...meta },
     },
     {},
@@ -118,6 +119,28 @@ describe('feature route guard', () => {
     appStore.publicSettingsLoaded = false
     appStore.cachedPublicSettings = null
     appStore.fetchPublicSettings.mockReset()
+  })
+
+  it('preserves a Veyra return intent on the login page when auth state is already present', async () => {
+    const { navigation, next } = runGuard(
+      { requiresAuth: false },
+      '/login',
+      { redirect: '/_veyra/return?target=alchemy' }
+    )
+
+    await navigation
+
+    expect(next).toHaveBeenCalledOnce()
+    expect(next).toHaveBeenCalledWith()
+  })
+
+  it('keeps the normal authenticated login redirect to the dashboard', async () => {
+    const { navigation, next } = runGuard({ requiresAuth: false }, '/login')
+
+    await navigation
+
+    expect(next).toHaveBeenCalledOnce()
+    expect(next).toHaveBeenCalledWith('/dashboard')
   })
 
   it('waits for the first public-settings request before deciding payment access', async () => {

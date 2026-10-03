@@ -12,6 +12,7 @@ import { useNavigationLoadingState } from '@/composables/useNavigationLoading'
 import { useRoutePrefetch } from '@/composables/useRoutePrefetch'
 import { getSetupStatus } from '@/api/setup'
 import { resolveCompletedSetupRedirectPath } from './setupRedirect'
+import { resolveVeyraReturnPath } from './veyraReturn'
 import { resolveRouteDocumentTitle } from './title'
 
 /**
@@ -832,6 +833,12 @@ router.beforeEach(async (to, _from, next) => {
   if (!requiresAuth) {
     // If already authenticated and trying to access login/register, redirect to appropriate dashboard
     if (authStore.isAuthenticated && (to.path === '/login' || to.path === '/register')) {
+      // Let users re-authenticate when the portal returns after a stale or
+      // revoked token instead of dropping the one-time intent on the dashboard.
+      if (to.path === '/login' && resolveVeyraReturnPath(to.query.redirect)) {
+        next()
+        return
+      }
       // In backend mode, non-admin users should NOT be redirected away from login
       // (they are blocked from all protected routes, so redirecting would cause a loop)
       if (appStore.backendModeEnabled && !authStore.isAdmin) {

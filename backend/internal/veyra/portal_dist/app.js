@@ -190,7 +190,7 @@
     if (!state.alchemyBaseUrl) throw new Error("Alchemy 跳转地址不可用，请联系管理员");
     const ticket = await issueAlchemyTicket(mobile ? "alchemy-mobile" : "alchemy");
     if (!ticket) return;
-    const destination = new URL(mobile ? "/h5" : "/", state.alchemyBaseUrl);
+    const destination = new URL(mobile ? "/h5" : "/go/v2", state.alchemyBaseUrl);
     destination.searchParams.set("ticket", ticket);
     window.location.href = destination.toString();
   }

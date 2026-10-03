@@ -87,6 +87,17 @@ func TestPortalAppDefaultsLoginReturnToHome(t *testing.T) {
 	require.NotContains(t, script, `state.authenticated ? "/dashboard" : loginUrl(routeTargets.home)`)
 }
 
+func TestPortalAlchemyLaunchTargetsV2WithoutChangingMobileOrConsoleRoutes(t *testing.T) {
+	subFS, err := fs.Sub(portalFS, "portal_dist")
+	require.NoError(t, err)
+	content, err := fs.ReadFile(subFS, "app.js")
+	require.NoError(t, err)
+	script := string(content)
+
+	require.Contains(t, script, `new URL(mobile ? "/h5" : "/go/v2", state.alchemyBaseUrl)`)
+	require.Contains(t, script, `state.authenticated ? "/dashboard" : loginUrl(routeTargets["sub2api-console"])`)
+}
+
 func TestPortalMiddlewareServesAssetsWhenEnabled(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
