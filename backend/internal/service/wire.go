@@ -107,6 +107,57 @@ func ProvideBatchImageCleanupService(repo BatchImageRepository, accountRepo Acco
 	return svc
 }
 
+// ProvideOpenAIGatewayService attaches the optional durable Smart Router
+// ledger while keeping the public constructor stable for tests and callers.
+func ProvideOpenAIGatewayService(
+	accountRepo AccountRepository,
+	usageLogRepo UsageLogRepository,
+	usageBillingRepo UsageBillingRepository,
+	userRepo UserRepository,
+	userSubRepo UserSubscriptionRepository,
+	userGroupRateRepo UserGroupRateRepository,
+	cache GatewayCache,
+	cfg *config.Config,
+	schedulerSnapshot *SchedulerSnapshotService,
+	concurrencyService *ConcurrencyService,
+	billingService *BillingService,
+	rateLimitService *RateLimitService,
+	billingCacheService *BillingCacheService,
+	httpUpstream HTTPUpstream,
+	deferredService *DeferredService,
+	openAITokenProvider *OpenAITokenProvider,
+	grokTokenProvider *GrokTokenProvider,
+	resolver *ModelPricingResolver,
+	channelService *ChannelService,
+	balanceNotifyService *BalanceNotifyService,
+	settingService *SettingService,
+	userPlatformQuotaRepo UserPlatformQuotaRepository,
+	ledger SmartRouterHealthLedger,
+) *OpenAIGatewayService {
+	svc := NewOpenAIGatewayService(
+		accountRepo, usageLogRepo, usageBillingRepo, userRepo, userSubRepo, userGroupRateRepo,
+		cache, cfg, schedulerSnapshot, concurrencyService, billingService, rateLimitService,
+		billingCacheService, httpUpstream, deferredService, openAITokenProvider, grokTokenProvider,
+		resolver, channelService, balanceNotifyService, settingService, userPlatformQuotaRepo,
+	)
+	svc.SetSmartRouterHealthLedger(ledger)
+	return svc
+}
+
+func ProvideSmartRouterCalibrationService(
+	accountRepo AccountRepository,
+	openAIGatewayService *OpenAIGatewayService,
+	ledger SmartRouterHealthLedger,
+	cfg *config.Config,
+) *SmartRouterCalibrationService {
+	svc := NewSmartRouterCalibrationService(accountRepo, openAIGatewayService, ledger, cfg)
+	if openAIGatewayService != nil {
+		openAIGatewayService.smartRouterHealth()
+	}
+	svc.Start()
+	return svc
+}
+
 // ProvideOpenAIOAuthService creates OpenAIOAuthService with privacy/account enrichment support.
 func ProvideOpenAIOAuthService(
 	proxyRepo ProxyRepository,
@@ -870,7 +921,8 @@ var ProviderSet = wire.NewSet(
 	NewAnnouncementService,
 	NewAdminService,
 	NewGatewayService,
-	NewOpenAIGatewayService,
+	ProvideOpenAIGatewayService,
+	ProvideSmartRouterCalibrationService,
 	ProvideImageStorageSettingService,
 	ProvideImageTaskService,
 	ProvideBatchImageModelPricingResolver,

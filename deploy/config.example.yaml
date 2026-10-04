@@ -217,6 +217,36 @@ security:
 # 网关配置
 # =============================================================================
 gateway:
+  # Legacy T0 Smart Router policy. Off by default and also requires the
+  # existing OpenAI advanced scheduler gate; ranking controls never change
+  # the native retry ceiling or compact candidate tiers.
+  smart_router:
+    enabled: false
+    top_k: 5
+    same_source_group_attempts: 1
+    cost_bias_max: 3.0
+    recovery:
+      second_failure_cooldown_seconds: 600
+      sustained_failure_threshold: 3
+      recovery_escalation_failure_threshold: 3
+      recovery_priority_step: 30
+    calibration:
+      enabled: true
+      auto_enroll_enabled: true
+      auto_enroll_interval_seconds: 300
+      # Asia/Shanghai (UTC+8)
+      hour: 4
+      minute: 0
+      total_budget_seconds: 1800
+      probe_timeout_seconds: 180
+    scoring:
+      priority: 0.8
+      cost: 1.0
+      health: 1.2
+      load: 1.0
+      queue: 0.6
+      latency: 0.4
+      recovery: 0.8
   # Timeout for waiting upstream response headers (seconds)
   # 等待上游响应头超时时间（秒）
   response_header_timeout: 600

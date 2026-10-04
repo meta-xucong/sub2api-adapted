@@ -191,13 +191,14 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 			return
 		}
 		reqLog.Debug("openai.images.account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
-		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForImages(
+		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForImageOperation(
 			requestCtx,
 			apiKey.GroupID,
 			sessionHash,
 			routingModel,
 			failedAccountIDs,
 			parsed.RequiredCapabilityForModel(channelMapping.MappedModel),
+			parsed.IsEdits(),
 		)
 		if err != nil {
 			if failoverClientGone(c) {
@@ -319,6 +320,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 			return h.gatewayService.ForwardImages(requestCtx, c, account, body, parsed, channelMapping.MappedModel)
 		}()
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
+		h.gatewayService.ReportSmartRouterImageResult(account, parsed, result, err, forwardDurationMs)
 		upstreamLatencyMs, _ := getContextInt64(c, service.OpsUpstreamLatencyMsKey)
 		responseLatencyMs := forwardDurationMs
 		if upstreamLatencyMs > 0 && forwardDurationMs > upstreamLatencyMs {

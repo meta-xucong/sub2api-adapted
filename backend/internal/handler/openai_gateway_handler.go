@@ -24,6 +24,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/securityaudit"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	smartrouter "github.com/Wei-Shaw/sub2api/internal/smartrouter/core"
 
 	coderws "github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
@@ -641,6 +642,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	// Get subscription info (may be nil)
 	subscription, _ := middleware2.GetSubscriptionFromContext(c)
 	requestPlatform := openAICompatibleRequestPlatform(c.Request.Context(), apiKey)
+	if imageIntent && requestPlatform == service.PlatformOpenAI {
+		c.Request = c.Request.WithContext(service.WithOpenAIImageGenerationIntent(c.Request.Context()))
+	}
 
 	service.SetOpsLatencyMs(c, service.OpsAuthLatencyMsKey, time.Since(requestStart).Milliseconds())
 	routingStart := time.Now()
@@ -726,13 +730,14 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		var scheduleDecision service.OpenAIAccountScheduleDecision
 		var err error
 		if bridgeModel := responsesImageBridgeSelectionModel(responsesImageBridge, responsesImageParsed); bridgeModel != "" {
-			selection, scheduleDecision, err = h.gatewayService.SelectAccountWithSchedulerForImages(
+			selection, scheduleDecision, err = h.gatewayService.SelectAccountWithSchedulerForImageOperation(
 				c.Request.Context(),
 				apiKey.GroupID,
 				sessionHash,
 				bridgeModel,
 				failedAccountIDs,
 				service.OpenAIImagesCapabilityBasic,
+				responsesImageParsed != nil && responsesImageParsed.IsEdits(),
 			)
 		} else {
 			selection, scheduleDecision, err = h.gatewayService.SelectAccountWithSchedulerForCapability(
@@ -878,6 +883,13 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		}
 		h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, err != nil, cyberBlockBodyHTTP, clientRequestedUsageFields(c, channelMapping, reqModel, ""), service.HashUsageRequestPayload(body))
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
+		if responsesImageParsed != nil {
+			h.gatewayService.ReportSmartRouterImageResult(account, responsesImageParsed, result, err, forwardDurationMs)
+		} else if requireCompact {
+			h.gatewayService.ReportSmartRouterCompactResult(account, reqModel, result, err, forwardDurationMs)
+		} else {
+			h.gatewayService.ReportSmartRouterTextResult(account, smartrouter.CapabilityResponses, reqModel, result, err, forwardDurationMs)
+		}
 		upstreamLatencyMs, _ := getContextInt64(c, service.OpsUpstreamLatencyMsKey)
 		responseLatencyMs := forwardDurationMs
 		if upstreamLatencyMs > 0 && forwardDurationMs > upstreamLatencyMs {
@@ -2640,6 +2652,9 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 
 	subscription, _ := middleware2.GetSubscriptionFromContext(c)
 	requestPlatform := openAICompatibleRequestPlatform(ctx, apiKey)
+	if imageIntent && requestPlatform == service.PlatformOpenAI {
+		ctx = service.WithOpenAIImageGenerationIntent(ctx)
+	}
 	requiredTransport := service.OpenAIUpstreamTransportResponsesWebsocketV2Ingress
 	if requestPlatform == service.PlatformGrok {
 		requiredTransport = service.OpenAIUpstreamTransportHTTPSSE

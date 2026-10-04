@@ -998,6 +998,47 @@ type ResponsesImageBridgeConfig struct {
 	PreserveStreaming bool   `mapstructure:"preserve_streaming"`
 }
 
+// GatewaySmartRouterConfig restores the legacy, opt-in health-aware account
+// ordering layer. It intentionally excludes legacy attempt-budget overrides;
+// the native v0.2.13 scheduler remains authoritative for retries and compact
+// candidate tiers.
+type GatewaySmartRouterConfig struct {
+	Enabled                 bool                                `mapstructure:"enabled"`
+	TopK                    int                                 `mapstructure:"top_k"`
+	SameSourceGroupAttempts int                                 `mapstructure:"same_source_group_attempts"`
+	CostBiasMax             float64                             `mapstructure:"cost_bias_max"`
+	Recovery                GatewaySmartRouterRecoveryConfig    `mapstructure:"recovery"`
+	Calibration             GatewaySmartRouterCalibrationConfig `mapstructure:"calibration"`
+	Scoring                 GatewaySmartRouterScoringConfig     `mapstructure:"scoring"`
+}
+
+type GatewaySmartRouterRecoveryConfig struct {
+	SecondFailureCooldownSeconds       int `mapstructure:"second_failure_cooldown_seconds"`
+	SustainedFailureThreshold          int `mapstructure:"sustained_failure_threshold"`
+	RecoveryEscalationFailureThreshold int `mapstructure:"recovery_escalation_failure_threshold"`
+	RecoveryPriorityStep               int `mapstructure:"recovery_priority_step"`
+}
+
+type GatewaySmartRouterCalibrationConfig struct {
+	Enabled                   bool `mapstructure:"enabled"`
+	AutoEnrollEnabled         bool `mapstructure:"auto_enroll_enabled"`
+	AutoEnrollIntervalSeconds int  `mapstructure:"auto_enroll_interval_seconds"`
+	Hour                      int  `mapstructure:"hour"`
+	Minute                    int  `mapstructure:"minute"`
+	TotalBudgetSeconds        int  `mapstructure:"total_budget_seconds"`
+	ProbeTimeoutSeconds       int  `mapstructure:"probe_timeout_seconds"`
+}
+
+type GatewaySmartRouterScoringConfig struct {
+	Priority float64 `mapstructure:"priority"`
+	Cost     float64 `mapstructure:"cost"`
+	Health   float64 `mapstructure:"health"`
+	Load     float64 `mapstructure:"load"`
+	Queue    float64 `mapstructure:"queue"`
+	Latency  float64 `mapstructure:"latency"`
+	Recovery float64 `mapstructure:"recovery"`
+}
+
 // GatewayConfig API网关相关配置
 type GatewayConfig struct {
 	// 等待上游响应头的超时时间（秒），0表示无超时
@@ -1144,6 +1185,10 @@ type GatewayConfig struct {
 
 	// Scheduling: 账号调度相关配置
 	Scheduling GatewaySchedulingConfig `mapstructure:"scheduling"`
+	// SmartRouter: optional health-aware ordering and calibration. It defaults
+	// off, and the scheduler adapter also requires the existing advanced-scheduler
+	// setting to be enabled.
+	SmartRouter GatewaySmartRouterConfig `mapstructure:"smart_router"`
 
 	// TLSFingerprint: TLS指纹伪装配置
 	TLSFingerprint TLSFingerprintConfig `mapstructure:"tls_fingerprint"`
@@ -2466,6 +2511,28 @@ func setDefaults() {
 	viper.SetDefault("gateway.failover_on_400", false)
 	viper.SetDefault("gateway.max_account_switches", 10)
 	viper.SetDefault("gateway.max_account_switches_gemini", 3)
+	viper.SetDefault("gateway.smart_router.enabled", false)
+	viper.SetDefault("gateway.smart_router.top_k", 5)
+	viper.SetDefault("gateway.smart_router.same_source_group_attempts", 1)
+	viper.SetDefault("gateway.smart_router.cost_bias_max", 3.0)
+	viper.SetDefault("gateway.smart_router.recovery.second_failure_cooldown_seconds", 600)
+	viper.SetDefault("gateway.smart_router.recovery.sustained_failure_threshold", 3)
+	viper.SetDefault("gateway.smart_router.recovery.recovery_escalation_failure_threshold", 3)
+	viper.SetDefault("gateway.smart_router.recovery.recovery_priority_step", 30)
+	viper.SetDefault("gateway.smart_router.calibration.enabled", true)
+	viper.SetDefault("gateway.smart_router.calibration.auto_enroll_enabled", true)
+	viper.SetDefault("gateway.smart_router.calibration.auto_enroll_interval_seconds", 300)
+	viper.SetDefault("gateway.smart_router.calibration.hour", 4)
+	viper.SetDefault("gateway.smart_router.calibration.minute", 0)
+	viper.SetDefault("gateway.smart_router.calibration.total_budget_seconds", 1800)
+	viper.SetDefault("gateway.smart_router.calibration.probe_timeout_seconds", 180)
+	viper.SetDefault("gateway.smart_router.scoring.priority", 0.8)
+	viper.SetDefault("gateway.smart_router.scoring.cost", 1.0)
+	viper.SetDefault("gateway.smart_router.scoring.health", 1.2)
+	viper.SetDefault("gateway.smart_router.scoring.load", 1.0)
+	viper.SetDefault("gateway.smart_router.scoring.queue", 0.6)
+	viper.SetDefault("gateway.smart_router.scoring.latency", 0.4)
+	viper.SetDefault("gateway.smart_router.scoring.recovery", 0.8)
 	viper.SetDefault("gateway.force_codex_cli", false)
 	viper.SetDefault("gateway.disable_codex_identity_enforcement", false)
 	viper.SetDefault("gateway.disable_codex_originator_normalization", false)
@@ -2791,6 +2858,40 @@ func (c *Config) Validate() error {
 		if len(guard.AllowedUserEmails) == 0 && len(guard.AllowedAPIKeyNames) == 0 {
 			return fmt.Errorf("gateway.operator_test_guard.allowed_user_emails or allowed_api_key_names is required when enabled")
 		}
+	}
+	if c.Gateway.SmartRouter.Recovery.SecondFailureCooldownSeconds < 0 ||
+		c.Gateway.SmartRouter.Recovery.SustainedFailureThreshold < 0 ||
+		c.Gateway.SmartRouter.Recovery.RecoveryEscalationFailureThreshold < 0 ||
+		c.Gateway.SmartRouter.Recovery.RecoveryPriorityStep < 0 {
+		return fmt.Errorf("gateway.smart_router.recovery values must be non-negative")
+	}
+	if c.Gateway.SmartRouter.TopK < 0 {
+		return fmt.Errorf("gateway.smart_router.top_k must be non-negative")
+	}
+	if c.Gateway.SmartRouter.SameSourceGroupAttempts < 0 {
+		return fmt.Errorf("gateway.smart_router.same_source_group_attempts must be non-negative")
+	}
+	if c.Gateway.SmartRouter.CostBiasMax < 0 {
+		return fmt.Errorf("gateway.smart_router.cost_bias_max must be non-negative")
+	}
+	calibration := c.Gateway.SmartRouter.Calibration
+	if calibration.Hour < 0 || calibration.Hour > 23 {
+		return fmt.Errorf("gateway.smart_router.calibration.hour must be between 0 and 23")
+	}
+	if calibration.Minute < 0 || calibration.Minute > 59 {
+		return fmt.Errorf("gateway.smart_router.calibration.minute must be between 0 and 59")
+	}
+	if calibration.AutoEnrollIntervalSeconds < 0 || calibration.TotalBudgetSeconds < 0 || calibration.ProbeTimeoutSeconds < 0 {
+		return fmt.Errorf("gateway.smart_router.calibration durations must be non-negative")
+	}
+	smartRouterWeights := c.Gateway.SmartRouter.Scoring
+	for _, weight := range []float64{smartRouterWeights.Priority, smartRouterWeights.Cost, smartRouterWeights.Health, smartRouterWeights.Load, smartRouterWeights.Queue, smartRouterWeights.Latency, smartRouterWeights.Recovery} {
+		if weight < 0 || math.IsNaN(weight) || math.IsInf(weight, 0) {
+			return fmt.Errorf("gateway.smart_router.scoring values must be finite and non-negative")
+		}
+	}
+	if c.Gateway.SmartRouter.Enabled && smartRouterWeights.Priority+smartRouterWeights.Cost+smartRouterWeights.Health+smartRouterWeights.Load+smartRouterWeights.Queue+smartRouterWeights.Latency+smartRouterWeights.Recovery == 0 {
+		return fmt.Errorf("gateway.smart_router.scoring must not all be zero when smart_router is enabled")
 	}
 	proxyProbeURLs, err := normalizeProxyProbeURLs(c.Security.ProxyProbe.URLs)
 	if err != nil {

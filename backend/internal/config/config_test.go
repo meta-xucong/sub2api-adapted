@@ -52,6 +52,41 @@ func TestOpenAIImageFailoverSettingsDefaultsAndValidation(t *testing.T) {
 	require.ErrorContains(t, cfg.Validate(), "gateway.image_generation_transient_cooldown_seconds must be non-negative")
 }
 
+func TestSmartRouterDefaultsAndValidation(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.False(t, cfg.Gateway.SmartRouter.Enabled)
+	require.Equal(t, 5, cfg.Gateway.SmartRouter.TopK)
+	require.Equal(t, 1, cfg.Gateway.SmartRouter.SameSourceGroupAttempts)
+	require.Equal(t, 3.0, cfg.Gateway.SmartRouter.CostBiasMax)
+	require.Equal(t, GatewaySmartRouterCalibrationConfig{
+		Enabled:                   true,
+		AutoEnrollEnabled:         true,
+		AutoEnrollIntervalSeconds: 300,
+		Hour:                      4,
+		Minute:                    0,
+		TotalBudgetSeconds:        1800,
+		ProbeTimeoutSeconds:       180,
+	}, cfg.Gateway.SmartRouter.Calibration)
+	require.NoError(t, cfg.Validate())
+
+	cfg.Gateway.SmartRouter.Calibration.Hour = 24
+	require.ErrorContains(t, cfg.Validate(), "gateway.smart_router.calibration.hour must be between 0 and 23")
+	cfg.Gateway.SmartRouter.Calibration.Hour = 4
+	cfg.Gateway.SmartRouter.Scoring.Health = math.NaN()
+	require.ErrorContains(t, cfg.Validate(), "gateway.smart_router.scoring values must be finite and non-negative")
+	cfg.Gateway.SmartRouter.Scoring.Health = 1.2
+	cfg.Gateway.SmartRouter.TopK = -1
+	require.ErrorContains(t, cfg.Validate(), "gateway.smart_router.top_k must be non-negative")
+	cfg.Gateway.SmartRouter.TopK = 5
+	cfg.Gateway.SmartRouter.SameSourceGroupAttempts = -1
+	require.ErrorContains(t, cfg.Validate(), "gateway.smart_router.same_source_group_attempts must be non-negative")
+	cfg.Gateway.SmartRouter.SameSourceGroupAttempts = 1
+	cfg.Gateway.SmartRouter.CostBiasMax = -1
+	require.ErrorContains(t, cfg.Validate(), "gateway.smart_router.cost_bias_max must be non-negative")
+}
+
 func TestResponsesImageBridgeDefaultsAndValidation(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	cfg, err := Load()

@@ -20,6 +20,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/platform/liveattestation"
+	smartrouter "github.com/Wei-Shaw/sub2api/internal/smartrouter/core"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/cespare/xxhash/v2"
 	"github.com/gin-gonic/gin"
@@ -474,6 +475,7 @@ type OpenAIGatewayService struct {
 	openaiWSPoolOnce               sync.Once
 	openaiWSStateStoreOnce         sync.Once
 	openaiSchedulerOnce            sync.Once
+	smartRouterHealthOnce          sync.Once
 	openaiProxyStreamCircuitOnce   sync.Once
 	openaiWSPassthroughDialerOnce  sync.Once
 	openaiModelTransientOnce       sync.Once
@@ -481,6 +483,8 @@ type OpenAIGatewayService struct {
 	openaiWSPool                   *openAIWSConnPool
 	openaiWSStateStore             OpenAIWSStateStore
 	openaiScheduler                OpenAIAccountScheduler
+	smartRouterHealthTracker       *smartrouter.HealthTracker
+	smartRouterHealthLedger        SmartRouterHealthLedger
 	openaiWSPassthroughDialer      openAIWSClientDialer
 	openaiWSSessionPreemptions     openAIWSSessionPreemptRegistry
 	openaiAccountStats             *openAIAccountRuntimeStats

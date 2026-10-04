@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	smartrouter "github.com/Wei-Shaw/sub2api/internal/smartrouter/core"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -88,6 +89,7 @@ type OpenAIAccountScheduleRequest struct {
 	RequiredTransport       OpenAIUpstreamTransport
 	RequiredCapability      OpenAIEndpointCapability
 	RequiredImageCapability OpenAIImagesCapability
+	SmartRouterCapability   smartrouter.Capability
 	// RequireCompact is only for legacy /responses/compact capability filtering
 	// and compact_model_mapping; native remote compaction v2 leaves it false.
 	RequireCompact bool
@@ -903,7 +905,7 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 		candidateCount:            len(candidates),
 	}
 	if len(candidates) == 0 {
-		plan.selectionOrder = s.buildOpenAISelectionOrder(req, plan)
+		plan.selectionOrder = s.buildOpenAISelectionOrder(ctx, req, plan)
 		return plan
 	}
 
@@ -1047,11 +1049,12 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 		plan.topK = 1
 	}
 
-	plan.selectionOrder = s.buildOpenAISelectionOrder(req, plan)
+	plan.selectionOrder = s.buildOpenAISelectionOrder(ctx, req, plan)
 	return plan
 }
 
 func (s *defaultOpenAIAccountScheduler) buildOpenAISelectionOrder(
+	ctx context.Context,
 	req OpenAIAccountScheduleRequest,
 	plan openAIAccountLoadPlan,
 ) []openAIAccountCandidateScore {
@@ -1084,6 +1087,9 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAISelectionOrder(
 		}
 		if len(primary) == 0 {
 			primary = buildOpenAIWeightedSelectionOrder(ranked, req)
+		}
+		if !req.StickyWeighted && req.StickyAccountID <= 0 && req.StickyPreviousAccountID <= 0 && strings.TrimSpace(req.PreviousResponseID) == "" {
+			primary = s.service.reorderSmartRouterSelectionCandidates(ctx, req, primary)
 		}
 		if !plan.includeOverflowFallback || groupTopK >= len(pool) {
 			return primary
@@ -2107,7 +2113,7 @@ func (s *OpenAIGatewayService) SelectAccountWithScheduler(
 	requiredTransport OpenAIUpstreamTransport,
 	requireCompact bool,
 ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
-	return s.selectAccountWithScheduler(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, "", "", requireCompact, PlatformOpenAI, false, true)
+	return s.selectAccountWithScheduler(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, "", "", requireCompact, PlatformOpenAI, false, true, "")
 }
 
 // SelectAccountWithSchedulerForCapability 按能力要求调度账号。
@@ -2131,7 +2137,11 @@ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForCapability(
 	if len(platformOverride) > 0 {
 		platform = platformOverride[0]
 	}
-	return s.selectAccountWithScheduler(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, requiredCapability, "", requireCompact, platform, previousResponseCanMove, useUpstreamTokenCost)
+	smartRouterCapability := smartRouterCapabilityForSelection(ctx, OpenAIAccountScheduleRequest{
+		RequiredCapability: requiredCapability,
+		RequireCompact:     requireCompact,
+	})
+	return s.selectAccountWithScheduler(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, requiredCapability, "", requireCompact, platform, previousResponseCanMove, useUpstreamTokenCost, smartRouterCapability)
 }
 
 func (s *OpenAIGatewayService) SelectAccountWithSchedulerForImages(
@@ -2142,13 +2152,29 @@ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForImages(
 	excludedIDs map[int64]struct{},
 	requiredCapability OpenAIImagesCapability,
 ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
-	selection, decision, err := s.selectAccountWithScheduler(ctx, groupID, "", sessionHash, requestedModel, excludedIDs, OpenAIUpstreamTransportHTTPSSE, "", requiredCapability, false, PlatformOpenAI, false, false)
+	return s.SelectAccountWithSchedulerForImageOperation(ctx, groupID, sessionHash, requestedModel, excludedIDs, requiredCapability, false)
+}
+
+func (s *OpenAIGatewayService) SelectAccountWithSchedulerForImageOperation(
+	ctx context.Context,
+	groupID *int64,
+	sessionHash string,
+	requestedModel string,
+	excludedIDs map[int64]struct{},
+	requiredCapability OpenAIImagesCapability,
+	isEdit bool,
+) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
+	smartRouterCapability := smartrouter.CapabilityImageGeneration
+	if isEdit {
+		smartRouterCapability = smartrouter.CapabilityImageEdit
+	}
+	selection, decision, err := s.selectAccountWithScheduler(ctx, groupID, "", sessionHash, requestedModel, excludedIDs, OpenAIUpstreamTransportHTTPSSE, "", requiredCapability, false, PlatformOpenAI, false, false, smartRouterCapability)
 	if err == nil && selection != nil && selection.Account != nil {
 		return selection, decision, nil
 	}
 	// 如果要求 native 能力（如指定了模型）但没有可用的 APIKey 账号，回退到 basic（OAuth 账号）
 	if requiredCapability == OpenAIImagesCapabilityNative {
-		return s.selectAccountWithScheduler(ctx, groupID, "", sessionHash, requestedModel, excludedIDs, OpenAIUpstreamTransportHTTPSSE, "", OpenAIImagesCapabilityBasic, false, PlatformOpenAI, false, false)
+		return s.selectAccountWithScheduler(ctx, groupID, "", sessionHash, requestedModel, excludedIDs, OpenAIUpstreamTransportHTTPSSE, "", OpenAIImagesCapabilityBasic, false, PlatformOpenAI, false, false, smartRouterCapability)
 	}
 	return selection, decision, err
 }
@@ -2174,8 +2200,9 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
 	platform string,
 	previousResponseCanMove bool,
 	useUpstreamTokenCost bool,
+	smartRouterCapability smartrouter.Capability,
 ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
-	selection, decision, err := s.selectAccountWithSchedulerOnce(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, requiredCapability, requiredImageCapability, requireCompact, platform, previousResponseCanMove, useUpstreamTokenCost)
+	selection, decision, err := s.selectAccountWithSchedulerOnce(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, requiredCapability, requiredImageCapability, requireCompact, platform, previousResponseCanMove, useUpstreamTokenCost, smartRouterCapability)
 	if err == nil || openAIProxyStreamQuarantineBypassed(ctx) {
 		return selection, decision, err
 	}
@@ -2191,7 +2218,7 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
 		return selection, decision, err
 	}
 	s.logOpenAIProxyStreamQuarantineFailOpen(requestedModel, blocked)
-	return s.selectAccountWithSchedulerOnce(withOpenAIProxyStreamQuarantineBypass(ctx), groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, requiredCapability, requiredImageCapability, requireCompact, platform, previousResponseCanMove, useUpstreamTokenCost)
+	return s.selectAccountWithSchedulerOnce(withOpenAIProxyStreamQuarantineBypass(ctx), groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, requiredCapability, requiredImageCapability, requireCompact, platform, previousResponseCanMove, useUpstreamTokenCost, smartRouterCapability)
 }
 
 type openAIGroupPrivacyRequirementContextKey struct{}
@@ -2309,6 +2336,7 @@ func (s *OpenAIGatewayService) selectAccountWithSchedulerOnce(
 	platform string,
 	previousResponseCanMove bool,
 	useUpstreamTokenCost bool,
+	smartRouterCapability smartrouter.Capability,
 ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
 	ctx = s.withOpenAIQuotaAutoPauseContext(ctx)
 	ctx = s.withOpenAIGroupPrivacyRequirement(ctx, groupID)
@@ -2355,6 +2383,7 @@ func (s *OpenAIGatewayService) selectAccountWithSchedulerOnce(
 				RequiredTransport:       requiredTransport,
 				RequiredCapability:      requiredCapability,
 				RequiredImageCapability: requiredImageCapability,
+				SmartRouterCapability:   smartRouterCapability,
 				RequireCompact:          requireCompact,
 				ExcludedIDs:             excludedIDs,
 				RequirePrivacySet:       s.openAIGroupRequiresPrivacySet(ctx, groupID),
@@ -2466,6 +2495,7 @@ func (s *OpenAIGatewayService) selectAccountWithSchedulerOnce(
 		RequiredTransport:       requiredTransport,
 		RequiredCapability:      requiredCapability,
 		RequiredImageCapability: requiredImageCapability,
+		SmartRouterCapability:   smartRouterCapability,
 		RequireCompact:          requireCompact,
 		ExcludedIDs:             excludedIDs,
 	})

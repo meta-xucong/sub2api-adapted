@@ -1475,6 +1475,11 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 				req.Header.Set("conversation_id", isolated)
 			}
 		}
+	} else if isOpenAINativeCompactionV2(c) {
+		// Native remote compaction v2 is a streaming /responses request even for
+		// API-key accounts. Negotiate SSE explicitly, matching the official
+		// account compact probe and the Codex-protocol branch above.
+		req.Header.Set("accept", "text/event-stream")
 	} else if isOpenAIResponsesCompactPath(c) {
 		// compact 上游是 unary JSON 协议：API-key 账号也显式声明 Accept，
 		// 避免 OpenAI 兼容网关按 SSE 返回（#3777 期望行为 4）。
