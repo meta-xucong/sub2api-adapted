@@ -160,7 +160,7 @@ func TestAccountHandlerGetAvailableModels_OpenAIOAuthUsesExplicitModelMapping(t 
 			Status:   service.StatusActive,
 			Credentials: map[string]any{
 				"model_mapping": map[string]any{
-					"gpt-5": "gpt-5.1",
+					"gpt-5.5": "gpt-5.1",
 				},
 			},
 		},
@@ -180,7 +180,7 @@ func TestAccountHandlerGetAvailableModels_OpenAIOAuthUsesExplicitModelMapping(t 
 	}
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	require.Len(t, resp.Data, 1)
-	require.Equal(t, "gpt-5", resp.Data[0].ID)
+	require.Equal(t, "gpt-5.5", resp.Data[0].ID)
 }
 
 func TestAccountHandlerGetAvailableModels_OpenAIOAuthPassthroughFallsBackToDefaults(t *testing.T) {
@@ -220,7 +220,7 @@ func TestAccountHandlerGetAvailableModels_OpenAIOAuthPassthroughFallsBackToDefau
 	require.NotEqual(t, "gpt-5", resp.Data[0].ID)
 }
 
-func TestAccountHandlerGetAvailableModels_OpenAIAPIKeyDefaultsToConcreteGPT56Sol(t *testing.T) {
+func TestAccountHandlerGetAvailableModels_OpenAIAPIKeyDefaultsToCuratedModels(t *testing.T) {
 	svc := &availableModelsAdminService{
 		stubAdminService: newStubAdminService(),
 		account: service.Account{
@@ -250,6 +250,43 @@ func TestAccountHandlerGetAvailableModels_OpenAIAPIKeyDefaultsToConcreteGPT56Sol
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	require.NotEmpty(t, resp.Data)
 	require.Equal(t, "gpt-5.6-sol", resp.Data[0].ID)
+}
+
+func TestAccountHandlerGetAvailableModels_OpenAIMappedModelsHideInternalNames(t *testing.T) {
+	svc := &availableModelsAdminService{
+		stubAdminService: newStubAdminService(),
+		account: service.Account{
+			ID:       47,
+			Platform: service.PlatformOpenAI,
+			Type:     service.AccountTypeAPIKey,
+			Credentials: map[string]any{
+				"model_mapping": map[string]any{
+					"gpt-5.6":           "gpt-5.6-sol",
+					"codex-auto-review": "gpt-5.5",
+					"gpt-custom":        "gpt-5",
+					"aiai-gpt-image-2":  "gpt-image-2",
+					"gpt-5.6-luna":      "gpt-5.6-luna",
+				},
+			},
+		},
+	}
+	router := setupAvailableModelsRouter(svc)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/accounts/47/models", nil)
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var resp struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	var ids []string
+	for _, model := range resp.Data {
+		ids = append(ids, model.ID)
+	}
+	require.Equal(t, []string{"aiai-gpt-image-2", "gpt-5.6-luna", "gpt-custom"}, ids)
 }
 
 func TestAccountHandlerGetAvailableModels_OpenAISparkShadowReturnsMappingModels(t *testing.T) {

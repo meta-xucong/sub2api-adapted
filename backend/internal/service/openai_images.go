@@ -236,11 +236,14 @@ func (s *OpenAIGatewayService) ParseOpenAIImagesRequest(c *gin.Context, body []b
 			req.Model = model
 		}
 	}
-	if err := validateCompatibleImagesModel(req.Model); err != nil {
+	if err := validateCompatibleImagesModel(req.Model); err != nil && !isVolcengineArkImageModel(req.Model) {
 		return nil, err
 	}
 	req.SizeTier = normalizeOpenAIImageSizeTier(req.Size)
 	req.RequiredCapability = classifyOpenAIImagesCapability(req)
+	if isVolcengineArkImageModel(req.Model) {
+		req.RequiredCapability = OpenAIImagesCapabilityAPIKey
+	}
 	return req, nil
 }
 
@@ -521,7 +524,7 @@ func validateCompatibleImagesModel(model string) error {
 // RequiredCapabilityForModel also applies the API-key-only fence when channel
 // mapping introduces a compatible provider model after request parsing.
 func (req *OpenAIImagesRequest) RequiredCapabilityForModel(model string) OpenAIImagesCapability {
-	if isGeminiCompatibleImageModel(model) {
+	if isGeminiCompatibleImageModel(model) || isVolcengineArkImageModel(model) {
 		return OpenAIImagesCapabilityAPIKey
 	}
 	return req.RequiredCapability
@@ -607,6 +610,13 @@ func (s *OpenAIGatewayService) ForwardImages(
 	if parsed == nil {
 		return nil, fmt.Errorf("parsed images request is required")
 	}
+	requestModel := strings.TrimSpace(parsed.Model)
+	if mapped := strings.TrimSpace(channelMappedModel); mapped != "" {
+		requestModel = mapped
+	}
+	if isVolcengineArkImageModel(requestModel) && !isVolcengineArkOpenAIAccount(account) {
+		return nil, validateOpenAIImagesModel(requestModel)
+	}
 	switch account.Type {
 	case AccountTypeAPIKey:
 		return s.forwardOpenAIImagesAPIKey(ctx, c, account, body, parsed, channelMappedModel)
@@ -630,11 +640,11 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 	if mapped := strings.TrimSpace(channelMappedModel); mapped != "" {
 		requestModel = mapped
 	}
-	if err := validateCompatibleImagesModel(requestModel); err != nil {
+	if err := validateOpenAIImagesModelForAccount(account, requestModel); err != nil {
 		return nil, err
 	}
 	upstreamModel := account.GetMappedModel(requestModel)
-	if err := validateCompatibleImagesModel(upstreamModel); err != nil {
+	if err := validateOpenAIImagesModelForAccount(account, upstreamModel); err != nil {
 		return nil, err
 	}
 	SetOpsUpstreamModel(c, upstreamModel)
@@ -650,19 +660,43 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 	if err != nil {
 		return nil, err
 	}
+	upstreamParsed := *parsed
+	upstreamParsed.Model = upstreamModel
+	aiaiAsync := false
+	if adaptedBody, adaptedContentType, adaptedEndpoint, adapted, async, adaptErr := adaptAIAIImagesEditToGeneration(account, &upstreamParsed); adaptErr != nil {
+		return nil, adaptErr
+	} else if adapted {
+		forwardBody = adaptedBody
+		forwardContentType = adaptedContentType
+		upstreamParsed.Endpoint = adaptedEndpoint
+		aiaiAsync = async
+	}
+	if adaptedBody, adaptedContentType, adaptedEndpoint, adapted, adaptErr := adaptVolcengineArkImagesToGeneration(account, &upstreamParsed); adaptErr != nil {
+		return nil, adaptErr
+	} else if adapted {
+		forwardBody = adaptedBody
+		forwardContentType = adaptedContentType
+		upstreamParsed.Endpoint = adaptedEndpoint
+	}
+	forwardBody, forwardContentType, err = sanitizeVolcengineArkImagesRequest(account, forwardBody, forwardContentType, &upstreamParsed)
+	if err != nil {
+		return nil, err
+	}
 	// 生图是长耗时、上游侧已产生实际成本的操作：客户端中途断开不应连带取消上游请求。
 	// detachStreamUpstreamContext 在非流式时原样返回请求 context，于是客户端一断开
 	// 就把已经在出图的上游调用打断成 context canceled，网关记 502、不扣费，而上游那边
 	// 图已经生成并计费。同一端点的 OAuth 分支 forwardOpenAIImagesOAuth 以及 Grok 媒体
 	// 路径本来就无条件脱钩，这里对齐；上游侧仍由 ResponseHeaderTimeout 兜底。
-	upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
+	upstreamCtx, releaseUpstreamCtx := detachOpenAIImageUpstreamContext(ctx)
 	defer releaseUpstreamCtx()
 
 	token, _, err := s.GetAccessToken(upstreamCtx, account)
 	if err != nil {
 		return nil, err
 	}
-	upstreamReq, err := s.buildOpenAIImagesRequest(upstreamCtx, c, account, forwardBody, forwardContentType, token, parsed.Endpoint)
+	attemptCtx, cancelAttempt := s.withOpenAIImageUpstreamTimeout(upstreamCtx)
+	defer cancelAttempt()
+	upstreamReq, err := s.buildOpenAIImagesRequest(attemptCtx, c, account, forwardBody, forwardContentType, token, upstreamParsed.Endpoint)
 	if err != nil {
 		return nil, err
 	}
@@ -675,6 +709,9 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 	resp, err := s.doOpenAIUpstream(upstreamReq, proxyURL, account)
 	SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
 	if err != nil {
+		if isOpenAIImageAttemptTimeout(err, attemptCtx, ctx) && OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c) <= 0 {
+			return nil, newOpenAIImageAttemptTimeoutFailover(nil)
+		}
 		safeErr := sanitizeUpstreamErrorMessage(err.Error())
 		setOpsUpstreamError(c, 0, safeErr, "")
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -713,7 +750,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 			s.coolOpenAIImagesInsufficientBalance(upstreamCtx, account)
 			return nil, newOpenAIImagesInsufficientBalanceFailoverError(resp.StatusCode, resp.Header, respBody)
 		}
-		if s.shouldFailoverOpenAIUpstreamResponse(account, resp.StatusCode, upstreamMsg, respBody) {
+		if s.shouldFailoverOpenAIImagesResponse(account, resp.StatusCode, upstreamMsg, respBody) {
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 				ProxyID:            opsUpstreamProxyID(account),
 				ProxyName:          opsUpstreamProxyName(account),
@@ -738,6 +775,14 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 		}
 		return s.handleOpenAIImagesErrorResponse(upstreamCtx, resp, c, account, upstreamModel)
 	}
+	if aiaiAsync {
+		polledResp, pollErr := s.pollAIAIImagesAsyncResponse(upstreamCtx, ctx, c, account, resp, token)
+		_ = resp.Body.Close()
+		if pollErr != nil {
+			return nil, pollErr
+		}
+		resp = polledResp
+	}
 	defer func() { _ = resp.Body.Close() }()
 
 	var usage OpenAIUsage
@@ -746,6 +791,9 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 	if parsed.Stream && isEventStreamResponse(resp.Header) {
 		streamUsage, streamCount, streamSizes, ttft, err := s.handleOpenAIImagesStreamingResponse(resp, c, startTime, nil)
 		if err != nil {
+			if isOpenAIImageAttemptTimeout(err, attemptCtx, ctx) && OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c) <= 0 {
+				return nil, newOpenAIImageAttemptTimeoutFailover(resp)
+			}
 			if streamCount > 0 {
 				return &OpenAIForwardResult{
 					RequestID:        resp.Header.Get("x-request-id"),
@@ -787,6 +835,9 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 	} else {
 		nonStreamUsage, nonStreamCount, nonStreamSizes, err := s.handleOpenAIImagesNonStreamingResponse(upstreamCtx, resp, c, account, parsed)
 		if err != nil {
+			if isOpenAIImageAttemptTimeout(err, attemptCtx, ctx) && OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c) <= 0 {
+				return nil, newOpenAIImageAttemptTimeoutFailover(resp)
+			}
 			return nil, err
 		}
 		usage = nonStreamUsage
@@ -825,6 +876,9 @@ func (s *OpenAIGatewayService) buildOpenAIImagesRequest(
 		targetURL = openAIImagesEditsURL
 	}
 	baseURL := account.GetOpenAIBaseURL()
+	if arkBaseURL := volcengineArkImagesBaseURL(account); arkBaseURL != "" {
+		baseURL = arkBaseURL
+	}
 	if baseURL != "" {
 		validatedURL, err := s.validateUpstreamBaseURL(baseURL)
 		if err != nil {

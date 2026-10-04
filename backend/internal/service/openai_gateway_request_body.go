@@ -1871,8 +1871,10 @@ func (e *OpenAIFastBlockedError) Error() string { return e.Message }
 
 // evaluateOpenAIFastPolicy returns the action and error message that should be
 // applied for a request with the given account/model/service_tier. When the
-// policy service is unavailable or no rule matches, it returns
-// (BetaPolicyActionPass, "") so callers can short-circuit safely.
+// policy service is unavailable, it returns (BetaPolicyActionPass, "") so
+// callers can short-circuit safely. When no explicit rule matches, it applies
+// the account-specific default action (including filtering unsupported
+// priority tiers on third-party OpenAI API-key/upstream accounts).
 //
 // Matching rules:
 //   - Scope filters by account type (all / oauth / apikey / bedrock)
@@ -1928,7 +1930,7 @@ func (s *OpenAIGatewayService) shouldForceOpenAIFastPriorityForMissingTier(ctx c
 // openAIFastPolicySettingsFromContext for the caching glue.
 func evaluateOpenAIFastPolicyWithSettings(settings *OpenAIFastPolicySettings, userID int64, account *Account, model, tier string) (action, errMsg string) {
 	if settings == nil {
-		return BetaPolicyActionPass, ""
+		return defaultOpenAIFastPolicyAction(account, tier), ""
 	}
 	isOAuth := account != nil && account.IsOAuth()
 	isBedrock := account != nil && account.IsBedrock()
@@ -1961,7 +1963,27 @@ func evaluateOpenAIFastPolicyWithSettings(settings *OpenAIFastPolicySettings, us
 			return resolveRuleAction(eff, model)
 		}
 	}
-	return BetaPolicyActionPass, ""
+	return defaultOpenAIFastPolicyAction(account, tier), ""
+}
+
+func defaultOpenAIFastPolicyAction(account *Account, tier string) string {
+	if account == nil || account.Platform != PlatformOpenAI {
+		return BetaPolicyActionPass
+	}
+	if account.Type != AccountTypeAPIKey && account.Type != AccountTypeUpstream {
+		return BetaPolicyActionPass
+	}
+	if strings.ToLower(strings.TrimSpace(tier)) != OpenAIFastTierPriority {
+		return BetaPolicyActionPass
+	}
+	baseURL := strings.TrimSpace(account.GetCredential("base_url"))
+	if baseURL == "" {
+		baseURL = strings.TrimSpace(account.GetOpenAIBaseURL())
+	}
+	if baseURL == "" || isOfficialOpenAIModelsBaseURL(baseURL) {
+		return BetaPolicyActionPass
+	}
+	return BetaPolicyActionFilter
 }
 
 func openAIFastPolicyUserID(ctx context.Context) int64 {

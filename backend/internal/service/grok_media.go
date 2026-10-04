@@ -57,19 +57,20 @@ func (e GrokMediaEndpoint) IsGenerationRequest() bool {
 }
 
 type GrokMediaRequestInfo struct {
-	Model           string
-	Prompt          string
-	N               int
-	Size            string
-	SizeTier        string
-	AspectRatio     string
-	ImageResolution string
-	Resolution      string
-	DurationSeconds int
-	InputImageURLs  []string
-	MaskImageURL    string
-	Uploads         []OpenAIImagesUpload
-	MaskUpload      *OpenAIImagesUpload
+	Model              string
+	Prompt             string
+	N                  int
+	Size               string
+	SizeTier           string
+	AspectRatio        string
+	ImageResolution    string
+	Resolution         string
+	DurationSeconds    int
+	InputImageURLs     []string
+	ReferenceImageURLs []string
+	MaskImageURL       string
+	Uploads            []OpenAIImagesUpload
+	MaskUpload         *OpenAIImagesUpload
 }
 
 func (r GrokMediaRequestInfo) ModerationBody() []byte {
@@ -176,7 +177,25 @@ func parseGrokMediaJSONRequest(body []byte, info *GrokMediaRequestInfo) {
 	}
 	appendJSONImageURLs(gjson.GetBytes(body, "image"))
 	appendJSONImageURLs(gjson.GetBytes(body, "images"))
-	appendJSONImageURLs(gjson.GetBytes(body, "reference_images"))
+	appendReferenceImageURLs := func(value gjson.Result) {
+		if !value.Exists() {
+			return
+		}
+		if value.IsArray() {
+			for _, item := range value.Array() {
+				if imageURL := extractGrokMediaImageURL(item); imageURL != "" {
+					info.ReferenceImageURLs = append(info.ReferenceImageURLs, imageURL)
+					info.InputImageURLs = append(info.InputImageURLs, imageURL)
+				}
+			}
+			return
+		}
+		if imageURL := extractGrokMediaImageURL(value); imageURL != "" {
+			info.ReferenceImageURLs = append(info.ReferenceImageURLs, imageURL)
+			info.InputImageURLs = append(info.InputImageURLs, imageURL)
+		}
+	}
+	appendReferenceImageURLs(gjson.GetBytes(body, "reference_images"))
 	info.MaskImageURL = extractGrokMediaImageURL(gjson.GetBytes(body, "mask"))
 }
 
@@ -664,6 +683,11 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 	if err != nil {
 		return nil, err
 	}
+	if shouldValidateGrokVideoGenerationRequest(account, endpoint) {
+		if err := ValidateGrokVideoGenerationRequest(contentType, body); err != nil {
+			return nil, err
+		}
+	}
 	if endpoint == GrokMediaEndpointVideoContent {
 		return s.forwardGrokMediaVideoContent(ctx, c, account, token, requestID, startTime)
 	}
@@ -676,7 +700,7 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 	if err != nil {
 		return nil, err
 	}
-	body, contentType, err = normalizeGrokMediaForwardBody(endpoint, body, contentType)
+	body, contentType, err = normalizeGrokMediaForwardBodyForAccount(account, endpoint, body, contentType)
 	if err != nil {
 		return nil, err
 	}
@@ -691,6 +715,26 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 			if err != nil {
 				return nil, fmt.Errorf("rewrite grok media account mapped model: %w", err)
 			}
+		}
+	}
+	if account.UsesKIEJobsVideoAPI() && endpoint == GrokMediaEndpointVideosGenerations {
+		imageURLs := append([]string{}, requestInfo.InputImageURLs...)
+		if err := validateKIEJobsVideoImageURLs(ctx, imageURLs); err != nil {
+			return nil, err
+		}
+		body, contentType, err = prepareKIEJobsVideoCreateBody(requestInfo, upstreamModel)
+		if err != nil {
+			return nil, err
+		}
+		body, err = s.materializeKIEJobsVideoImageURLs(ctx, account, token, body)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if isWokeyVideoGeneration(account, endpoint) {
+		body, contentType, err = prepareWokeyVideoImageMultipartBody(ctx, body, contentType, requestInfo)
+		if err != nil {
+			return nil, err
 		}
 	}
 	body, contentType, err = sanitizeGrokMediaForwardBody(endpoint, body, contentType)
@@ -746,6 +790,27 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 	if err != nil {
 		return nil, err
 	}
+	rawResponseBody := respBody
+	if account.UsesKIEJobsVideoAPI() {
+		switch endpoint {
+		case GrokMediaEndpointVideosGenerations:
+			respBody, err = normalizeKIEJobsVideoCreateResponse(respBody, requestInfo.Model)
+		case GrokMediaEndpointVideoStatus:
+			respBody, err = normalizeKIEJobsVideoStatusResponse(respBody, requestID)
+		}
+		if err != nil {
+			setOpsUpstreamError(c, http.StatusBadGateway, "KIE video response could not be normalized", KIEJobsUpstreamErrorSummary(rawResponseBody))
+			return nil, &UpstreamFailoverError{
+				StatusCode:      http.StatusBadGateway,
+				ResponseBody:    rawResponseBody,
+				ResponseHeaders: resp.Header.Clone(),
+			}
+		}
+	}
+	usageBody := respBody
+	if endpoint == GrokMediaEndpointVideoStatus && account.UsesWokeyVideoMultipart() {
+		usageBody = normalizeWokeyVideoStatusForBilling(respBody)
+	}
 	if endpoint == GrokMediaEndpointImagesGenerations || endpoint == GrokMediaEndpointImagesEdits {
 		if countOpenAIResponseImageOutputsFromJSONBytes(respBody) <= 0 {
 			setOpsUpstreamError(c, http.StatusBadGateway, "xAI upstream returned no image output", truncateString(string(respBody), 512))
@@ -757,6 +822,9 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 		}
 	}
 	if endpoint == GrokMediaEndpointVideoStatus {
+		if account.UsesKIEJobsVideoAPI() {
+			respBody = rewriteKIEJobsVideoContentURL(respBody, grokMediaContentProxyURL(c, requestID))
+		}
 		respBody = rewriteGrokMediaVideoContentURLs(
 			respBody,
 			requestID,
@@ -764,7 +832,7 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 		)
 	}
 	writeGrokMediaResponse(c, resp, respBody, s.responseHeaderFilter)
-	usage := grokMediaUsageFromResponse(endpoint, requestInfo, respBody)
+	usage := grokMediaUsageFromResponse(endpoint, requestInfo, usageBody)
 	resultModel := requestModel
 	resultBillingModel := requestModel
 	if endpoint == GrokMediaEndpointVideoStatus {
@@ -794,6 +862,13 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 		VideoResolution:      usage.VideoResolution,
 		VideoDurationSeconds: usage.VideoDurationSeconds,
 	}, nil
+}
+
+func shouldValidateGrokVideoGenerationRequest(account *Account, endpoint GrokMediaEndpoint) bool {
+	if endpoint != GrokMediaEndpointVideosGenerations || account == nil {
+		return false
+	}
+	return account.UsesWokeyVideoMultipart() || account.UsesKIEJobsVideoAPI()
 }
 
 func (s *OpenAIGatewayService) forwardGrokMediaVideoContent(
@@ -852,7 +927,20 @@ func (s *OpenAIGatewayService) forwardGrokMediaVideoContent(
 		return nil, err
 	}
 
-	contentURL, err := grokMediaSignedVideoContentURL(statusBody, requestID)
+	if account.UsesKIEJobsVideoAPI() {
+		rawStatusBody := statusBody
+		statusBody, err = normalizeKIEJobsVideoStatusResponse(statusBody, requestID)
+		if err != nil {
+			setOpsUpstreamError(c, http.StatusBadGateway, "KIE video status could not be normalized", KIEJobsUpstreamErrorSummary(rawStatusBody))
+			SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
+			return nil, &UpstreamFailoverError{StatusCode: http.StatusBadGateway, ResponseBody: rawStatusBody, ResponseHeaders: statusResp.Header.Clone()}
+		}
+	}
+	billingStatusBody := statusBody
+	if account.UsesWokeyVideoMultipart() {
+		billingStatusBody = normalizeWokeyVideoStatusForBilling(statusBody)
+	}
+	contentURL, err := grokMediaSignedVideoContentURLForAccount(account, statusBody, requestID)
 	if err != nil {
 		SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
 		return nil, err
@@ -866,8 +954,14 @@ func (s *OpenAIGatewayService) forwardGrokMediaVideoContent(
 		}
 	}
 
+	contentRequestContext := WithHTTPUpstreamRedirectsDisabled(upstreamCtx)
+	if account.UsesKIEJobsVideoAPI() && signedContent {
+		// KIE supplies this URL inside an upstream response. Enforce the target's
+		// public-host policy across DNS resolution and every redirect hop.
+		contentRequestContext = WithHTTPUpstreamPublicHostsOnly(contentRequestContext)
+	}
 	contentReq, err := http.NewRequestWithContext(
-		WithHTTPUpstreamRedirectsDisabled(upstreamCtx),
+		contentRequestContext,
 		http.MethodGet,
 		contentURL,
 		nil,
@@ -917,7 +1011,7 @@ func (s *OpenAIGatewayService) forwardGrokMediaVideoContent(
 		ResponseHeaders: contentResp.Header.Clone(),
 		Duration:        time.Since(startTime),
 	}
-	if billed := ExtractGrokVideoBillingFromStatusBody(statusBody, nil, requestID); billed != nil {
+	if billed := ExtractGrokVideoBillingFromStatusBody(billingStatusBody, nil, requestID); billed != nil {
 		result.ResponseID = firstNonEmpty(billed.ResponseID, strings.TrimSpace(requestID))
 		result.Model = billed.Model
 		result.BillingModel = billed.BillingModel

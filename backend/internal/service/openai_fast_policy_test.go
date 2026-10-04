@@ -108,6 +108,54 @@ func TestEvaluateOpenAIFastPolicy_DefaultPassesKnownTiers(t *testing.T) {
 	require.Equal(t, BetaPolicyActionPass, action)
 }
 
+func TestEvaluateOpenAIFastPolicy_DefaultFiltersThirdPartyPriority(t *testing.T) {
+	svc := newOpenAIGatewayServiceWithSettings(t, DefaultOpenAIFastPolicySettings())
+	thirdParty := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"base_url": "https://third-party.example/v1",
+		},
+	}
+	action, _ := svc.evaluateOpenAIFastPolicy(context.Background(), thirdParty, "gpt-5.5", OpenAIFastTierPriority)
+	require.Equal(t, BetaPolicyActionFilter, action)
+	thirdPartyUpstream := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeUpstream,
+		Credentials: map[string]any{
+			"base_url": "https://third-party.example/v1",
+		},
+	}
+	action, _ = svc.evaluateOpenAIFastPolicy(context.Background(), thirdPartyUpstream, "gpt-5.5", OpenAIFastTierPriority)
+	require.Equal(t, BetaPolicyActionFilter, action)
+
+	for _, account := range []*Account{
+		{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://api.openai.com/v1"}},
+		{Platform: PlatformOpenAI, Type: AccountTypeAPIKey},
+		{Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{"base_url": "https://third-party.example/v1"}},
+		{Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://third-party.example/v1"}},
+	} {
+		action, _ := svc.evaluateOpenAIFastPolicy(context.Background(), account, "gpt-5.5", OpenAIFastTierPriority)
+		require.Equal(t, BetaPolicyActionPass, action)
+	}
+	for _, tier := range []string{OpenAIFastTierFlex, OpenAIFastTierUltrafast} {
+		action, _ := svc.evaluateOpenAIFastPolicy(context.Background(), thirdParty, "gpt-5.5", tier)
+		require.Equal(t, BetaPolicyActionPass, action)
+	}
+}
+
+func TestEvaluateOpenAIFastPolicy_ExplicitRuleOverridesThirdPartyDefault(t *testing.T) {
+	settings := &OpenAIFastPolicySettings{Rules: []OpenAIFastPolicyRule{{
+		ServiceTier: OpenAIFastTierPriority,
+		Action:      BetaPolicyActionPass,
+		Scope:       BetaPolicyScopeAll,
+	}}}
+	svc := newOpenAIGatewayServiceWithSettings(t, settings)
+	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://third-party.example/v1"}}
+	action, _ := svc.evaluateOpenAIFastPolicy(context.Background(), account, "gpt-5.5", OpenAIFastTierPriority)
+	require.Equal(t, BetaPolicyActionPass, action)
+}
+
 func TestEvaluateOpenAIFastPolicy_BlockRuleCarriesMessage(t *testing.T) {
 	settings := &OpenAIFastPolicySettings{
 		Rules: []OpenAIFastPolicyRule{{
@@ -203,6 +251,20 @@ func TestApplyOpenAIFastPolicyToBody_DefaultPassesPriorityAndFast(t *testing.T) 
 	updated, err = svc.applyOpenAIFastPolicyToBody(context.Background(), account, "gpt-5.5", body)
 	require.NoError(t, err)
 	require.Equal(t, string(body), string(updated))
+}
+
+func TestApplyOpenAIFastPolicyToBody_FiltersThirdPartyPriorityByDefault(t *testing.T) {
+	svc := newOpenAIGatewayServiceWithSettings(t, DefaultOpenAIFastPolicySettings())
+	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://third-party.example/v1"}}
+	body := []byte(`{"model":"gpt-5.5","service_tier":"priority"}`)
+	updated, err := svc.applyOpenAIFastPolicyToBody(context.Background(), account, "gpt-5.5", body)
+	require.NoError(t, err)
+	require.False(t, gjson.GetBytes(updated, "service_tier").Exists())
+
+	body = []byte(`{"model":"gpt-5.5","service_tier":"fast"}`)
+	updated, err = svc.applyOpenAIFastPolicyToBody(context.Background(), account, "gpt-5.5", body)
+	require.NoError(t, err)
+	require.False(t, gjson.GetBytes(updated, "service_tier").Exists())
 }
 
 func TestApplyOpenAIFastPolicyToBody_ForcePriorityInjectsMissingTier(t *testing.T) {

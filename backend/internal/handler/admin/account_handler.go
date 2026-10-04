@@ -2810,27 +2810,39 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 		// retain the legacy local catalog below so the test dialog remains usable.
 		if h.accountTestService != nil {
 			if models, fetchErr := h.accountTestService.FetchOpenAIAccountModels(c.Request.Context(), account); fetchErr == nil {
+				if account.QuotaDimension != service.QuotaDimensionSpark {
+					models = openai.FilterAdminSelectableModels(models)
+				}
 				response.Success(c, models)
 				return
 			}
 		}
 		// OpenAI 自动透传会绕过常规模型改写，测试/模型列表也应回落到默认模型集。
 		if account.IsOpenAIPassthroughEnabled() {
-			response.Success(c, openai.DefaultModels)
+			response.Success(c, openai.AdminSelectableModels())
 			return
 		}
 
 		mapping := account.GetModelMapping()
 		if len(mapping) == 0 {
-			response.Success(c, openai.DefaultModels)
+			response.Success(c, openai.AdminSelectableModels())
 			return
 		}
 
 		// Return mapped models
 		var models []openai.Model
-		for requestedModel := range mapping {
+		modelIDs := make([]string, 0, len(mapping))
+		for modelID := range mapping {
+			modelIDs = append(modelIDs, modelID)
+		}
+		requestedModels := modelIDs
+		if account.QuotaDimension != service.QuotaDimensionSpark {
+			requestedModels = openai.FilterAdminSelectableModelIDs(modelIDs)
+		}
+		sort.Strings(requestedModels)
+		for _, requestedModel := range requestedModels {
 			var found bool
-			for _, dm := range openai.DefaultModels {
+			for _, dm := range openai.AdminSelectableModels() {
 				if dm.ID == requestedModel {
 					models = append(models, dm)
 					found = true

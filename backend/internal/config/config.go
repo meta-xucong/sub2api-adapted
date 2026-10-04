@@ -977,6 +977,27 @@ const (
 	ImageConcurrencyOverflowModeWait   = "wait"
 )
 
+// GatewayOperatorTestGuardConfig scopes local operator smoke tests to dedicated
+// ops keys so maintenance scripts cannot accidentally spend customer keys.
+type GatewayOperatorTestGuardConfig struct {
+	Enabled            bool     `mapstructure:"enabled"`
+	RequireAdminUser   bool     `mapstructure:"require_admin_user"`
+	TrustedClientIPs   []string `mapstructure:"trusted_client_ips"`
+	BlockedUserAgents  []string `mapstructure:"blocked_user_agents"`
+	AllowedUserEmails  []string `mapstructure:"allowed_user_emails"`
+	AllowedAPIKeyNames []string `mapstructure:"allowed_api_key_names"`
+	Paths              []string `mapstructure:"paths"`
+}
+
+// ResponsesImageBridgeConfig controls the opt-in Responses -> Images API
+// protocol adapter. Account-level capability marking remains mandatory.
+type ResponsesImageBridgeConfig struct {
+	Enabled           bool   `mapstructure:"enabled"`
+	ApplyToProtocol   string `mapstructure:"apply_to_protocol"`
+	MaxRequestBytes   int    `mapstructure:"max_request_bytes"`
+	PreserveStreaming bool   `mapstructure:"preserve_streaming"`
+}
+
 // GatewayConfig API网关相关配置
 type GatewayConfig struct {
 	// 等待上游响应头的超时时间（秒），0表示无超时
@@ -1025,6 +1046,11 @@ type GatewayConfig struct {
 	// CodexImageGenerationBridgeEnabled: 是否为 Codex `/v1/responses` 自动注入 image_generation 工具和桥接指令。
 	// 默认关闭，避免纯文本 Codex 请求被意外改写；显式携带 image_generation 工具的请求仍按分组能力转发。
 	CodexImageGenerationBridgeEnabled bool `mapstructure:"codex_image_generation_bridge_enabled"`
+	// ResponsesImageBridge adapts explicit Responses image_generation requests to
+	// accounts that expose the OpenAI Images API instead of /v1/responses.
+	ResponsesImageBridge ResponsesImageBridgeConfig `mapstructure:"responses_image_bridge"`
+	// OperatorTestGuard blocks local maintenance probes from consuming customer API keys.
+	OperatorTestGuard GatewayOperatorTestGuardConfig `mapstructure:"operator_test_guard"`
 	// ForcedCodexInstructionsTemplateFile: 服务端强制附加到 Codex 顶层 instructions 的模板文件路径。
 	// 模板渲染后会直接覆盖最终 instructions；若需要保留客户端 system 转换结果，请在模板中显式引用 {{ .ExistingInstructions }}。
 	ForcedCodexInstructionsTemplateFile string `mapstructure:"forced_codex_instructions_template_file"`
@@ -1086,6 +1112,14 @@ type GatewayConfig struct {
 	ImageStreamKeepaliveInterval int `mapstructure:"image_stream_keepalive_interval"`
 	// ImageNonstreamKeepaliveInterval: 图片非流式 JSON keepalive 间隔（秒），0表示禁用
 	ImageNonstreamKeepaliveInterval int `mapstructure:"image_nonstream_keepalive_interval"`
+	// ImageUpstreamTimeoutSeconds bounds one image upstream attempt; 0 disables it.
+	ImageUpstreamTimeoutSeconds int `mapstructure:"image_upstream_timeout_seconds"`
+	// ImageRequestTimeoutSeconds bounds the complete image failover request; 0 disables it.
+	ImageRequestTimeoutSeconds int `mapstructure:"image_request_timeout_seconds"`
+	// ImageEditTransientCooldownSeconds temporarily avoids a failed image-edit lane; 0 disables it.
+	ImageEditTransientCooldownSeconds int `mapstructure:"image_edit_transient_cooldown_seconds"`
+	// ImageGenerationTransientCooldownSeconds temporarily avoids a failed generation lane; 0 disables it.
+	ImageGenerationTransientCooldownSeconds int `mapstructure:"image_generation_transient_cooldown_seconds"`
 	// MaxLineSize: 上游 SSE 单行最大字节数（0使用默认值）
 	MaxLineSize int `mapstructure:"max_line_size"`
 
@@ -1937,6 +1971,11 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 	cfg.Log.Environment = strings.TrimSpace(cfg.Log.Environment)
 	cfg.Log.StacktraceLevel = strings.ToLower(strings.TrimSpace(cfg.Log.StacktraceLevel))
 	cfg.Log.Output.FilePath = strings.TrimSpace(cfg.Log.Output.FilePath)
+	cfg.Gateway.OperatorTestGuard.TrustedClientIPs = normalizeStringSlice(cfg.Gateway.OperatorTestGuard.TrustedClientIPs)
+	cfg.Gateway.OperatorTestGuard.BlockedUserAgents = normalizeStringSlice(cfg.Gateway.OperatorTestGuard.BlockedUserAgents)
+	cfg.Gateway.OperatorTestGuard.AllowedUserEmails = normalizeStringSlice(cfg.Gateway.OperatorTestGuard.AllowedUserEmails)
+	cfg.Gateway.OperatorTestGuard.AllowedAPIKeyNames = normalizeStringSlice(cfg.Gateway.OperatorTestGuard.AllowedAPIKeyNames)
+	cfg.Gateway.OperatorTestGuard.Paths = normalizeStringSlice(cfg.Gateway.OperatorTestGuard.Paths)
 	cfg.Gateway.ForcedCodexInstructionsTemplateFile = strings.TrimSpace(cfg.Gateway.ForcedCodexInstructionsTemplateFile)
 	if cfg.Gateway.ForcedCodexInstructionsTemplateFile != "" {
 		content, err := os.ReadFile(cfg.Gateway.ForcedCodexInstructionsTemplateFile)
@@ -2431,6 +2470,23 @@ func setDefaults() {
 	viper.SetDefault("gateway.disable_codex_identity_enforcement", false)
 	viper.SetDefault("gateway.disable_codex_originator_normalization", false)
 	viper.SetDefault("gateway.codex_image_generation_bridge_enabled", false)
+	viper.SetDefault("gateway.responses_image_bridge.enabled", false)
+	viper.SetDefault("gateway.responses_image_bridge.apply_to_protocol", "images_api_only")
+	viper.SetDefault("gateway.responses_image_bridge.max_request_bytes", 16<<20)
+	viper.SetDefault("gateway.responses_image_bridge.preserve_streaming", true)
+	viper.SetDefault("gateway.operator_test_guard.enabled", false)
+	viper.SetDefault("gateway.operator_test_guard.require_admin_user", true)
+	viper.SetDefault("gateway.operator_test_guard.trusted_client_ips", []string{"127.0.0.1", "::1"})
+	viper.SetDefault("gateway.operator_test_guard.blocked_user_agents", []string{"curl/", "wget/", "python-requests/", "httpie/"})
+	viper.SetDefault("gateway.operator_test_guard.allowed_user_emails", []string{})
+	viper.SetDefault("gateway.operator_test_guard.allowed_api_key_names", []string{"ops-test*", "operator-test*", "运维测试*"})
+	viper.SetDefault("gateway.operator_test_guard.paths", []string{
+		"/v1/responses", "/v1/responses/*", "/responses", "/responses/*",
+		"/backend-api/codex/responses", "/backend-api/codex/responses/*",
+		"/v1/images/generations/async", "/images/generations/async",
+		"/v1/images/edits/async", "/images/edits/async",
+		"/v1/chat/completions", "/chat/completions",
+	})
 	viper.SetDefault("gateway.openai_passthrough_allow_timeout_headers", false)
 	viper.SetDefault("gateway.openai_compact_model", "gpt-5.5")
 	viper.SetDefault("gateway.live.max_session_duration_seconds", 3600)
@@ -2541,6 +2597,10 @@ func setDefaults() {
 	viper.SetDefault("gateway.image_stream_data_interval_timeout", 900)
 	viper.SetDefault("gateway.image_stream_keepalive_interval", 10)
 	viper.SetDefault("gateway.image_nonstream_keepalive_interval", 0)
+	viper.SetDefault("gateway.image_upstream_timeout_seconds", 180)
+	viper.SetDefault("gateway.image_request_timeout_seconds", 600)
+	viper.SetDefault("gateway.image_edit_transient_cooldown_seconds", 12)
+	viper.SetDefault("gateway.image_generation_transient_cooldown_seconds", 30)
 	viper.SetDefault("gateway.max_line_size", 500*1024*1024)
 	viper.SetDefault("gateway.scheduling.sticky_session_max_waiting", 3)
 	viper.SetDefault("gateway.scheduling.sticky_session_wait_timeout", 120*time.Second)
@@ -2709,6 +2769,29 @@ func (c *Config) Validate() error {
 	}
 	c.Security.ForwardedClientIPHeaders = forwardedClientIPHeaders
 	c.SetForwardedClientIPSettings(c.Security.TrustForwardedIPForAPIKeyACL, forwardedClientIPHeaders)
+	if c.Gateway.ResponsesImageBridge.MaxRequestBytes <= 0 {
+		return fmt.Errorf("gateway.responses_image_bridge.max_request_bytes must be positive")
+	}
+	switch strings.ToLower(strings.TrimSpace(c.Gateway.ResponsesImageBridge.ApplyToProtocol)) {
+	case "images_api_only":
+	default:
+		return fmt.Errorf("gateway.responses_image_bridge.apply_to_protocol must be images_api_only")
+	}
+	if c.Gateway.OperatorTestGuard.Enabled {
+		guard := c.Gateway.OperatorTestGuard
+		if len(guard.TrustedClientIPs) == 0 {
+			return fmt.Errorf("gateway.operator_test_guard.trusted_client_ips is required when enabled")
+		}
+		if len(guard.BlockedUserAgents) == 0 {
+			return fmt.Errorf("gateway.operator_test_guard.blocked_user_agents is required when enabled")
+		}
+		if len(guard.Paths) == 0 {
+			return fmt.Errorf("gateway.operator_test_guard.paths is required when enabled")
+		}
+		if len(guard.AllowedUserEmails) == 0 && len(guard.AllowedAPIKeyNames) == 0 {
+			return fmt.Errorf("gateway.operator_test_guard.allowed_user_emails or allowed_api_key_names is required when enabled")
+		}
+	}
 	proxyProbeURLs, err := normalizeProxyProbeURLs(c.Security.ProxyProbe.URLs)
 	if err != nil {
 		return fmt.Errorf("security.proxy_probe.urls: %w", err)
@@ -3452,6 +3535,18 @@ func (c *Config) Validate() error {
 	if c.Gateway.ImageNonstreamKeepaliveInterval != 0 &&
 		(c.Gateway.ImageNonstreamKeepaliveInterval < 5 || c.Gateway.ImageNonstreamKeepaliveInterval > 60) {
 		return fmt.Errorf("gateway.image_nonstream_keepalive_interval must be 0 or between 5-60 seconds")
+	}
+	if c.Gateway.ImageUpstreamTimeoutSeconds < 0 {
+		return fmt.Errorf("gateway.image_upstream_timeout_seconds must be non-negative")
+	}
+	if c.Gateway.ImageRequestTimeoutSeconds < 0 {
+		return fmt.Errorf("gateway.image_request_timeout_seconds must be non-negative")
+	}
+	if c.Gateway.ImageEditTransientCooldownSeconds < 0 {
+		return fmt.Errorf("gateway.image_edit_transient_cooldown_seconds must be non-negative")
+	}
+	if c.Gateway.ImageGenerationTransientCooldownSeconds < 0 {
+		return fmt.Errorf("gateway.image_generation_transient_cooldown_seconds must be non-negative")
 	}
 	// 兼容旧键 sticky_previous_response_ttl_seconds
 	if c.Gateway.OpenAIWS.StickyResponseIDTTLSeconds <= 0 && c.Gateway.OpenAIWS.StickyPreviousResponseTTLSeconds > 0 {

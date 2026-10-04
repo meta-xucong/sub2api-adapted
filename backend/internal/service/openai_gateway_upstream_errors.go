@@ -250,6 +250,15 @@ func (s *OpenAIGatewayService) shouldFailoverUpstreamError(statusCode int) bool 
 	}
 }
 
+// shouldFailoverOpenAIImagesResponse keeps the image-only upstream_text_reply
+// lane-mismatch rule out of ordinary Responses and text requests.
+func (s *OpenAIGatewayService) shouldFailoverOpenAIImagesResponse(account *Account, statusCode int, upstreamMsg string, upstreamBody []byte) bool {
+	if isOpenAIImageUpstreamTextReplyFailover(statusCode, upstreamBody) {
+		return true
+	}
+	return s.shouldFailoverOpenAIUpstreamResponse(account, statusCode, upstreamMsg, upstreamBody)
+}
+
 func (s *OpenAIGatewayService) shouldFailoverOpenAIUpstreamResponse(account *Account, statusCode int, upstreamMsg string, upstreamBody []byte) bool {
 	// cyber_policy is request-scoped even when an intermediary wraps the
 	// provider response in a retryable 5xx status. Never punish or rotate the

@@ -30,6 +30,82 @@ func TestLoadDefaultModelsListReadMaxBytes(t *testing.T) {
 	require.Equal(t, DefaultModelsListReadMaxBytes, cfg.Gateway.ModelsListReadMaxBytes)
 }
 
+func TestOpenAIImageFailoverSettingsDefaultsAndValidation(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.Equal(t, 180, cfg.Gateway.ImageUpstreamTimeoutSeconds)
+	require.Equal(t, 600, cfg.Gateway.ImageRequestTimeoutSeconds)
+	require.Equal(t, 12, cfg.Gateway.ImageEditTransientCooldownSeconds)
+	require.Equal(t, 30, cfg.Gateway.ImageGenerationTransientCooldownSeconds)
+
+	cfg.Gateway.ImageUpstreamTimeoutSeconds = -1
+	require.ErrorContains(t, cfg.Validate(), "gateway.image_upstream_timeout_seconds must be non-negative")
+	cfg.Gateway.ImageUpstreamTimeoutSeconds = 180
+	cfg.Gateway.ImageRequestTimeoutSeconds = -1
+	require.ErrorContains(t, cfg.Validate(), "gateway.image_request_timeout_seconds must be non-negative")
+	cfg.Gateway.ImageRequestTimeoutSeconds = 600
+	cfg.Gateway.ImageEditTransientCooldownSeconds = -1
+	require.ErrorContains(t, cfg.Validate(), "gateway.image_edit_transient_cooldown_seconds must be non-negative")
+	cfg.Gateway.ImageEditTransientCooldownSeconds = 12
+	cfg.Gateway.ImageGenerationTransientCooldownSeconds = -1
+	require.ErrorContains(t, cfg.Validate(), "gateway.image_generation_transient_cooldown_seconds must be non-negative")
+}
+
+func TestResponsesImageBridgeDefaultsAndValidation(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.Equal(t, ResponsesImageBridgeConfig{
+		Enabled:           false,
+		ApplyToProtocol:   "images_api_only",
+		MaxRequestBytes:   16 << 20,
+		PreserveStreaming: true,
+	}, cfg.Gateway.ResponsesImageBridge)
+
+	cfg.Gateway.ResponsesImageBridge.MaxRequestBytes = 0
+	require.ErrorContains(t, cfg.Validate(), "gateway.responses_image_bridge.max_request_bytes must be positive")
+	cfg.Gateway.ResponsesImageBridge.MaxRequestBytes = 16 << 20
+	cfg.Gateway.ResponsesImageBridge.ApplyToProtocol = "all"
+	require.ErrorContains(t, cfg.Validate(), "gateway.responses_image_bridge.apply_to_protocol must be images_api_only")
+}
+
+func TestOperatorTestGuardDefaultsAndValidation(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.False(t, cfg.Gateway.OperatorTestGuard.Enabled)
+	require.True(t, cfg.Gateway.OperatorTestGuard.RequireAdminUser)
+	require.Contains(t, cfg.Gateway.OperatorTestGuard.Paths, "/v1/responses")
+	require.Contains(t, cfg.Gateway.OperatorTestGuard.Paths, "/backend-api/codex/responses")
+	require.Contains(t, cfg.Gateway.OperatorTestGuard.Paths, "/v1/images/generations/async")
+	require.Contains(t, cfg.Gateway.OperatorTestGuard.Paths, "/v1/images/edits/async")
+	require.Contains(t, cfg.Gateway.OperatorTestGuard.Paths, "/images/generations/async")
+	require.Contains(t, cfg.Gateway.OperatorTestGuard.Paths, "/images/edits/async")
+	require.NotContains(t, cfg.Gateway.OperatorTestGuard.Paths, "/v1/images/*/*")
+	require.NotContains(t, cfg.Gateway.OperatorTestGuard.Paths, "/v1/images/*")
+	require.NotContains(t, cfg.Gateway.OperatorTestGuard.Paths, "/images/*")
+	require.NotContains(t, cfg.Gateway.OperatorTestGuard.Paths, "/v1/images/batches")
+
+	guard := cfg.Gateway.OperatorTestGuard
+	cfg.Gateway.OperatorTestGuard = GatewayOperatorTestGuardConfig{Enabled: true}
+	require.ErrorContains(t, cfg.Validate(), "trusted_client_ips is required")
+
+	cfg.Gateway.OperatorTestGuard = guard
+	cfg.Gateway.OperatorTestGuard.Enabled = true
+	cfg.Gateway.OperatorTestGuard.AllowedUserEmails = nil
+	cfg.Gateway.OperatorTestGuard.AllowedAPIKeyNames = nil
+	require.ErrorContains(t, cfg.Validate(), "allowed_user_emails or allowed_api_key_names is required")
+
+	cfg.Gateway.OperatorTestGuard = guard
+	cfg.Gateway.OperatorTestGuard.Enabled = true
+	cfg.Gateway.OperatorTestGuard.TrustedClientIPs = []string{"not-an-ip"}
+	require.NoError(t, cfg.Validate(), "the legacy source only requires a non-empty client allowlist; runtime matching still rejects malformed entries")
+
+	cfg.Gateway.OperatorTestGuard = guard
+	require.NoError(t, cfg.Validate())
+}
+
 func TestLoadTimezonePrecedence(t *testing.T) {
 	tests := []struct {
 		name         string

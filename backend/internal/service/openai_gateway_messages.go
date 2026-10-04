@@ -178,6 +178,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	if compatReplayGuardEnabled && !account.UsesOpenAICodexProtocol() {
 		appendOpenAICompatClaudeCodeTodoGuard(responsesReq)
 	}
+	applyVolcengineArkMessagesToResponses(account, responsesReq)
 
 	logFields := []zap.Field{
 		zap.Int64("account_id", account.ID),

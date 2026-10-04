@@ -1814,7 +1814,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 		account.Type,
 		len(parsed.Uploads),
 	)
-	upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
+	upstreamCtx, releaseUpstreamCtx := detachOpenAIImageUpstreamContext(ctx)
 	defer releaseUpstreamCtx()
 
 	token, _, err := s.GetAccessToken(upstreamCtx, account)
@@ -1834,7 +1834,9 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 		return nil, err
 	}
 	upstreamCtx = withOpenAIImagesSelfBuiltRequest(upstreamCtx)
-	upstreamReq, err := s.buildUpstreamRequest(upstreamCtx, c, account, responsesBody, token, true, parsed.StickySessionSeed(), false)
+	attemptCtx, cancelAttempt := s.withOpenAIImageUpstreamTimeout(upstreamCtx)
+	defer cancelAttempt()
+	upstreamReq, err := s.buildUpstreamRequest(attemptCtx, c, account, responsesBody, token, true, parsed.StickySessionSeed(), false)
 	if err != nil {
 		return nil, err
 	}
@@ -1862,6 +1864,9 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 	resp, err := s.doOpenAIUpstream(upstreamReq, proxyURL, account)
 	SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
 	if err != nil {
+		if isOpenAIImageAttemptTimeout(err, attemptCtx, ctx) && OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c) <= 0 {
+			return nil, newOpenAIImageAttemptTimeoutFailover(nil)
+		}
 		safeErr := sanitizeUpstreamErrorMessage(err.Error())
 		setOpsUpstreamError(c, 0, safeErr, "")
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -1897,7 +1902,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 		}
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
-		if s.shouldFailoverOpenAIUpstreamResponse(account, resp.StatusCode, upstreamMsg, respBody) {
+		if s.shouldFailoverOpenAIImagesResponse(account, resp.StatusCode, upstreamMsg, respBody) {
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 				ProxyID:            opsUpstreamProxyID(account),
 				ProxyName:          opsUpstreamProxyName(account),
@@ -1941,6 +1946,9 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 			usage, imageCount, imageOutputSizes, firstTokenMs, err = s.handleOpenAIImagesOAuthStreamingResponse(resp, c, startTime, parsed.ResponseFormat, openAIImagesStreamPrefix(parsed), upstreamModel)
 		}
 		if err != nil {
+			if isOpenAIImageAttemptTimeout(err, attemptCtx, ctx) && OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c) <= 0 {
+				return nil, newOpenAIImageAttemptTimeoutFailover(resp)
+			}
 			if imageCount > 0 {
 				return &OpenAIForwardResult{
 					RequestID:                     resp.Header.Get("x-request-id"),
@@ -1979,6 +1987,9 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 			usage, imageCount, imageOutputSizes, err = s.handleOpenAIImagesOAuthNonStreamingResponse(resp, c, parsed.ResponseFormat, requestModel)
 		}
 		if err != nil {
+			if isOpenAIImageAttemptTimeout(err, attemptCtx, ctx) && OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c) <= 0 {
+				return nil, newOpenAIImageAttemptTimeoutFailover(resp)
+			}
 			return nil, s.handleOpenAIImagesOAuthResponseError(
 				upstreamCtx,
 				c,

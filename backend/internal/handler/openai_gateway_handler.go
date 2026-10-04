@@ -169,6 +169,36 @@ func openAIChannelForwardModel(mapping service.ChannelMappingResult, requestedMo
 	return requestedModel
 }
 
+func (h *OpenAIGatewayHandler) responsesImageBridgeEnabled(body []byte) bool {
+	if h == nil || h.cfg == nil || !h.cfg.Gateway.ResponsesImageBridge.Enabled {
+		return false
+	}
+	if !service.IsResponsesImageBridgeRequest(body) {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(h.cfg.Gateway.ResponsesImageBridge.ApplyToProtocol), "images_api_only")
+}
+
+func (h *OpenAIGatewayHandler) applyResponsesImageBridgeRequestTimeout(c *gin.Context) context.CancelFunc {
+	if h == nil || h.gatewayService == nil || c == nil || c.Request == nil {
+		return func() {}
+	}
+	requestCtx, cancel := h.gatewayService.WithOpenAIImageRequestTimeout(c.Request.Context())
+	c.Request = c.Request.WithContext(requestCtx)
+	return cancel
+}
+
+func responsesImageBridgeSelectionModel(enabled bool, parsed *service.OpenAIImagesRequest) string {
+	if !enabled || parsed == nil {
+		return ""
+	}
+	return strings.TrimSpace(parsed.Model)
+}
+
+func responsesImageBridgeDispatches(enabled bool, account *service.Account) bool {
+	return enabled && account != nil && account.UsesResponsesImageBridge()
+}
+
 type grokMediaEligibilityProber interface {
 	ProbeMediaEligibility(ctx context.Context, accountID int64) (bool, string, error)
 }
@@ -555,6 +585,26 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		h.errorResponse(c, http.StatusForbidden, "permission_error", service.ImageGenerationPermissionMessage())
 		return
 	}
+	responsesImageBridge := false
+	var responsesImageParsed *service.OpenAIImagesRequest
+	var cancelImageBridgeRequest context.CancelFunc
+	defer func() {
+		if cancelImageBridgeRequest != nil {
+			cancelImageBridgeRequest()
+		}
+	}()
+	if h.responsesImageBridgeEnabled(body) {
+		if maxBytes := h.cfg.Gateway.ResponsesImageBridge.MaxRequestBytes; maxBytes > 0 && len(body) > maxBytes {
+			h.errorResponse(c, http.StatusRequestEntityTooLarge, "invalid_request_error", "Responses image bridge request is too large")
+			return
+		}
+		_, responsesImageParsed, err = service.BuildOpenAIResponsesImageBridgeRequest(body)
+		if err != nil {
+			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+			return
+		}
+		responsesImageBridge = true
+	}
 	var imageReleaseFunc func()
 	if imageIntent {
 		var imageAcquired bool
@@ -672,20 +722,34 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		}
 		// Select account supporting the requested model
 		reqLog.Debug("openai.account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
-		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForCapability(
-			c.Request.Context(),
-			apiKey.GroupID,
-			previousResponseID,
-			sessionHash,
-			forwardModel,
-			failedAccountIDs,
-			service.OpenAIUpstreamTransportAny,
-			requiredCapability,
-			requireCompact,
-			false,
-			!imageIntent,
-			requestPlatform,
-		)
+		var selection *service.AccountSelectionResult
+		var scheduleDecision service.OpenAIAccountScheduleDecision
+		var err error
+		if bridgeModel := responsesImageBridgeSelectionModel(responsesImageBridge, responsesImageParsed); bridgeModel != "" {
+			selection, scheduleDecision, err = h.gatewayService.SelectAccountWithSchedulerForImages(
+				c.Request.Context(),
+				apiKey.GroupID,
+				sessionHash,
+				bridgeModel,
+				failedAccountIDs,
+				service.OpenAIImagesCapabilityBasic,
+			)
+		} else {
+			selection, scheduleDecision, err = h.gatewayService.SelectAccountWithSchedulerForCapability(
+				c.Request.Context(),
+				apiKey.GroupID,
+				previousResponseID,
+				sessionHash,
+				forwardModel,
+				failedAccountIDs,
+				service.OpenAIUpstreamTransportAny,
+				requiredCapability,
+				requireCompact,
+				false,
+				!imageIntent,
+				requestPlatform,
+			)
+		}
 		if err != nil {
 			if failoverClientGone(c) {
 				reqLog.Info("openai.account_select_aborted_client_disconnected", zap.Error(err))
@@ -794,6 +858,18 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					accountReleaseFunc()
 				}
 			}()
+			if responsesImageBridgeDispatches(responsesImageBridge, account) {
+				if cancelImageBridgeRequest == nil {
+					cancelImageBridgeRequest = h.applyResponsesImageBridgeRequestTimeout(c)
+				}
+				return h.gatewayService.ForwardResponsesImageBridge(
+					c.Request.Context(),
+					c,
+					account,
+					body,
+					h.cfg.Gateway.ResponsesImageBridge.PreserveStreaming,
+				)
+			}
 			return h.gatewayService.Forward(c.Request.Context(), c, account, attemptBody)
 		}()
 		var cyberBlockBodyHTTP []byte

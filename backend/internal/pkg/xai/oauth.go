@@ -27,6 +27,7 @@ const (
 	DefaultAuthorizeURL   = OAuthIssuer + "/oauth2/authorize"
 	DefaultTokenURL       = OAuthIssuer + "/oauth2/token"
 	DefaultBaseURL        = "https://api.x.ai/v1"
+	WokeyAPIBaseURL       = "https://api.wokey.ai/v1"
 	DefaultCLIBaseURL     = "https://cli-chat-proxy.grok.com/v1"
 	DefaultUSEast1BaseURL = "https://us-east-1.api.x.ai/v1"
 	DefaultUSWest2BaseURL = "https://us-west-2.api.x.ai/v1"
@@ -494,6 +495,14 @@ func IsOfficialBaseURL(raw string) bool {
 	return IsOfficialBaseURLHost(parsed.Hostname())
 }
 
+// IsWokeyAPIBaseURL matches only the provider's canonical HTTPS base URL.
+// It is intentionally separate from IsOfficialBaseURL: Wokey is an explicit
+// API-key/provider profile and must not become an OAuth-trusted xAI host.
+func IsWokeyAPIBaseURL(raw string) bool {
+	validated, err := ValidatedBaseURL(raw)
+	return err == nil && strings.EqualFold(validated, WokeyAPIBaseURL)
+}
+
 func AllowUnsafeURLOverrides() bool {
 	return envBool(EnvAllowUnsafeURLOverrides)
 }
@@ -688,6 +697,28 @@ func BuildVideosGenerationsURLWithValidator(baseURL string, validator BaseURLVal
 		return "", fmt.Errorf("invalid base url: %w", err)
 	}
 	return validatedBaseURL + "/videos/generations", nil
+}
+
+// BuildVideosURLWithValidator builds the provider-specific collection route
+// used by Wokey-compatible video transports.
+func BuildVideosURLWithValidator(baseURL string, validator BaseURLValidator) (string, error) {
+	validatedBaseURL, err := validatedBaseURLWithValidator(baseURL, validator)
+	if err != nil {
+		return "", fmt.Errorf("invalid base url: %w", err)
+	}
+	return validatedBaseURL + "/videos", nil
+}
+
+func BuildWokeyVideosURL(baseURL string) (string, error) {
+	return BuildWokeyVideosURLWithValidator(baseURL, nil)
+}
+
+func BuildWokeyVideosURLWithValidator(baseURL string, validator BaseURLValidator) (string, error) {
+	validatedBaseURL, err := validatedBaseURLWithValidator(baseURL, validator)
+	if err != nil {
+		return "", fmt.Errorf("invalid base url: %w", err)
+	}
+	return validatedBaseURL + "/videos", nil
 }
 
 func BuildVideosEditsURL(baseURL string) (string, error) {

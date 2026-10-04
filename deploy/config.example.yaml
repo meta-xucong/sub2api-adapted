@@ -285,6 +285,28 @@ gateway:
   # 默认 false：保持纯文本 Codex 请求不被改写；客户端显式提供 image_generation tool 时，
   # 仍会在分组允许图片生成的情况下正常转发。
   codex_image_generation_bridge_enabled: false
+  # Local maintenance probes on trusted client IPs must use a dedicated ops test key.
+  # This guard is disabled by default; do not add production user/key allowlists here.
+  operator_test_guard:
+    enabled: false
+    require_admin_user: true
+    trusted_client_ips: ["127.0.0.1", "::1"]
+    blocked_user_agents: ["curl/", "wget/", "python-requests/", "httpie/"]
+    allowed_user_emails: []
+    allowed_api_key_names: ["ops-test*", "operator-test*", "运维测试*"]
+    paths:
+      - /v1/responses
+      - /v1/responses/*
+      - /responses
+      - /responses/*
+      - /backend-api/codex/responses
+      - /backend-api/codex/responses/*
+      - /v1/images/generations/async
+      - /images/generations/async
+      - /v1/images/edits/async
+      - /images/edits/async
+      - /v1/chat/completions
+      - /chat/completions
   # Optional: template file used to build the final top-level Codex `instructions`.
   # 可选：用于构建最终 Codex 顶层 `instructions` 的模板文件路径。
   #

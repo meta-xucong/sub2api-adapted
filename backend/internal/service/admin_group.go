@@ -119,8 +119,11 @@ func (s *adminServiceImpl) GetGroupModelsListCandidates(ctx context.Context, id 
 			continue
 		}
 		for model := range acc.GetModelMapping() {
-			model = strings.TrimSpace(model)
+			model = strings.TrimPrefix(strings.TrimSpace(model), "models/")
 			if model == "" {
+				continue
+			}
+			if acc.Platform == PlatformOpenAI && acc.QuotaDimension != QuotaDimensionSpark && !openai.IsAdminSelectableModelID(model) {
 				continue
 			}
 			if _, ok := seen[model]; ok {
@@ -279,7 +282,7 @@ func compositeRouteFromInput(groupID int64, input CompositeRouteInput) (*Composi
 func defaultModelsListCandidateIDs(platform string) []string {
 	switch platform {
 	case PlatformOpenAI:
-		return openai.DefaultModelIDs()
+		return openai.AdminSelectableModelIDs()
 	case PlatformGemini:
 		ids := make([]string, 0, len(geminicli.DefaultModels))
 		for _, model := range geminicli.DefaultModels {
