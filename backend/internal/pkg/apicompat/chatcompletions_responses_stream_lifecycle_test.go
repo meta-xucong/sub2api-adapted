@@ -179,6 +179,59 @@ func TestStream_ToolCallLifecycleComplete(t *testing.T) {
 	require.True(t, sawItemDone, "function_call output_item.done missing")
 }
 
+func TestStream_CompletedOutputReusesAddedItemIDs(t *testing.T) {
+	events := collectStreamEvents(t, []string{
+		`{"choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"plan"}}]}`,
+		`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_a","type":"function","function":{"name":"exec","arguments":"{\"cmd\":\"a\"}"}},{"index":1,"id":"call_b","type":"function","function":{"name":"lookup","arguments":"{\"q\":\"b\"}"}}]}}]}`,
+		`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+	})
+
+	itemKey := func(item *ResponsesOutput) string {
+		require.NotNil(t, item)
+		if item.Type == "reasoning" {
+			return "reasoning"
+		}
+		return item.Type + ":" + item.CallID
+	}
+	addedIDs := make(map[string]string)
+	doneIDs := make(map[string]string)
+	completedIDs := make(map[string]string)
+	for index, event := range events {
+		if index > 0 {
+			require.Equal(t, events[index-1].SequenceNumber+1, event.SequenceNumber,
+				"Responses stream sequence numbers must be contiguous")
+		}
+		switch event.Type {
+		case "response.output_item.added":
+			addedIDs[itemKey(event.Item)] = event.Item.ID
+		case "response.output_item.done":
+			doneIDs[itemKey(event.Item)] = event.Item.ID
+		case "response.completed":
+			require.NotNil(t, event.Response)
+			for i := range event.Response.Output {
+				item := &event.Response.Output[i]
+				completedIDs[itemKey(item)] = item.ID
+			}
+		}
+	}
+
+	require.Len(t, addedIDs, 3, "reasoning and both parallel tools must be announced")
+	require.Equal(t, addedIDs, doneIDs, "output_item.done must preserve each announced item ID")
+	require.Equal(t, addedIDs, completedIDs, "response.completed output must preserve each announced item ID")
+}
+
+func TestStream_LifecycleStartsCreatedThenInProgress(t *testing.T) {
+	events := collectStreamEvents(t, []string{
+		`{"choices":[{"index":0,"delta":{"role":"assistant","content":"hello"}}]}`,
+		`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+	})
+	require.GreaterOrEqual(t, len(events), 3)
+	require.Equal(t, "response.created", events[0].Type)
+	require.Equal(t, "response.in_progress", events[1].Type)
+	require.Equal(t, events[0].SequenceNumber+1, events[1].SequenceNumber)
+	require.Equal(t, events[0].Response.ID, events[1].Response.ID)
+}
+
 // TestStream_ToolCallArgumentsInFirstChunkNotDoubled guards the GLM/Zhipu shape
 // where a single tool_call delta chunk carries id+name+arguments together.
 // Earlier code copied the whole tool_call (including arguments) into state and

@@ -17,9 +17,65 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
 	"go.uber.org/zap"
 )
+
+// writeResponsesAdapterFailure closes only an already-selected third-party
+// compatibility stream. It preserves the adapter's response identity and
+// sequence instead of asking the outer handler to synthesize an unrelated
+// terminal event.
+func writeResponsesAdapterFailure(
+	c *gin.Context,
+	responseID string,
+	model string,
+	createdAt int64,
+	sequence *int,
+	completedSent *bool,
+	code string,
+	message string,
+) error {
+	if c == nil || c.Writer == nil || sequence == nil || completedSent == nil {
+		return errors.New("Responses compatibility stream state is unavailable")
+	}
+	if *completedSent {
+		return errors.New("Responses compatibility stream already has a terminal event")
+	}
+	if createdAt <= 0 {
+		createdAt = time.Now().Unix()
+	}
+	output := []apicompat.ResponsesOutput{}
+	newEvent := func(eventType, status string, failure *apicompat.ResponsesError) apicompat.ResponsesStreamEvent {
+		response := &apicompat.ResponsesResponse{
+			ID:        responseID,
+			Object:    "response",
+			CreatedAt: createdAt,
+			Model:     model,
+			Status:    status,
+			Output:    output,
+			Error:     failure,
+		}
+		event := apicompat.ResponsesStreamEvent{Type: eventType, SequenceNumber: *sequence, Response: response}
+		*sequence++
+		return event
+	}
+	events := []apicompat.ResponsesStreamEvent{newEvent("response.failed", "failed", &apicompat.ResponsesError{Code: code, Message: message})}
+	*completedSent = true
+	MarkOpsStreamError(c, code, message, http.StatusBadGateway)
+	MarkResponseCommitted(c)
+	for _, event := range events {
+		frame, err := apicompat.ResponsesEventToSSE(event)
+		if err != nil {
+			return fmt.Errorf("marshal Responses compatibility failure event: %w", err)
+		}
+		if _, err := fmt.Fprint(c.Writer, frame); err != nil {
+			return fmt.Errorf("write Responses compatibility failure event: %w", err)
+		}
+	}
+	c.Writer.Flush()
+	return nil
+}
 
 // ForwardAsResponses accepts an OpenAI Responses API request body, converts it
 // to Anthropic Messages format, forwards to the Anthropic upstream, and converts
@@ -43,6 +99,22 @@ func (s *GatewayService) ForwardAsResponses(
 	}
 	if normalized {
 		body = normalizedBody
+	}
+	var canonicalResponsesReq apicompat.ResponsesRequest
+	if err := json.Unmarshal(body, &canonicalResponsesReq); err != nil {
+		return nil, fmt.Errorf("parse responses request: %w", err)
+	}
+	if strings.TrimSpace(canonicalResponsesReq.PreviousResponseID) != "" {
+		if err := s.prepareResponsesCompatContinuation(ctx, c, &canonicalResponsesReq); err != nil {
+			logger.L().Warn("gateway responses compatibility continuation history unavailable", zap.Error(err))
+			writeResponsesCompatError(c, err)
+			return nil, err
+		}
+		replayedBody, marshalErr := json.Marshal(&canonicalResponsesReq)
+		if marshalErr != nil {
+			return nil, fmt.Errorf("marshal replayed Responses request: %w", marshalErr)
+		}
+		body = replayedBody
 	}
 
 	// 1. Lower Codex client-side tools to function tools understood by Anthropic.
@@ -201,6 +273,14 @@ func (s *GatewayService) ForwardAsResponses(
 		result, handleErr = s.handleResponsesStreamingResponse(resp, c, originalModel, mappedModel, reasoningEffort, startTime, clientToolMapping)
 	} else {
 		result, handleErr = s.handleResponsesBufferedStreamingResponse(resp, c, originalModel, mappedModel, reasoningEffort, startTime, clientToolMapping)
+	}
+	if handleErr == nil && result != nil && result.responsesCompatResponse != nil {
+		persistCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		persistErr := s.saveResponsesCompatResponse(persistCtx, c, &canonicalResponsesReq, result.responsesCompatResponse)
+		cancel()
+		if persistErr != nil {
+			logger.L().Warn("gateway responses compatibility session persistence failed", zap.Error(persistErr), zap.String("response_id", result.responsesCompatResponse.ID))
+		}
 	}
 
 	return result, handleErr
@@ -388,6 +468,7 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 	// Accumulate the final Anthropic response from streaming events
 	var finalResp *apicompat.AnthropicResponse
 	var usage ClaudeUsage
+	sawMessageStop := false
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -431,6 +512,9 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 				finalResp.StopReason = apicompat.AnthropicStopReasonPtr(event.Delta.StopReason)
 			}
 		}
+		if event.Type == "message_stop" {
+			sawMessageStop = true
+		}
 
 		// Accumulate content blocks
 		if event.Type == "content_block_start" && event.ContentBlock != nil && finalResp != nil {
@@ -466,6 +550,10 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 		writeResponsesError(c, http.StatusBadGateway, "server_error", "Upstream stream ended without a response")
 		return nil, fmt.Errorf("upstream stream ended without response")
 	}
+	if !sawMessageStop {
+		writeResponsesError(c, http.StatusBadGateway, "server_error", "Upstream stream ended before completion")
+		return nil, fmt.Errorf("upstream stream ended before completion")
+	}
 
 	// Update usage from accumulated delta
 	if usage.InputTokens > 0 || usage.OutputTokens > 0 {
@@ -493,26 +581,37 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 	// 无法覆盖已存在的 SSE 头。这里显式 Set 强制改回 JSON，避免下游中间层
 	// （如 new-api）按 Content-Type 误判为流式。
 	c.Writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+	var compatResponse *apicompat.ResponsesResponse
 	if respBytes, err := json.Marshal(responsesResp); err == nil {
 		respBytes = reverseToolNamesIfPresent(c, respBytes)
 		respBytes, _, err = apicompat.RestoreResponsesClientToolPayload(respBytes, clientToolMapping)
 		if err != nil {
 			return nil, fmt.Errorf("restore responses client tools: %w", err)
 		}
+		if sawMessageStop {
+			var restored apicompat.ResponsesResponse
+			if json.Unmarshal(respBytes, &restored) == nil {
+				compatResponse = &restored
+			}
+		}
 		c.Data(http.StatusOK, "application/json; charset=utf-8", respBytes)
 	} else {
 		c.JSON(http.StatusOK, responsesResp)
+		if sawMessageStop {
+			compatResponse = responsesResp
+		}
 	}
 
 	return &ForwardResult{
-		RequestID:       requestID,
-		UpstreamHeaders: resp.Header,
-		Usage:           usage,
-		Model:           originalModel,
-		UpstreamModel:   mappedModel,
-		ReasoningEffort: reasoningEffort,
-		Stream:          false,
-		Duration:        time.Since(startTime),
+		RequestID:               requestID,
+		UpstreamHeaders:         resp.Header,
+		Usage:                   usage,
+		Model:                   originalModel,
+		UpstreamModel:           mappedModel,
+		ReasoningEffort:         reasoningEffort,
+		Stream:                  false,
+		Duration:                time.Since(startTime),
+		responsesCompatResponse: compatResponse,
 	}, nil
 }
 
@@ -543,8 +642,10 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 	state.PreserveThinkingSignatures = isClaude55SignedThinkingModel(mappedModel)
 	clientToolRestorer := apicompat.NewResponsesClientToolStreamRestorer(clientToolMapping)
 	var usage ClaudeUsage
+	var completedResponse *apicompat.ResponsesResponse
 	var firstTokenMs *int
 	firstChunk := true
+	sawMessageStop := false
 
 	scanner := bufio.NewScanner(resp.Body)
 	maxLineSize := defaultMaxLineSize
@@ -555,20 +656,24 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 
 	resultWithUsage := func() *ForwardResult {
 		return &ForwardResult{
-			RequestID:       requestID,
-			UpstreamHeaders: resp.Header,
-			Usage:           usage,
-			Model:           originalModel,
-			UpstreamModel:   mappedModel,
-			ReasoningEffort: reasoningEffort,
-			Stream:          true,
-			Duration:        time.Since(startTime),
-			FirstTokenMs:    firstTokenMs,
+			RequestID:               requestID,
+			UpstreamHeaders:         resp.Header,
+			Usage:                   usage,
+			Model:                   originalModel,
+			UpstreamModel:           mappedModel,
+			ReasoningEffort:         reasoningEffort,
+			Stream:                  true,
+			Duration:                time.Since(startTime),
+			FirstTokenMs:            firstTokenMs,
+			responsesCompatResponse: completedResponse,
 		}
 	}
 
 	// processEvent handles a single parsed Anthropic SSE event.
 	processEvent := func(event *apicompat.AnthropicStreamEvent) bool {
+		if event.Type == "message_stop" {
+			sawMessageStop = true
+		}
 		if firstChunk {
 			firstChunk = false
 			ms := int(time.Since(startTime).Milliseconds())
@@ -612,6 +717,12 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 			}
 			for _, restored := range payloads {
 				eventType := gjson.GetBytes(restored, "type").String()
+				if eventType == "response.completed" {
+					var completed apicompat.ResponsesStreamEvent
+					if json.Unmarshal(restored, &completed) == nil && completed.Response != nil {
+						completedResponse = completed.Response
+					}
+				}
 				if _, err := fmt.Fprintf(c.Writer, "event: %s\ndata: %s\n\n", eventType, restored); err != nil {
 					logger.L().Info("forward_as_responses stream: client disconnected",
 						zap.String("request_id", requestID),
@@ -639,6 +750,19 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 			c.Writer.Flush()
 		}
 		return resultWithUsage(), nil
+	}
+	failStream := func(message string, cause error) (*ForwardResult, error) {
+		if c.Request != nil && errors.Is(c.Request.Context().Err(), context.Canceled) {
+			MarkResponseCommitted(c)
+			return resultWithUsage(), fmt.Errorf("upstream response failed: %s: %w", message, cause)
+		}
+		if strings.TrimSpace(state.ResponseID) == "" {
+			state.ResponseID = "resp_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+		}
+		if err := writeResponsesAdapterFailure(c, state.ResponseID, state.Model, state.Created, &state.SequenceNumber, &state.CompletedSent, "upstream_stream_error", message); err != nil {
+			logger.L().Debug("forward_as_responses stream: failed to write terminal failure event", zap.Error(err), zap.String("request_id", requestID))
+		}
+		return resultWithUsage(), fmt.Errorf("upstream response failed: %s: %w", message, cause)
 	}
 
 	// Read Anthropic SSE events
@@ -681,6 +805,12 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 				zap.String("request_id", requestID),
 			)
 		}
+		if !sawMessageStop {
+			return failStream("Upstream response stream was interrupted", err)
+		}
+	}
+	if !sawMessageStop {
+		return failStream("Upstream response stream ended before completion", io.ErrUnexpectedEOF)
 	}
 
 	return finalizeStream()

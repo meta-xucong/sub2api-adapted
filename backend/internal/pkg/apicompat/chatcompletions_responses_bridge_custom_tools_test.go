@@ -298,6 +298,7 @@ func TestChatCompletionsChunkToResponsesEvents_CustomToolCallStream(t *testing.T
 	assert.Equal(t, "call_1", inputDone.CallID)
 
 	require.NotNil(t, itemDone, "缺少 custom_tool_call 的 output_item.done")
+	assert.Equal(t, added.Item.ID, itemDone.Item.ID, "custom_tool_call 的 added/done item ID 必须一致")
 	assert.Equal(t, "call_1", itemDone.Item.CallID)
 	assert.Equal(t, "exec", itemDone.Item.Name)
 	assert.Equal(t, "dir", itemDone.Item.Input)
@@ -311,6 +312,7 @@ func TestChatCompletionsChunkToResponsesEvents_CustomToolCallStream(t *testing.T
 	for _, item := range final.Response.Output {
 		if item.Type == "custom_tool_call" {
 			foundCustom = true
+			assert.Equal(t, added.Item.ID, item.ID, "response.completed 必须复用 custom_tool_call 的 item ID")
 			assert.Equal(t, "exec", item.Name)
 			assert.Equal(t, "dir", item.Input)
 		}
@@ -504,6 +506,7 @@ func TestChatCompletionsChunkToResponsesEvents_ToolSearchCallStream(t *testing.T
 	assert.Equal(t, "tool_search_call", added.Item.Type)
 
 	require.NotNil(t, itemDone, "缺少 tool_search_call 的 output_item.done")
+	assert.Equal(t, added.Item.ID, itemDone.Item.ID, "tool_search_call 的 added/done item ID 必须一致")
 	assert.Equal(t, "call_s", itemDone.Item.CallID)
 
 	// SSE 线上形态经 responsesItemWire 白名单重组，必须单独断言。
@@ -521,6 +524,7 @@ func TestChatCompletionsChunkToResponsesEvents_ToolSearchCallStream(t *testing.T
 	for _, item := range final.Response.Output {
 		if item.Type == "tool_search_call" {
 			found = true
+			assert.Equal(t, added.Item.ID, item.ID, "response.completed 必须复用 tool_search_call 的 item ID")
 			assert.Equal(t, "call_s", item.CallID)
 		}
 	}

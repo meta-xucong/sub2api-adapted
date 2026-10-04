@@ -176,10 +176,14 @@ func convertResponsesInputToAnthropic(instructions string, inputRaw json.RawMess
 	if err := json.Unmarshal(inputRaw, &items); err != nil {
 		return nil, nil, fmt.Errorf("parse responses input: %w", err)
 	}
+	var rawItems []json.RawMessage
+	if err := json.Unmarshal(inputRaw, &rawItems); err != nil {
+		return nil, nil, fmt.Errorf("parse responses input: %w", err)
+	}
 
 	var messages []AnthropicMessage
 
-	for _, item := range items {
+	for itemIndex, item := range items {
 		switch {
 		case item.Role == "system" || item.Role == "developer":
 			text := extractTextFromContent(item.Content)
@@ -218,6 +222,32 @@ func convertResponsesInputToAnthropic(instructions string, inputRaw json.RawMess
 				Role:    "user",
 				Content: blockJSON,
 			})
+
+		case item.Type == "compaction" || item.Type == "compaction_summary":
+			// Provider-native encrypted compaction state is not portable to
+			// Anthropic. Replay only the visible summary and fail closed when
+			// the item is opaque-only instead of silently losing history.
+			var compaction struct {
+				Summary []ResponsesSummary `json:"summary"`
+			}
+			if err := json.Unmarshal(rawItems[itemIndex], &compaction); err != nil {
+				return nil, nil, fmt.Errorf("parse Responses compaction summary: %w", err)
+			}
+			var summaryParts []string
+			for _, part := range compaction.Summary {
+				if strings.TrimSpace(part.Text) != "" {
+					summaryParts = append(summaryParts, part.Text)
+				}
+			}
+			summary := strings.TrimSpace(strings.Join(summaryParts, "\n"))
+			if summary == "" {
+				return nil, nil, fmt.Errorf("Responses compaction item has no portable summary for Anthropic compatibility")
+			}
+			content, _ := json.Marshal([]AnthropicContentBlock{{
+				Type: "text",
+				Text: "<conversation_summary>\n" + summary + "\n</conversation_summary>",
+			}})
+			messages = append(messages, AnthropicMessage{Role: "user", Content: content})
 
 		case item.Type == "reasoning":
 			// Only decode marked Anthropic bridge envelopes, not arbitrary

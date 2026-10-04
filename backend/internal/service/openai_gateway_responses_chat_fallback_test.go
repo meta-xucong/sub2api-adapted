@@ -13,11 +13,138 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
+
+type responsesCompatInjectedReadFailure struct{}
+
+func (responsesCompatInjectedReadFailure) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }
+
+type responsesCompatFailAfterWriter struct {
+	gin.ResponseWriter
+	successfulWrites int
+	failAfter        int
+	failed           bool
+}
+
+func (w *responsesCompatFailAfterWriter) Write(p []byte) (int, error) {
+	if w.successfulWrites >= w.failAfter {
+		w.failed = true
+		return 0, io.ErrClosedPipe
+	}
+	w.successfulWrites++
+	return w.ResponseWriter.Write(p)
+}
+
+func (w *responsesCompatFailAfterWriter) WriteString(s string) (int, error) {
+	return w.Write([]byte(s))
+}
+
+func assertResponsesFailedTerminal(t *testing.T, body, expectedCode string) {
+	t.Helper()
+	var responseID string
+	sequence := int64(0)
+	sawFailed := false
+	for _, line := range strings.Split(body, "\n") {
+		if !strings.HasPrefix(line, "data: {") {
+			continue
+		}
+		payload := strings.TrimPrefix(line, "data: ")
+		require.Equal(t, sequence, gjson.Get(payload, "sequence_number").Int())
+		sequence++
+		eventResponseID := gjson.Get(payload, "response.id").String()
+		if eventResponseID != "" {
+			if responseID == "" {
+				responseID = eventResponseID
+			} else {
+				require.Equal(t, responseID, eventResponseID)
+			}
+		}
+		switch gjson.Get(payload, "type").String() {
+		case "response.created":
+		case "response.completed":
+			t.Fatal("incomplete upstream stream was reported as completed")
+		case "response.failed":
+			sawFailed = true
+			require.NotEmpty(t, responseID)
+			require.Equal(t, "failed", gjson.Get(payload, "response.status").String())
+			require.Equal(t, expectedCode, gjson.Get(payload, "response.error.code").String())
+		}
+	}
+	require.True(t, sawFailed, "stream must end with response.failed")
+}
+
+func TestResponsesChatFallbackFailsTruncatedOrUnterminatedUpstreamStream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	chunk := "data: {\"id\":\"chatcmpl_partial\",\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"}}]}\n\n"
+	for _, tc := range []struct {
+		name string
+		body io.Reader
+	}{
+		{name: "read_error", body: io.MultiReader(strings.NewReader(chunk), responsesCompatInjectedReadFailure{})},
+		{name: "missing_done", body: strings.NewReader(chunk)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(tc.body)}
+			svc := &OpenAIGatewayService{}
+
+			_, err := svc.streamChatCompletionsAsResponses(c, resp, "test-model", nil, nil, false, nil, "test-model", "test-model", nil, nil, time.Now())
+			require.Error(t, err)
+			assertResponsesFailedTerminal(t, rec.Body.String(), "upstream_stream_error")
+			_, marked := GetOpsStreamError(c)
+			require.True(t, marked, "started stream failure must be recorded for operational error reporting")
+		})
+	}
+}
+
+func TestResponsesChatFallbackFailureBeforeFirstEventUsesJSONError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(responsesCompatInjectedReadFailure{})}
+
+	_, err := (&OpenAIGatewayService{}).streamChatCompletionsAsResponses(c, resp, "test-model", nil, nil, false, nil, "test-model", "test-model", nil, nil, time.Now())
+	require.Error(t, err)
+	require.Equal(t, http.StatusBadGateway, rec.Code)
+	require.Contains(t, rec.Header().Get("Content-Type"), "application/json")
+	require.Equal(t, "upstream_stream_error", gjson.Get(rec.Body.String(), "error.code").String())
+	require.NotContains(t, rec.Body.String(), "event: response.")
+	_, marked := GetOpsStreamError(c)
+	require.False(t, marked, "failure before stream creation follows the existing JSON error path")
+}
+
+func TestResponsesChatFallbackClientDisconnectDoesNotAppendFailureTerminal(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	c.Writer = &responsesCompatFailAfterWriter{ResponseWriter: c.Writer, failAfter: 4}
+	upstreamBody := strings.Join([]string{
+		`data: {"id":"chatcmpl_disconnect","model":"test-model","choices":[{"index":0,"delta":{"content":"partial"}}]}`,
+		``,
+		`data: {"id":"chatcmpl_disconnect","model":"test-model","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		``,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(upstreamBody))}
+
+	result, err := (&OpenAIGatewayService{}).streamChatCompletionsAsResponses(c, resp, "test-model", nil, nil, false, nil, "test-model", "test-model", nil, nil, time.Now())
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, result.responsesCompatResponse, "the adapter should drain the upstream stream after the client disconnects")
+	require.True(t, c.Writer.(*responsesCompatFailAfterWriter).failed)
+	require.NotContains(t, rec.Body.String(), "event: response.failed\n")
+	require.NotContains(t, rec.Body.String(), "event: response.completed\n")
+}
 
 func TestForwardResponses_ForceChatCompletionsRoutesNonStreamingToChatCompletions(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -58,6 +185,371 @@ func TestForwardResponses_ForceChatCompletionsRoutesNonStreamingToChatCompletion
 	require.Equal(t, "priority", *result.ServiceTier)
 	require.Equal(t, "default", result.UpstreamResponseServiceTier)
 	require.False(t, result.Stream)
+}
+
+// This is the P3-2 differential fixture: a Chat-only /v1/responses account must
+// be able to continue a tool turn by expanding the preceding request/output
+// history before adapting the new function_call_output to Chat Completions.
+func TestForwardResponses_ChatFallbackReplaysPreviousResponseHistory(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	firstBody := []byte(`{"model":"glm-5","instructions":"保留 Skills instructions","input":[{"type":"message","role":"user","content":"执行 café 检查"}],"tools":[{"type":"function","name":"unified_exec","parameters":{"type":"object","properties":{}}}],"stream":false}`)
+	secondBody := []byte(`{"model":"glm-5","previous_response_id":"chatcmpl_first","input":[{"type":"function_call_output","call_id":"call_exec_1","output":"已完成"}],"stream":false}`)
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{
+		{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_first"}},
+			Body:       io.NopCloser(strings.NewReader(`{"id":"chatcmpl_first","object":"chat.completion","model":"glm-5","choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"call_exec_1","type":"function","function":{"name":"unified_exec","arguments":"{\"command\":\"Get-Date\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":3,"total_tokens":13}}`)),
+		},
+		{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_second"}},
+			Body:       io.NopCloser(strings.NewReader(`{"id":"chatcmpl_second","object":"chat.completion","model":"glm-5","choices":[{"index":0,"message":{"role":"assistant","content":"已完成"},"finish_reason":"stop"}],"usage":{"prompt_tokens":14,"completion_tokens":2,"total_tokens":16}}`)),
+		},
+	}}
+	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
+	account := rawChatCompletionsTestAccount()
+	account.Extra = map[string]any{openai_compat.ExtraKeyResponsesSupported: false}
+
+	firstRecorder := httptest.NewRecorder()
+	firstContext, _ := gin.CreateTestContext(firstRecorder)
+	firstContext.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(firstBody))
+	firstContext.Request.Header.Set("Content-Type", "application/json")
+	firstResult, err := svc.Forward(context.Background(), firstContext, account, firstBody)
+	require.NoError(t, err)
+	require.NotNil(t, firstResult)
+	require.Equal(t, "chatcmpl_first", gjson.Get(firstRecorder.Body.String(), "id").String())
+	require.Contains(t, firstRecorder.Body.String(), "function_call")
+
+	secondRecorder := httptest.NewRecorder()
+	secondContext, _ := gin.CreateTestContext(secondRecorder)
+	secondContext.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(secondBody))
+	secondContext.Request.Header.Set("Content-Type", "application/json")
+	secondResult, err := svc.Forward(context.Background(), secondContext, account, secondBody)
+	require.NoError(t, err)
+	require.NotNil(t, secondResult)
+	require.Len(t, upstream.bodies, 2)
+	require.Equal(t, "http://upstream.example/v1/chat/completions", upstream.requests[1].URL.String())
+
+	replayed := upstream.bodies[1]
+	require.Equal(t, "glm-5", gjson.GetBytes(replayed, "model").String())
+	require.Equalf(t, int64(4), gjson.GetBytes(replayed, "messages.#").Int(), "second Chat request body: %s", replayed)
+	require.Equal(t, "system", gjson.GetBytes(replayed, "messages.0.role").String())
+	require.Equal(t, "保留 Skills instructions", gjson.GetBytes(replayed, "messages.0.content").String())
+	require.Equal(t, "user", gjson.GetBytes(replayed, "messages.1.role").String())
+	require.Contains(t, gjson.GetBytes(replayed, "messages.1.content").String(), "café")
+	require.Equal(t, "assistant", gjson.GetBytes(replayed, "messages.2.role").String())
+	require.Equal(t, "call_exec_1", gjson.GetBytes(replayed, "messages.2.tool_calls.0.id").String())
+	require.Equal(t, "unified_exec", gjson.GetBytes(replayed, "messages.2.tool_calls.0.function.name").String())
+	require.Equal(t, "tool", gjson.GetBytes(replayed, "messages.3.role").String())
+	require.Equal(t, "call_exec_1", gjson.GetBytes(replayed, "messages.3.tool_call_id").String())
+	require.Equal(t, "已完成", gjson.GetBytes(replayed, "messages.3.content").String())
+	require.Equal(t, "function", gjson.GetBytes(replayed, "tools.0.type").String())
+}
+
+func TestForwardResponses_ChatFallbackCapturesStreamForContinuation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	firstBody := []byte(`{"model":"glm-5","instructions":"keep these instructions","input":"first turn","stream":true}`)
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{
+		{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_chat_stream_first"}},
+			Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+				`data: {"id":"chatcmpl_stream_first","object":"chat.completion.chunk","model":"glm-5","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}`,
+				"",
+				`data: {"id":"chatcmpl_stream_first","object":"chat.completion.chunk","model":"glm-5","choices":[{"index":0,"delta":{"content":"stream answer"},"finish_reason":null}]}`,
+				"",
+				`data: {"id":"chatcmpl_stream_first","object":"chat.completion.chunk","model":"glm-5","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+				"",
+				`data: [DONE]`,
+				"",
+			}, "\n"))),
+		},
+		{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_chat_stream_second"}},
+			Body:       io.NopCloser(strings.NewReader(`{"id":"chatcmpl_stream_second","object":"chat.completion","model":"glm-5","choices":[{"index":0,"message":{"role":"assistant","content":"second answer"},"finish_reason":"stop"}],"usage":{"prompt_tokens":8,"completion_tokens":2,"total_tokens":10}}`)),
+		},
+	}}
+	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
+	account := forceChatResponsesFallbackAccount()
+
+	firstRecorder := httptest.NewRecorder()
+	firstContext, _ := gin.CreateTestContext(firstRecorder)
+	firstContext.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(firstBody))
+	firstContext.Request.Header.Set("Content-Type", "application/json")
+	firstResult, err := svc.Forward(context.Background(), firstContext, account, firstBody)
+	require.NoError(t, err)
+	require.NotNil(t, firstResult)
+	require.NotNil(t, firstResult.responsesCompatResponse)
+	require.Equal(t, "chatcmpl_stream_first", firstResult.responsesCompatResponse.ID)
+	require.Contains(t, firstRecorder.Body.String(), "event: response.completed")
+
+	secondBody := []byte(`{"model":"glm-5","previous_response_id":"chatcmpl_stream_first","input":"second turn","stream":false}`)
+	secondRecorder := httptest.NewRecorder()
+	secondContext, _ := gin.CreateTestContext(secondRecorder)
+	secondContext.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(secondBody))
+	secondContext.Request.Header.Set("Content-Type", "application/json")
+	secondResult, err := svc.Forward(context.Background(), secondContext, account, secondBody)
+	require.NoError(t, err)
+	require.NotNil(t, secondResult)
+	require.Len(t, upstream.bodies, 2)
+
+	replayed := upstream.bodies[1]
+	require.Equal(t, int64(4), gjson.GetBytes(replayed, "messages.#").Int(), "second Chat request body: %s", replayed)
+	require.Equal(t, "keep these instructions", gjson.GetBytes(replayed, "messages.0.content").String())
+	require.Equal(t, "first turn", gjson.GetBytes(replayed, "messages.1.content").String())
+	require.Equal(t, "assistant", gjson.GetBytes(replayed, "messages.2.role").String())
+	require.Equal(t, "stream answer", gjson.GetBytes(replayed, "messages.2.content").String())
+	require.Equal(t, "second turn", gjson.GetBytes(replayed, "messages.3.content").String())
+}
+
+func TestForwardResponses_NativeContinuationUnavailableReplaysMatchingHistoryThroughChat(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	firstBody := []byte(`{"model":"gpt-5.4","instructions":"keep Skills instructions","input":[{"type":"message","role":"user","content":"check café"}],"tools":[{"type":"function","name":"unified_exec","parameters":{"type":"object","properties":{}}}],"stream":false}`)
+	secondBody := []byte(`{"model":"gpt-5.4","previous_response_id":"resp_native_first","input":[{"type":"function_call_output","call_id":"call_exec_native","output":"finished"}],"stream":false}`)
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{
+		{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_native_first"}},
+			Body:       io.NopCloser(strings.NewReader(`{"id":"resp_native_first","object":"response","model":"gpt-5.4","status":"completed","output":[{"id":"fc_item_native","type":"function_call","status":"completed","call_id":"call_exec_native","name":"unified_exec","arguments":"{\"command\":\"Get-Date\"}"}],"usage":{"input_tokens":10,"output_tokens":3,"total_tokens":13}}`)),
+		},
+		{
+			StatusCode: http.StatusBadRequest,
+			Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_native_continuation_rejected"}},
+			Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"previous_response_id is not available for this user","type":"invalid_request_error"}}`)),
+		},
+		{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_native_chat_fallback"}},
+			Body:       io.NopCloser(strings.NewReader(`{"id":"chatcmpl_native_fallback","object":"chat.completion","model":"gpt-5.4","choices":[{"index":0,"message":{"role":"assistant","content":"finished"},"finish_reason":"stop"}],"usage":{"prompt_tokens":14,"completion_tokens":2,"total_tokens":16}}`)),
+		},
+	}}
+	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
+	account := rawChatCompletionsTestAccount()
+	account.Extra = map[string]any{openai_compat.ExtraKeyResponsesSupported: true}
+
+	firstRecorder := httptest.NewRecorder()
+	firstContext, _ := gin.CreateTestContext(firstRecorder)
+	firstContext.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(firstBody))
+	firstContext.Request.Header.Set("Content-Type", "application/json")
+	firstResult, err := svc.Forward(context.Background(), firstContext, account, firstBody)
+	require.NoError(t, err)
+	require.NotNil(t, firstResult)
+	require.Equal(t, "http://upstream.example/v1/responses", upstream.requests[0].URL.String())
+
+	secondRecorder := httptest.NewRecorder()
+	secondContext, _ := gin.CreateTestContext(secondRecorder)
+	secondContext.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(secondBody))
+	secondContext.Request.Header.Set("Content-Type", "application/json")
+	secondResult, err := svc.Forward(context.Background(), secondContext, account, secondBody)
+	require.NoError(t, err)
+	require.NotNil(t, secondResult)
+	require.Len(t, upstream.requests, 3)
+	require.Equal(t, "http://upstream.example/v1/responses", upstream.requests[1].URL.String())
+	require.Equal(t, "http://upstream.example/v1/chat/completions", upstream.requests[2].URL.String())
+
+	replayed := upstream.bodies[2]
+	require.Equal(t, "gpt-5.4", gjson.GetBytes(replayed, "model").String())
+	require.Equal(t, int64(4), gjson.GetBytes(replayed, "messages.#").Int(), "fallback request body: %s", replayed)
+	require.Equal(t, "system", gjson.GetBytes(replayed, "messages.0.role").String())
+	require.Equal(t, "keep Skills instructions", gjson.GetBytes(replayed, "messages.0.content").String())
+	require.Contains(t, gjson.GetBytes(replayed, "messages.1.content").String(), "café")
+	require.Equal(t, "call_exec_native", gjson.GetBytes(replayed, "messages.2.tool_calls.0.id").String())
+	require.Equal(t, "unified_exec", gjson.GetBytes(replayed, "messages.2.tool_calls.0.function.name").String())
+	require.Equal(t, "tool", gjson.GetBytes(replayed, "messages.3.role").String())
+	require.Equal(t, "call_exec_native", gjson.GetBytes(replayed, "messages.3.tool_call_id").String())
+	require.Equal(t, "finished", gjson.GetBytes(replayed, "messages.3.content").String())
+}
+
+func TestForwardResponses_NativeStreamingResponseCapturesDoneItemForContinuation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	firstBody := []byte(`{"model":"gpt-5.4","instructions":"keep stream instructions","input":"run a command","tools":[{"type":"function","name":"exec","parameters":{"type":"object","properties":{}}}],"stream":true}`)
+	secondBody := []byte(`{"model":"gpt-5.4","previous_response_id":"resp_native_stream","input":[{"type":"function_call_output","call_id":"call_stream","output":"done"}],"stream":false}`)
+	streamBody := strings.Join([]string{
+		`event: response.output_item.done`,
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"item_stream","type":"function_call","status":"completed","call_id":"call_stream","name":"exec","arguments":"{\"cmd\":\"Get-Date\"}"}}`,
+		"",
+		`event: response.completed`,
+		`data: {"type":"response.completed","response":{"id":"resp_native_stream","object":"response","model":"gpt-5.4","status":"completed","output":[],"usage":{"input_tokens":8,"output_tokens":2,"total_tokens":10}}}`,
+		"",
+	}, "\n")
+	clientStreamBody := strings.Replace(streamBody, `"output":[]`, `"output":[{"id":"item_stream","type":"function_call","status":"completed","call_id":"call_stream","name":"exec","arguments":"{\"cmd\":\"Get-Date\"}"}]`, 1)
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{
+		{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(streamBody))},
+		{StatusCode: http.StatusBadRequest, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"error":{"message":"previous_response_id is not available for this user"}}`))},
+		{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"id":"chatcmpl_stream_fallback","object":"chat.completion","model":"gpt-5.4","choices":[{"index":0,"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":1,"total_tokens":11}}`))},
+	}}
+	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream, toolCorrector: NewCodexToolCorrector()}
+	account := rawChatCompletionsTestAccount()
+	account.Extra = map[string]any{openai_compat.ExtraKeyResponsesSupported: true}
+
+	firstRecorder := httptest.NewRecorder()
+	firstContext, _ := gin.CreateTestContext(firstRecorder)
+	firstContext.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(firstBody))
+	firstContext.Request.Header.Set("Content-Type", "application/json")
+	firstResult, err := svc.Forward(context.Background(), firstContext, account, firstBody)
+	require.NoError(t, err)
+	require.NotNil(t, firstResult)
+	require.NotNil(t, firstResult.responsesCompatResponse)
+	require.Equal(t, "call_stream", firstResult.responsesCompatResponse.Output[0].CallID)
+	require.Equal(t, clientStreamBody, firstRecorder.Body.String(), "session capture must not add mutations beyond the existing terminal-output normalization")
+
+	secondRecorder := httptest.NewRecorder()
+	secondContext, _ := gin.CreateTestContext(secondRecorder)
+	secondContext.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(secondBody))
+	secondContext.Request.Header.Set("Content-Type", "application/json")
+	_, err = svc.Forward(context.Background(), secondContext, account, secondBody)
+	require.NoError(t, err)
+	require.Len(t, upstream.requests, 3)
+	replayed := upstream.bodies[2]
+	require.Equal(t, "keep stream instructions", gjson.GetBytes(replayed, "messages.0.content").String())
+	require.Equal(t, "call_stream", gjson.GetBytes(replayed, "messages.2.tool_calls.0.id").String())
+	require.Equal(t, "tool", gjson.GetBytes(replayed, "messages.3.role").String())
+	require.Equal(t, "done", gjson.GetBytes(replayed, "messages.3.content").String())
+}
+
+func TestOpenAIStreamingResponseCapturesAccumulatorOutputForContinuation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), toolCorrector: NewCodexToolCorrector()}
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	body := strings.Join([]string{
+		`event: response.output_text.delta`,
+		`data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"从流式增量重建的回答"}`,
+		"",
+		`event: response.completed`,
+		`data: {"type":"response.completed","response":{"id":"resp_accumulator","object":"response","model":"gpt-5.4","status":"completed","output":[],"usage":{"input_tokens":8,"output_tokens":2,"total_tokens":10}}}`,
+		"",
+	}, "\n")
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+	result, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, &Account{ID: 1}, time.Now(), "gpt-5.4", "gpt-5.4")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, result.responsesCompatResponse)
+	require.Equal(t, "resp_accumulator", result.responsesCompatResponse.ID)
+	require.Len(t, result.responsesCompatResponse.Output, 1)
+	require.Equal(t, "message", result.responsesCompatResponse.Output[0].Type)
+	require.Len(t, result.responsesCompatResponse.Output[0].Content, 1)
+	require.Equal(t, "从流式增量重建的回答", result.responsesCompatResponse.Output[0].Content[0].Text)
+	clientStreamBody := strings.Replace(body,
+		`"output":[]`,
+		`"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"从流式增量重建的回答"}]}]`,
+		1,
+	)
+	require.Equal(t, clientStreamBody, recorder.Body.String(), "session capture must not mutate the downstream SSE beyond the existing terminal-output reconstruction")
+}
+
+func TestOpenAIStreamingResponseWithoutTerminalDoesNotCaptureContinuationState(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), toolCorrector: NewCodexToolCorrector()}
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			`event: response.output_text.delta`,
+			`data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"尚未完成的回答"}`,
+			"",
+		}, "\n"))),
+	}
+	result, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, &Account{ID: 1}, time.Now(), "gpt-5.4", "gpt-5.4")
+	require.ErrorContains(t, err, "missing terminal event")
+	require.NotNil(t, result)
+	require.Nil(t, result.responsesCompatResponse, "an incomplete stream must not create resumable session state")
+	require.Contains(t, recorder.Body.String(), "尚未完成的回答")
+	require.NotContains(t, recorder.Body.String(), "event: response.completed")
+}
+
+func TestResponsesCompatNativeHTTPSessionScopeIsNarrow(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(nil)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	account := rawChatCompletionsTestAccount()
+	account.Extra = map[string]any{openai_compat.ExtraKeyResponsesSupported: true}
+	require.True(t, shouldUseResponsesCompatSessionForNativeHTTP(ctx, account, OpenAIUpstreamTransportHTTPSSE))
+	require.False(t, shouldUseResponsesCompatSessionForNativeHTTP(ctx, account, OpenAIUpstreamTransportResponsesWebsocketV2))
+	ctx.Request.URL.Path = "/v1/responses/compact"
+	require.False(t, shouldUseResponsesCompatSessionForNativeHTTP(ctx, account, OpenAIUpstreamTransportHTTPSSE))
+	ctx.Request.URL.Path = "/v1/responses"
+	MarkOpenAINativeCompactionV2(ctx)
+	require.False(t, shouldUseResponsesCompatSessionForNativeHTTP(ctx, account, OpenAIUpstreamTransportHTTPSSE),
+		"native Responses compaction v2 must stay on the official Responses path")
+	ctx.Set(openAINativeCompactionV2Key, false)
+	account.Platform = PlatformDeepseek
+	require.False(t, shouldUseResponsesCompatSessionForNativeHTTP(ctx, account, OpenAIUpstreamTransportHTTPSSE))
+	account.Platform = PlatformOpenAI
+	account.Type = AccountTypeOAuth
+	require.False(t, shouldUseResponsesCompatSessionForNativeHTTP(ctx, account, OpenAIUpstreamTransportHTTPSSE))
+}
+
+func TestForwardResponses_NativeContinuationFallbackRequiresMatchingHistoryAndKnownError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cases := []struct {
+		name          string
+		seedHistory   bool
+		nativeV2      bool
+		upstreamError string
+	}{
+		{
+			name:          "recognized error without local history",
+			upstreamError: `{"error":{"message":"previous_response_id is not available for this user"}}`,
+		},
+		{
+			name:          "unrelated error with local history",
+			seedHistory:   true,
+			upstreamError: `{"error":{"message":"invalid model parameter"}}`,
+		},
+		{
+			name:          "native compaction v2 does not fallback with matching history",
+			seedHistory:   true,
+			nativeV2:      true,
+			upstreamError: `{"error":{"message":"previous_response_id is not available for this user"}}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream := &httpUpstreamRecorder{resp: &http.Response{
+				StatusCode: http.StatusBadRequest,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(tc.upstreamError)),
+			}}
+			svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
+			account := rawChatCompletionsTestAccount()
+			account.Extra = map[string]any{openai_compat.ExtraKeyResponsesSupported: true}
+			body := []byte(`{"model":"gpt-5.4","previous_response_id":"resp_seeded","input":"continue","stream":false}`)
+			if tc.nativeV2 {
+				body = []byte(`{"model":"gpt-5.4","previous_response_id":"resp_seeded","input":[{"type":"compaction_trigger"}],"stream":true}`)
+			}
+			rec := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(rec)
+			ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+			ctx.Request.Header.Set("Content-Type", "application/json")
+			if tc.nativeV2 {
+				MarkOpenAINativeCompactionV2(ctx)
+			}
+			if tc.seedHistory {
+				seedReq := &apicompat.ResponsesRequest{Model: "gpt-5.4", Input: []byte(`"prior"`)}
+				seedResp := &apicompat.ResponsesResponse{ID: "resp_seeded", Output: []apicompat.ResponsesOutput{{Type: "message", Role: "assistant", Content: []apicompat.ResponsesContentPart{{Type: "output_text", Text: "prior answer"}}}}}
+				state, err := buildResponsesCompatSessionState(seedReq, seedResp)
+				require.NoError(t, err)
+				require.NoError(t, saveResponsesCompatSession(context.Background(), ctx, nil, &svc.responsesCompatSessions, state, time.Hour))
+			}
+
+			_, err := svc.Forward(context.Background(), ctx, account, body)
+			require.Error(t, err)
+			require.Len(t, upstream.requests, 1, "this condition must not issue a Chat Completions request")
+			require.Equal(t, "http://upstream.example/v1/responses", upstream.requests[0].URL.String())
+		})
+	}
 }
 
 // Scenario: 第三方无推理模型不收到兼容档位。
@@ -218,6 +710,7 @@ func TestForwardResponses_ChatFallbackRejectsInvalidToolArgumentsAtOutputLimit(t
 	require.NotContains(t, rec.Body.String(), "response.function_call_arguments.done")
 	require.NotContains(t, rec.Body.String(), "response.output_item.done")
 	require.NotContains(t, rec.Body.String(), "data: [DONE]")
+	assertResponsesFailedTerminal(t, rec.Body.String(), "invalid_tool_arguments")
 }
 
 func TestForwardResponses_DeepSeekReasoningOnlyStreamProducesVisibleText(t *testing.T) {

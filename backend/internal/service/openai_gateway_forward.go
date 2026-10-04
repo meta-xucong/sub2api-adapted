@@ -10,11 +10,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
+	"go.uber.org/zap"
 )
 
 // Forward forwards request to OpenAI API
@@ -113,6 +115,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	wsDecision = resolveOpenAIWSDecisionByClientTransport(wsDecision, GetOpenAIClientTransport(c))
 	passthroughEnabled := account.IsOpenAIPassthroughEnabled()
 	compactPath := isOpenAIResponsesCompactPath(c)
+	responsesCompatNativeHTTP := shouldUseResponsesCompatSessionForNativeHTTP(c, account, wsDecision.Transport)
 	if shouldFlattenOpenAIResponsesNamespaces(account, wsDecision.Transport, passthroughEnabled, compactPath) {
 		body, err = flattenOpenAIResponsesNamespaces(c, body)
 		if err != nil {
@@ -1164,6 +1167,31 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				)
 				continue
 			}
+			previousResponseID := strings.TrimSpace(gjson.GetBytes(body, "previous_response_id").String())
+			if responsesCompatNativeHTTP && previousResponseID != "" &&
+				(isOpenAICompatPreviousResponseNotFound(resp.StatusCode, upstreamMsg, respBody) ||
+					isOpenAICompatPreviousResponseUnsupported(resp.StatusCode, upstreamMsg, respBody)) {
+				compatCtx, compatCancel := context.WithTimeout(context.Background(), 3*time.Second)
+				compatState, compatLoadErr := loadResponsesCompatSession(
+					compatCtx, c, s.cache, &s.responsesCompatSessions, previousResponseID,
+				)
+				compatCancel()
+				if compatLoadErr != nil {
+					logger.L().Warn("openai responses: failed to load local continuation before Chat fallback",
+						zap.Int64("account_id", account.ID),
+						zap.Int("previous_response_id_len", len(previousResponseID)),
+						zap.Error(compatLoadErr),
+					)
+				} else if compatState != nil {
+					_ = resp.Body.Close()
+					logger.L().Info("openai responses: upstream continuation unsupported, replaying local history through Chat Completions",
+						zap.Int64("account_id", account.ID),
+						zap.Int("previous_response_id_len", len(previousResponseID)),
+						zap.String("upstream_model", upstreamModel),
+					)
+					return s.forwardResponsesViaRawChatCompletions(ctx, c, account, body)
+				}
+			}
 			if s.shouldFailoverOpenAIUpstreamResponse(account, resp.StatusCode, upstreamMsg, respBody) {
 				upstreamDetail := ""
 				if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
@@ -1217,6 +1245,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		var usage *OpenAIUsage
 		var firstTokenMs *int
 		responseID := ""
+		var responsesCompatResponse *apicompat.ResponsesResponse
 		imageCount := 0
 		searchCount := 0
 		var imageOutputSizes []string
@@ -1264,6 +1293,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			usage = streamResult.usage
 			firstTokenMs = streamResult.firstTokenMs
 			responseID = strings.TrimSpace(streamResult.responseID)
+			responsesCompatResponse = streamResult.responsesCompatResponse
 			imageCount = streamResult.imageCount
 			imageOutputSizes = streamResult.imageOutputSizes
 			searchCount = streamResult.searchCount
@@ -1287,6 +1317,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			}
 			usage = nonStreamResult.usage
 			responseID = strings.TrimSpace(nonStreamResult.responseID)
+			responsesCompatResponse = nonStreamResult.responsesCompatResponse
 			imageCount = nonStreamResult.imageCount
 			imageOutputSizes = nonStreamResult.imageOutputSizes
 			searchCount = nonStreamResult.searchCount
@@ -1324,6 +1355,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			OpenAIWSMode:                  false,
 			Duration:                      time.Since(startTime),
 			FirstTokenMs:                  firstTokenMs,
+			responsesCompatResponse:       responsesCompatResponse,
 		}
 		if imageCount > 0 {
 			forwardResult.ImageCount = imageCount
@@ -1338,9 +1370,28 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		if searchCount > 0 && account != nil && account.IsGrok() {
 			forwardResult.SearchCount = searchCount
 		}
+		if responsesCompatNativeHTTP && responsesCompatResponse != nil && strings.TrimSpace(gjson.GetBytes(body, "previous_response_id").String()) == "" {
+			persistCtx, persistCancel := context.WithTimeout(context.Background(), 3*time.Second)
+			persistErr := s.saveResponsesCompatResponseFromBody(persistCtx, c, body, responsesCompatResponse)
+			persistCancel()
+			if persistErr != nil {
+				logger.L().Warn("openai responses compatibility session persistence failed",
+					zap.Int64("account_id", account.ID),
+					zap.Int("response_id_len", len(responseID)),
+					zap.Error(persistErr),
+				)
+			}
+		}
 		stampOpenAIResponsesUpstreamEndpoint(c, forwardResult)
 		return forwardResult, nil
 	}
+}
+
+func shouldUseResponsesCompatSessionForNativeHTTP(c *gin.Context, account *Account, transport OpenAIUpstreamTransport) bool {
+	return c != nil && account != nil && account.Platform == PlatformOpenAI &&
+		account.Type == AccountTypeAPIKey && transport == OpenAIUpstreamTransportHTTPSSE &&
+		!isOpenAIResponsesCompactPath(c) && !isOpenAINativeCompactionV2(c) &&
+		!shouldForwardOpenAIResponsesViaRawChatCompletions(account)
 }
 
 func shouldForwardOpenAIResponsesViaRawChatCompletions(account *Account) bool {

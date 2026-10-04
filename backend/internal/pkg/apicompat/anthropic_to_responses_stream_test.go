@@ -2,6 +2,26 @@ package apicompat
 
 import "testing"
 
+func TestAnthropicEventToResponses_LifecycleStartsCreatedThenInProgress(t *testing.T) {
+	state := NewAnthropicEventToResponsesState()
+	events := AnthropicEventToResponsesEvents(&AnthropicStreamEvent{
+		Type:    "message_start",
+		Message: &AnthropicResponse{ID: "msg_lifecycle", Model: "claude-sonnet-4-5"},
+	}, state)
+	if len(events) != 2 {
+		t.Fatalf("message_start emitted %d events, want 2: %+v", len(events), events)
+	}
+	if events[0].Type != "response.created" || events[1].Type != "response.in_progress" {
+		t.Fatalf("lifecycle start events = %q, %q; want created then in_progress", events[0].Type, events[1].Type)
+	}
+	if events[1].SequenceNumber != events[0].SequenceNumber+1 {
+		t.Fatalf("sequence numbers are not contiguous: %d, %d", events[0].SequenceNumber, events[1].SequenceNumber)
+	}
+	if events[0].Response.ID != events[1].Response.ID {
+		t.Fatalf("response IDs differ: %q != %q", events[0].Response.ID, events[1].Response.ID)
+	}
+}
+
 // TestAnthropicEventToResponses_TextEmitsContentPart pins that a message text
 // stream emits response.content_part.added, and that it precedes the first
 // output_text.delta for that part.
@@ -351,7 +371,10 @@ func TestAnthropicEventToResponses_ItemLifecycleIsBalanced(t *testing.T) {
 
 			openIDs := map[string]int{}
 			var order []string
-			for _, evt := range events {
+			for eventIndex, evt := range events {
+				if eventIndex > 0 && evt.SequenceNumber != events[eventIndex-1].SequenceNumber+1 {
+					t.Errorf("event %d sequence_number = %d, want %d", eventIndex, evt.SequenceNumber, events[eventIndex-1].SequenceNumber+1)
+				}
 				switch evt.Type {
 				case "response.output_item.added":
 					if evt.Item == nil {

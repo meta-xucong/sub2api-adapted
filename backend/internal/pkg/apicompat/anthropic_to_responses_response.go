@@ -305,8 +305,7 @@ func anthToResHandleMessageStart(evt *AnthropicStreamEvent, state *AnthropicEven
 	}
 	state.CreatedSent = true
 
-	// Emit response.created
-	return []ResponsesStreamEvent{makeResponsesCreatedEvent(state)}
+	return []ResponsesStreamEvent{makeResponsesCreatedEvent(state), makeResponsesInProgressEvent(state)}
 }
 
 func anthToResHandleContentBlockStart(evt *AnthropicStreamEvent, state *AnthropicEventToResponsesState) []ResponsesStreamEvent {
@@ -666,6 +665,23 @@ func makeResponsesCreatedEvent(state *AnthropicEventToResponsesState) ResponsesS
 	state.SequenceNumber++
 	return ResponsesStreamEvent{
 		Type:           "response.created",
+		SequenceNumber: seq,
+		Response: &ResponsesResponse{
+			ID:        state.ResponseID,
+			Object:    "response",
+			CreatedAt: state.Created,
+			Model:     state.Model,
+			Status:    "in_progress",
+			Output:    []ResponsesOutput{},
+		},
+	}
+}
+
+func makeResponsesInProgressEvent(state *AnthropicEventToResponsesState) ResponsesStreamEvent {
+	seq := state.SequenceNumber
+	state.SequenceNumber++
+	return ResponsesStreamEvent{
+		Type:           "response.in_progress",
 		SequenceNumber: seq,
 		Response: &ResponsesResponse{
 			ID:        state.ResponseID,

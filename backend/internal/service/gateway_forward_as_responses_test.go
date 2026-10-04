@@ -215,6 +215,81 @@ func TestHandleResponsesStreamingResponse_RestoresNamespaceTool(t *testing.T) {
 	require.NotContains(t, rec.Body.String(), `"name":"codex_app__read_thread"`)
 }
 
+func anthropicResponsesPartialStream() string {
+	return strings.Join([]string{
+		`event: message_start`,
+		`data: {"type":"message_start","message":{"id":"msg_partial","type":"message","role":"assistant","model":"claude-fable-5","content":[],"usage":{"input_tokens":4}}}`,
+		``,
+		`event: content_block_start`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+		``,
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}`,
+		``,
+	}, "\n")
+}
+
+func TestHandleResponsesStreamingResponse_FailsWithoutAnthropicTerminal(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	partial := anthropicResponsesPartialStream()
+	for _, tc := range []struct {
+		name string
+		body io.Reader
+	}{
+		{name: "missing_message_start", body: strings.NewReader("")},
+		{name: "missing_message_stop", body: strings.NewReader(partial)},
+		{name: "read_error", body: io.MultiReader(strings.NewReader(partial), responsesCompatInjectedReadFailure{})},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(tc.body)}
+			result, err := (&GatewayService{}).handleResponsesStreamingResponse(resp, c, "claude-fable-5", "claude-fable-5", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
+			require.Error(t, err)
+			require.NotNil(t, result)
+			assertResponsesFailedTerminal(t, rec.Body.String(), "upstream_stream_error")
+			if tc.name == "missing_message_start" {
+				require.Equal(t, 1, strings.Count(rec.Body.String(), "event: response.failed\n"))
+				require.NotContains(t, rec.Body.String(), "event: response.created\n")
+				require.NotContains(t, rec.Body.String(), "event: response.in_progress\n")
+			}
+			_, marked := GetOpsStreamError(c)
+			require.True(t, marked, "adapter failure must be included in operational stream error reporting")
+		})
+	}
+}
+
+func TestHandleResponsesStreamingResponse_ClientDisconnectDoesNotAppendTerminal(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	c.Writer = &responsesCompatFailAfterWriter{ResponseWriter: c.Writer, failAfter: 1}
+	resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(namespaceToolAnthropicStream()))}
+
+	result, err := (&GatewayService{}).handleResponsesStreamingResponse(resp, c, "claude-fable-5", "claude-fable-5", nil, time.Now(), namespaceToolMapping())
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.True(t, c.Writer.(*responsesCompatFailAfterWriter).failed)
+	require.NotContains(t, rec.Body.String(), "event: response.failed\n")
+	require.NotContains(t, rec.Body.String(), "event: response.completed\n")
+}
+
+func TestHandleResponsesBufferedStreamingResponse_FailsWithoutAnthropicTerminal(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(anthropicResponsesPartialStream()))}
+
+	_, err := (&GatewayService{}).handleResponsesBufferedStreamingResponse(resp, c, "claude-fable-5", "claude-fable-5", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
+	require.Error(t, err)
+	require.Equal(t, http.StatusBadGateway, rec.Code)
+	require.Contains(t, gjson.Get(rec.Body.String(), "error.message").String(), "before completion")
+	require.NotContains(t, rec.Body.String(), `"status":"completed"`)
+}
+
 func TestExtractResponsesReasoningEffortFromBody(t *testing.T) {
 	t.Parallel()
 
@@ -259,6 +334,9 @@ func TestHandleResponsesBufferedStreamingResponse_PreservesMessageStartCacheUsag
 			``,
 			`event: message_delta`,
 			`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}`,
+			``,
+			`event: message_stop`,
+			`data: {"type":"message_stop"}`,
 			``,
 		}, "\n"))),
 	}
@@ -370,7 +448,7 @@ func TestHandleResponsesStreamingResponse_NormalizesTerminalUsage(t *testing.T) 
 	}
 
 	for _, tt := range tests {
-		for _, terminal := range []string{"message_stop", "eof"} {
+		for _, terminal := range []string{"message_stop"} {
 			t.Run(tt.name+"/"+terminal, func(t *testing.T) {
 				rec := httptest.NewRecorder()
 				c, _ := gin.CreateTestContext(rec)
@@ -517,6 +595,9 @@ func TestHandleResponsesBufferedStreamingResponse_CompactSSEFormat(t *testing.T)
 			`event:message_delta`,
 			`data:{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}`,
 			``,
+			`event:message_stop`,
+			`data:{"type":"message_stop"}`,
+			``,
 		}, "\n"))),
 	}
 
@@ -637,4 +718,143 @@ func TestClaude55BridgeUsesMappedModelBeforeThinkingConversion(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestForwardAsResponses_AnthropicContinuationReplaysPreviousResponseHistory(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	toolUseSSE := strings.Join([]string{
+		`event: message_start` + "\n" + `data: {"type":"message_start","message":{"id":"msg_first","type":"message","role":"assistant","model":"claude-fable-5","content":[],"usage":{"input_tokens":8}}}`,
+		`event: content_block_start` + "\n" + `data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_lookup_1","name":"lookup","input":{}}}`,
+		`event: content_block_delta` + "\n" + `data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"q\":\"café\"}"}}`,
+		`event: content_block_stop` + "\n" + `data: {"type":"content_block_stop","index":0}`,
+		`event: message_delta` + "\n" + `data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":3}}`,
+		`event: message_stop` + "\n" + `data: {"type":"message_stop"}`,
+	}, "\n\n") + "\n"
+	textSSE := strings.Join([]string{
+		`event: message_start` + "\n" + `data: {"type":"message_start","message":{"id":"msg_second","type":"message","role":"assistant","model":"claude-fable-5","content":[],"usage":{"input_tokens":12}}}`,
+		`event: content_block_start` + "\n" + `data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+		`event: content_block_delta` + "\n" + `data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"完成"}}`,
+		`event: content_block_stop` + "\n" + `data: {"type":"content_block_stop","index":0}`,
+		`event: message_delta` + "\n" + `data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}`,
+		`event: message_stop` + "\n" + `data: {"type":"message_stop"}`,
+	}, "\n\n") + "\n"
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{
+		{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(toolUseSSE))},
+		{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(textSSE))},
+	}}
+	svc := &GatewayService{
+		cfg:          &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false, AllowInsecureHTTP: true}}},
+		httpUpstream: upstream,
+	}
+	account := &Account{ID: 201, Name: "anthropic-chat-only", Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Credentials: map[string]any{
+		"api_key": "fixture-key", "base_url": "https://api.anthropic.com",
+	}}
+	firstBody := []byte(`{"model":"claude-fable-5","instructions":"保留 Skills instructions","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"检查 café"}]}],"tools":[{"type":"function","name":"lookup","parameters":{"type":"object","properties":{}}}],"stream":false}`)
+	firstRecorder := httptest.NewRecorder()
+	firstContext, _ := gin.CreateTestContext(firstRecorder)
+	firstContext.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(string(firstBody)))
+	firstContext.Request.Header.Set("Content-Type", "application/json")
+	firstResult, err := svc.ForwardAsResponses(context.Background(), firstContext, account, firstBody, nil)
+	require.NoError(t, err)
+	require.NotNil(t, firstResult)
+	previousID := gjson.Get(firstRecorder.Body.String(), "id").String()
+	callID := gjson.Get(firstRecorder.Body.String(), "output.0.call_id").String()
+	require.NotEmpty(t, previousID)
+	require.Equal(t, "toolu_lookup_1", callID)
+
+	secondBody, err := json.Marshal(map[string]any{
+		"model":                "claude-fable-5",
+		"previous_response_id": previousID,
+		"input": []any{map[string]any{
+			"type": "function_call_output", "call_id": callID, "output": "已完成",
+		}},
+		"stream": false,
+	})
+	require.NoError(t, err)
+	secondRecorder := httptest.NewRecorder()
+	secondContext, _ := gin.CreateTestContext(secondRecorder)
+	secondContext.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(string(secondBody)))
+	secondContext.Request.Header.Set("Content-Type", "application/json")
+	secondResult, err := svc.ForwardAsResponses(context.Background(), secondContext, account, secondBody, nil)
+	require.NoError(t, err)
+	require.NotNil(t, secondResult)
+	require.Len(t, upstream.bodies, 2)
+
+	replayed := upstream.bodies[1]
+	require.Equal(t, "保留 Skills instructions", gjson.GetBytes(replayed, "system").String())
+	require.Equal(t, int64(3), gjson.GetBytes(replayed, "messages.#").Int(), "second Anthropic request body: %s", replayed)
+	require.Equal(t, "user", gjson.GetBytes(replayed, "messages.0.role").String())
+	require.Contains(t, gjson.GetBytes(replayed, "messages.0.content.0.text").String(), "café")
+	require.Equal(t, "assistant", gjson.GetBytes(replayed, "messages.1.role").String())
+	require.Equal(t, "tool_use", gjson.GetBytes(replayed, "messages.1.content.0.type").String())
+	require.Equal(t, "toolu_lookup_1", gjson.GetBytes(replayed, "messages.1.content.0.id").String())
+	require.Equal(t, "user", gjson.GetBytes(replayed, "messages.2.role").String())
+	require.Equal(t, "tool_result", gjson.GetBytes(replayed, "messages.2.content.0.type").String())
+	require.Equal(t, "toolu_lookup_1", gjson.GetBytes(replayed, "messages.2.content.0.tool_use_id").String())
+	require.Equal(t, "已完成", gjson.GetBytes(replayed, "messages.2.content.0.content").String())
+	require.Equal(t, "lookup", gjson.GetBytes(replayed, "tools.0.name").String())
+}
+
+func TestForwardAsResponses_AnthropicStreamContinuationReplaysPreviousResponseHistory(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	toolUseSSE := strings.Join([]string{
+		`event: message_start` + "\n" + `data: {"type":"message_start","message":{"id":"msg_stream_first","type":"message","role":"assistant","model":"claude-fable-5","content":[],"usage":{"input_tokens":8}}}`,
+		`event: content_block_start` + "\n" + `data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_stream_1","name":"lookup","input":{}}}`,
+		`event: content_block_delta` + "\n" + `data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"q\":\"café\"}"}}`,
+		`event: content_block_stop` + "\n" + `data: {"type":"content_block_stop","index":0}`,
+		`event: message_delta` + "\n" + `data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":3}}`,
+		`event: message_stop` + "\n" + `data: {"type":"message_stop"}`,
+	}, "\n\n") + "\n"
+	textSSE := strings.Join([]string{
+		`event: message_start` + "\n" + `data: {"type":"message_start","message":{"id":"msg_stream_second","type":"message","role":"assistant","model":"claude-fable-5","content":[],"usage":{"input_tokens":12}}}`,
+		`event: content_block_start` + "\n" + `data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+		`event: content_block_delta` + "\n" + `data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"完成"}}`,
+		`event: content_block_stop` + "\n" + `data: {"type":"content_block_stop","index":0}`,
+		`event: message_delta` + "\n" + `data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}`,
+		`event: message_stop` + "\n" + `data: {"type":"message_stop"}`,
+	}, "\n\n") + "\n"
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{
+		{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(toolUseSSE))},
+		{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(textSSE))},
+	}}
+	svc := &GatewayService{
+		cfg:          &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false, AllowInsecureHTTP: true}}},
+		httpUpstream: upstream,
+	}
+	account := &Account{ID: 202, Name: "anthropic-chat-only", Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Credentials: map[string]any{
+		"api_key": "fixture-key", "base_url": "https://api.anthropic.com",
+	}}
+	firstBody := []byte(`{"model":"claude-fable-5","instructions":"保留 Skills instructions","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"检查 café"}]}],"tools":[{"type":"function","name":"lookup","parameters":{"type":"object","properties":{}}}],"stream":true}`)
+	firstRecorder := httptest.NewRecorder()
+	firstContext, _ := gin.CreateTestContext(firstRecorder)
+	firstContext.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(string(firstBody)))
+	firstContext.Request.Header.Set("Content-Type", "application/json")
+	firstResult, err := svc.ForwardAsResponses(context.Background(), firstContext, account, firstBody, nil)
+	require.NoError(t, err)
+	require.NotNil(t, firstResult)
+	require.NotNil(t, firstResult.responsesCompatResponse)
+	require.Equal(t, "toolu_stream_1", firstResult.responsesCompatResponse.Output[0].CallID)
+	require.Contains(t, firstRecorder.Body.String(), "event: response.completed")
+
+	secondBody, err := json.Marshal(map[string]any{
+		"model":                "claude-fable-5",
+		"previous_response_id": firstResult.responsesCompatResponse.ID,
+		"input":                []any{map[string]any{"type": "function_call_output", "call_id": "toolu_stream_1", "output": "已完成"}},
+		"stream":               false,
+	})
+	require.NoError(t, err)
+	secondRecorder := httptest.NewRecorder()
+	secondContext, _ := gin.CreateTestContext(secondRecorder)
+	secondContext.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(string(secondBody)))
+	secondContext.Request.Header.Set("Content-Type", "application/json")
+	secondResult, err := svc.ForwardAsResponses(context.Background(), secondContext, account, secondBody, nil)
+	require.NoError(t, err)
+	require.NotNil(t, secondResult)
+	require.Len(t, upstream.bodies, 2)
+	replayed := upstream.bodies[1]
+	require.Equal(t, "保留 Skills instructions", gjson.GetBytes(replayed, "system").String())
+	require.Contains(t, string(replayed), "toolu_stream_1")
+	require.Contains(t, string(replayed), "已完成")
+	require.Contains(t, string(replayed), "café")
 }

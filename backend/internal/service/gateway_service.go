@@ -15,11 +15,13 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 	"unsafe"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
@@ -640,15 +642,16 @@ type ForwardResult struct {
 	ServiceTier *string
 
 	// 图片生成计费字段（图片生成模型使用）
-	ImageCount         int    // 生成的图片数量
-	ImageSize          string // 最终计费尺寸 "1K", "2K", "4K"
-	ImageInputSize     string // 请求中的原始图片尺寸
-	ImageOutputSize    string // 上游响应中的图片尺寸
-	ImageOutputSizes   []string
-	ImageSizeSource    string
-	ImageSizeBreakdown map[string]int
-	SearchCount        int
-	AudioUsage         *AudioUsage
+	ImageCount              int    // 生成的图片数量
+	ImageSize               string // 最终计费尺寸 "1K", "2K", "4K"
+	ImageInputSize          string // 请求中的原始图片尺寸
+	ImageOutputSize         string // 上游响应中的图片尺寸
+	ImageOutputSizes        []string
+	ImageSizeSource         string
+	ImageSizeBreakdown      map[string]int
+	SearchCount             int
+	AudioUsage              *AudioUsage
+	responsesCompatResponse *apicompat.ResponsesResponse
 }
 
 // GatewayFailureStage identifies which request stage failed. The zero value is
@@ -762,43 +765,44 @@ func (s *GatewayService) TempUnscheduleRetryableError(ctx context.Context, accou
 
 // GatewayService handles API gateway operations
 type GatewayService struct {
-	accountRepo           AccountRepository
-	groupRepo             GroupRepository
-	usageLogRepo          UsageLogRepository
-	usageBillingRepo      UsageBillingRepository
-	userRepo              UserRepository
-	userSubRepo           UserSubscriptionRepository
-	userGroupRateRepo     UserGroupRateRepository
-	cache                 GatewayCache
-	digestStore           *DigestSessionStore
-	cfg                   *config.Config
-	schedulerSnapshot     *SchedulerSnapshotService
-	billingService        *BillingService
-	rateLimitService      *RateLimitService
-	billingCacheService   *BillingCacheService
-	identityService       *IdentityService
-	httpUpstream          HTTPUpstream
-	deferredService       *DeferredService
-	concurrencyService    *ConcurrencyService
-	claudeTokenProvider   *ClaudeTokenProvider
-	sessionLimitCache     SessionLimitCache // 会话数量限制缓存（仅 Anthropic OAuth/SetupToken）
-	rpmCache              RPMCache          // RPM 计数缓存（仅 Anthropic OAuth/SetupToken）
-	userGroupRateResolver *userGroupRateResolver
-	userGroupRateCache    *gocache.Cache
-	userGroupRateSF       singleflight.Group
-	modelsListCache       *gocache.Cache
-	modelsListCacheTTL    time.Duration
-	settingService        *SettingService
-	responseHeaderFilter  *responseheaders.CompiledHeaderFilter
-	debugModelRouting     atomic.Bool
-	debugClaudeMimic      atomic.Bool
-	channelService        *ChannelService
-	resolver              *ModelPricingResolver
-	compositeResolver     *CompositeRouteResolver
-	debugGatewayBodyFile  atomic.Pointer[os.File] // non-nil when SUB2API_DEBUG_GATEWAY_BODY is set
-	tlsFPProfileService   *TLSFingerprintProfileService
-	balanceNotifyService  *BalanceNotifyService
-	userPlatformQuotaRepo UserPlatformQuotaRepository
+	accountRepo             AccountRepository
+	groupRepo               GroupRepository
+	usageLogRepo            UsageLogRepository
+	usageBillingRepo        UsageBillingRepository
+	userRepo                UserRepository
+	userSubRepo             UserSubscriptionRepository
+	userGroupRateRepo       UserGroupRateRepository
+	cache                   GatewayCache
+	responsesCompatSessions sync.Map
+	digestStore             *DigestSessionStore
+	cfg                     *config.Config
+	schedulerSnapshot       *SchedulerSnapshotService
+	billingService          *BillingService
+	rateLimitService        *RateLimitService
+	billingCacheService     *BillingCacheService
+	identityService         *IdentityService
+	httpUpstream            HTTPUpstream
+	deferredService         *DeferredService
+	concurrencyService      *ConcurrencyService
+	claudeTokenProvider     *ClaudeTokenProvider
+	sessionLimitCache       SessionLimitCache // 会话数量限制缓存（仅 Anthropic OAuth/SetupToken）
+	rpmCache                RPMCache          // RPM 计数缓存（仅 Anthropic OAuth/SetupToken）
+	userGroupRateResolver   *userGroupRateResolver
+	userGroupRateCache      *gocache.Cache
+	userGroupRateSF         singleflight.Group
+	modelsListCache         *gocache.Cache
+	modelsListCacheTTL      time.Duration
+	settingService          *SettingService
+	responseHeaderFilter    *responseheaders.CompiledHeaderFilter
+	debugModelRouting       atomic.Bool
+	debugClaudeMimic        atomic.Bool
+	channelService          *ChannelService
+	resolver                *ModelPricingResolver
+	compositeResolver       *CompositeRouteResolver
+	debugGatewayBodyFile    atomic.Pointer[os.File] // non-nil when SUB2API_DEBUG_GATEWAY_BODY is set
+	tlsFPProfileService     *TLSFingerprintProfileService
+	balanceNotifyService    *BalanceNotifyService
+	userPlatformQuotaRepo   UserPlatformQuotaRepository
 }
 
 // NewGatewayService creates a new GatewayService
