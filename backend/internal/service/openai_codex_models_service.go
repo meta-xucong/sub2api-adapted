@@ -276,12 +276,21 @@ func loadCodexGroupCatalogAccounts(ctx context.Context, repo AccountRepository, 
 func openAIConfiguredCodexModelIDs(accounts []Account) []string {
 	seen := make(map[string]struct{})
 	models := make([]string, 0)
+	now := time.Now()
 	for i := range accounts {
 		account := &accounts[i]
 		if account.Platform != PlatformOpenAI {
 			continue
 		}
-		for modelID := range account.GetModelMapping() {
+		configuredModels := make([]string, 0, len(account.GetModelMapping()))
+		if account.managesUpstreamModelAvailabilityListing() {
+			configuredModels = account.upstreamAvailabilityListingModels(now)
+		} else {
+			for modelID := range account.GetModelMapping() {
+				configuredModels = append(configuredModels, modelID)
+			}
+		}
+		for _, modelID := range configuredModels {
 			modelID = strings.TrimSpace(modelID)
 			if modelID == "" || strings.Contains(modelID, "*") {
 				continue
@@ -319,6 +328,9 @@ func openAIConfiguredCodexModelIDsForGroup(accounts []Account, group *Group) []s
 			}
 			mappedModel, matched := account.ResolveMappedModel(selectedModel)
 			if !matched || strings.TrimSpace(mappedModel) == "" {
+				continue
+			}
+			if account.managesUpstreamModelAvailabilityListing() && !account.IsModelSupported(selectedModel) {
 				continue
 			}
 			if _, exists := seen[selectedModel]; !exists {

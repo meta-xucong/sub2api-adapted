@@ -417,6 +417,39 @@ func TestFetchUpstreamSupportedModelsParsesOpenAIResponse(t *testing.T) {
 	require.Equal(t, "Bearer openai-key", upstream.lastReq.Header.Get("Authorization"))
 }
 
+func TestFetchUpstreamSupportedModelsFiltersTrustedOpenAISnapshots(t *testing.T) {
+	t.Parallel()
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"data":[{"id":"gpt-5.6-sol-2026-07-09"},{"id":"gpt-5.6"},{"id":"gpt-5.6-sol"},{"id":"codex-auto-review"}]}`)),
+	}}
+	svc := &AccountTestService{httpUpstream: upstream, cfg: upstreamModelSyncTestConfig()}
+
+	models, err := svc.FetchUpstreamSupportedModels(context.Background(), &Account{
+		ID: 8, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{"api_key": "key", "base_url": "https://api.openai.com/v1"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"gpt-5.6-sol"}, models)
+}
+
+func TestFetchUpstreamSupportedModelsRejectsTrustedOpenAISnapshotOnlyCatalog(t *testing.T) {
+	t.Parallel()
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"data":[{"id":"gpt-5.6-sol-2026-07-09"},{"id":"gpt-5.6"}]}`)),
+	}}
+	svc := &AccountTestService{httpUpstream: upstream, cfg: upstreamModelSyncTestConfig()}
+
+	_, err := svc.FetchUpstreamSupportedModels(context.Background(), &Account{
+		ID: 8, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{"api_key": "key", "base_url": "https://api.openai.com/v1"},
+	})
+	require.ErrorContains(t, err, "no current supported models")
+}
+
 // Scenario: ID-only 模型列表从 Models.dev 补齐能力。
 func TestSyncUpstreamModelCatalogEnrichesOpenCodeIDOnlyListAndPersistsSnapshot(t *testing.T) {
 	upstream := &httpUpstreamRecorder{responses: []*http.Response{
@@ -1184,4 +1217,16 @@ func TestMatchModelsDevProviderOfficialHostsWithoutAPI(t *testing.T) {
 		Reasoning: new(bool), InputModalities: []string{"text"}, ContextWindow: 1050000,
 	}}
 	require.False(t, upstreamCatalogNeedsRegistry(capabilitySyncModelIDs([]string{"gpt-6-astra", "gpt-image-2"}), metadata))
+}
+
+func TestExtractUpstreamModelCatalogReadsAlibabaNestedModelMetadata(t *testing.T) {
+	models, metadata, err := extractUpstreamModelCatalog([]byte(`{"success":true,"output":{"total":1,"models":[{"model":"qwen-plus","display_name":"Qwen Plus","reasoning":true,"supported_reasoning_levels":[{"effort":"low"}],"input_modalities":["text"],"context_window":128000}]}}`), false)
+	require.NoError(t, err)
+	require.Equal(t, []string{"qwen-plus"}, models)
+	require.Equal(t, "Qwen Plus", metadata["qwen-plus"].DisplayName)
+	require.NotNil(t, metadata["qwen-plus"].Reasoning)
+	require.True(t, *metadata["qwen-plus"].Reasoning)
+	require.Equal(t, []string{"low"}, metadata["qwen-plus"].SupportedReasoningLevels)
+	require.Equal(t, []string{"text"}, metadata["qwen-plus"].InputModalities)
+	require.EqualValues(t, 128000, metadata["qwen-plus"].ContextWindow)
 }

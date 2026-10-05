@@ -31,6 +31,11 @@ func RegisterAdminRoutes(
 	admin.Use(gin.HandlerFunc(auditLog))
 	admin.Use(middleware.AdminComplianceGuard(settingService))
 	{
+		// Model refresh status and explicit policy opt-in are account-admin APIs.
+		admin.GET("/model-catalog-refresh/status", h.Admin.Account.GetUpstreamModelRefreshStatus)
+		admin.POST("/model-catalog-refresh/policy-preview", h.Admin.Account.PreviewUpstreamModelPolicies)
+		admin.POST("/model-catalog-refresh/policy-opt-in", h.Admin.Account.OptInUpstreamModelPolicies)
+
 		// 部署与运营合规确认
 		registerAdminComplianceRoutes(admin, h)
 

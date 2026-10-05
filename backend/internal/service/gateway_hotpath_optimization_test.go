@@ -718,6 +718,94 @@ func TestGetAvailableModels_OpenAIPassthroughUsesDefaultFallback(t *testing.T) {
 	}
 }
 
+func TestGetAvailableModelsDoesNotExposeWildcardMappingsButKeepsRouting(t *testing.T) {
+	groupID := int64(122)
+	account := Account{
+		ID:       1221,
+		Platform: PlatformOpenAI,
+		Credentials: map[string]any{"model_mapping": map[string]any{
+			"gpt-*":        "gpt-5.6-sol",
+			"gpt-5.6-luna": "gpt-5.6-luna",
+		}},
+	}
+	repo := &modelsListAccountRepoStub{byGroup: map[int64][]Account{groupID: {account}}}
+	svc := &GatewayService{accountRepo: repo}
+
+	require.Equal(t, "gpt-5.6-sol", account.GetMappedModel("gpt-5.7"), "wildcard mappings remain active for request routing")
+	require.Equal(t, []string{"gpt-5.6-luna"}, svc.GetAvailableModels(context.Background(), &groupID, PlatformOpenAI), "routing patterns are not concrete public model IDs")
+}
+
+func TestGetAvailableModelsUsesOnlyFollowUpstreamSnapshot(t *testing.T) {
+	groupID := int64(120)
+	now := time.Now().UTC()
+	account := &Account{
+		ID: 1201, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key":       "test",
+			"base_url":      "https://api.openai.com/v1",
+			"model_mapping": map[string]any{},
+		},
+		Extra: map[string]any{UpstreamModelPolicyExtraKey: UpstreamModelPolicyFollow},
+	}
+	profile := DetectUpstreamModelSourceProfile(account)
+	snapshot, err := buildTrustedAvailabilitySnapshot(profile, []string{"gpt-5.5", "gpt-5.6-sol"}, nil, now)
+	require.NoError(t, err)
+	account.SetUpstreamModelAvailabilitySnapshot(snapshot)
+	repo := &modelsListAccountRepoStub{byGroup: map[int64][]Account{groupID: {*account}}}
+	svc := &GatewayService{accountRepo: repo}
+
+	got := svc.GetAvailableModels(context.Background(), &groupID, PlatformOpenAI)
+	require.Equal(t, []string{"gpt-5.5", "gpt-5.6-sol"}, got)
+	require.NotContains(t, got, "gpt-5.6-luna")
+
+	account.Extra[UpstreamModelAvailabilityExtraKey] = nil
+	empty := svc.GetAvailableModels(context.Background(), &groupID, PlatformOpenAI)
+	require.NotNil(t, empty)
+	require.Empty(t, empty, "follow policy without a usable snapshot must not be replaced by the static default catalog")
+}
+
+func TestGetAvailableModelsManualUnmappedAccountKeepsDefaultFallback(t *testing.T) {
+	groupID := int64(121)
+	now := time.Now().UTC()
+	account := &Account{
+		ID: 1211, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key":       "test",
+			"base_url":      "https://api.openai.com/v1",
+			"model_mapping": map[string]any{},
+		},
+	}
+	profile := DetectUpstreamModelSourceProfile(account)
+	snapshot, err := buildTrustedAvailabilitySnapshot(profile, []string{"gpt-5.5"}, nil, now)
+	require.NoError(t, err)
+	account.SetUpstreamModelAvailabilitySnapshot(snapshot)
+	repo := &modelsListAccountRepoStub{byGroup: map[int64][]Account{groupID: {*account}}}
+	svc := &GatewayService{accountRepo: repo}
+
+	require.Nil(t, svc.GetAvailableModels(context.Background(), &groupID, PlatformOpenAI))
+}
+
+func TestGetAvailableModelsEmptyFollowSnapshotDoesNotHideManualUnmappedFallback(t *testing.T) {
+	groupID := int64(123)
+	follow := Account{
+		ID: 1231, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key":       "follow-test",
+			"base_url":      "https://api.openai.com/v1",
+			"model_mapping": map[string]any{},
+		},
+		Extra: map[string]any{UpstreamModelPolicyExtraKey: UpstreamModelPolicyFollow},
+	}
+	manualUnmapped := Account{
+		ID: 1232, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{"model_mapping": map[string]any{}},
+	}
+	repo := &modelsListAccountRepoStub{byGroup: map[int64][]Account{groupID: {follow, manualUnmapped}}}
+	svc := &GatewayService{accountRepo: repo}
+
+	require.Nil(t, svc.GetAvailableModels(context.Background(), &groupID, PlatformOpenAI), "a manual unmapped account retains its official default-list fallback alongside an empty follow account")
+}
+
 func TestGetAvailableModels_GlobalListPreservesMappedModelsWithOpenAIPassthrough(t *testing.T) {
 	groupID := int64(11)
 	repo := &modelsListAccountRepoStub{

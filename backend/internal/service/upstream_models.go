@@ -16,6 +16,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 )
 
 const (
@@ -224,12 +225,29 @@ func (s *AccountTestService) SyncUpstreamModelCatalog(ctx context.Context, accou
 			"model_count", len(models),
 		)
 	}
-	catalog := &UpstreamModelCatalog{Models: models, Metadata: make(map[string]UpstreamModelMetadata)}
+	directMetadata := make(map[string]UpstreamModelMetadata)
 	if len(body) > 0 {
-		_, directMetadata, parseErr := extractUpstreamModelCatalog(body, account != nil && account.IsGrok())
+		_, parsedMetadata, parseErr := extractUpstreamModelCatalog(body, account != nil && account.IsGrok())
 		if parseErr == nil {
-			catalog.Metadata = directMetadata
+			directMetadata = parsedMetadata
 		}
+	}
+	return s.syncUpstreamModelCatalogFromFetched(ctx, account, models, directMetadata, liveListAvailable)
+}
+
+// syncUpstreamModelCatalogFromFetched preserves the manual catalog enrichment
+// path when the caller already acquired the complete model list. It deliberately
+// does not issue another upstream model-list request.
+func (s *AccountTestService) syncUpstreamModelCatalogFromFetched(
+	ctx context.Context,
+	account *Account,
+	models []string,
+	directMetadata map[string]UpstreamModelMetadata,
+	liveListAvailable bool,
+) (*UpstreamModelCatalog, error) {
+	catalog := &UpstreamModelCatalog{Models: append([]string(nil), models...), Metadata: make(map[string]UpstreamModelMetadata, len(directMetadata))}
+	for modelID, metadata := range directMetadata {
+		catalog.Metadata[modelID] = metadata
 	}
 
 	// Capability enrichment also covers concrete model_mapping targets. Admins may
@@ -782,6 +800,13 @@ func (s *AccountTestService) fetchUpstreamModelList(ctx context.Context, account
 	if len(models) == 0 {
 		return nil, nil, newUpstreamModelSyncUpstreamError("Upstream returned no supported models", nil)
 	}
+	if account.IsOpenAI() && (account.IsOpenAIOAuth() || DetectUpstreamModelSourceProfile(account).Kind == "openai") {
+		filtered := openai.FilterAutoDiscoveredModelIDs(models)
+		if len(filtered) == 0 {
+			return nil, nil, newUpstreamModelSyncUpstreamError("Upstream returned no current supported models", nil)
+		}
+		models = filtered
+	}
 
 	return models, body, nil
 }
@@ -1319,6 +1344,14 @@ func extractUpstreamModelRawEntries(body []byte) ([]json.RawMessage, error) {
 		entries = append(entries, response.Models...)
 		return entries, nil
 	}
+	var nested struct {
+		Output struct {
+			Models []json.RawMessage `json:"models"`
+		} `json:"output"`
+	}
+	if err := json.Unmarshal(body, &nested); err == nil && nested.Output.Models != nil {
+		return nested.Output.Models, nil
+	}
 	var entries []json.RawMessage
 	if err := json.Unmarshal(body, &entries); err != nil {
 		return nil, fmt.Errorf("parse upstream model catalog: %w", err)
@@ -1481,6 +1514,9 @@ func upstreamModelEntryID(entry upstreamModelEntry) string {
 	modelID := strings.TrimSpace(entry.ID)
 	if modelID == "" {
 		modelID = strings.TrimSpace(entry.Slug)
+	}
+	if modelID == "" {
+		modelID = strings.TrimSpace(entry.Model)
 	}
 	if modelID == "" {
 		modelID = strings.TrimSpace(entry.Name)

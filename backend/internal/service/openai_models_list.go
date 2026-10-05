@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 )
@@ -164,6 +165,9 @@ func standardOpenAIModelsBody(body []byte, fromManifest bool) ([]byte, error) {
 // representations while retaining the source entry's metadata. It never changes
 // the shared response and never synthesizes models absent from this account.
 func projectAccountModelsBody(body []byte, account *Account, group *Group, codex bool) ([]byte, error) {
+	if account != nil && account.managesUpstreamModelAvailabilityListing() {
+		return projectRefreshManagedAccountModelsBody(body, account, group, codex)
+	}
 	if account.IsOpenAIPassthroughEnabled() || len(account.GetModelMapping()) == 0 {
 		return body, nil
 	}
@@ -241,6 +245,79 @@ func projectAccountModelsBody(body []byte, account *Account, group *Group, codex
 		if err != nil {
 			return nil, err
 		}
+		projected = append(projected, encoded)
+	}
+	envelope[field], err = json.Marshal(projected)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(envelope)
+}
+
+func projectRefreshManagedAccountModelsBody(body []byte, account *Account, group *Group, codex bool) ([]byte, error) {
+	field, idField := "data", "id"
+	if codex {
+		field, idField = "models", "slug"
+	}
+	envelope, entries, err := modelCatalogEntries(body, field)
+	if err != nil {
+		return nil, err
+	}
+	upstreamByID := make(map[string]json.RawMessage, len(entries))
+	for _, raw := range entries {
+		var entry map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &entry); err != nil || entry == nil {
+			continue
+		}
+		var id string
+		if err := json.Unmarshal(entry[idField], &id); err != nil {
+			continue
+		}
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, exists := upstreamByID[strings.ToLower(id)]; !exists {
+			upstreamByID[strings.ToLower(id)] = raw
+		}
+	}
+
+	models := account.upstreamAvailabilityListingModels(time.Now())
+	projected := make([]json.RawMessage, 0, len(models))
+	seen := make(map[string]struct{}, len(models))
+	for _, publicID := range models {
+		publicID = strings.TrimSpace(publicID)
+		key := strings.ToLower(publicID)
+		if publicID == "" || strings.Contains(publicID, "*") {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		if codex && len(FilterCodexModelIDsForGroup([]string{publicID}, group)) == 0 {
+			continue
+		}
+		routeID, matched := account.ResolveMappedModel(publicID)
+		if !matched || !account.IsModelSupported(publicID) {
+			continue
+		}
+		raw, exists := upstreamByID[strings.ToLower(strings.TrimSpace(routeID))]
+		if !exists {
+			continue
+		}
+		var entry map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &entry); err != nil {
+			return nil, err
+		}
+		entry[idField], _ = json.Marshal(publicID)
+		if !strings.EqualFold(publicID, routeID) {
+			entry["display_name"], _ = json.Marshal(publicID)
+		}
+		encoded, err := json.Marshal(entry)
+		if err != nil {
+			return nil, err
+		}
+		seen[key] = struct{}{}
 		projected = append(projected, encoded)
 	}
 	envelope[field], err = json.Marshal(projected)

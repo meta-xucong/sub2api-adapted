@@ -922,6 +922,7 @@ var ProviderSet = wire.NewSet(
 	NewAdminService,
 	NewGatewayService,
 	ProvideOpenAIGatewayService,
+	ProvideUpstreamModelRefreshService,
 	ProvideSmartRouterCalibrationService,
 	ProvideImageStorageSettingService,
 	ProvideImageTaskService,

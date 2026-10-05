@@ -1012,6 +1012,19 @@ type GatewaySmartRouterConfig struct {
 	Scoring                 GatewaySmartRouterScoringConfig     `mapstructure:"scoring"`
 }
 
+// GatewayUpstreamModelRefreshConfig controls the automatic daily schedule and
+// startup catch-up for accounts explicitly opted into trusted upstream model
+// catalogs. An administrator-confirmed opt-in still triggers its due-only
+// catch-up when the automatic schedule is disabled.
+type GatewayUpstreamModelRefreshConfig struct {
+	Enabled               bool `mapstructure:"enabled"`
+	Hour                  int  `mapstructure:"hour"`
+	Minute                int  `mapstructure:"minute"`
+	AccountTimeoutSeconds int  `mapstructure:"account_timeout_seconds"`
+	TotalBudgetSeconds    int  `mapstructure:"total_budget_seconds"`
+	MaxConcurrency        int  `mapstructure:"max_concurrency"`
+}
+
 type GatewaySmartRouterRecoveryConfig struct {
 	SecondFailureCooldownSeconds       int `mapstructure:"second_failure_cooldown_seconds"`
 	SustainedFailureThreshold          int `mapstructure:"sustained_failure_threshold"`
@@ -1189,6 +1202,9 @@ type GatewayConfig struct {
 	// off, and the scheduler adapter also requires the existing advanced-scheduler
 	// setting to be enabled.
 	SmartRouter GatewaySmartRouterConfig `mapstructure:"smart_router"`
+	// Daily model availability snapshots are independent from Smart Router
+	// calibration and use their own distributed refresh leases.
+	UpstreamModelRefresh GatewayUpstreamModelRefreshConfig `mapstructure:"upstream_model_refresh"`
 
 	// TLSFingerprint: TLS指纹伪装配置
 	TLSFingerprint TLSFingerprintConfig `mapstructure:"tls_fingerprint"`
@@ -2512,6 +2528,12 @@ func setDefaults() {
 	viper.SetDefault("gateway.max_account_switches", 10)
 	viper.SetDefault("gateway.max_account_switches_gemini", 3)
 	viper.SetDefault("gateway.smart_router.enabled", false)
+	viper.SetDefault("gateway.upstream_model_refresh.enabled", true)
+	viper.SetDefault("gateway.upstream_model_refresh.hour", 4)
+	viper.SetDefault("gateway.upstream_model_refresh.minute", 0)
+	viper.SetDefault("gateway.upstream_model_refresh.account_timeout_seconds", 30)
+	viper.SetDefault("gateway.upstream_model_refresh.total_budget_seconds", 1800)
+	viper.SetDefault("gateway.upstream_model_refresh.max_concurrency", 4)
 	viper.SetDefault("gateway.smart_router.top_k", 5)
 	viper.SetDefault("gateway.smart_router.same_source_group_attempts", 1)
 	viper.SetDefault("gateway.smart_router.cost_bias_max", 3.0)
@@ -2830,6 +2852,22 @@ func setEnvReachableDefaults() {
 }
 
 func (c *Config) Validate() error {
+	refresh := c.Gateway.UpstreamModelRefresh
+	if refresh.Hour < 0 || refresh.Hour > 23 {
+		return fmt.Errorf("gateway.upstream_model_refresh.hour must be between 0 and 23")
+	}
+	if refresh.Minute < 0 || refresh.Minute > 59 {
+		return fmt.Errorf("gateway.upstream_model_refresh.minute must be between 0 and 59")
+	}
+	if refresh.AccountTimeoutSeconds < 1 || refresh.AccountTimeoutSeconds > 300 {
+		return fmt.Errorf("gateway.upstream_model_refresh.account_timeout_seconds must be between 1 and 300")
+	}
+	if refresh.TotalBudgetSeconds < 60 || refresh.TotalBudgetSeconds > 3600 {
+		return fmt.Errorf("gateway.upstream_model_refresh.total_budget_seconds must be between 60 and 3600")
+	}
+	if refresh.MaxConcurrency < 1 || refresh.MaxConcurrency > 8 {
+		return fmt.Errorf("gateway.upstream_model_refresh.max_concurrency must be between 1 and 8")
+	}
 	forwardedClientIPHeaders, err := NormalizeForwardedClientIPHeaders(c.Security.ForwardedClientIPHeaders)
 	if err != nil {
 		return fmt.Errorf("security.forwarded_client_ip_headers: %w", err)

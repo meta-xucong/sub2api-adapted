@@ -1427,6 +1427,54 @@ func TestBuildGroupConfiguredCodexModelsManifestFallsThroughWithoutConfiguration
 	require.Nil(t, manifest)
 }
 
+func TestOpenAIConfiguredCodexModelIDsUsesRefreshSnapshotOnlyWhenManaged(t *testing.T) {
+	now := time.Now().UTC()
+	follow := newCodexModelsAPIKeyTestAccount("https://api.openai.com/v1")
+	follow.Credentials["model_mapping"] = map[string]any{}
+	follow.Extra = map[string]any{UpstreamModelPolicyExtraKey: UpstreamModelPolicyFollow}
+	profile := DetectUpstreamModelSourceProfile(follow)
+	snapshot, err := buildTrustedAvailabilitySnapshot(profile, []string{"gpt-5.5", "gpt-5.6-sol"}, nil, now)
+	require.NoError(t, err)
+	follow.SetUpstreamModelAvailabilitySnapshot(snapshot)
+
+	require.Equal(t, []string{"gpt-5.5", "gpt-5.6-sol"}, openAIConfiguredCodexModelIDs([]Account{*follow}))
+
+	follow.Extra[UpstreamModelAvailabilityExtraKey] = nil
+	require.Empty(t, openAIConfiguredCodexModelIDsForGroup([]Account{*follow}, nil), "an opted-in account without a usable snapshot must not fall back to static defaults")
+
+	manual := newCodexModelsAPIKeyTestAccount("https://api.openai.com/v1")
+	manual.Credentials["model_mapping"] = map[string]any{}
+	manualSnapshot, err := buildTrustedAvailabilitySnapshot(DetectUpstreamModelSourceProfile(manual), []string{"gpt-5.5"}, nil, now)
+	require.NoError(t, err)
+	manual.SetUpstreamModelAvailabilitySnapshot(manualSnapshot)
+	require.Empty(t, openAIConfiguredCodexModelIDsForGroup([]Account{*manual}, nil), "manual mode without mappings does not add refreshed IDs to the configured-model overlay; the official base catalog remains the fallback")
+}
+
+func TestGroupAllowlistDoesNotReintroduceModelExcludedByRefreshSnapshot(t *testing.T) {
+	for _, expired := range []bool{false, true} {
+		name := "fresh"
+		if expired {
+			name = "expired"
+		}
+		t.Run(name, func(t *testing.T) {
+			account := newCodexModelsAPIKeyTestAccount("https://api.openai.com/v1")
+			account.Credentials["model_mapping"] = map[string]any{"mapped-luna": "gpt-5.6-luna"}
+			profile := DetectUpstreamModelSourceProfile(account)
+			snapshot, err := buildTrustedAvailabilitySnapshot(profile, []string{"gpt-5.6-sol"}, nil, time.Now().UTC())
+			require.NoError(t, err)
+			require.NoError(t, applyCompleteCatalogMappingNegatives(&snapshot, account, profile))
+			if expired {
+				snapshot.Status = "expired"
+			}
+			account.SetUpstreamModelAvailabilitySnapshot(snapshot)
+			group := &Group{ModelAllowlist: GroupModelAllowlist{Enabled: true, Models: []string{"mapped-luna"}}}
+
+			got := openAIConfiguredCodexModelIDsForGroup([]Account{*account}, group)
+			require.NotContains(t, got, "mapped-luna", "a group allowlist cannot resurrect a mapping rejected by current/last-good complete-catalog evidence")
+		})
+	}
+}
+
 func TestMergeGroupConfiguredCodexModelsFiltersAutoReviewByDefault(t *testing.T) {
 	t.Parallel()
 

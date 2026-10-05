@@ -858,6 +858,27 @@ func resolveRequestedModelInMapping(mapping map[string]string, requestedModel st
 // （isDeepseekServableModel）——未知模型名透传上游只会得到 404/400，并误触发
 // per-(账号,模型) 30 分钟冷却；带 [1m] 上下文后缀的写法先归一化再比对。
 func (a *Account) IsModelSupported(requestedModel string) bool {
+	if a == nil {
+		return false
+	}
+	requestedModel = canonicalizeAccountRequestedModelID(a, requestedModel)
+	if isForbiddenOpenAIRequestModelIDForAccount(a, requestedModel) {
+		return false
+	}
+	mapping := a.GetModelMapping()
+	mappedModel, mapped := resolveRequestedModelInMapping(mapping, requestedModel)
+	snapshot, profile, usable := a.usableUpstreamModelAvailabilitySnapshot(time.Now())
+	if a.GetUpstreamModelPolicy() == UpstreamModelPolicyFollow {
+		if !usable {
+			return false
+		}
+		if mapped {
+			_, ok := resolveAvailabilityCatalogModel(snapshot, profile, mappedModel, true)
+			return ok
+		}
+		_, ok := resolveAvailabilityCatalogModel(snapshot, profile, requestedModel, false)
+		return ok
+	}
 	// 透传模式仅替换认证、模型语义完全交由上游决定，因此放行所有模型。
 	// 该短路必须在 model_mapping 判定之前：账号从"白名单模式"切换到透传后，
 	// credentials 里常残留旧的非空 model_mapping，若不在此放行，透传账号会被
@@ -865,7 +886,13 @@ func (a *Account) IsModelSupported(requestedModel string) bool {
 	if a.IsOpenAIPassthroughEnabled() {
 		return true
 	}
-	mapping := a.GetModelMapping()
+	if mapped {
+		if usable {
+			_, ok := resolveAvailabilityCatalogModel(snapshot, profile, mappedModel, true)
+			return ok
+		}
+		return upstreamSnapshotModelLifecycleRoutable(snapshot, profile, mappedModel, time.Now())
+	}
 	if len(mapping) == 0 {
 		if a.IsOpenAIOAuth() {
 			return isOpenAIOAuthServableModel(requestedModel)
@@ -892,12 +919,56 @@ func (a *Account) GetMappedModel(requestedModel string) string {
 // ResolveMappedModel 获取映射后的模型名，并返回是否命中了账号级映射。
 // matched=true 表示命中了精确映射或通配符映射，即使映射结果与原模型名相同。
 func (a *Account) ResolveMappedModel(requestedModel string) (mappedModel string, matched bool) {
-	mapping := a.GetModelMapping()
-	if len(mapping) == 0 {
+	if a == nil {
 		return requestedModel, false
 	}
-	if mappedModel, matched := resolveRequestedModelInMapping(mapping, requestedModel); matched {
-		return mappedModel, true
+	requestedModel = canonicalizeAccountRequestedModelID(a, requestedModel)
+	if isForbiddenOpenAIRequestModelIDForAccount(a, requestedModel) {
+		return requestedModel, false
+	}
+	mapping := a.GetModelMapping()
+	configuredModel, configured := resolveRequestedModelInMapping(mapping, requestedModel)
+	snapshot, profile, usable := a.usableUpstreamModelAvailabilitySnapshot(time.Now())
+	if a.GetUpstreamModelPolicy() == UpstreamModelPolicyFollow {
+		if !usable {
+			return requestedModel, false
+		}
+		if configured {
+			if route, ok := resolveAvailabilityCatalogModel(snapshot, profile, configuredModel, true); ok {
+				return route, true
+			}
+			return requestedModel, false
+		}
+		if route, ok := resolveAvailabilityCatalogModel(snapshot, profile, requestedModel, false); ok {
+			return route, true
+		}
+		return requestedModel, false
+	}
+	if a.IsOpenAIPassthroughEnabled() {
+		if usable {
+			if route, ok := resolveAvailabilityCatalogModel(snapshot, profile, requestedModel, false); ok {
+				return route, true
+			}
+		}
+		return requestedModel, false
+	}
+	if configured {
+		if usable {
+			if route, ok := resolveAvailabilityCatalogModel(snapshot, profile, configuredModel, true); ok {
+				return route, true
+			}
+			return requestedModel, false
+		}
+		if !upstreamSnapshotModelLifecycleRoutable(snapshot, profile, configuredModel, time.Now()) {
+			return requestedModel, false
+		}
+		return configuredModel, true
+	}
+	if len(mapping) == 0 {
+		if a.Platform == PlatformOpenAI && DetectUpstreamModelSourceProfile(a).Kind == "openai" {
+			return requestedModel, false
+		}
+		return requestedModel, false
 	}
 	normalized := normalizeRequestedModelForLookup(a.Platform, requestedModel)
 	if normalized != requestedModel {

@@ -670,7 +670,9 @@ func lockAndMergeAccountProbeExtra(
 				false
 			),
 			extra -> 'opencode_go_usage_auto_refresh',
-			extra -> 'opencode_go_usage_snapshot'
+			extra -> 'opencode_go_usage_snapshot',
+			extra -> 'upstream_model_availability',
+			extra -> 'upstream_model_policy'
 		FROM accounts
 		WHERE id = $1 AND deleted_at IS NULL
 		FOR NO KEY UPDATE
@@ -699,6 +701,8 @@ func lockAndMergeAccountProbeExtra(
 		currentOllamaSnapshot          []byte
 		currentOpenCodeAutoRefresh     []byte
 		currentOpenCodeSnapshot        []byte
+		currentModelAvailability       []byte
+		currentModelPolicy             []byte
 	)
 	if err := rows.Scan(
 		&identityUnchanged,
@@ -713,6 +717,8 @@ func lockAndMergeAccountProbeExtra(
 		&opencodeGroupIdentityUnchanged,
 		&currentOpenCodeAutoRefresh,
 		&currentOpenCodeSnapshot,
+		&currentModelAvailability,
+		&currentModelPolicy,
 	); err != nil {
 		return nil, err
 	}
@@ -721,6 +727,12 @@ func lockAndMergeAccountProbeExtra(
 	}
 
 	extra := copyJSONMap(normalizeJSONMap(account.Extra))
+	if err := mergeCurrentAccountExtraKeys(extra, map[string][]byte{
+		service.UpstreamModelAvailabilityExtraKey: currentModelAvailability,
+		service.UpstreamModelPolicyExtraKey:       currentModelPolicy,
+	}); err != nil {
+		return nil, err
+	}
 	for _, key := range []string{
 		service.UpstreamBillingProbeEnabledExtraKey,
 		service.UpstreamBillingRateSyncEnabledExtraKey,
@@ -827,6 +839,20 @@ func lockAndMergeAccountProbeExtra(
 		}
 	}
 	return extra, nil
+}
+
+func mergeCurrentAccountExtraKeys(extra map[string]any, current map[string][]byte) error {
+	for key, raw := range current {
+		delete(extra, key)
+		value, ok, err := decodeAccountExtraJSON(raw)
+		if err != nil {
+			return err
+		}
+		if ok {
+			extra[key] = value
+		}
+	}
+	return nil
 }
 
 func decodeAccountExtraJSON(raw []byte) (any, bool, error) {
@@ -1867,9 +1893,14 @@ func (r *accountRepository) AddToGroup(ctx context.Context, accountID, groupID i
 		return err
 	}
 	client := r.client
+	var exec sqlExecutor = r.client
 	if tx != nil {
 		defer func() { _ = tx.Rollback() }()
 		client = tx.Client()
+		exec = tx.Client()
+	}
+	if err := lockLiveAccounts(ctx, exec, []int64{accountID}); err != nil {
+		return err
 	}
 	if err := lockLiveGroups(ctx, client, []int64{groupID}); err != nil {
 		return err
@@ -1880,6 +1911,9 @@ func (r *accountRepository) AddToGroup(ctx context.Context, accountID, groupID i
 		SetPriority(priority).
 		Save(ctx)
 	if err != nil {
+		return err
+	}
+	if err := bumpAccountGroupRevision(ctx, exec, []int64{accountID}); err != nil {
 		return err
 	}
 	if tx != nil {
@@ -1895,7 +1929,21 @@ func (r *accountRepository) AddToGroup(ctx context.Context, accountID, groupID i
 }
 
 func (r *accountRepository) RemoveFromGroup(ctx context.Context, accountID, groupID int64) error {
-	_, err := r.client.AccountGroup.Delete().
+	tx, err := r.client.Tx(ctx)
+	if err != nil && !errors.Is(err, dbent.ErrTxStarted) {
+		return err
+	}
+	client := r.client
+	var exec sqlExecutor = r.client
+	if tx != nil {
+		defer func() { _ = tx.Rollback() }()
+		client = tx.Client()
+		exec = tx.Client()
+	}
+	if err := lockLiveAccounts(ctx, exec, []int64{accountID}); err != nil {
+		return err
+	}
+	_, err = client.AccountGroup.Delete().
 		Where(
 			dbaccountgroup.AccountIDEQ(accountID),
 			dbaccountgroup.GroupIDEQ(groupID),
@@ -1903,6 +1951,14 @@ func (r *accountRepository) RemoveFromGroup(ctx context.Context, accountID, grou
 		Exec(ctx)
 	if err != nil {
 		return err
+	}
+	if err := bumpAccountGroupRevision(ctx, exec, []int64{accountID}); err != nil {
+		return err
+	}
+	if tx != nil {
+		if err := tx.Commit(); err != nil {
+			return err
+		}
 	}
 	payload := buildSchedulerGroupPayload([]int64{groupID})
 	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountGroupsChanged, &accountID, nil, payload); err != nil {
@@ -1929,10 +1985,6 @@ func (r *accountRepository) GetGroups(ctx context.Context, accountID int64) ([]s
 }
 
 func (r *accountRepository) BindGroups(ctx context.Context, accountID int64, groupIDs []int64) error {
-	existingGroupIDs, err := r.loadAccountGroupIDs(ctx, accountID)
-	if err != nil {
-		return err
-	}
 	// 使用事务保证删除旧绑定与创建新绑定的原子性
 	tx, err := r.client.Tx(ctx)
 	if err != nil && !errors.Is(err, dbent.ErrTxStarted) {
@@ -1947,11 +1999,39 @@ func (r *accountRepository) BindGroups(ctx context.Context, accountID int64, gro
 		// 已处于外部事务中（ErrTxStarted），复用当前 client
 		txClient = r.client
 	}
+	rows, err := txClient.QueryContext(ctx, `
+		SELECT id FROM accounts WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, accountID)
+	if err != nil {
+		return err
+	}
+	if !rows.Next() {
+		rowsErr := rows.Err()
+		_ = rows.Close()
+		if rowsErr != nil {
+			return rowsErr
+		}
+		return service.ErrAccountNotFound
+	}
+	var lockedAccountID int64
+	if err := rows.Scan(&lockedAccountID); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	existingGroupIDs, err := r.loadAccountGroupIDs(ctx, accountID)
+	if err != nil {
+		return err
+	}
 	if err := lockLiveGroups(ctx, txClient, groupIDs); err != nil {
 		return err
 	}
 
 	if _, err := txClient.AccountGroup.Delete().Where(dbaccountgroup.AccountIDEQ(accountID)).Exec(ctx); err != nil {
+		return err
+	}
+	if _, err := txClient.ExecContext(ctx, `UPDATE accounts SET updated_at = NOW() WHERE id = $1 AND deleted_at IS NULL`, accountID); err != nil {
 		return err
 	}
 

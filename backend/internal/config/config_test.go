@@ -87,6 +87,27 @@ func TestSmartRouterDefaultsAndValidation(t *testing.T) {
 	require.ErrorContains(t, cfg.Validate(), "gateway.smart_router.cost_bias_max must be non-negative")
 }
 
+func TestUpstreamModelRefreshDefaultsAndValidation(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.Equal(t, GatewayUpstreamModelRefreshConfig{
+		Enabled:               true,
+		Hour:                  4,
+		Minute:                0,
+		AccountTimeoutSeconds: 30,
+		TotalBudgetSeconds:    1800,
+		MaxConcurrency:        4,
+	}, cfg.Gateway.UpstreamModelRefresh)
+	require.NoError(t, cfg.Validate())
+
+	cfg.Gateway.UpstreamModelRefresh.Hour = 24
+	require.ErrorContains(t, cfg.Validate(), "gateway.upstream_model_refresh.hour must be between 0 and 23")
+	cfg.Gateway.UpstreamModelRefresh.Hour = 4
+	cfg.Gateway.UpstreamModelRefresh.MaxConcurrency = 9
+	require.ErrorContains(t, cfg.Validate(), "gateway.upstream_model_refresh.max_concurrency must be between 1 and 8")
+}
+
 func TestResponsesImageBridgeDefaultsAndValidation(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	cfg, err := Load()

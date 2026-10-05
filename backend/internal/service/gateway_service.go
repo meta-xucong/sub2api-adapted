@@ -218,7 +218,7 @@ func anthropicStreamEventIsTerminal(eventName, data string) bool {
 }
 
 func cloneStringSlice(src []string) []string {
-	if len(src) == 0 {
+	if src == nil {
 		return nil
 	}
 	dst := make([]string, len(src))
@@ -1435,8 +1435,30 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 	// Collect unique models from all accounts
 	modelSet := make(map[string]struct{})
 	hasAnyMapping := false
+	hasRefreshManagedResult := false
+	hasUnmanagedOpenAIWithDefaultListing := false
+	listingNow := time.Now()
 
 	for _, acc := range accounts {
+		if platform == PlatformOpenAI && acc.Platform == PlatformOpenAI &&
+			!acc.managesUpstreamModelAvailabilityListing() &&
+			(acc.IsOpenAIPassthroughEnabled() || len(acc.GetModelMapping()) == 0) {
+			hasUnmanagedOpenAIWithDefaultListing = true
+		}
+		if acc.managesUpstreamModelAvailabilityListing() &&
+			(acc.GetUpstreamModelPolicy() == UpstreamModelPolicyFollow || len(acc.GetModelMapping()) > 0) {
+			hasRefreshManagedResult = true
+			if acc.GetUpstreamModelPolicy() == UpstreamModelPolicyFollow || len(acc.GetModelMapping()) > 0 {
+				hasAnyMapping = true
+			}
+			for _, model := range acc.upstreamAvailabilityListingModels(listingNow) {
+				if platform != "" && acc.Platform != platform && !mixedListingModelAllowed(platform, model) {
+					continue
+				}
+				modelSet[model] = struct{}{}
+			}
+			continue
+		}
 		// Passthrough routing accepts models independently of model_mapping, so a
 		// stale mapping on a passthrough account must not narrow the public list.
 		// Treat it like an unmapped account: skip its mapping here and let
@@ -1448,6 +1470,10 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 
 		mapping := acc.GetModelMapping()
 		for model := range mapping {
+			// Wildcard mapping keys are routing patterns, not concrete public model IDs.
+			if strings.Contains(model, "*") {
+				continue
+			}
 			// Accounts pulled in through mixed scheduling only contribute the
 			// models that belong to the listing platform (e.g. an antigravity
 			// account's claude-* mappings must not surface on a gemini group).
@@ -1461,11 +1487,34 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 
 	// If no account has model_mapping, return nil (use default)
 	if !hasAnyMapping {
+		if hasRefreshManagedResult && !hasUnmanagedOpenAIWithDefaultListing {
+			models := []string{}
+			if s.modelsListCache != nil {
+				s.modelsListCache.Set(cacheKey, models, s.modelsListCacheTTL)
+				modelsListCacheStoreTotal.Add(1)
+			}
+			return models
+		}
 		if s.modelsListCache != nil {
 			s.modelsListCache.Set(cacheKey, []string(nil), s.modelsListCacheTTL)
 			modelsListCacheStoreTotal.Add(1)
 		}
 		return nil
+	}
+	if len(modelSet) == 0 && hasRefreshManagedResult {
+		if hasUnmanagedOpenAIWithDefaultListing {
+			if s.modelsListCache != nil {
+				s.modelsListCache.Set(cacheKey, []string(nil), s.modelsListCacheTTL)
+				modelsListCacheStoreTotal.Add(1)
+			}
+			return nil
+		}
+		models := []string{}
+		if s.modelsListCache != nil {
+			s.modelsListCache.Set(cacheKey, models, s.modelsListCacheTTL)
+			modelsListCacheStoreTotal.Add(1)
+		}
+		return models
 	}
 
 	// Convert to slice
@@ -1598,6 +1647,16 @@ func (s *GatewayService) InvalidateAvailableModelsCache(groupID *int64, platform
 		}
 		s.modelsListCache.Delete(key)
 	}
+}
+
+// InvalidateModelAvailabilityForAccount clears cached model listings after a
+// trusted refresh changes one account's availability. Accounts may belong to
+// multiple groups, so the existing cache API performs a broad, safe invalidation.
+func (s *GatewayService) InvalidateModelAvailabilityForAccount(_ *Account) {
+	if s == nil {
+		return
+	}
+	s.InvalidateAvailableModelsCache(nil, "")
 }
 
 func (s *GatewayService) invalidateCompositeModelOwnershipCache(groupID *int64) {

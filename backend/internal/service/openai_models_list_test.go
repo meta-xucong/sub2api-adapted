@@ -208,6 +208,40 @@ func TestProjectAccountModelsPassthroughIgnoresStaleMappings(t *testing.T) {
 	require.JSONEq(t, string(body), string(projected))
 }
 
+func TestProjectAccountModelsUsesTrustedFollowSnapshot(t *testing.T) {
+	account := newCodexModelsAPIKeyTestAccount("https://api.openai.com/v1")
+	account.Credentials["model_mapping"] = map[string]any{}
+	account.Extra = map[string]any{UpstreamModelPolicyExtraKey: UpstreamModelPolicyFollow}
+	profile := DetectUpstreamModelSourceProfile(account)
+	snapshot, err := buildTrustedAvailabilitySnapshot(profile, []string{"gpt-5.6-sol"}, nil, time.Now().UTC())
+	require.NoError(t, err)
+	account.SetUpstreamModelAvailabilitySnapshot(snapshot)
+
+	body := []byte(`{"object":"list","data":[{"id":"gpt-5.6-sol","owned_by":"official"},{"id":"gpt-5.6-luna","owned_by":"official"},{"id":"newly-added-but-not-in-snapshot"}]}`)
+	projected, err := projectAccountModelsBody(body, account, nil, false)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"object":"list","data":[{"id":"gpt-5.6-sol","owned_by":"official"}]}`, string(projected))
+
+	account.Extra[UpstreamModelAvailabilityExtraKey] = nil
+	projected, err = projectAccountModelsBody(body, account, nil, false)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"object":"list","data":[]}`, string(projected), "follow policy must not fall back to raw/stale upstream rows")
+}
+
+func TestProjectAccountModelsManualUnmappedKeepsOfficialPassthrough(t *testing.T) {
+	account := newCodexModelsAPIKeyTestAccount("https://api.openai.com/v1")
+	account.Credentials["model_mapping"] = map[string]any{}
+	profile := DetectUpstreamModelSourceProfile(account)
+	snapshot, err := buildTrustedAvailabilitySnapshot(profile, []string{"gpt-5.5"}, nil, time.Now().UTC())
+	require.NoError(t, err)
+	account.SetUpstreamModelAvailabilitySnapshot(snapshot)
+
+	body := []byte(`{"object":"list","data":[{"id":"gpt-5.5"},{"id":"provider-private-custom"}]}`)
+	projected, err := projectAccountModelsBody(body, account, nil, false)
+	require.NoError(t, err)
+	require.JSONEq(t, string(body), string(projected), "manual accounts without a mapping retain the official upstream list instead of applying the refresh snapshot")
+}
+
 func TestFetchOpenAIModelsListEmptyAndMalformedResponses(t *testing.T) {
 	for _, body := range []string{`{"data":[]}`, `{"data":null}`, `{}`, `{"data":{}}`, `{"data":[{}]}`, `{"data":[null]}`} {
 		t.Run(body, func(t *testing.T) {

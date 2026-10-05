@@ -67,6 +67,39 @@ func TestAdminSelectorFilterDoesNotChangeRoutingCatalog(t *testing.T) {
 	require.False(t, IsAdminSelectableModelID("codex-auto-review"))
 }
 
+func TestFilterAutoDiscoveredModelIDsKeepsFormalModelsAndCustomIDs(t *testing.T) {
+	got := FilterAutoDiscoveredModelIDs([]string{
+		"gpt-5.6-sol-2026-07-09",
+		"gpt-5.6-sol",
+		"gpt-5.5-codex",
+		"gpt-6-astra",
+		"gpt-image-2.5-flare",
+		"gpt-image-1.5",
+		"gpt-custom-2026-07-09",
+		"custom-provider-2026-07-09",
+		"codex-auto-review",
+		"ft:gpt-5.6:org:private",
+	})
+
+	require.Equal(t, []string{
+		"custom-provider-2026-07-09",
+		"ft:gpt-5.6:org:private",
+		"gpt-5.5-codex",
+		"gpt-5.6-sol",
+		"gpt-6-astra",
+		"gpt-image-2.5-flare",
+	}, got)
+}
+
+func TestAutoDiscoveryFilterAppliesOpenAIOnlyDateAndAliasRules(t *testing.T) {
+	require.False(t, IsAutoDiscoveredModelID("gpt-5.6-sol-2026-07-09"))
+	require.False(t, IsAutoDiscoveredModelID("gpt-5.6"))
+	require.False(t, IsAutoDiscoveredModelID("gpt-6"))
+	require.True(t, IsAutoDiscoveredModelID("custom-provider-2026-07-09"))
+	require.False(t, IsAutoDiscoveredModelID("gpt-custom-2026-07-09"), "frozen source applies the OpenAI date rule to all gpt-prefixed IDs")
+	require.True(t, IsAutoDiscoveredModelID("ft:gpt-5.6:org:private"), "frozen source preserves fine-tuned IDs as non-OpenAI-managed names")
+}
+
 func modelIDs(models []Model) []string {
 	ids := make([]string, 0, len(models))
 	for _, model := range models {
