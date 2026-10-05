@@ -13,7 +13,6 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
@@ -21,15 +20,9 @@ import (
 	"go.uber.org/zap"
 )
 
-// cursorResponsesUnsupportedFields are top-level Responses API parameters that
-// Codex upstreams reject with "Unsupported parameter: ...". They must be
-// stripped when forwarding a raw client body through the Responses-shape
-// short-circuit in ForwardAsChatCompletions (see isResponsesShape branch).
-// The normal Chat Completions → Responses conversion path is unaffected
-// because ChatCompletionsRequest has no fields for these parameters — unknown
-// fields are dropped naturally by json.Unmarshal. Kept semantically in sync
-// with the list in openai_gateway_service.go:2034 used by the /v1/responses
-// passthrough path.
+// cursorResponsesUnsupportedFields are unsupported top-level Responses
+// parameters removed only from the named Responses-shaped Cursor compatibility
+// body (see isResponsesShape below).
 var cursorResponsesUnsupportedFields = []string{
 	"prompt_cache_retention",
 	"safety_identifier",
@@ -46,11 +39,9 @@ var cursorResponsesUnsupportedFields = []string{
 // 正确的，但 sub2api 接入 DeepSeek/Kimi/GLM 等第三方 OpenAI 兼容上游后假设破裂：
 // 这些上游普遍只支持 /v1/chat/completions，无 /v1/responses 端点。
 //
-// 当前路由策略：
-//   - CN 账号以 credentials.api_protocol 为权威；adaptive/chat_completions 入站 Chat
-//     直转原生 CC，anthropic 走原生 Anthropic，responses 走 Responses
-//   - 其他 APIKey 账号仍按覆盖模式/探测标记分流（详见
-//     openai_compat.ShouldUseResponsesAPI）
+// 当前路由策略：普通 OpenAI API-key 账号遵循明确入站端点；仅 force_responses
+// 会让普通 Chat 入站使用现有 adapter。具名 Cursor Responses-shaped body、CN
+// api_protocol、OpenCodeGo model rules、OAuth 与 provider-specific routes 保留适配。
 func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	ctx context.Context,
 	c *gin.Context,
@@ -74,9 +65,6 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
 	rememberOpenCodeInboundBody(c, body)
 	beginUpstreamResponseModelObservation(c)
 	ClearActualOpenAIUpstreamEndpoint(c)
-	if shouldForwardOpenAIResponsesViaRawChatCompletions(account) {
-		SetActualOpenAIUpstreamEndpoint(c, "/v1/chat/completions")
-	}
 	setCodexToolNameReverse(c, nil)
 	if _, err := s.prepareCodexAccountIdentitySource(ctx, c, account); err != nil {
 		return nil, err
@@ -94,7 +82,6 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
 		})
 		return nil, errors.New("codex_cli_only restriction: only codex official clients are allowed")
 	}
-
 	if account.Platform == PlatformGrok {
 		if account.IsGrokOAuth() {
 			if eligible, reason := grokChatResponsesBridgeEligibility(body); eligible {
@@ -109,10 +96,15 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
 		return s.forwardAsRawChatCompletions(ctx, c, account, body, defaultMappedModel)
 	}
 
-	// Cursor compatibility: some clients send a Responses-shaped body to the
-	// /v1/chat/completions URL. Detect it before adaptive routing so adaptive
-	// accounts never forward the body unchanged to a Chat Completions endpoint.
+	// Named Cursor compatibility: some clients post a Responses-shaped body to
+	// the Chat URL. Keep this existing raw-body adapter isolated; it is not the
+	// default Chat→Responses route for ordinary Chat Completions requests.
 	isResponsesShape := !gjson.GetBytes(body, "messages").Exists() && gjson.GetBytes(body, "input").Exists()
+	if isResponsesShape || shouldRouteChatCompletionsViaResponses(account) {
+		SetActualOpenAIUpstreamEndpoint(c, openAIResponsesUpstreamEndpoint)
+	} else {
+		SetActualOpenAIUpstreamEndpoint(c, "/v1/chat/completions")
+	}
 
 	// OpenCode Go：按模型原生协议分流（与 inbound 协议正交）。
 	// 规则未命中一律兜底 Chat Completions，只有显式 Responses 才走下方转换链。
@@ -148,9 +140,8 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
 		}
 	}
 
-	// 自适应账号的标准 Chat Completions 入站使用供应商原生 CC 端点。
-	// Responses 形状下，DeepSeek / Kimi 继续走下方原生 Responses 链；GLM
-	// 没有 Responses 端点，先转换成 Chat Completions 再直转。
+	// 显式配置为 adaptive 的 CN 账号，其标准 Chat 入站使用供应商原生 CC 端点；
+	// 仅 Responses-shaped body 按 adaptive 配置选择该平台可用的原生协议。
 	if account.IsAdaptiveAPIProtocol() && !account.IsOpenCodeGo() {
 		if !isResponsesShape {
 			return s.forwardAsRawChatCompletions(ctx, c, account, body, defaultMappedModel)
@@ -173,20 +164,17 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
 			}
 			return s.forwardAsRawChatCompletions(ctx, c, account, chatBody, defaultMappedModel)
 		}
-		// DeepSeek / Kimi 原生 Responses 请求继续走下方 Responses→Chat 回程转换。
+		// DeepSeek / Kimi native Responses requests continue through the Responses path below.
 	}
 
-	// 入口分流（国产供应商 Anthropic 协议）：上游为供应商原生 Anthropic 端点，
-	// CC 入站请求经 CC→Responses→Anthropic 转换链直通该端点。必须先于
-	// ShouldUseResponsesAPI 分流：该类账号经 probe 落标
-	// openai_responses_supported=false，会先命中下方的 CC 直转分支。
+	// 显式 Anthropic 协议账号使用供应商原生 endpoint adapter。
 	if account.IsAnthropicProtocol() {
 		return s.forwardChatCompletionsViaNativeAnthropic(ctx, c, account, body, defaultMappedModel)
 	}
 
-	// 固定 chat_completions 的 CN 账号，以及强制或已探测确认不支持 Responses
-	// 的其他 APIKey 账号，均走 CC 直转。
-	if shouldForwardOpenAIResponsesViaRawChatCompletions(account) {
+	// 固定 Chat 的 CN 账号与普通 OpenAI API key 自动模式使用原生 CC；
+	// Responses adapter 仅由显式路由配置触发。
+	if !isResponsesShape && !shouldRouteChatCompletionsViaResponses(account) {
 		return s.forwardAsRawChatCompletions(ctx, c, account, body, defaultMappedModel)
 	}
 	SetActualOpenAIUpstreamEndpoint(c, openAIResponsesUpstreamEndpoint)
@@ -221,18 +209,9 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
 		}
 	}
 
-	// 3. Build the upstream (Responses API) body.
-	//
-	// Cursor compatibility: some clients (notably Cursor cloud) send Responses
-	// API shaped bodies — `input: [...]` with no `messages` field — to the
-	// /v1/chat/completions URL. Running those through ChatCompletionsToResponses
-	// would silently drop Cursor's `input` array (the struct has no Input field)
-	// and produce `input: null`, which Codex upstreams reject with
-	// "Invalid type for 'input': expected a string, but got an object".
-	//
-	// Forward that shape as-is, only rewriting `model`
-	// to the resolved upstream model. The downstream codex OAuth transform will
-	// still normalize store/stream/instructions/etc.
+	// 3. Build the upstream Responses body. Ordinary Chat requests use the
+	// explicit adapter; the named Cursor compatibility case preserves its
+	// Responses-shaped payload, changing only the pre-existing supported fields.
 	var (
 		responsesReq  *apicompat.ResponsesRequest
 		responsesBody []byte
@@ -243,11 +222,6 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
 		if err != nil {
 			return nil, fmt.Errorf("rewrite model in responses-shape body: %w", err)
 		}
-		// Strip Responses API parameters that no Codex upstream accepts.
-		// Because this branch forwards the raw body (the normal path rebuilds
-		// it from ChatCompletionsRequest and drops unknown fields naturally),
-		// we must filter these fields explicitly here — otherwise the upstream
-		// rejects the request with "Unsupported parameter: ...".
 		for _, field := range cursorResponsesUnsupportedFields {
 			if stripped, derr := sjson.DeleteBytes(responsesBody, field); derr == nil {
 				responsesBody = stripped
@@ -258,17 +232,11 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
 		if err != nil {
 			return nil, fmt.Errorf("normalize service_tier in responses-shape body: %w", err)
 		}
-		// Minimal stub populated from the raw body so downstream billing
-		// propagation (ServiceTier, ReasoningEffort) keeps working.
-		responsesReq = &apicompat.ResponsesRequest{
-			Model:       upstreamModel,
-			ServiceTier: normalizedServiceTier,
-		}
+		responsesReq = &apicompat.ResponsesRequest{Model: upstreamModel, ServiceTier: normalizedServiceTier}
 		if effort := gjson.GetBytes(responsesBody, "reasoning.effort").String(); effort != "" {
 			responsesReq.Reasoning = &apicompat.ResponsesReasoning{Effort: effort}
 		}
 	} else {
-		// Normal path: convert Chat Completions → Responses.
 		// ChatCompletionsToResponses always sets Stream=true (upstream always streams).
 		chatReq.Model = upstreamModel
 		responsesReq, err = apicompat.ChatCompletionsToResponses(&chatReq)
@@ -419,17 +387,6 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
 				return nil, fmt.Errorf("agent identity task recovery failed: %w", err)
 			}
 			return s.forwardAsChatCompletions(markAgentIdentityTaskRecoveryTried(ctx), c, account, body, promptCacheKey, defaultMappedModel, compatPromptCacheTenantIsolated)
-		}
-		if account.Type == AccountTypeAPIKey &&
-			!account.IsOpenCodeGo() &&
-			openai_compat.ResolveResponsesSupport(account.Extra) == openai_compat.ResponsesSupportUnknown &&
-			!isResponsesEndpointSupportedByStatus(resp.StatusCode) {
-			logger.L().Info("openai chat_completions: /responses unsupported, falling back to raw chat completions",
-				zap.Int64("account_id", account.ID),
-				zap.Int("upstream_status", resp.StatusCode),
-				zap.String("upstream_message", upstreamMsg),
-			)
-			return s.forwardAsRawChatCompletions(ctx, c, account, body, defaultMappedModel)
 		}
 		if foErr := s.failoverOpenAIUpstreamHTTPError(ctx, c, account, resp, respBody, upstreamMsg, upstreamModel); foErr != nil {
 			return nil, foErr

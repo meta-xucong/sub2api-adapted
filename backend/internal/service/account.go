@@ -1964,10 +1964,9 @@ func (a *Account) SupportsOpenAIEndpointCapability(capability OpenAIEndpointCapa
 			!a.IsOpenAIPersonalAccessToken() &&
 			!a.IsOpenAIAgentIdentity()
 	case OpenAIEndpointCapabilityResponses:
-		// Responses 支持状态由 accounts.extra 的自动探测标记决定，而非
-		// credentials 能力集。已探测确认不支持 /v1/responses 的 APIKey 上游
-		// 必须排除——否则会在 forward 阶段被静默降级为 Chat Completions，
-		// 无法完成生图（#4417）。未探测/OAuth 账号保留旧行为（不排除）。
+		// Responses 支持状态由 accounts.extra 的探测标记决定，而非 credentials
+		// 能力集。已知不支持 Responses 的 APIKey 不作为 Responses 端点候选；
+		// 转发层仍按入站端点路由，不会因此把请求改发到 Chat Completions。
 		if a.Type == AccountTypeAPIKey && !openai_compat.ShouldUseResponsesAPI(a.Extra) {
 			return false
 		}

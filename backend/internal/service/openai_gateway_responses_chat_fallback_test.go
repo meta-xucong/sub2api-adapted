@@ -209,7 +209,7 @@ func TestForwardResponses_ChatFallbackReplaysPreviousResponseHistory(t *testing.
 	}}
 	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
 	account := rawChatCompletionsTestAccount()
-	account.Extra = map[string]any{openai_compat.ExtraKeyResponsesSupported: false}
+	account.Extra = map[string]any{openai_compat.ExtraKeyResponsesMode: string(openai_compat.ResponsesSupportModeForceChatCompletions)}
 
 	firstRecorder := httptest.NewRecorder()
 	firstContext, _ := gin.CreateTestContext(firstRecorder)
@@ -304,7 +304,7 @@ func TestForwardResponses_ChatFallbackCapturesStreamForContinuation(t *testing.T
 	require.Equal(t, "second turn", gjson.GetBytes(replayed, "messages.3.content").String())
 }
 
-func TestForwardResponses_NativeContinuationUnavailableReplaysMatchingHistoryThroughChat(t *testing.T) {
+func TestForwardResponses_NativeContinuationUnavailableDoesNotReplayThroughChat(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	firstBody := []byte(`{"model":"gpt-5.4","instructions":"keep Skills instructions","input":[{"type":"message","role":"user","content":"check café"}],"tools":[{"type":"function","name":"unified_exec","parameters":{"type":"object","properties":{}}}],"stream":false}`)
@@ -319,11 +319,6 @@ func TestForwardResponses_NativeContinuationUnavailableReplaysMatchingHistoryThr
 			StatusCode: http.StatusBadRequest,
 			Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_native_continuation_rejected"}},
 			Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"previous_response_id is not available for this user","type":"invalid_request_error"}}`)),
-		},
-		{
-			StatusCode: http.StatusOK,
-			Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_native_chat_fallback"}},
-			Body:       io.NopCloser(strings.NewReader(`{"id":"chatcmpl_native_fallback","object":"chat.completion","model":"gpt-5.4","choices":[{"index":0,"message":{"role":"assistant","content":"finished"},"finish_reason":"stop"}],"usage":{"prompt_tokens":14,"completion_tokens":2,"total_tokens":16}}`)),
 		},
 	}}
 	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
@@ -344,26 +339,17 @@ func TestForwardResponses_NativeContinuationUnavailableReplaysMatchingHistoryThr
 	secondContext.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(secondBody))
 	secondContext.Request.Header.Set("Content-Type", "application/json")
 	secondResult, err := svc.Forward(context.Background(), secondContext, account, secondBody)
-	require.NoError(t, err)
-	require.NotNil(t, secondResult)
-	require.Len(t, upstream.requests, 3)
+	require.Error(t, err)
+	require.Nil(t, secondResult)
+	require.Len(t, upstream.requests, 2)
 	require.Equal(t, "http://upstream.example/v1/responses", upstream.requests[1].URL.String())
-	require.Equal(t, "http://upstream.example/v1/chat/completions", upstream.requests[2].URL.String())
-
-	replayed := upstream.bodies[2]
-	require.Equal(t, "gpt-5.4", gjson.GetBytes(replayed, "model").String())
-	require.Equal(t, int64(4), gjson.GetBytes(replayed, "messages.#").Int(), "fallback request body: %s", replayed)
-	require.Equal(t, "system", gjson.GetBytes(replayed, "messages.0.role").String())
-	require.Equal(t, "keep Skills instructions", gjson.GetBytes(replayed, "messages.0.content").String())
-	require.Contains(t, gjson.GetBytes(replayed, "messages.1.content").String(), "café")
-	require.Equal(t, "call_exec_native", gjson.GetBytes(replayed, "messages.2.tool_calls.0.id").String())
-	require.Equal(t, "unified_exec", gjson.GetBytes(replayed, "messages.2.tool_calls.0.function.name").String())
-	require.Equal(t, "tool", gjson.GetBytes(replayed, "messages.3.role").String())
-	require.Equal(t, "call_exec_native", gjson.GetBytes(replayed, "messages.3.tool_call_id").String())
-	require.Equal(t, "finished", gjson.GetBytes(replayed, "messages.3.content").String())
+	require.Equal(t, "http://upstream.example/v1/responses", upstream.requests[0].URL.String())
+	require.Equal(t, "resp_native_first", gjson.GetBytes(upstream.bodies[1], "previous_response_id").String())
+	require.True(t, gjson.GetBytes(upstream.bodies[1], "input.0.call_id").Exists())
+	require.False(t, gjson.GetBytes(upstream.bodies[1], "messages").Exists())
 }
 
-func TestForwardResponses_NativeStreamingResponseCapturesDoneItemForContinuation(t *testing.T) {
+func TestForwardResponses_NativeStreamingContinuationKeepsResponsesProtocol(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	firstBody := []byte(`{"model":"gpt-5.4","instructions":"keep stream instructions","input":"run a command","tools":[{"type":"function","name":"exec","parameters":{"type":"object","properties":{}}}],"stream":true}`)
 	secondBody := []byte(`{"model":"gpt-5.4","previous_response_id":"resp_native_stream","input":[{"type":"function_call_output","call_id":"call_stream","output":"done"}],"stream":false}`)
@@ -379,7 +365,6 @@ func TestForwardResponses_NativeStreamingResponseCapturesDoneItemForContinuation
 	upstream := &httpUpstreamRecorder{responses: []*http.Response{
 		{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(streamBody))},
 		{StatusCode: http.StatusBadRequest, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"error":{"message":"previous_response_id is not available for this user"}}`))},
-		{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"id":"chatcmpl_stream_fallback","object":"chat.completion","model":"gpt-5.4","choices":[{"index":0,"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":1,"total_tokens":11}}`))},
 	}}
 	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream, toolCorrector: NewCodexToolCorrector()}
 	account := rawChatCompletionsTestAccount()
@@ -401,13 +386,13 @@ func TestForwardResponses_NativeStreamingResponseCapturesDoneItemForContinuation
 	secondContext.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(secondBody))
 	secondContext.Request.Header.Set("Content-Type", "application/json")
 	_, err = svc.Forward(context.Background(), secondContext, account, secondBody)
-	require.NoError(t, err)
-	require.Len(t, upstream.requests, 3)
-	replayed := upstream.bodies[2]
-	require.Equal(t, "keep stream instructions", gjson.GetBytes(replayed, "messages.0.content").String())
-	require.Equal(t, "call_stream", gjson.GetBytes(replayed, "messages.2.tool_calls.0.id").String())
-	require.Equal(t, "tool", gjson.GetBytes(replayed, "messages.3.role").String())
-	require.Equal(t, "done", gjson.GetBytes(replayed, "messages.3.content").String())
+	require.Error(t, err)
+	require.Len(t, upstream.requests, 2)
+	require.Equal(t, "http://upstream.example/v1/responses", upstream.requests[0].URL.String())
+	require.Equal(t, "http://upstream.example/v1/responses", upstream.requests[1].URL.String())
+	require.Equal(t, "resp_native_stream", gjson.GetBytes(upstream.bodies[1], "previous_response_id").String())
+	require.True(t, gjson.GetBytes(upstream.bodies[1], "input.0.call_id").Exists())
+	require.False(t, gjson.GetBytes(upstream.bodies[1], "messages").Exists())
 }
 
 func TestOpenAIStreamingResponseCapturesAccumulatorOutputForContinuation(t *testing.T) {
@@ -469,29 +454,7 @@ func TestOpenAIStreamingResponseWithoutTerminalDoesNotCaptureContinuationState(t
 	require.NotContains(t, recorder.Body.String(), "event: response.completed")
 }
 
-func TestResponsesCompatNativeHTTPSessionScopeIsNarrow(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	ctx, _ := gin.CreateTestContext(nil)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
-	account := rawChatCompletionsTestAccount()
-	account.Extra = map[string]any{openai_compat.ExtraKeyResponsesSupported: true}
-	require.True(t, shouldUseResponsesCompatSessionForNativeHTTP(ctx, account, OpenAIUpstreamTransportHTTPSSE))
-	require.False(t, shouldUseResponsesCompatSessionForNativeHTTP(ctx, account, OpenAIUpstreamTransportResponsesWebsocketV2))
-	ctx.Request.URL.Path = "/v1/responses/compact"
-	require.False(t, shouldUseResponsesCompatSessionForNativeHTTP(ctx, account, OpenAIUpstreamTransportHTTPSSE))
-	ctx.Request.URL.Path = "/v1/responses"
-	MarkOpenAINativeCompactionV2(ctx)
-	require.False(t, shouldUseResponsesCompatSessionForNativeHTTP(ctx, account, OpenAIUpstreamTransportHTTPSSE),
-		"native Responses compaction v2 must stay on the official Responses path")
-	ctx.Set(openAINativeCompactionV2Key, false)
-	account.Platform = PlatformDeepseek
-	require.False(t, shouldUseResponsesCompatSessionForNativeHTTP(ctx, account, OpenAIUpstreamTransportHTTPSSE))
-	account.Platform = PlatformOpenAI
-	account.Type = AccountTypeOAuth
-	require.False(t, shouldUseResponsesCompatSessionForNativeHTTP(ctx, account, OpenAIUpstreamTransportHTTPSSE))
-}
-
-func TestForwardResponses_NativeContinuationFallbackRequiresMatchingHistoryAndKnownError(t *testing.T) {
+func TestForwardResponses_NativeContinuationErrorNeverSwitchesProtocol(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cases := []struct {
 		name          string
@@ -501,6 +464,11 @@ func TestForwardResponses_NativeContinuationFallbackRequiresMatchingHistoryAndKn
 	}{
 		{
 			name:          "recognized error without local history",
+			upstreamError: `{"error":{"message":"previous_response_id is not available for this user"}}`,
+		},
+		{
+			name:          "recognized error with local history",
+			seedHistory:   true,
 			upstreamError: `{"error":{"message":"previous_response_id is not available for this user"}}`,
 		},
 		{
@@ -548,8 +516,36 @@ func TestForwardResponses_NativeContinuationFallbackRequiresMatchingHistoryAndKn
 			require.Error(t, err)
 			require.Len(t, upstream.requests, 1, "this condition must not issue a Chat Completions request")
 			require.Equal(t, "http://upstream.example/v1/responses", upstream.requests[0].URL.String())
+			require.Equal(t, "/v1/responses", GetActualOpenAIUpstreamEndpoint(ctx))
 		})
 	}
+}
+
+func TestForwardResponses_AutoUnsupportedProbeDoesNotSwitchToChat(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"model":"gpt-5.4","input":"hello","stream":false}`)
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"Responses endpoint is not supported"}}`)),
+	}}
+	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
+	account := rawChatCompletionsTestAccount()
+	account.Extra = map[string]any{
+		openai_compat.ExtraKeyResponsesMode:      string(openai_compat.ResponsesSupportModeAuto),
+		openai_compat.ExtraKeyResponsesSupported: false,
+	}
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+
+	_, err := svc.Forward(context.Background(), ctx, account, body)
+	require.Error(t, err)
+	require.Len(t, upstream.requests, 1)
+	require.Equal(t, "http://upstream.example/v1/responses", upstream.requests[0].URL.String())
+	require.True(t, gjson.GetBytes(upstream.lastBody, "input").Exists())
+	require.False(t, gjson.GetBytes(upstream.lastBody, "messages").Exists())
+	require.Equal(t, "/v1/responses", GetActualOpenAIUpstreamEndpoint(ctx))
 }
 
 // Scenario: 第三方无推理模型不收到兼容档位。
@@ -582,7 +578,7 @@ func TestForwardResponses_ForceChatCompletionsOmitsNoneReasoningEffort(t *testin
 	require.Nil(t, result.ReasoningEffort)
 }
 
-func TestForwardResponses_PassthroughFlagWithUnsupportedResponsesUsesAccountMapping(t *testing.T) {
+func TestForwardResponses_PassthroughKeepsIngressProtocolIndependentOfProbe(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	for _, path := range []string{"/v1/responses", "/v1/responses/compact"} {
@@ -594,12 +590,14 @@ func TestForwardResponses_PassthroughFlagWithUnsupportedResponsesUsesAccountMapp
 			c.Request = httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
 			c.Request.Header.Set("Content-Type", "application/json")
 
+			upstreamResponse := `{"id":"resp_mapping","object":"response","model":"gpt-5.4-account","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}],"status":"completed"}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`
+			if path == "/v1/responses/compact" {
+				upstreamResponse = `{"id":"chatcmpl_mapping","object":"chat.completion","model":"gpt-5.4-account","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`
+			}
 			upstream := &httpUpstreamRecorder{resp: &http.Response{
 				StatusCode: http.StatusOK,
 				Header:     http.Header{"Content-Type": []string{"application/json"}},
-				Body: io.NopCloser(strings.NewReader(
-					`{"id":"chatcmpl_mapping","object":"chat.completion","model":"gpt-5.4-account","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`,
-				)),
+				Body:       io.NopCloser(strings.NewReader(upstreamResponse)),
 			}}
 			svc := &OpenAIGatewayService{
 				cfg:          rawChatCompletionsTestConfig(),
@@ -620,8 +618,13 @@ func TestForwardResponses_PassthroughFlagWithUnsupportedResponsesUsesAccountMapp
 			result, err := svc.Forward(context.Background(), c, account, body)
 			require.NoError(t, err)
 			require.NotNil(t, result)
-			require.Equal(t, "http://upstream.example/v1/chat/completions", upstream.lastReq.URL.String())
-			require.Equal(t, "gpt-5.4-account", gjson.GetBytes(upstream.lastBody, "model").String())
+			if path == "/v1/responses" {
+				require.Equal(t, "http://upstream.example/v1/responses", upstream.lastReq.URL.String())
+				require.True(t, gjson.GetBytes(upstream.lastBody, "input").Exists())
+			} else {
+				require.Equal(t, "http://upstream.example/v1/chat/completions", upstream.lastReq.URL.String())
+			}
+			require.Equal(t, "gpt-5.4-channel", gjson.GetBytes(upstream.lastBody, "model").String())
 		})
 	}
 }

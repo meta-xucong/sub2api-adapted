@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -676,7 +677,10 @@ func TestForwardAsChatCompletions_KeepsOutboundAndObservedServiceTiersSeparate(t
 		Type:        AccountTypeAPIKey,
 		Concurrency: 1,
 		Credentials: map[string]any{"api_key": "sk-compatible"},
-		Extra:       map[string]any{"openai_responses_supported": true},
+		Extra: map[string]any{
+			openai_compat.ExtraKeyResponsesMode:      string(openai_compat.ResponsesSupportModeForceResponses),
+			openai_compat.ExtraKeyResponsesSupported: true,
+		},
 		Status:      StatusActive,
 		Schedulable: true,
 	}

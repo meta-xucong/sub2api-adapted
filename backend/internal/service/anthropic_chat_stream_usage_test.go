@@ -62,6 +62,7 @@ func TestAnthropicChatStreamAuthoritativeUsage(t *testing.T) {
 							svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
 							result, err := svc.forwardChatCompletionsViaNativeAnthropic(context.Background(), c, nativeAnthropicTestAccount(), body, "")
 							require.NoError(t, err)
+							require.Equal(t, upstream.lastReq.URL.Path, GetActualOpenAIUpstreamEndpoint(c))
 							require.Equal(t, tc.totalInput, result.Usage.InputTokens)
 							require.Equal(t, tc.output, result.Usage.OutputTokens)
 							require.Equal(t, tc.cached, result.Usage.CacheReadInputTokens)

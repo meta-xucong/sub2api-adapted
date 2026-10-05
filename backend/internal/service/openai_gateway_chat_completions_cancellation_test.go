@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -101,7 +102,11 @@ func TestForwardAsChatCompletions_CancelsUpstreamBeforeClosingBody(t *testing.T)
 	}
 	resultCh := make(chan forwardResult, 1)
 	go func() {
-		result, err := svc.ForwardAsChatCompletions(context.Background(), c, rawChatCompletionsTestAccount(), body, "", "gpt-5.1")
+		account := rawChatCompletionsTestAccount()
+		account.Extra = map[string]any{
+			openai_compat.ExtraKeyResponsesMode: string(openai_compat.ResponsesSupportModeForceResponses),
+		}
+		result, err := svc.ForwardAsChatCompletions(context.Background(), c, account, body, "", "gpt-5.1")
 		resultCh <- forwardResult{result: result, err: err}
 	}()
 
