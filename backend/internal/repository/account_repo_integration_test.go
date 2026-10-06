@@ -266,6 +266,50 @@ func (s *AccountRepoSuite) TestDelete() {
 
 	_, err = s.repo.GetByID(s.ctx, account.ID)
 	s.Require().Error(err, "expected error after delete")
+
+	var outboxCount int
+	err = scanSingleRow(
+		s.ctx,
+		s.repo.sql,
+		"SELECT COUNT(*) FROM scheduler_outbox WHERE event_type = $1 AND account_id = $2",
+		[]any{service.SchedulerOutboxEventAccountChanged, account.ID},
+		&outboxCount,
+	)
+	s.Require().NoError(err)
+	s.Require().Equal(1, outboxCount)
+}
+
+func TestDeleteRollsBackWhenSchedulerOutboxInsertFails(t *testing.T) {
+	client := testEntClient(t)
+	account := mustCreateAccount(t, client, &service.Account{Name: "delete-outbox-atomic"})
+	t.Cleanup(func() {
+		_, _ = integrationDB.ExecContext(context.Background(), "DROP TRIGGER IF EXISTS test_fail_scheduler_outbox_insert ON scheduler_outbox")
+		_, _ = integrationDB.ExecContext(context.Background(), "DROP FUNCTION IF EXISTS test_fail_scheduler_outbox_insert()")
+		_ = client.Account.DeleteOneID(account.ID).Exec(context.Background())
+	})
+
+	_, err := integrationDB.ExecContext(context.Background(), `
+		CREATE OR REPLACE FUNCTION test_fail_scheduler_outbox_insert() RETURNS trigger
+		LANGUAGE plpgsql AS $$
+		BEGIN
+			RAISE EXCEPTION 'test scheduler outbox insert failure';
+		END;
+		$$`)
+	require.NoError(t, err)
+	_, err = integrationDB.ExecContext(context.Background(), `
+		CREATE TRIGGER test_fail_scheduler_outbox_insert
+		BEFORE INSERT ON scheduler_outbox
+		FOR EACH ROW EXECUTE FUNCTION test_fail_scheduler_outbox_insert()`)
+	require.NoError(t, err)
+
+	repo := NewAccountRepository(client, integrationDB, nil)
+	err = repo.Delete(context.Background(), account.ID)
+	require.Error(t, err)
+
+	got, readErr := repo.GetByID(context.Background(), account.ID)
+	require.NoError(t, readErr)
+	require.Equal(t, service.StatusActive, got.Status)
+	require.True(t, got.Schedulable)
 }
 
 func (s *AccountRepoSuite) TestDelete_RemovesSchedulerAccountSnapshot() {

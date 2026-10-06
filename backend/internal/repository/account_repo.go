@@ -1012,6 +1012,21 @@ func (r *accountRepository) Delete(ctx context.Context, id int64) error {
 	if _, err := txClient.Account.Delete().Where(dbaccount.IDEQ(id)).Exec(ctx); err != nil {
 		return err
 	}
+	// Keep the durable scheduler invalidation event in the same transaction as
+	// the soft delete. If the event cannot be written, the account deletion must
+	// roll back; otherwise a stale scheduler snapshot could keep the account in
+	// rotation with no event left to repair it.
+	outboxExec := r.sql
+	if tx != nil {
+		var ok bool
+		outboxExec, ok = txClient.Driver().(sqlExecutor)
+		if !ok {
+			return errors.New("account delete transaction does not support scheduler outbox")
+		}
+	}
+	if err := enqueueSchedulerOutbox(ctx, outboxExec, service.SchedulerOutboxEventAccountChanged, &id, nil, buildSchedulerGroupPayload(groupIDs)); err != nil {
+		return err
+	}
 
 	if tx != nil {
 		if err := tx.Commit(); err != nil {
@@ -1019,9 +1034,6 @@ func (r *accountRepository) Delete(ctx context.Context, id int64) error {
 		}
 	}
 	r.deleteSchedulerAccountSnapshot(ctx, id)
-	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &id, nil, buildSchedulerGroupPayload(groupIDs)); err != nil {
-		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue account delete failed: account=%d err=%v", id, err)
-	}
 	return nil
 }
 
