@@ -700,11 +700,15 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 	if err != nil {
 		return nil, err
 	}
+	billingRequestBody := body
 	body, contentType, err = normalizeGrokMediaForwardBodyForAccount(account, endpoint, body, contentType)
 	if err != nil {
 		return nil, err
 	}
 	requestInfo := ParseGrokMediaRequest(contentType, body)
+	if isWokeyVideoGeneration(account, endpoint) {
+		requestInfo.Resolution = wokeyVideoBillingResolution(billingRequestBody, requestInfo.Resolution)
+	}
 	upstreamModel := requestInfo.Model
 	if endpoint.RequiresRequestBody() && gjson.ValidBytes(body) {
 		if mappedModel := strings.TrimSpace(account.GetMappedModel(requestInfo.Model)); mappedModel != "" {

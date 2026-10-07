@@ -82,11 +82,10 @@ describe('AppSidebar subscription feature flag', () => {
 })
 
 describe('AppSidebar Unified Gateway admin entry', () => {
-  it('loads management metadata and hides the entry unless the admin UI is ready and readable', () => {
-    expect(componentSource).toContain("import { getMeta as getUnifiedGatewayMeta } from '@/api/admin/unifiedGateway'")
-    expect(componentSource).toContain('const unifiedGatewayNavEnabled = ref(false)')
-    expect(componentSource).toContain('meta.admin_ui_enabled === true && meta.migration_ready === true && meta.capabilities?.read === true')
-    expect(componentSource).toMatch(/path: '\/admin\/unified-gateway'[\s\S]*?featureFlag: flagUnifiedGateway/)
-    expect(componentSource).toContain('unifiedGatewayNavEnabled.value = false')
-  })
+	it('uses the normal admin navigation without a legacy management metadata gate', () => {
+		expect(componentSource).not.toContain('getUnifiedGatewayMeta')
+		expect(componentSource).not.toContain('unifiedGatewayNavEnabled')
+		expect(componentSource).not.toContain('flagUnifiedGateway')
+		expect(componentSource).toMatch(/path: '\/admin\/unified-gateway'[^\n]*label: t\('admin\.unifiedGateway\.title'\)/)
+	})
 })

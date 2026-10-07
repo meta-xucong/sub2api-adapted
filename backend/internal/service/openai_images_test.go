@@ -66,6 +66,28 @@ func TestOpenAIGatewayServiceParseOpenAIImagesRequest_JSON(t *testing.T) {
 	require.False(t, parsed.Multipart)
 }
 
+func TestRewriteOpenAIImagesModelKeepsJSONBytesWhenModelAlreadyMatches(t *testing.T) {
+	body := []byte("{ \"prompt\" : \"draw a cat\",\n  \"model\" : \"gpt-image-2\", \"size\":\"1024x1024\" }\n")
+
+	rewritten, contentType, err := rewriteOpenAIImagesModel(body, "application/json", "gpt-image-2")
+
+	require.NoError(t, err)
+	require.Equal(t, "application/json", contentType)
+	require.Equal(t, body, rewritten)
+}
+
+func TestRewriteOpenAIImagesModelChangesOnlyModelWhenDifferent(t *testing.T) {
+	body := []byte(`{"model":"gpt-image-1","prompt":"draw a cat","size":"1024x1024"}`)
+
+	rewritten, contentType, err := rewriteOpenAIImagesModel(body, "application/json", "gpt-image-2")
+
+	require.NoError(t, err)
+	require.Equal(t, "application/json", contentType)
+	require.Equal(t, "gpt-image-2", gjson.GetBytes(rewritten, "model").String())
+	require.Equal(t, "draw a cat", gjson.GetBytes(rewritten, "prompt").String())
+	require.Equal(t, "1024x1024", gjson.GetBytes(rewritten, "size").String())
+}
+
 func TestOpenAIGatewayServiceParseOpenAIImagesRequest_MultipartEdit(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -328,7 +350,7 @@ func TestOpenAIGatewayServiceParseOpenAIImagesRequest_ExplicitSizeRequiresNative
 
 func TestOpenAIGatewayServiceParseOpenAIImagesRequest_RejectsNonImageModel(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	body := []byte(`{"model":"gpt-5.4","prompt":"draw a cat"}`)
+	body := []byte(`{"model":"gpt-5.6-sol","prompt":"draw a cat"}`)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -339,7 +361,7 @@ func TestOpenAIGatewayServiceParseOpenAIImagesRequest_RejectsNonImageModel(t *te
 	svc := &OpenAIGatewayService{}
 	parsed, err := svc.ParseOpenAIImagesRequest(c, body)
 	require.Nil(t, parsed)
-	require.ErrorContains(t, err, `images endpoint requires an image model, got "gpt-5.4"`)
+	require.ErrorContains(t, err, `images endpoint requires an image model, got "gpt-5.6-sol"`)
 }
 
 func TestOpenAIGatewayServiceParseOpenAIImagesRequest_AllowsGrokImageModels(t *testing.T) {

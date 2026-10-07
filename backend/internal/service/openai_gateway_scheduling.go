@@ -971,6 +971,9 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 	if _, excluded := excludedIDs[accountID]; excluded {
 		return nil
 	}
+	if !compositeOpenAIRoutingAllowsAccount(ctx, accountID) {
+		return nil
+	}
 
 	account, err := s.getSchedulableAccount(ctx, accountID)
 	if err != nil {
@@ -1038,6 +1041,10 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 		// Skip excluded accounts
 		if _, excluded := excludedIDs[acc.ID]; excluded {
 			filterStats.exclude("excluded")
+			continue
+		}
+		if !compositeOpenAIRoutingAllowsAccount(ctx, acc.ID) {
+			filterStats.exclude("model_routing")
 			continue
 		}
 
@@ -1209,7 +1216,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 	stickySpillover := false
 	if sessionHash != "" {
 		accountID := stickyAccountID
-		if accountID > 0 && !isExcluded(accountID) {
+		if accountID > 0 && !isExcluded(accountID) && compositeOpenAIRoutingAllowsAccount(ctx, accountID) {
 			account, err := s.getSchedulableAccount(ctx, accountID)
 			if err == nil {
 				clearSticky := shouldClearStickySession(account, requestedModel)
@@ -1278,6 +1285,10 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 		acc := &accounts[i]
 		if isExcluded(acc.ID) {
 			filterStats.exclude("excluded")
+			continue
+		}
+		if !compositeOpenAIRoutingAllowsAccount(ctx, acc.ID) {
+			filterStats.exclude("model_routing")
 			continue
 		}
 		// Scheduler snapshots can be temporarily stale (bucket rebuild is throttled);

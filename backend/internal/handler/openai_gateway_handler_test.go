@@ -1932,6 +1932,7 @@ func newOpenAIWSHandlerTestServer(t *testing.T, h *OpenAIGatewayHandler, subject
 type openAIResponsesWSUsageLogCase struct {
 	simpleModeRejectAtRead int64
 	compositeResolver      *service.CompositeRouteResolver
+	additionalAccountIDs   []int64
 	accountPlatform        string
 	closeReason            string
 	closeStatus            coderws.StatusCode
@@ -1964,14 +1965,22 @@ type openAIResponsesWSUsageLogResult struct {
 
 type openAIWSUsageHandlerAccountRepoStub struct {
 	service.AccountRepository
-	account service.Account
+	account  service.Account
+	accounts []service.Account
 }
 
 func (s *openAIWSUsageHandlerAccountRepoStub) ListSchedulableByPlatform(ctx context.Context, platform string) ([]service.Account, error) {
-	if s.account.Platform != platform {
-		return nil, nil
+	accounts := s.accounts
+	if len(accounts) == 0 {
+		accounts = []service.Account{s.account}
 	}
-	return []service.Account{s.account}, nil
+	filtered := make([]service.Account, 0, len(accounts))
+	for _, account := range accounts {
+		if account.Platform == platform {
+			filtered = append(filtered, account)
+		}
+	}
+	return filtered, nil
 }
 
 func (s *openAIWSUsageHandlerAccountRepoStub) ListSchedulableByGroupIDAndPlatform(ctx context.Context, groupID int64, platform string) ([]service.Account, error) {
@@ -1979,11 +1988,17 @@ func (s *openAIWSUsageHandlerAccountRepoStub) ListSchedulableByGroupIDAndPlatfor
 }
 
 func (s *openAIWSUsageHandlerAccountRepoStub) GetByID(ctx context.Context, id int64) (*service.Account, error) {
-	if s.account.ID != id {
-		return nil, nil
+	accounts := s.accounts
+	if len(accounts) == 0 {
+		accounts = []service.Account{s.account}
 	}
-	account := s.account
-	return &account, nil
+	for _, account := range accounts {
+		if account.ID == id {
+			accountCopy := account
+			return &accountCopy, nil
+		}
+	}
+	return nil, nil
 }
 
 type openAIWSFailoverHandlerAccountRepoStub struct {
@@ -2950,9 +2965,8 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 		Schedulable: true,
 		Concurrency: 1,
 		Credentials: map[string]any{
-			"api_key":       "sk-test",
-			"base_url":      upstreamServer.URL,
-			"model_mapping": tc.accountModelMapping,
+			"api_key":  "sk-test",
+			"base_url": upstreamServer.URL,
 		},
 		Extra: map[string]any{
 			"openai_apikey_responses_websockets_v2_enabled": true,
@@ -2962,8 +2976,19 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 	if tc.accountPlatform != "" {
 		account.Platform = tc.accountPlatform
 	}
+	if len(tc.accountModelMapping) > 0 {
+		account.Credentials["model_mapping"] = tc.accountModelMapping
+	}
 	if strings.TrimSpace(tc.ingressMode) != "" {
 		account.Extra["openai_apikey_responses_websockets_v2_mode"] = tc.ingressMode
+	}
+	accounts := []service.Account{account}
+	for _, id := range tc.additionalAccountIDs {
+		additional := account
+		additional.ID = id
+		additional.Name = "openai-ws-passthrough-usage-e2e-additional"
+		additional.Priority = 10
+		accounts = append(accounts, additional)
 	}
 
 	cfg := &config.Config{}
@@ -2979,7 +3004,7 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 	cfg.Gateway.OpenAIWS.ReadTimeoutSeconds = 3
 	cfg.Gateway.OpenAIWS.WriteTimeoutSeconds = 3
 
-	accountRepo := &openAIWSUsageHandlerAccountRepoStub{account: account}
+	accountRepo := &openAIWSUsageHandlerAccountRepoStub{account: account, accounts: accounts}
 	usageRepo := &openAIWSUsageHandlerUsageLogRepoStub{created: make(chan *service.UsageLog, turnCount)}
 
 	if len(tc.channelMapping) > 0 {

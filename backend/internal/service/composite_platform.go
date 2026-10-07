@@ -7,6 +7,43 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 )
 
+type compositeOpenAIRoutingAccountIDsContextKey struct{}
+
+// WithCompositeOpenAIRoutingAccountIDs carries an existing group ModelRouting
+// preference into the native OpenAI account scheduler for a Composite request.
+func WithCompositeOpenAIRoutingAccountIDs(ctx context.Context, accountIDs []int64) context.Context {
+	if ctx == nil {
+		return nil
+	}
+	return context.WithValue(ctx, compositeOpenAIRoutingAccountIDsContextKey{}, append([]int64(nil), accountIDs...))
+}
+
+// CompositeOpenAIRoutingAccountIDsFromContext returns the copied ModelRouting
+// preference, if the current Composite request has one.
+func CompositeOpenAIRoutingAccountIDsFromContext(ctx context.Context) []int64 {
+	if ctx == nil {
+		return nil
+	}
+	accountIDs, _ := ctx.Value(compositeOpenAIRoutingAccountIDsContextKey{}).([]int64)
+	return append([]int64(nil), accountIDs...)
+}
+
+func compositeOpenAIRoutingAllowsAccount(ctx context.Context, accountID int64) bool {
+	if ctx == nil {
+		return true
+	}
+	accountIDs, _ := ctx.Value(compositeOpenAIRoutingAccountIDsContextKey{}).([]int64)
+	if len(accountIDs) == 0 {
+		return true
+	}
+	for _, id := range accountIDs {
+		if id == accountID {
+			return true
+		}
+	}
+	return false
+}
+
 // WithResolvedTargetPlatform stores the concrete provider chosen for a request
 // made through a composite group.
 func WithResolvedTargetPlatform(ctx context.Context, platform string) context.Context {

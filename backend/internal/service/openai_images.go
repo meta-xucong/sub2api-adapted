@@ -935,6 +935,9 @@ func rewriteOpenAIImagesModel(body []byte, contentType string, model string) ([]
 		rewrittenBody, rewrittenType, rewriteErr := rewriteOpenAIImagesMultipartModel(body, contentType, model)
 		return rewrittenBody, rewrittenType, rewriteErr
 	}
+	if modelResult := gjson.GetBytes(body, "model"); modelResult.Type == gjson.String && modelResult.String() == model {
+		return body, contentType, nil
+	}
 	rewritten, err := sjson.SetBytes(body, "model", model)
 	if err != nil {
 		return nil, "", fmt.Errorf("rewrite image request model: %w", err)

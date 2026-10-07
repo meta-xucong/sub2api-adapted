@@ -1202,11 +1202,6 @@ type GatewayConfig struct {
 	// off, and the scheduler adapter also requires the existing advanced-scheduler
 	// setting to be enabled.
 	SmartRouter GatewaySmartRouterConfig `mapstructure:"smart_router"`
-	// Unified Gateway admin visibility is independent of the runtime gate.
-	// Access group zero deliberately fails closed until explicitly configured.
-	UnifiedGatewayAdminUIEnabled bool  `mapstructure:"unified_gateway_admin_ui_enabled"`
-	UnifiedGatewayRuntimeEnabled bool  `mapstructure:"unified_gateway_runtime_enabled"`
-	UnifiedGatewayAccessGroupID  int64 `mapstructure:"unified_gateway_access_group_id"`
 	// Daily model availability snapshots are independent from Smart Router
 	// calibration and use their own distributed refresh leases.
 	UpstreamModelRefresh GatewayUpstreamModelRefreshConfig `mapstructure:"upstream_model_refresh"`
@@ -2533,9 +2528,6 @@ func setDefaults() {
 	viper.SetDefault("gateway.max_account_switches", 10)
 	viper.SetDefault("gateway.max_account_switches_gemini", 3)
 	viper.SetDefault("gateway.smart_router.enabled", false)
-	viper.SetDefault("gateway.unified_gateway_admin_ui_enabled", true)
-	viper.SetDefault("gateway.unified_gateway_runtime_enabled", false)
-	viper.SetDefault("gateway.unified_gateway_access_group_id", int64(0))
 	viper.SetDefault("gateway.upstream_model_refresh.enabled", true)
 	viper.SetDefault("gateway.upstream_model_refresh.hour", 4)
 	viper.SetDefault("gateway.upstream_model_refresh.minute", 0)

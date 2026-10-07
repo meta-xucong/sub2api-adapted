@@ -69,6 +69,22 @@ func TestOpenAIResponsesWebSocket_CompositeAlias(t *testing.T) {
 	}
 }
 
+func TestOpenAIResponsesWebSocket_CompositeModelRoutingSelectsConfiguredUnmappedAccount(t *testing.T) {
+	group := compositeWSGroup("public-alias")
+	group.ModelRoutingEnabled = true
+	group.ModelRouting = map[string][]int64{"public-*": {9902}}
+	got := runOpenAIResponsesWebSocketUsageLogCase(t, openAIResponsesWSUsageLogCase{
+		firstPayload:         `{"type":"response.create","model":"public-alias","input":"hi"}`,
+		group:                group,
+		compositeResolver:    compositeWSResolver(service.PlatformOpenAI, service.CompositeRouteEndpointResponses, "gpt-5.4"),
+		additionalAccountIDs: []int64{9902},
+	})
+	require.Len(t, got.logs, 1)
+	require.Equal(t, int64(9902), got.logs[0].AccountID)
+	require.Equal(t, "public-alias", got.logs[0].RequestedModel)
+	require.Equal(t, "gpt-5.4", gjson.GetBytes(got.upstreamFirstPayload, "model").String())
+}
+
 func TestOpenAIResponsesWebSocket_CompositeRouteRejections(t *testing.T) {
 	for _, tc := range []struct {
 		name, platform, endpoint, model, reason string

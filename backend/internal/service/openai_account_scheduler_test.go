@@ -1371,6 +1371,258 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_AccountModelRouteDBRech
 	}
 }
 
+func TestOpenAIGatewayService_CompositeModelRoutingUsesNativeOpenAISchedulerWithoutModelMapping(t *testing.T) {
+	defer resetOpenAIAdvancedSchedulerSettingCacheForTest()
+	groupID := int64(1080501)
+	group := &Group{
+		ID:                  groupID,
+		Platform:            PlatformComposite,
+		ModelRoutingEnabled: true,
+		ModelRouting: map[string][]int64{
+			"glm-*":            {29},
+			"qwen-exact-model": {25},
+		},
+	}
+
+	for _, advanced := range []bool{false, true} {
+		mode := "legacy"
+		if advanced {
+			mode = "advanced"
+		}
+		for _, loadBatchEnabled := range []bool{false, true} {
+			for _, endpoint := range []struct {
+				name              string
+				model             string
+				wantAccountID     int64
+				account25Priority int
+				account29Priority int
+				call              func(*OpenAIGatewayService, context.Context, *int64, string) (*AccountSelectionResult, error)
+			}{
+				{
+					name:              "chat completions prefix selects account 29",
+					model:             "glm-candidate-model",
+					wantAccountID:     29,
+					account25Priority: 0,
+					account29Priority: 10,
+					call: func(svc *OpenAIGatewayService, ctx context.Context, groupID *int64, model string) (*AccountSelectionResult, error) {
+						selection, _, err := svc.SelectAccountWithSchedulerForCapability(ctx, groupID, "", "", model, nil, OpenAIUpstreamTransportAny, OpenAIEndpointCapabilityChatCompletions, false, false, true)
+						return selection, err
+					},
+				},
+				{
+					name:              "responses exact selects account 25",
+					model:             "qwen-exact-model",
+					wantAccountID:     25,
+					account25Priority: 10,
+					account29Priority: 0,
+					call: func(svc *OpenAIGatewayService, ctx context.Context, groupID *int64, model string) (*AccountSelectionResult, error) {
+						selection, _, err := svc.SelectAccountWithSchedulerForCapability(ctx, groupID, "", "", model, nil, OpenAIUpstreamTransportAny, OpenAIEndpointCapabilityResponses, false, false, true)
+						return selection, err
+					},
+				},
+				{
+					name:              "images prefix selects account 29",
+					model:             "glm-image-model",
+					wantAccountID:     29,
+					account25Priority: 0,
+					account29Priority: 10,
+					call: func(svc *OpenAIGatewayService, ctx context.Context, groupID *int64, model string) (*AccountSelectionResult, error) {
+						selection, _, err := svc.SelectAccountWithSchedulerForImageOperation(ctx, groupID, "", model, nil, OpenAIImagesCapabilityAPIKey, false)
+						return selection, err
+					},
+				},
+			} {
+				t.Run(mode+"/load_batch="+strconv.FormatBool(loadBatchEnabled)+"/"+endpoint.name, func(t *testing.T) {
+					rateLimitService := newOpenAIAdvancedSchedulerRateLimitService(strconv.FormatBool(advanced))
+					cfg := &config.Config{}
+					cfg.Gateway.Scheduling.LoadBatchEnabled = loadBatchEnabled
+					cfg.Gateway.SmartRouter.Enabled = advanced
+					accounts := []Account{
+						{ID: 25, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: endpoint.account25Priority, GroupIDs: []int64{groupID}, Credentials: map[string]any{"base_url": "https://api.openai.com"}},
+						{ID: 29, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: endpoint.account29Priority, GroupIDs: []int64{groupID}, Credentials: map[string]any{"base_url": "https://api.openai.com"}},
+					}
+					svc := &OpenAIGatewayService{
+						accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+						cache:              &schedulerTestGatewayCache{},
+						cfg:                cfg,
+						rateLimitService:   rateLimitService,
+						concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+					}
+					ctx := WithCompositeRouteDecision(context.Background(), CompositeRouteDecision{
+						Matched: true, GroupID: groupID, PublicModel: endpoint.model, TargetPlatform: PlatformOpenAI,
+					})
+					ctx = WithCompositeOpenAIRoutingAccountIDs(ctx, group.GetRoutingAccountIDs(endpoint.model))
+
+					selection, err := endpoint.call(svc, ctx, &groupID, endpoint.model)
+					require.NoError(t, err)
+					require.NotNil(t, selection)
+					require.NotNil(t, selection.Account)
+					require.Equal(t, endpoint.wantAccountID, selection.Account.ID)
+					require.NotContains(t, selection.Account.Credentials, "model_mapping")
+					if selection.ReleaseFunc != nil {
+						selection.ReleaseFunc()
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestOpenAIGatewayService_CompositeModelRoutingKeepsStickyInsidePreferredPoolAndFallsBack(t *testing.T) {
+	defer resetOpenAIAdvancedSchedulerSettingCacheForTest()
+	groupID := int64(1080502)
+	model := "glm-candidate-model"
+	ctx := WithCompositeRouteDecision(context.Background(), CompositeRouteDecision{
+		Matched: true, GroupID: groupID, PublicModel: model, TargetPlatform: PlatformOpenAI,
+	})
+	ctx = WithCompositeOpenAIRoutingAccountIDs(ctx, []int64{29})
+
+	for _, advanced := range []bool{false, true} {
+		mode := "legacy"
+		if advanced {
+			mode = "advanced"
+		}
+		for _, loadBatchEnabled := range []bool{false, true} {
+			t.Run(mode+"/load_batch="+strconv.FormatBool(loadBatchEnabled), func(t *testing.T) {
+				accounts := []Account{
+					{ID: 25, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 0, GroupIDs: []int64{groupID}},
+					{ID: 29, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 10, GroupIDs: []int64{groupID}},
+				}
+				cfg := &config.Config{}
+				cfg.Gateway.Scheduling.LoadBatchEnabled = loadBatchEnabled
+				cache := &schedulerTestGatewayCache{sessionBindings: map[string]int64{"openai:route-sticky": 25}}
+				svc := &OpenAIGatewayService{
+					accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+					cache:              cache,
+					cfg:                cfg,
+					rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService(strconv.FormatBool(advanced)),
+					concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+				}
+
+				selection, _, err := svc.SelectAccountWithSchedulerForCapability(ctx, &groupID, "", "route-sticky", model, nil, OpenAIUpstreamTransportAny, OpenAIEndpointCapabilityChatCompletions, false, false, true)
+				require.NoError(t, err)
+				require.NotNil(t, selection)
+				require.Equal(t, int64(29), selection.Account.ID, "session stickiness must not leave the model's configured routing pool")
+				if selection.ReleaseFunc != nil {
+					selection.ReleaseFunc()
+				}
+
+				selection, _, err = svc.SelectAccountWithSchedulerForCapability(ctx, &groupID, "", "", model, map[int64]struct{}{29: {}}, OpenAIUpstreamTransportAny, OpenAIEndpointCapabilityChatCompletions, false, false, true)
+				require.NoError(t, err)
+				require.NotNil(t, selection)
+				require.Equal(t, int64(25), selection.Account.ID, "an excluded routed account must fall back to the ordinary native pool")
+				if selection.ReleaseFunc != nil {
+					selection.ReleaseFunc()
+				}
+
+				stoppedAccounts := []Account{
+					{ID: 25, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 10, GroupIDs: []int64{groupID}},
+					{ID: 29, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusDisabled, Schedulable: false, Concurrency: 1, Priority: 0, GroupIDs: []int64{groupID}},
+				}
+				svc.accountRepo = schedulerTestOpenAIAccountRepo{accounts: stoppedAccounts}
+				selection, _, err = svc.SelectAccountWithSchedulerForCapability(ctx, &groupID, "", "", model, nil, OpenAIUpstreamTransportAny, OpenAIEndpointCapabilityChatCompletions, false, false, true)
+				require.NoError(t, err)
+				require.NotNil(t, selection)
+				require.NotNil(t, selection.Account)
+				require.Equal(t, int64(25), selection.Account.ID, "a stopped routed account must not prevent native fallback")
+				if selection.ReleaseFunc != nil {
+					selection.ReleaseFunc()
+				}
+
+				capabilityAccounts := []Account{
+					{ID: 25, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 10, GroupIDs: []int64{groupID}},
+					{ID: 29, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 0, GroupIDs: []int64{groupID}, Extra: map[string]any{"openai_responses_supported": false}},
+				}
+				svc.accountRepo = schedulerTestOpenAIAccountRepo{accounts: capabilityAccounts}
+				selection, _, err = svc.SelectAccountWithSchedulerForCapability(ctx, &groupID, "", "", model, nil, OpenAIUpstreamTransportAny, OpenAIEndpointCapabilityResponses, false, false, true)
+				require.NoError(t, err)
+				require.NotNil(t, selection)
+				require.NotNil(t, selection.Account)
+				require.Equal(t, int64(25), selection.Account.ID, "an endpoint-incompatible routed account must not prevent native fallback")
+				if selection.ReleaseFunc != nil {
+					selection.ReleaseFunc()
+				}
+
+				svc.accountRepo = schedulerTestOpenAIAccountRepo{accounts: accounts}
+
+				stateStore := NewOpenAIWSStateStore(cache)
+				svc.openaiWSStateStore = stateStore
+				require.NoError(t, stateStore.BindResponseAccount(context.Background(), groupID, "resp-routed-sticky", 25, time.Minute))
+				selection, _, err = svc.SelectAccountWithSchedulerForCapability(ctx, &groupID, "resp-routed-sticky", "", model, nil, OpenAIUpstreamTransportAny, OpenAIEndpointCapabilityResponses, false, false, true)
+				require.NoError(t, err)
+				require.NotNil(t, selection)
+				require.Equal(t, int64(29), selection.Account.ID, "previous-response affinity must stay inside the model's configured routing pool")
+				if selection.ReleaseFunc != nil {
+					selection.ReleaseFunc()
+				}
+
+				parentID := "11111111-1111-4111-8111-111111111111"
+				guardianCtx := guardianAffinityTestContext(t, codexAutoReviewModel, "guardian", parentID, "")
+				affinity, ok := openAIGuardianParentAffinityFromContext(guardianCtx)
+				require.True(t, ok)
+				cache.sessionBindings[affinity.currentSessionHash] = 25
+				guardianCtx = WithCompositeRouteDecision(guardianCtx, CompositeRouteDecision{
+					Matched: true, GroupID: groupID, PublicModel: codexAutoReviewModel, TargetPlatform: PlatformOpenAI,
+				})
+				guardianCtx = WithCompositeOpenAIRoutingAccountIDs(guardianCtx, []int64{29})
+				selection, _, err = svc.SelectAccountWithSchedulerForCapability(guardianCtx, &groupID, "", affinity.currentSessionHash, codexAutoReviewModel, nil, OpenAIUpstreamTransportAny, OpenAIEndpointCapabilityResponses, false, false, true)
+				require.NoError(t, err)
+				require.NotNil(t, selection)
+				require.Equal(t, int64(29), selection.Account.ID, "guardian parent affinity must not escape the model's configured routing pool")
+				if selection.ReleaseFunc != nil {
+					selection.ReleaseFunc()
+				}
+			})
+		}
+	}
+}
+
+func TestOpenAIGatewayService_CompositeModelRoutingPreservesNativeWaitPlanForSaturatedAccount(t *testing.T) {
+	defer resetOpenAIAdvancedSchedulerSettingCacheForTest()
+	groupID := int64(1080504)
+	model := "glm-saturated-model"
+	ctx := WithCompositeRouteDecision(context.Background(), CompositeRouteDecision{
+		Matched: true, GroupID: groupID, PublicModel: model, TargetPlatform: PlatformOpenAI,
+	})
+	ctx = WithCompositeOpenAIRoutingAccountIDs(ctx, []int64{29})
+
+	for _, advanced := range []bool{false, true} {
+		mode := "legacy"
+		if advanced {
+			mode = "advanced"
+		}
+		for _, loadBatchEnabled := range []bool{false, true} {
+			t.Run(mode+"/load_batch="+strconv.FormatBool(loadBatchEnabled), func(t *testing.T) {
+				accounts := []Account{
+					{ID: 25, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1, GroupIDs: []int64{groupID}},
+					{ID: 29, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1, GroupIDs: []int64{groupID}},
+				}
+				cfg := &config.Config{}
+				cfg.Gateway.Scheduling.LoadBatchEnabled = loadBatchEnabled
+				cache := schedulerTestConcurrencyCache{
+					loadMap:        map[int64]*AccountLoadInfo{29: {AccountID: 29, CurrentConcurrency: 1, LoadRate: 100}},
+					acquireResults: map[int64]bool{29: false},
+				}
+				svc := &OpenAIGatewayService{
+					accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+					cache:              &schedulerTestGatewayCache{},
+					cfg:                cfg,
+					rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService(strconv.FormatBool(advanced)),
+					concurrencyService: NewConcurrencyService(cache),
+				}
+
+				selection, _, err := svc.SelectAccountWithSchedulerForCapability(ctx, &groupID, "", "", model, nil, OpenAIUpstreamTransportAny, OpenAIEndpointCapabilityChatCompletions, false, false, true)
+				require.NoError(t, err)
+				require.NotNil(t, selection)
+				require.NotNil(t, selection.Account)
+				require.Equal(t, int64(29), selection.Account.ID, "a native wait plan keeps the selected model's preferred route")
+				require.NotNil(t, selection.WaitPlan)
+				require.Equal(t, int64(29), selection.WaitPlan.AccountID)
+			})
+		}
+	}
+}
+
 func TestOpenAIGatewayService_SelectAccountWithScheduler_StickyWeightedPreviousRequiresMovableContext(t *testing.T) {
 	resetOpenAIAdvancedSchedulerSettingCacheForTest()
 

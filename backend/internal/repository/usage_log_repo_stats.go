@@ -825,6 +825,41 @@ func (r *usageLogRepository) GetStatsWithFilters(ctx context.Context, filters Us
 	return stats, nil
 }
 
+// GetAPIKeyAccountBillingBreakdown returns native usage costs grouped by account and billing type.
+// It reads directly from usage_logs so soft-deleted accounts with retained usage remain visible.
+func (r *usageLogRepository) GetAPIKeyAccountBillingBreakdown(ctx context.Context, apiKeyID int64, startTime, endTime time.Time) ([]service.AccountBillingBreakdown, error) {
+	query := `
+		SELECT
+			account_id,
+			billing_type,
+			COALESCE(SUM(actual_cost), 0) AS actual_cost,
+			COALESCE(SUM(COALESCE(account_stats_cost, total_cost) * COALESCE(account_rate_multiplier, 1)), 0) AS account_cost
+		FROM usage_logs
+		WHERE api_key_id = $1 AND created_at >= $2 AND created_at < $3
+		GROUP BY account_id, billing_type
+		ORDER BY account_id, billing_type
+	`
+
+	rows, err := r.sql.QueryContext(ctx, query, apiKeyID, startTime, endTime)
+	if err != nil {
+		return nil, fmt.Errorf("query API key account billing breakdown: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	result := make([]service.AccountBillingBreakdown, 0)
+	for rows.Next() {
+		var row service.AccountBillingBreakdown
+		if err := rows.Scan(&row.AccountID, &row.BillingType, &row.ActualCost, &row.AccountCost); err != nil {
+			return nil, fmt.Errorf("scan API key account billing breakdown: %w", err)
+		}
+		result = append(result, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate API key account billing breakdown: %w", err)
+	}
+	return result, nil
+}
+
 // AccountUsageHistory represents daily usage history for an account
 type AccountUsageHistory = usagestats.AccountUsageHistory
 

@@ -245,7 +245,11 @@ func (s *OpenAIGatewayService) prepareOpenAICompactFallbackRetry(
 	upstreamBody []byte,
 	alreadyRetried bool,
 ) ([]byte, string, bool) {
-	if alreadyRetried || !isExplicitOpenAICompactRequest(c, currentBody) ||
+	// The legacy /responses/compact endpoint must keep the caller's requested
+	// model. If that upstream model is unavailable, return its error instead of
+	// silently retrying against a process-wide model configured for other lines.
+	// Native Responses compaction keeps its existing retry behavior.
+	if isOpenAIResponsesCompactPath(c) || alreadyRetried || !isExplicitOpenAICompactRequest(c, currentBody) ||
 		!isOpenAICompactModelFailure(statusCode, upstreamMsg, upstreamBody) {
 		return currentBody, "", false
 	}

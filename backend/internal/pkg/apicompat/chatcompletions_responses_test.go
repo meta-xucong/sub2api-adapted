@@ -204,6 +204,51 @@ func TestChatCompletionsToResponses_ToolCalls(t *testing.T) {
 	assert.Equal(t, "ping", resp.Tools[0].Name)
 }
 
+func TestChatCompletionsToResponses_ToolChoiceFunctionObject(t *testing.T) {
+	req := &ChatCompletionsRequest{
+		Model:    "glm-5.3",
+		Messages: []ChatMessage{{Role: "user", Content: json.RawMessage(`"Call lookup"`)}},
+		Tools: []ChatTool{{
+			Type: "function",
+			Function: &ChatFunction{
+				Name:       "lookup",
+				Parameters: json.RawMessage(`{"type":"object"}`),
+			},
+		}},
+		ToolChoice: json.RawMessage(`{"type":"function","function":{"name":"lookup"}}`),
+	}
+
+	resp, err := ChatCompletionsToResponses(req)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"type":"function","name":"lookup"}`, string(resp.ToolChoice))
+}
+
+func TestChatCompletionsToResponses_ToolChoicePassThrough(t *testing.T) {
+	tests := []struct {
+		name string
+		want string
+	}{
+		{name: "auto", want: `"auto"`},
+		{name: "none", want: `"none"`},
+		{name: "required", want: `"required"`},
+		{name: "responses named function", want: `{"type":"function","name":"lookup"}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &ChatCompletionsRequest{
+				Model:      "gpt-4o",
+				Messages:   []ChatMessage{{Role: "user", Content: json.RawMessage(`"Call lookup"`)}},
+				ToolChoice: json.RawMessage(tt.want),
+			}
+
+			resp, err := ChatCompletionsToResponses(req)
+			require.NoError(t, err)
+			assert.JSONEq(t, tt.want, string(resp.ToolChoice))
+		})
+	}
+}
+
 func TestChatCompletionsToResponses_ToolStrict(t *testing.T) {
 	strictTrue := true
 	strictFalse := false

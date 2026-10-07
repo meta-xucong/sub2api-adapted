@@ -1260,7 +1260,7 @@ func TestGPT6ReasoningModeUsesMappedUpstream(t *testing.T) {
 func TestGPT6MappedCompatibilityBridgesKeepReasoningAndTools(t *testing.T) {
 	for _, model := range []string{"gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"} {
 		for _, messages := range []bool{false, true} {
-			body := []byte(`{"model":"public","reasoning_effort":"max","temperature":0.7,"top_p":0.9,"prompt_cache_options":{"ttl":"30m"},"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}],"messages":[{"role":"user","content":"hello"}]}`)
+			body := []byte(`{"model":"public","reasoning_effort":"max","temperature":0.7,"top_p":0.9,"prompt_cache_options":{"ttl":"30m"},"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}],"tool_choice":{"type":"function","function":{"name":"lookup"}},"messages":[{"role":"user","content":"hello"}]}`)
 			if messages {
 				body = []byte(`{"model":"public","max_tokens":1000,"output_config":{"effort":"max"},"temperature":0.7,"top_p":0.9,"tools":[{"name":"lookup","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":"hello"}]}`)
 			}
@@ -1293,6 +1293,9 @@ func TestGPT6MappedCompatibilityBridgesKeepReasoningAndTools(t *testing.T) {
 			require.False(t, gjson.GetBytes(upstream.lastBody, "top_p").Exists())
 			if !messages {
 				require.Equal(t, "30m", gjson.GetBytes(upstream.lastBody, "prompt_cache_options.ttl").String())
+				require.Equal(t, "function", gjson.GetBytes(upstream.lastBody, "tool_choice.type").String())
+				require.Equal(t, "lookup", gjson.GetBytes(upstream.lastBody, "tool_choice.name").String())
+				require.False(t, gjson.GetBytes(upstream.lastBody, "tool_choice.function").Exists())
 			}
 			require.Equal(t, 300, result.Usage.CacheCreationInputTokens)
 		}

@@ -88,10 +88,11 @@ func ChatCompletionsToResponses(req *ChatCompletionsRequest) (*ResponsesRequest,
 		out.Tools = convertChatToolsToResponses(req.Tools, req.Functions)
 	}
 
-	// tool_choice: already compatible format — pass through directly.
-	// Legacy function_call needs mapping.
+	// tool_choice strings (auto/none/required) are shared by both APIs. A
+	// Chat Completions named-function object has a different shape from the
+	// Responses API named-function object, so normalize that one form here.
 	if len(req.ToolChoice) > 0 {
-		out.ToolChoice = req.ToolChoice
+		out.ToolChoice = chatToolChoiceToResponsesToolChoice(req.ToolChoice)
 	} else if len(req.FunctionCall) > 0 {
 		tc, err := convertChatFunctionCallToToolChoice(req.FunctionCall)
 		if err != nil {
@@ -101,6 +102,26 @@ func ChatCompletionsToResponses(req *ChatCompletionsRequest) (*ResponsesRequest,
 	}
 
 	return out, nil
+}
+
+func chatToolChoiceToResponsesToolChoice(raw json.RawMessage) json.RawMessage {
+	var choice struct {
+		Type     string `json:"type"`
+		Function struct {
+			Name string `json:"name"`
+		} `json:"function"`
+	}
+	if err := json.Unmarshal(raw, &choice); err != nil || choice.Type != "function" || choice.Function.Name == "" {
+		return raw
+	}
+	converted, err := json.Marshal(struct {
+		Type string `json:"type"`
+		Name string `json:"name"`
+	}{Type: choice.Type, Name: choice.Function.Name})
+	if err != nil {
+		return raw
+	}
+	return converted
 }
 
 // convertChatMessagesToResponsesInput converts the Chat Completions messages

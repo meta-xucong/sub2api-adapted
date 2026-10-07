@@ -56,6 +56,9 @@ func normalizeWokeyVideoStatusForBilling(statusBody []byte) []byte {
 	}
 	status := strings.TrimSpace(gjson.GetBytes(statusBody, "status").String())
 	videoURL := strings.TrimSpace(gjson.GetBytes(statusBody, "video_url").String())
+	if videoURL == "" {
+		videoURL = strings.TrimSpace(gjson.GetBytes(statusBody, "content_url").String())
+	}
 	if !strings.EqualFold(status, "completed") || videoURL == "" {
 		return statusBody
 	}
@@ -118,6 +121,17 @@ func normalizeGrokMediaForwardBodyForAccount(account *Account, endpoint GrokMedi
 		return normalizeWokeyVideoForwardBody(body, contentType, ParseGrokMediaRequest(contentType, body))
 	}
 	return normalizeGrokMediaForwardBody(endpoint, body, contentType)
+}
+
+func wokeyVideoBillingResolution(body []byte, fallback string) string {
+	if gjson.ValidBytes(body) {
+		for _, field := range []string{"video_resolution", "resolution"} {
+			if resolution := strings.TrimSpace(gjson.GetBytes(body, field).String()); resolution != "" {
+				return NormalizeVideoBillingResolutionOrDefault(resolution)
+			}
+		}
+	}
+	return NormalizeVideoBillingResolutionOrDefault(fallback)
 }
 
 func isWokeyVideoGeneration(account *Account, endpoint GrokMediaEndpoint) bool {

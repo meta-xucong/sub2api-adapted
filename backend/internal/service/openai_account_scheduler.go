@@ -1782,6 +1782,9 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleReason(ctx con
 	if account == nil {
 		return false, "account_nil"
 	}
+	if !compositeOpenAIRoutingAllowsAccount(ctx, account.ID) {
+		return false, "model_routing"
+	}
 	if source, ok := CompositeRouteSourceFromContext(ctx); ok && source == CompositeRouteSourceAccount {
 		if publicModel, modelOK := RequestedPublicModelFromContext(ctx); modelOK && !explicitModelMappingClaims(*account, publicModel) {
 			return false, "account_model_not_owned"
@@ -2202,7 +2205,24 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
 	useUpstreamTokenCost bool,
 	smartRouterCapability smartrouter.Capability,
 ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
-	selection, decision, err := s.selectAccountWithSchedulerOnce(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, requiredCapability, requiredImageCapability, requireCompact, platform, previousResponseCanMove, useUpstreamTokenCost, smartRouterCapability)
+	selectOnce := func(selectionCtx context.Context) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
+		return s.selectAccountWithSchedulerOnce(selectionCtx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, requiredCapability, requiredImageCapability, requireCompact, platform, previousResponseCanMove, useUpstreamTokenCost, smartRouterCapability)
+	}
+	selectWithModelRoutingFallback := func(selectionCtx context.Context) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
+		routingAccountIDs := CompositeOpenAIRoutingAccountIDsFromContext(selectionCtx)
+		selection, decision, err := selectOnce(selectionCtx)
+		if len(routingAccountIDs) == 0 || (err == nil && selection != nil && selection.Account != nil) {
+			return selection, decision, err
+		}
+		if err != nil && !errors.Is(err, ErrNoAvailableAccounts) && !errors.Is(err, ErrNoAvailableCompactAccounts) {
+			return selection, decision, err
+		}
+		// If the native OpenAI selector reports no available routed account, retry
+		// the same selector without the ModelRouting preference. A native WaitPlan
+		// is a successful routed selection and returns above unchanged.
+		return selectOnce(WithCompositeOpenAIRoutingAccountIDs(selectionCtx, nil))
+	}
+	selection, decision, err := selectWithModelRoutingFallback(ctx)
 	if err == nil || openAIProxyStreamQuarantineBypassed(ctx) {
 		return selection, decision, err
 	}
@@ -2218,7 +2238,7 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
 		return selection, decision, err
 	}
 	s.logOpenAIProxyStreamQuarantineFailOpen(requestedModel, blocked)
-	return s.selectAccountWithSchedulerOnce(withOpenAIProxyStreamQuarantineBypass(ctx), groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, requiredCapability, requiredImageCapability, requireCompact, platform, previousResponseCanMove, useUpstreamTokenCost, smartRouterCapability)
+	return selectWithModelRoutingFallback(withOpenAIProxyStreamQuarantineBypass(ctx))
 }
 
 type openAIGroupPrivacyRequirementContextKey struct{}

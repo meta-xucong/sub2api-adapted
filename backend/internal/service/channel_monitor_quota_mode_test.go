@@ -267,10 +267,11 @@ func TestValidateCreateParams_CheckModeMatrix(t *testing.T) {
 			wantErr: ErrChannelMonitorInvalidEndpoint,
 		},
 		{
+			// Numeric public IP avoids an external DNS lookup before the API-key check.
 			name: "probe requires api key",
 			params: ChannelMonitorCreateParams{
 				Provider: MonitorProviderOpenAI, CheckMode: MonitorCheckModeProbe,
-				Endpoint: "https://api.openai.com", IntervalSeconds: 60, PrimaryModel: "gpt-5",
+				Endpoint: "https://1.1.1.1", IntervalSeconds: 60, PrimaryModel: "gpt-5",
 			},
 			wantErr: ErrChannelMonitorMissingAPIKey,
 		},
@@ -327,10 +328,11 @@ func TestValidateCreateParams_CheckModeMatrix(t *testing.T) {
 		},
 		{
 			// quota_probe 仍要打真实探活请求：空模型必须报错，不再用 "quota" 占位。
+			// Numeric public IP keeps this validation-order case independent of DNS.
 			name: "quota_probe requires primary model",
 			params: ChannelMonitorCreateParams{
 				Provider: MonitorProviderKimi, CheckMode: MonitorCheckModeQuotaProbe,
-				Endpoint: "https://api.kimi.com", APIKey: "sk",
+				Endpoint: "https://1.1.1.1", APIKey: "sk",
 				IntervalSeconds: 60, AccountID: &accountID,
 			},
 			wantErr: ErrChannelMonitorMissingPrimaryModel,

@@ -134,6 +134,95 @@ func TestCompositeTargetPlatformMiddlewareUsesExplicitRouteAndRewritesBody(t *te
 	require.Equal(t, http.StatusNoContent, w.Code)
 }
 
+func TestCompositeTargetPlatformMiddlewareCarriesOnlyMatchedOpenAIRoutingIDs(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, tt := range []struct {
+		name           string
+		groupPlatform  string
+		targetPlatform string
+		routingEnabled bool
+		routing        map[string][]int64
+		wantAccountIDs []int64
+	}{
+		{
+			name:           "matched openai prefix",
+			groupPlatform:  service.PlatformComposite,
+			targetPlatform: service.PlatformOpenAI,
+			routingEnabled: true,
+			routing:        map[string][]int64{"public-*": {27}},
+			wantAccountIDs: []int64{27},
+		},
+		{
+			name:           "disabled model routing",
+			groupPlatform:  service.PlatformComposite,
+			targetPlatform: service.PlatformOpenAI,
+			routing:        map[string][]int64{"public-*": {27}},
+		},
+		{
+			name:           "unmatched model routing",
+			groupPlatform:  service.PlatformComposite,
+			targetPlatform: service.PlatformOpenAI,
+			routingEnabled: true,
+			routing:        map[string][]int64{"other-*": {27}},
+		},
+		{
+			name:           "non openai composite target",
+			groupPlatform:  service.PlatformComposite,
+			targetPlatform: service.PlatformAnthropic,
+			routingEnabled: true,
+			routing:        map[string][]int64{"public-*": {27}},
+		},
+		{
+			name:           "ordinary openai group",
+			groupPlatform:  service.PlatformOpenAI,
+			targetPlatform: service.PlatformOpenAI,
+			routingEnabled: true,
+			routing:        map[string][]int64{"public-*": {27}},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			groupID := int64(1)
+			resolver := service.NewCompositeRouteResolver(compositeRouteRepoStub{
+				routes: []service.CompositeModelRoute{{
+					ID:             1,
+					GroupID:        groupID,
+					PublicModel:    "public-alpha",
+					MatchType:      service.CompositeRouteMatchExact,
+					TargetPlatform: tt.targetPlatform,
+					Endpoint:       service.CompositeRouteEndpointAny,
+					Priority:       100,
+					Enabled:        true,
+				}},
+			})
+			router := gin.New()
+			router.Use(gin.HandlerFunc(servermiddleware.APIKeyAuthMiddleware(func(c *gin.Context) {
+				c.Set(string(servermiddleware.ContextKeyAPIKey), &service.APIKey{
+					GroupID: &groupID,
+					Group: &service.Group{
+						ID:                  groupID,
+						Platform:            tt.groupPlatform,
+						ModelRoutingEnabled: tt.routingEnabled,
+						ModelRouting:        tt.routing,
+					},
+				})
+				c.Next()
+			})))
+			router.Use(compositeTargetPlatformMiddleware(resolver))
+			router.POST("/v1/chat/completions", func(c *gin.Context) {
+				require.Equal(t, tt.wantAccountIDs, service.CompositeOpenAIRoutingAccountIDsFromContext(c.Request.Context()))
+				c.Status(http.StatusNoContent)
+			})
+
+			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"public-alpha"}`))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			require.Equal(t, http.StatusNoContent, w.Code)
+		})
+	}
+}
+
 func TestCompositeTargetPlatformMiddlewareRewritesNestedLiveModel(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()

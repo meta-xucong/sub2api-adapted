@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
@@ -15,9 +16,14 @@ import (
 
 type adminUsageRepoCapture struct {
 	service.UsageLogRepository
-	listParams   pagination.PaginationParams
-	listFilters  usagestats.UsageLogFilters
-	statsFilters usagestats.UsageLogFilters
+	listParams                pagination.PaginationParams
+	listFilters               usagestats.UsageLogFilters
+	statsFilters              usagestats.UsageLogFilters
+	statsCalls                int
+	billingBreakdownAPIKeyID  int64
+	billingBreakdownStartTime time.Time
+	billingBreakdownEndTime   time.Time
+	billingBreakdownRows      []service.AccountBillingBreakdown
 }
 
 func (s *adminUsageRepoCapture) ListWithFilters(ctx context.Context, params pagination.PaginationParams, filters usagestats.UsageLogFilters) ([]service.UsageLog, *pagination.PaginationResult, error) {
@@ -33,7 +39,17 @@ func (s *adminUsageRepoCapture) ListWithFilters(ctx context.Context, params pagi
 
 func (s *adminUsageRepoCapture) GetStatsWithFilters(ctx context.Context, filters usagestats.UsageLogFilters) (*usagestats.UsageStats, error) {
 	s.statsFilters = filters
+	s.statsCalls++
 	return &usagestats.UsageStats{}, nil
+}
+
+func (s *adminUsageRepoCapture) GetAPIKeyAccountBillingBreakdown(ctx context.Context, apiKeyID int64, startTime, endTime time.Time) ([]service.AccountBillingBreakdown, error) {
+	s.billingBreakdownAPIKeyID = apiKeyID
+	s.billingBreakdownStartTime = startTime
+	s.billingBreakdownEndTime = endTime
+	return []service.AccountBillingBreakdown{
+		{AccountID: 99, BillingType: service.BillingTypeBalance, ActualCost: 1.25, AccountCost: 0.8},
+	}, nil
 }
 
 func newAdminUsageRequestTypeTestRouter(repo *adminUsageRepoCapture) *gin.Engine {
@@ -44,6 +60,73 @@ func newAdminUsageRequestTypeTestRouter(repo *adminUsageRepoCapture) *gin.Engine
 	router.GET("/admin/usage", handler.List)
 	router.GET("/admin/usage/stats", handler.Stats)
 	return router
+}
+
+func TestAdminUsageAccountBillingBreakdownUsesSingleKeyAndExplicitDateRange(t *testing.T) {
+	repo := &adminUsageRepoCapture{}
+	router := newAdminUsageRequestTypeTestRouter(repo)
+
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/admin/usage/stats?account_billing_breakdown=true&api_key_id=22&start_date=2026-10-01&end_date=2026-10-06&timezone=Asia%2FShanghai",
+		nil,
+	)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, int64(22), repo.billingBreakdownAPIKeyID)
+	require.Equal(t, time.Date(2026, 9, 30, 16, 0, 0, 0, time.UTC), repo.billingBreakdownStartTime.UTC())
+	require.Equal(t, time.Date(2026, 10, 6, 16, 0, 0, 0, time.UTC), repo.billingBreakdownEndTime.UTC())
+	require.Contains(t, rec.Body.String(), "\"account_id\":99")
+	require.Contains(t, rec.Body.String(), "\"billing_type\":0")
+	require.Contains(t, rec.Body.String(), "\"actual_cost\":1.25")
+	require.Contains(t, rec.Body.String(), "\"account_cost\":0.8")
+	require.Zero(t, repo.statsCalls, "the grouped request must not fall through to the generic stats path")
+}
+
+func TestAdminUsageStatsWithoutBreakdownUsesExistingStatsPath(t *testing.T) {
+	repo := &adminUsageRepoCapture{}
+	router := newAdminUsageRequestTypeTestRouter(repo)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/admin/usage/stats?api_key_id=22", nil))
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, 1, repo.statsCalls)
+	require.Equal(t, int64(22), repo.statsFilters.APIKeyID)
+	require.Zero(t, repo.billingBreakdownAPIKeyID)
+}
+
+func TestAdminUsageAccountBillingBreakdownRequiresKeyAndDates(t *testing.T) {
+	for _, target := range []string{
+		"/admin/usage/stats?account_billing_breakdown=true&start_date=2026-10-01&end_date=2026-10-06",
+		"/admin/usage/stats?account_billing_breakdown=true&api_key_id=22",
+	} {
+		repo := &adminUsageRepoCapture{}
+		router := newAdminUsageRequestTypeTestRouter(repo)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
+
+		require.Equal(t, http.StatusBadRequest, rec.Code, target)
+		require.Zero(t, repo.billingBreakdownAPIKeyID, target)
+	}
+}
+
+func TestAdminUsageAccountBillingBreakdownRejectsOtherFilters(t *testing.T) {
+	for _, filter := range []string{"billing_type=0", "period=week", "nocache=1"} {
+		repo := &adminUsageRepoCapture{}
+		router := newAdminUsageRequestTypeTestRouter(repo)
+		req := httptest.NewRequest(
+			http.MethodGet,
+			"/admin/usage/stats?account_billing_breakdown=true&api_key_id=22&start_date=2026-10-01&end_date=2026-10-06&"+filter,
+			nil,
+		)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+
+		require.Equal(t, http.StatusBadRequest, rec.Code, filter)
+		require.Zero(t, repo.billingBreakdownAPIKeyID, filter)
+	}
 }
 
 func TestAdminUsageListRequestTypePriority(t *testing.T) {

@@ -2862,6 +2862,11 @@ func (r *stubUsageLogRepo) GetStatsWithFilters(ctx context.Context, filters usag
 		Endpoints:                []usagestats.EndpointStat{},
 	}, nil
 }
+
+func (r *stubUsageLogRepo) GetAPIKeyAccountBillingBreakdown(ctx context.Context, apiKeyID int64, startTime, endTime time.Time) ([]service.AccountBillingBreakdown, error) {
+	return nil, errors.New("not implemented")
+}
+
 func (r *stubUsageLogRepo) GetAllGroupUsageSummary(ctx context.Context, todayStart time.Time) ([]usagestats.GroupUsageSummary, error) {
 	return nil, errors.New("not implemented")
 }

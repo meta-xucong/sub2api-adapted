@@ -87,25 +87,6 @@ func TestSmartRouterDefaultsAndValidation(t *testing.T) {
 	require.ErrorContains(t, cfg.Validate(), "gateway.smart_router.cost_bias_max must be non-negative")
 }
 
-func TestUnifiedGatewayConfigDefaultsAndEnvironmentOverrides(t *testing.T) {
-	resetViperWithJWTSecret(t)
-	cfg, err := Load()
-	require.NoError(t, err)
-	require.True(t, cfg.Gateway.UnifiedGatewayAdminUIEnabled)
-	require.False(t, cfg.Gateway.UnifiedGatewayRuntimeEnabled)
-	require.Zero(t, cfg.Gateway.UnifiedGatewayAccessGroupID)
-
-	resetViperWithJWTSecret(t)
-	t.Setenv("GATEWAY_UNIFIED_GATEWAY_ADMIN_UI_ENABLED", "false")
-	t.Setenv("GATEWAY_UNIFIED_GATEWAY_RUNTIME_ENABLED", "true")
-	t.Setenv("GATEWAY_UNIFIED_GATEWAY_ACCESS_GROUP_ID", "42")
-	cfg, err = Load()
-	require.NoError(t, err)
-	require.False(t, cfg.Gateway.UnifiedGatewayAdminUIEnabled)
-	require.True(t, cfg.Gateway.UnifiedGatewayRuntimeEnabled)
-	require.EqualValues(t, 42, cfg.Gateway.UnifiedGatewayAccessGroupID)
-}
-
 func TestUpstreamModelRefreshDefaultsAndValidation(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	cfg, err := Load()

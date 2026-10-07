@@ -380,11 +380,6 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	isCompactRequest := compactPath
 	requestedModel := reqModel
 	billingModel, upstreamModel := resolveOpenAIForwardMappedModels(account, requestedModel, isCompactRequest)
-	if isCompactRequest {
-		if compactModel := s.resolveOpenAICompactFallbackModel(account, requestedModel); compactModel != "" {
-			upstreamModel = compactModel
-		}
-	}
 	instructions := gjson.GetBytes(body, "instructions")
 	instructionsEmpty := !instructions.Exists() || instructions.Type != gjson.String || strings.TrimSpace(instructions.String()) == ""
 	if instructionsEmpty && account.UsesOpenAICodexProtocol() && !compatMessagesBridge && !nativeCNResponses {

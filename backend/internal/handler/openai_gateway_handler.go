@@ -2533,7 +2533,11 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			return
 		}
 		if decision.Matched {
-			c.Request = c.Request.WithContext(service.WithCompositeRouteDecision(c.Request.Context(), decision))
+			requestContext := service.WithCompositeRouteDecision(c.Request.Context(), decision)
+			if decision.TargetPlatform == service.PlatformOpenAI {
+				requestContext = service.WithCompositeOpenAIRoutingAccountIDs(requestContext, apiKey.Group.GetRoutingAccountIDs(reqModel))
+			}
+			c.Request = c.Request.WithContext(requestContext)
 			wsRouteModel = decision.UpstreamModel
 		}
 	}

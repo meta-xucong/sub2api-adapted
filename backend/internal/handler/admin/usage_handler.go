@@ -223,6 +223,31 @@ func (h *UsageHandler) List(c *gin.Context) {
 // Stats handles getting usage statistics with filters
 // GET /api/v1/admin/usage/stats
 func (h *UsageHandler) Stats(c *gin.Context) {
+	accountBillingBreakdown := false
+	if raw := strings.TrimSpace(c.Query("account_billing_breakdown")); raw != "" {
+		parsed, err := strconv.ParseBool(raw)
+		if err != nil {
+			response.BadRequest(c, "Invalid account_billing_breakdown value, use true or false")
+			return
+		}
+		accountBillingBreakdown = parsed
+	}
+	if accountBillingBreakdown {
+		allowedParams := map[string]struct{}{
+			"account_billing_breakdown": {},
+			"api_key_id":                {},
+			"start_date":                {},
+			"end_date":                  {},
+			"timezone":                  {},
+		}
+		for name := range c.Request.URL.Query() {
+			if _, allowed := allowedParams[name]; !allowed {
+				response.BadRequest(c, "account_billing_breakdown supports only api_key_id and date range filters")
+				return
+			}
+		}
+	}
+
 	// Parse filters - same as List endpoint
 	var userID, apiKeyID, accountID, groupID int64
 	if userIDStr := c.Query("user_id"); userIDStr != "" {
@@ -345,6 +370,24 @@ func (h *UsageHandler) Stats(c *gin.Context) {
 			startTime = timezone.StartOfDayInUserLocation(now, userTZ)
 		}
 		endTime = now
+	}
+
+	if accountBillingBreakdown {
+		if apiKeyID <= 0 || startDateStr == "" || endDateStr == "" {
+			response.BadRequest(c, "account_billing_breakdown requires api_key_id, start_date, and end_date")
+			return
+		}
+		if !startTime.Before(endTime) {
+			response.BadRequest(c, "start_date must not be after end_date")
+			return
+		}
+		accounts, err := h.usageService.GetAPIKeyAccountBillingBreakdown(c.Request.Context(), apiKeyID, startTime, endTime)
+		if err != nil {
+			response.ErrorFrom(c, err)
+			return
+		}
+		response.Success(c, gin.H{"accounts": accounts})
+		return
 	}
 
 	// Build filters and call GetStatsWithFilters

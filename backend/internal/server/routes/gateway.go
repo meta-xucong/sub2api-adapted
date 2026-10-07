@@ -45,7 +45,6 @@ func RegisterGatewayRoutes(
 	// 保证校验发生在合成路由改写与调度之前，且只看客户端书写的模型名。
 	groupModelAllowlist := middleware.GroupModelAllowlist()
 	operatorTestGuard := middleware.OperatorTestGuard(cfg)
-
 	isOpenAIResponsesCompatibleGatewayPlatform := func(c *gin.Context) bool {
 		switch getGroupPlatform(c) {
 		case service.PlatformOpenAI, service.PlatformGrok,
@@ -589,7 +588,11 @@ func compositeTargetPlatformMiddleware(resolver *service.CompositeRouteResolver)
 				return
 			}
 			if decision.Matched {
-				c.Request = c.Request.WithContext(service.WithCompositeRouteDecision(c.Request.Context(), decision))
+				requestContext := service.WithCompositeRouteDecision(c.Request.Context(), decision)
+				if decision.TargetPlatform == service.PlatformOpenAI {
+					requestContext = service.WithCompositeOpenAIRoutingAccountIDs(requestContext, apiKey.Group.GetRoutingAccountIDs(model))
+				}
+				c.Request = c.Request.WithContext(requestContext)
 				if upstreamModel := strings.TrimSpace(decision.UpstreamModel); upstreamModel != "" && upstreamModel != model && gjson.ValidBytes(body) {
 					if _, modelPath := requestmodel.JSONModelPathForRoute(routePath, body); modelPath != "" {
 						if rewritten, rewriteErr := sjson.SetBytes(body, modelPath, upstreamModel); rewriteErr == nil {

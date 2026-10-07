@@ -55,6 +55,7 @@ type compatibleImagesUpstream struct {
 	service.HTTPUpstream
 	accountIDs []int64
 	body       []byte
+	bodies     [][]byte
 }
 
 func (u *compatibleImagesUpstream) Do(req *http.Request, _ string, id int64, _ int) (*http.Response, error) {
@@ -64,6 +65,7 @@ func (u *compatibleImagesUpstream) Do(req *http.Request, _ string, id int64, _ i
 	if err != nil {
 		return nil, err
 	}
+	u.bodies = append(u.bodies, append([]byte(nil), u.body...))
 	return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}, "X-Request-Id": {"compatible-image-test"}}, Body: io.NopCloser(strings.NewReader(`{"data":[{"b64_json":"aW1hZ2U="}]}`))}, nil
 }
 
@@ -161,5 +163,76 @@ func TestCompositeCompatibleImagesEndToEnd(t *testing.T) {
 			require.InDelta(t, price, usage.logs[0].ActualCost, 1e-9)
 			require.Equal(t, publicModel, usage.logs[0].RequestedModel)
 		})
+	}
+}
+
+func TestCompositeModelRoutingUsesOneKeyAcrossUnmappedOpenAIAccounts(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	groupID := int64(109)
+	const (
+		modelA = "gpt-image-2-line-a"
+		modelB = "gpt-image-2-line-b"
+	)
+	group := &service.Group{
+		ID:                   groupID,
+		Platform:             service.PlatformComposite,
+		AllowImageGeneration: true,
+		RateMultiplier:       1,
+		ModelRoutingEnabled:  true,
+		ModelRouting: map[string][]int64{
+			modelA: {25},
+			modelB: {29},
+		},
+	}
+	accounts := []service.Account{
+		{ID: 25, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey, Status: service.StatusActive, Schedulable: true, Priority: 10, GroupIDs: []int64{groupID}, Credentials: map[string]any{"api_key": "fixture-key-25", "base_url": "https://compatible.example/v1"}},
+		{ID: 29, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey, Status: service.StatusActive, Schedulable: true, Priority: 0, GroupIDs: []int64{groupID}, Credentials: map[string]any{"api_key": "fixture-key-29", "base_url": "https://compatible.example/v1"}},
+	}
+	for _, account := range accounts {
+		require.NotContains(t, account.Credentials, "model_mapping")
+	}
+	cfg := &config.Config{RunMode: config.RunModeSimple}
+	repo := compatibleImagesAccounts{accounts: accounts}
+	upstream, usage := &compatibleImagesUpstream{}, &compatibleImagesUsage{}
+	billingCache := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
+	t.Cleanup(billingCache.Stop)
+	gateway := service.NewOpenAIGatewayService(repo, usage, nil, nil, nil, nil, nil, cfg, nil, nil, service.NewBillingService(cfg, nil), nil, billingCache, upstream, &service.DeferredService{}, nil, nil, nil, nil, nil, nil, nil)
+	concurrency := service.NewConcurrencyService(nil)
+	imagesHandler := handler.NewOpenAIGatewayHandler(gateway, concurrency, billingCache, service.NewAPIKeyService(nil, nil, nil, nil, nil, nil, cfg), nil, nil, nil, nil, cfg)
+	resolver := service.NewCompositeRouteResolver(compositeRouteRepoStub{routes: []service.CompositeModelRoute{
+		{ID: 1, GroupID: groupID, PublicModel: modelA, MatchType: service.CompositeRouteMatchExact, TargetPlatform: service.PlatformOpenAI, UpstreamModel: modelA, Endpoint: service.CompositeRouteEndpointImages, Enabled: true},
+		{ID: 2, GroupID: groupID, PublicModel: modelB, MatchType: service.CompositeRouteMatchExact, TargetPlatform: service.PlatformOpenAI, UpstreamModel: modelB, Endpoint: service.CompositeRouteEndpointImages, Enabled: true},
+	}})
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Set(string(servermiddleware.ContextKeyAPIKey), &service.APIKey{ID: 202, GroupID: &groupID, Group: group, User: &service.User{ID: 303}})
+		c.Set(string(servermiddleware.ContextKeyUser), servermiddleware.AuthSubject{UserID: 303})
+		c.Next()
+	})
+	router.Use(compositeTargetPlatformMiddleware(resolver))
+	router.POST("/v1/images/generations", imagesHandler.Images)
+
+	for _, model := range []string{modelA, modelB} {
+		body := []byte(fmt.Sprintf(`{"model":%q,"prompt":"draw","size":"1024x1024"}`, model))
+		req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	require.Equal(t, []int64{25, 29}, upstream.accountIDs, "one API key/group must honor the existing per-model native account routing")
+	require.Len(t, upstream.bodies, 2)
+	require.Contains(t, string(upstream.bodies[0]), modelA)
+	require.Contains(t, string(upstream.bodies[1]), modelB)
+	require.Len(t, usage.logs, 2)
+	require.Equal(t, int64(25), usage.logs[0].AccountID)
+	require.Equal(t, modelA, usage.logs[0].RequestedModel)
+	require.Equal(t, int64(29), usage.logs[1].AccountID)
+	require.Equal(t, modelB, usage.logs[1].RequestedModel)
+	for _, log := range usage.logs {
+		if log.UpstreamModel != nil {
+			require.Equal(t, log.RequestedModel, *log.UpstreamModel, "no account model mapping must keep the requested model for this route")
+		}
 	}
 }

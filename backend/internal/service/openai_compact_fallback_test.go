@@ -73,16 +73,16 @@ func TestResolveOpenAICompactFallbackModelPrefersAccountMapping(t *testing.T) {
 	require.Equal(t, "global-compact", svc.resolveOpenAICompactFallbackModel(account, "unmapped-model"))
 }
 
-func TestOpenAIGatewayForwardUsesGlobalCompactModelOnInitialLegacyRequest(t *testing.T) {
+func TestOpenAIGatewayForwardKeepsRequestedModelOnInitialLegacyRequest(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	body := []byte(`{"model":"gpt-5.5","stream":false,"instructions":"compact-test","input":[]}`)
+	body := []byte(`{"model":"glm-5.2","stream":false,"instructions":"compact-test","input":[]}`)
 	c := newOpenAICompactFallbackTestContext(t, "/v1/responses/compact")
 	c.Request.Body = io.NopCloser(bytes.NewReader(body))
 	c.Request.Header.Set("Content-Type", "application/json")
 	upstream := &httpUpstreamRecorder{resp: &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"application/json"}},
-		Body:       io.NopCloser(strings.NewReader(`{"id":"resp_compact","status":"completed","model":"global-compact","output":[],"usage":{"input_tokens":1,"output_tokens":1}}`)),
+		Body:       io.NopCloser(strings.NewReader(`{"id":"resp_compact","status":"completed","model":"glm-5.2","output":[],"usage":{"input_tokens":1,"output_tokens":1}}`)),
 	}}
 	svc := &OpenAIGatewayService{
 		cfg:          &config.Config{Gateway: config.GatewayConfig{OpenAICompactModel: "global-compact"}},
@@ -99,11 +99,11 @@ func TestOpenAIGatewayForwardUsesGlobalCompactModelOnInitialLegacyRequest(t *tes
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.Len(t, upstream.bodies, 1)
-	require.Equal(t, "global-compact", gjson.GetBytes(upstream.bodies[0], "model").String())
+	require.Equal(t, "glm-5.2", gjson.GetBytes(upstream.bodies[0], "model").String())
 	require.Contains(t, upstream.requests[0].URL.Path, "/compact")
 }
 
-func TestPrepareOpenAICompactFallbackRetryLegacyPathAndSingleAttemptGuard(t *testing.T) {
+func TestPrepareOpenAICompactFallbackRetryDoesNotRemapLegacyPath(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{OpenAICompactModel: "gpt-5.4"}}}
 	c := newOpenAICompactFallbackTestContext(t, "/v1/responses/compact")
@@ -113,16 +113,10 @@ func TestPrepareOpenAICompactFallbackRetryLegacyPathAndSingleAttemptGuard(t *tes
 	retryBody, fallbackModel, retry := svc.prepareOpenAICompactFallbackRetry(
 		c, nil, "gpt-5.5", body, http.StatusBadRequest, "", errorBody, false,
 	)
-	require.True(t, retry)
-	require.Equal(t, "gpt-5.4", fallbackModel)
+	require.False(t, retry)
+	require.Empty(t, fallbackModel)
+	require.Equal(t, body, retryBody)
 	require.Equal(t, "/compact", openAIResponsesRequestPathSuffix(c))
-
-	secondBody, secondModel, secondRetry := svc.prepareOpenAICompactFallbackRetry(
-		c, nil, "gpt-5.5", retryBody, http.StatusBadRequest, "", errorBody, true,
-	)
-	require.False(t, secondRetry)
-	require.Empty(t, secondModel)
-	require.Equal(t, retryBody, secondBody)
 }
 
 func TestPrepareOpenAICompactFallbackRetryDoesNotHideSpecificBusinessFailure(t *testing.T) {

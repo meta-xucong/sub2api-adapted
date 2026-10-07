@@ -54,6 +54,14 @@ type UsageStats struct {
 	AverageDurationMs        float64 `json:"average_duration_ms"`
 }
 
+// AccountBillingBreakdown is a read-only usage summary for one account and billing type.
+type AccountBillingBreakdown struct {
+	AccountID   int64   `json:"account_id"`
+	BillingType int8    `json:"billing_type"`
+	ActualCost  float64 `json:"actual_cost"`
+	AccountCost float64 `json:"account_cost"`
+}
+
 // UsageService 使用统计服务
 type UsageService struct {
 	usageRepo            UsageLogRepository
@@ -460,4 +468,13 @@ func (s *UsageService) GetStatsWithFilters(ctx context.Context, filters usagesta
 		return nil, fmt.Errorf("get usage stats with filters: %w", err)
 	}
 	return stats, nil
+}
+
+// GetAPIKeyAccountBillingBreakdown returns native user/account costs grouped by account and billing type.
+func (s *UsageService) GetAPIKeyAccountBillingBreakdown(ctx context.Context, apiKeyID int64, startTime, endTime time.Time) ([]AccountBillingBreakdown, error) {
+	rows, err := s.usageRepo.GetAPIKeyAccountBillingBreakdown(ctx, apiKeyID, startTime, endTime)
+	if err != nil {
+		return nil, fmt.Errorf("get API key account billing breakdown: %w", err)
+	}
+	return rows, nil
 }

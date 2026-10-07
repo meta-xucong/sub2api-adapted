@@ -27,19 +27,6 @@ func ProvideGrokOAuthService(proxyRepo ProxyRepository, oauthClient GrokOAuthCli
 	return svc
 }
 
-// ProvideUnifiedGatewayAdminService wires the Phase 5 management service to
-// its repository and the existing group/account/user readers. Runtime
-// execution services are intentionally not part of this dependency graph.
-func ProvideUnifiedGatewayAdminService(
-	repo UnifiedGatewayAdminRepository,
-	groups GroupRepository,
-	accounts AccountRepository,
-	cfg *config.Config,
-	adminScope UserRepository,
-) *UnifiedGatewayAdminService {
-	return NewUnifiedGatewayAdminService(repo, groups, accounts, cfg, adminScope)
-}
-
 // BuildInfo contains build information
 type BuildInfo struct {
 	Version   string
@@ -913,7 +900,6 @@ func ProvideAPIKeyService(
 
 // ProviderSet is the Wire provider set for all services
 var ProviderSet = wire.NewSet(
-	ProvideUnifiedGatewayAdminService,
 	// Core services
 	ProvideAuthService,
 	NewPasskeyService,
