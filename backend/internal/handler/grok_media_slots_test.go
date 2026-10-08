@@ -120,6 +120,7 @@ func (s *grokMediaSlotsCache) assertReleased(t *testing.T) {
 
 type grokMediaSlotBindings struct {
 	testutil.StubGatewayCache
+	mu      sync.Mutex
 	owner   int64
 	writes  int
 	key     string
@@ -159,6 +160,8 @@ func (s *grokMediaSlotBindings) DeleteSessionAccountID(context.Context, int64, s
 }
 
 func (s *grokMediaSlotBindings) ClaimGrokVideoBilled(_ context.Context, key string, _ time.Duration) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.billed == nil {
 		s.billed = make(map[string]bool)
 	}
@@ -419,4 +422,55 @@ func TestGrokMediaVideoCompletionStillClaimsBillingOnce(t *testing.T) {
 		}
 	}
 	require.Len(t, bindings.billed, 1)
+}
+
+func TestGrokMediaVideoCompletionCarriesRoutePricingSnapshotOnce(t *testing.T) {
+	h, _, bindings, _ := newGrokMediaSlotHandler(t, false, false)
+	c, _ := grokMediaSlotContext(context.Background(), false)
+	key, ok := middleware2.GetAPIKeyFromContext(c)
+	require.True(t, ok)
+	subject := middleware2.AuthSubject{UserID: 10, Concurrency: 5}
+	unitPrice := 0.75
+	pendingDecision := service.UnifiedGatewayRoutePricingDecision{
+		Allowed:              true,
+		Revision:             8,
+		GroupID:              24,
+		Model:                "grok-imagine-video-1.5",
+		Kind:                 service.UnifiedGatewayRoutePricingVideo,
+		VideoResolution:      "720p",
+		VideoDurationSeconds: 5,
+		Entries: []service.UnifiedGatewayRoutePricingEntry{{
+			AccountID:            1,
+			Model:                "grok-imagine-video-1.5",
+			Kind:                 service.UnifiedGatewayRoutePricingVideo,
+			UnitPrice:            &unitPrice,
+			VideoResolution:      "720p",
+			VideoDurationSeconds: 5,
+		}},
+	}
+	err := h.gatewayService.StoreGrokVideoPendingBilling(c.Request.Context(), "task", subject.UserID, key.ID, service.GrokVideoPendingBilling{
+		Model:                "grok-imagine-video-1.5",
+		BillingModel:         "grok-imagine-video-1.5",
+		VideoResolution:      "720p",
+		VideoDurationSeconds: 5,
+		RoutePricingDecision: &pendingDecision,
+	})
+	require.NoError(t, err)
+	require.Len(t, bindings.pending, 1, "create-time route tariff should be persisted with pending billing")
+
+	status := &service.OpenAIForwardResult{ResponseID: "task", Model: "grok-imagine-video-1.5", VideoCount: 1}
+	first := prepareGrokVideoCompletionBilling(c.Request.Context(), h, zap.NewNop(), key, subject, "task", status)
+	require.NotNil(t, first)
+	require.NotNil(t, first.RoutePricingDecision, "completion merge carries create-time route tariff")
+	require.False(t, first.RoutePricingDecision.Allowed, "completion must obtain a fresh reserve before applying route tariff")
+	require.Equal(t, pendingDecision.Revision, first.RoutePricingDecision.Revision)
+	require.Equal(t, pendingDecision.GroupID, first.RoutePricingDecision.GroupID)
+	require.Equal(t, pendingDecision.Model, first.RoutePricingDecision.Model)
+	require.Equal(t, pendingDecision.VideoResolution, first.RoutePricingDecision.VideoResolution)
+	require.Equal(t, pendingDecision.VideoDurationSeconds, first.RoutePricingDecision.VideoDurationSeconds)
+	require.Equal(t, pendingDecision.Entries, first.RoutePricingDecision.Entries)
+
+	second := prepareGrokVideoCompletionBilling(c.Request.Context(), h, zap.NewNop(), key, subject, "task", status)
+	require.Nil(t, second, "the competing status/content completion path cannot carry a second billing decision")
+	require.Len(t, bindings.billed, 1, "exactly one one-shot claim is retained")
 }

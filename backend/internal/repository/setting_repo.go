@@ -53,6 +53,34 @@ func (r *settingRepository) Set(ctx context.Context, key, value string) error {
 		Exec(ctx)
 }
 
+func (r *settingRepository) CompareAndSetValue(ctx context.Context, key string, expected *string, value string) (bool, error) {
+	now := time.Now()
+	if expected == nil {
+		result, err := r.client.ExecContext(ctx, `
+			INSERT INTO settings (key, value, updated_at)
+			VALUES ($1, $2, $3)
+			ON CONFLICT (key) DO NOTHING
+		`, key, value, now)
+		if err != nil {
+			return false, err
+		}
+		rowsAffected, err := result.RowsAffected()
+		if err != nil {
+			return false, err
+		}
+		return rowsAffected == 1, nil
+	}
+	updated, err := r.client.Setting.Update().
+		Where(setting.KeyEQ(key), setting.ValueEQ(*expected)).
+		SetValue(value).
+		SetUpdatedAt(now).
+		Save(ctx)
+	if err != nil {
+		return false, err
+	}
+	return updated == 1, nil
+}
+
 func (r *settingRepository) GetMultiple(ctx context.Context, keys []string) (map[string]string, error) {
 	if len(keys) == 0 {
 		return map[string]string{}, nil

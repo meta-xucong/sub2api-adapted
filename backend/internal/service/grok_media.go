@@ -394,17 +394,43 @@ func (s *OpenAIGatewayService) SelectMediaVideoRequestAccount(
 // first observes a completed video URL. Status may omit model/duration; we fall
 // back to this snapshot, then defaults.
 type GrokVideoPendingBilling struct {
-	Model                string `json:"model"`
-	BillingModel         string `json:"billing_model,omitempty"`
-	UpstreamModel        string `json:"upstream_model,omitempty"`
-	VideoResolution      string `json:"video_resolution,omitempty"`
-	VideoDurationSeconds int    `json:"video_duration_seconds,omitempty"`
-	OriginalModel        string `json:"original_model,omitempty"`
+	Model                string                              `json:"model"`
+	BillingModel         string                              `json:"billing_model,omitempty"`
+	UpstreamModel        string                              `json:"upstream_model,omitempty"`
+	VideoResolution      string                              `json:"video_resolution,omitempty"`
+	VideoDurationSeconds int                                 `json:"video_duration_seconds,omitempty"`
+	OriginalModel        string                              `json:"original_model,omitempty"`
+	RoutePricingDecision *UnifiedGatewayRoutePricingDecision `json:"route_pricing_decision,omitempty"`
 	// CreatedAt is when the gateway accepted the async create (RFC3339Nano UTC).
 	// duration_ms for deferred billing is measured from this instant until the
 	// first official done+video.url observation (status poll or content download),
 	// not the latency of that single discovery request alone.
 	CreatedAt string `json:"created_at,omitempty"`
+}
+
+func (s *OpenAIGatewayService) EstimateUnifiedGatewayCompletedVideoPrice(ctx context.Context, apiKey *APIKey, accountID int64, result *OpenAIForwardResult, decision UnifiedGatewayRoutePricingDecision) (float64, bool) {
+	if s == nil || apiKey == nil || apiKey.GroupID == nil || result == nil || accountID <= 0 {
+		return 0, false
+	}
+	base := 1.0
+	if s.cfg != nil {
+		base = s.cfg.Default.RateMultiplier
+	}
+	if apiKey.Group != nil && apiKey.User != nil {
+		base = s.ResolveUserGroupRateMultiplier(ctx, apiKey.User.ID, *apiKey.GroupID, apiKey.Group.RateMultiplier)
+	}
+	decision.Allowed = true
+	ctx = WithUnifiedGatewayRoutePricingDecision(ctx, decision)
+	billingModel := strings.TrimSpace(result.BillingModel)
+	if billingModel == "" {
+		billingModel = forwardResultBillingModel(result.Model, result.UpstreamModel)
+	}
+	videoMultiplier := resolveVideoRateMultiplier(apiKey, base)
+	cost := ApplyUnifiedGatewayRoutePricing(ctx, apiKey, accountID, billingModel, result.ImageSize, result.ImageQuality, result.ImageSizeBreakdown, result.ImageCount, result.VideoCount, result.VideoResolution, result.VideoDurationSeconds, nil, resolveImageRateMultiplier(apiKey, base), videoMultiplier)
+	if cost == nil || !finiteNonNegative(cost.ActualCost) {
+		return 0, false
+	}
+	return cost.ActualCost, true
 }
 
 // GrokVideoPendingCreatedAtNow formats a create-accept timestamp for pending billing.

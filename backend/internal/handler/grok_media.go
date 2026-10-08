@@ -521,6 +521,12 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 				// Wall-clock start for usage duration_ms: create accepted → first done discovery.
 				CreatedAt: videoCreateStartedAt,
 			}
+			if routeDecision, ok := service.UnifiedGatewayRoutePricingDecisionFromContext(requestCtx); ok && len(routeDecision.Entries) > 0 {
+				// Creation's reserve ends with this HTTP request. Keep only the immutable
+				// tariff candidates; completion must obtain its own reserve after claim.
+				routeDecision.Allowed = false
+				pending.RoutePricingDecision = &routeDecision
+			}
 			if err := h.gatewayService.StoreGrokVideoPendingBilling(requestCtx, result.ResponseID, subject.UserID, apiKey.ID, pending); err != nil {
 				reqLog.Warn("grok_media.store_video_pending_billing_failed_retrying",
 					zap.Int64("account_id", account.ID),
@@ -547,6 +553,8 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 		} else if endpoint == service.GrokMediaEndpointVideoStatus || endpoint == service.GrokMediaEndpointVideoContent {
 			taskID := strings.TrimSpace(requestID)
 			if billResult := prepareGrokVideoCompletionBilling(requestCtx, h, reqLog, apiKey, subject, taskID, result); billResult != nil {
+				completionReserveDone := reserveGrokVideoRoutePricing(c, h, apiKey, subscription, account, billResult)
+				defer completionReserveDone()
 				recordGrokMediaUsage(c, h, reqLog, apiKey, subject, subscription, account, billResult, billResult.Model, body, taskID)
 			}
 		} else if shouldRecordGrokMediaUsage(endpoint, requestModel, result) {
@@ -724,6 +732,12 @@ func prepareGrokVideoCompletionBilling(
 		if e2e := service.GrokVideoE2EDuration(pending.CreatedAt, time.Now()); e2e > 0 {
 			merged.Duration = e2e
 		}
+		if pending.RoutePricingDecision != nil {
+			decision := *pending.RoutePricingDecision
+			decision.Allowed = false
+			decision.Entries = append([]service.UnifiedGatewayRoutePricingEntry(nil), pending.RoutePricingDecision.Entries...)
+			merged.RoutePricingDecision = &decision
+		}
 	}
 	return &merged
 }
@@ -750,6 +764,9 @@ func recordGrokMediaUsage(
 	body []byte,
 	requestID string,
 ) {
+	if c != nil && c.Request != nil && result != nil && result.RoutePricingDecision != nil {
+		c.Request = c.Request.WithContext(service.WithUnifiedGatewayRoutePricingDecision(c.Request.Context(), *result.RoutePricingDecision))
+	}
 	userAgent := c.GetHeader("User-Agent")
 	clientIP := ip.GetClientIP(c)
 	sessionID := service.ExtractClientSessionID(c)
@@ -815,4 +832,58 @@ func recordGrokMediaUsage(
 			reqLog.Debug("grok_media.record_usage_failed", zap.Error(err))
 		}
 	})
+}
+
+// reserveGrokVideoRoutePricing performs a completion-time reserve only after
+// the native one-shot claim has succeeded. Every failure keeps native billing
+// and the completed upstream response intact.
+func reserveGrokVideoRoutePricing(
+	c *gin.Context,
+	h *OpenAIGatewayHandler,
+	apiKey *service.APIKey,
+	subscription *service.UserSubscription,
+	account *service.Account,
+	result *service.OpenAIForwardResult,
+) func() {
+	noop := func() {}
+	if c == nil || c.Request == nil || h == nil || h.gatewayService == nil || h.billingCacheService == nil || apiKey == nil || account == nil || result == nil || result.RoutePricingDecision == nil {
+		return noop
+	}
+	decision := *result.RoutePricingDecision
+	decision.Allowed = false
+	ctx := c.Request.Context()
+	price, priced := h.gatewayService.EstimateUnifiedGatewayCompletedVideoPrice(ctx, apiKey, account.ID, result, decision)
+	if priced && subscription != nil && apiKey.Group != nil && apiKey.Group.IsSubscriptionType() {
+		// Native subscription billing has no balance reservation. The successful
+		// one-shot video claim is its duplicate-charge guard; retain the exact
+		// pending tariff only for this matching subscription settlement.
+		decision.Allowed = true
+		result.RoutePricingDecision = &decision
+		c.Request = c.Request.WithContext(service.WithUnifiedGatewayRoutePricingDecision(ctx, decision))
+		return noop
+	}
+	if !priced || !h.billingCacheService.InflightReservationEnabled() {
+		result.RoutePricingDecision = &decision
+		c.Request = c.Request.WithContext(service.WithUnifiedGatewayRoutePricingDecision(ctx, decision))
+		return noop
+	}
+	if price > 0 {
+		reservation, err := h.billingCacheService.ReserveInflight(ctx, apiKey.User, apiKey.Group, subscription, price)
+		if err != nil || reservation == nil {
+			// Keep the claim; native usage must still be recorded exactly once.
+			result.RoutePricingDecision = &decision
+			c.Request = c.Request.WithContext(service.WithUnifiedGatewayRoutePricingDecision(ctx, decision))
+			return noop
+		}
+		decision.Allowed = true
+		ctx = service.WithInflightReservation(ctx, reservation)
+		result.RoutePricingDecision = &decision
+		c.Request = c.Request.WithContext(service.WithUnifiedGatewayRoutePricingDecision(ctx, decision))
+		return reservation.HandlerDone
+	}
+	// Zero-priced routes need no balance hold and are safe to apply.
+	decision.Allowed = true
+	result.RoutePricingDecision = &decision
+	c.Request = c.Request.WithContext(service.WithUnifiedGatewayRoutePricingDecision(ctx, decision))
+	return noop
 }

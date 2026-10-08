@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
@@ -11,6 +12,10 @@ import (
 // inflightReservationEstimator 估算单请求在途预留金额（USD）；false 表示无法定价。
 type inflightReservationEstimator interface {
 	EstimateInflightReservation(ctx context.Context, apiKey *service.APIKey, req service.InflightEstimateRequest) (float64, bool)
+}
+
+type unifiedRoutePricingReservationEstimator interface {
+	PrepareUnifiedGatewayRoutePricingReservation(ctx context.Context, apiKey *service.APIKey, req service.InflightEstimateRequest, nativeEstimate float64, nativePriced bool) (context.Context, float64, bool)
 }
 
 // requestMaxOutputTokens 从请求体中提取输出 token 上限（兼容 Anthropic / OpenAI Chat / Responses / Gemini）。
@@ -71,25 +76,91 @@ func reserveInflightBalanceCtx(
 	subscription *service.UserSubscription,
 	req service.InflightEstimateRequest,
 ) (context.Context, func(), error) {
-	if billing == nil || estimator == nil || apiKey == nil || apiKey.User == nil || !billing.InflightReservationEnabled() {
+	if apiKey == nil {
 		return ctx, inflightNoop, nil
 	}
+	reservationEnabled := billing != nil && estimator != nil && billing.InflightReservationEnabled()
 	if apiKey.Group != nil && apiKey.Group.IsSubscriptionType() && subscription != nil {
+		if planner, ok := estimator.(unifiedRoutePricingReservationEstimator); ok {
+			ctx, _, planned := planner.PrepareUnifiedGatewayRoutePricingReservation(ctx, apiKey, req, 0, false)
+			if planned {
+				ctx = service.WithUnifiedGatewayRoutePricingDecisionAllowed(ctx, true)
+			}
+		}
 		return ctx, inflightNoop, nil
 	}
-	estimate, priced := estimator.EstimateInflightReservation(ctx, apiKey, req)
+	estimate, priced := 0.0, false
+	if reservationEnabled {
+		estimate, priced = estimator.EstimateInflightReservation(ctx, apiKey, req)
+	}
+	routeEstimate, routePlanned := 0.0, false
+	if planner, ok := estimator.(unifiedRoutePricingReservationEstimator); ok {
+		ctx, routeEstimate, routePlanned = planner.PrepareUnifiedGatewayRoutePricingReservation(ctx, apiKey, req, estimate, priced)
+	}
+	decision, _ := service.UnifiedGatewayRoutePricingDecisionFromContext(ctx)
+	if routePlanned {
+		estimate = max(estimate, routeEstimate)
+		priced = priced || decision.Kind != service.UnifiedGatewayRoutePricingToken || routeEstimate > 0 ||
+			decision.HasTokenBasePrice()
+	}
+	strictTokenBasePrice := routePlanned && decision.HasTokenBasePrice() && estimate > 0
+	if apiKey.User == nil {
+		if strictTokenBasePrice {
+			ctx = service.WithUnifiedGatewayRoutePricingDecisionAllowed(ctx, false)
+			return ctx, inflightNoop, service.ErrInsufficientBalance
+		}
+		if routePlanned {
+			ctx = service.WithUnifiedGatewayRoutePricingDecisionAllowed(ctx, true)
+		}
+		return ctx, inflightNoop, nil
+	}
+	if !reservationEnabled {
+		if strictTokenBasePrice {
+			ctx = service.WithUnifiedGatewayRoutePricingDecisionAllowed(ctx, false)
+			return ctx, inflightNoop, service.ErrInsufficientBalance
+		}
+		if routePlanned {
+			ctx = service.WithUnifiedGatewayRoutePricingDecisionAllowed(ctx, true)
+		}
+		return ctx, inflightNoop, nil
+	}
+	if strictTokenBasePrice {
+		if estimate <= 0 {
+			ctx = service.WithUnifiedGatewayRoutePricingDecisionAllowed(ctx, false)
+			return ctx, inflightNoop, service.ErrInsufficientBalance
+		}
+		if maxAmount := billing.InflightReservationMaxAmount(); maxAmount > 0 && estimate > maxAmount {
+			ctx = service.WithUnifiedGatewayRoutePricingDecisionAllowed(ctx, false)
+			return ctx, inflightNoop, service.ErrInsufficientBalance
+		}
+	}
 	if !priced && billing.InflightReservationFailClosedOnUnpriced() {
+		ctx = service.WithUnifiedGatewayRoutePricingDecisionAllowed(ctx, false)
 		return ctx, inflightNoop, service.ErrInsufficientBalance
 	}
 	if estimate <= 0 {
+		if routePlanned {
+			canPrice := !(reservationEnabled && decision.Kind == service.UnifiedGatewayRoutePricingToken && !priced)
+			ctx = service.WithUnifiedGatewayRoutePricingDecisionAllowed(ctx, canPrice)
+		}
 		return ctx, inflightNoop, nil
 	}
 	res, err := billing.ReserveInflight(ctx, apiKey.User, apiKey.Group, subscription, estimate)
 	if err != nil {
+		ctx = service.WithUnifiedGatewayRoutePricingDecisionAllowed(ctx, false)
 		return ctx, inflightNoop, err
 	}
 	if res == nil {
+		if routePlanned {
+			ctx = service.WithUnifiedGatewayRoutePricingDecisionAllowed(ctx, false)
+		}
+		if strictTokenBasePrice {
+			return ctx, inflightNoop, service.ErrInsufficientBalance
+		}
 		return ctx, inflightNoop, nil
+	}
+	if routePlanned {
+		ctx = service.WithUnifiedGatewayRoutePricingDecisionAllowed(ctx, true)
 	}
 	return service.WithInflightReservation(ctx, res), res.HandlerDone, nil
 }
@@ -102,7 +173,13 @@ func grokMediaInflightEstimate(endpoint service.GrokMediaEndpoint, model string,
 	}
 	switch endpoint {
 	case service.GrokMediaEndpointImagesGenerations, service.GrokMediaEndpointImagesEdits:
-		return service.InflightEstimateRequest{Model: model, BodyBytes: len(body), Kind: service.InflightEstimateImage, Units: info.N}
+		imageSize := strings.TrimSpace(info.Size)
+		if imageSize == "" {
+			imageSize = strings.TrimSpace(info.SizeTier)
+		}
+		// Grok image request parsing and usage settlement do not expose a quality
+		// field. Do not invent a "default" tier for route-price reservation.
+		return service.InflightEstimateRequest{Model: model, BodyBytes: len(body), Kind: service.InflightEstimateImage, Units: info.N, ImageSize: imageSize}
 	default:
 		return service.InflightEstimateRequest{
 			Model:                model,

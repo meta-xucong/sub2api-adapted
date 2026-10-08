@@ -329,7 +329,7 @@ func buildUsageBillingCommand(requestID string, usageLog *UsageLog, p *postUsage
 	// user-specific) rate multiplier consumes subscription quota at the expected
 	// speed. TotalCost remains the raw (pre-multiplier) value; downstream guards
 	// on "> 0" still correctly skip free subscriptions (RateMultiplier == 0).
-	if p.IsSubscriptionBill && p.Subscription != nil && p.Cost.TotalCost > 0 {
+	if p.IsSubscriptionBill && p.Subscription != nil && (p.Cost.TotalCost > 0 || p.Cost.routePricingApplied) {
 		cmd.SubscriptionID = &p.Subscription.ID
 		cmd.SubscriptionCost = p.Cost.ActualCost
 	} else if p.Cost.ActualCost > 0 {
@@ -796,6 +796,7 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 		groupDefault := apiKey.Group.RateMultiplier
 		multiplier = s.ResolveUserGroupRateMultiplier(ctx, user.ID, *apiKey.GroupID, groupDefault)
 	}
+	routeBaseMultiplier := multiplier
 	// token 倍率叠加高峰因子（token 计费含图片 token，图片按次倍率不受影响）。高峰因子按请求时刻现算，
 	// 不并入上面的 getUserGroupRateMultiplier，以免污染 user:group 倍率缓存。
 	pricingAt := input.PricingAt
@@ -832,6 +833,7 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 
 	// 计算费用
 	cost := s.calculateRecordUsageCost(ctx, result, apiKey, billingModel, multiplier, imageMultiplier, pricingAt)
+	effectiveBillingModel := billingModel
 	// response_model：按上游成功响应自报的模型计费（渠道显式开启才生效）。
 	// 采纳条件见 responseModelBillingDeclaration + hasIdentifiedResponseModelPricing
 	// + responseModelBillingAdoptable。任一条件不满足都静默回落基线，即开启本模式前的
@@ -850,9 +852,27 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 				// 因此这里不改写它，改由日志记录实际生效的计费基准。
 				logResponseModelBillingApplied("service.gateway", account, result.RequestID, billingModel, responseModel, cost, responseCost)
 				cost = responseCost
+				effectiveBillingModel = responseModel
 			}
 		}
 	}
+	cost = ApplyUnifiedGatewayRoutePricingWithTokenUsage(
+		ctx, apiKey, account.ID, effectiveBillingModel, result.ImageSize, "", result.ImageSizeBreakdown, 0, 0, "", 0, cost, imageMultiplier, 1,
+		UnifiedGatewayRouteTokenUsage{
+			Tokens: UsageTokens{
+				InputTokens: result.Usage.InputTokens, OutputTokens: result.Usage.OutputTokens,
+				CacheCreationTokens: result.Usage.CacheCreationInputTokens, CacheReadTokens: result.Usage.CacheReadInputTokens,
+				CacheCreation5mTokens: result.Usage.CacheCreation5mTokens, CacheCreation1hTokens: result.Usage.CacheCreation1hTokens,
+				ImageOutputTokens: result.Usage.ImageOutputTokens,
+			},
+			RateMultiplier: routeBaseMultiplier,
+			Eligible: result.ImageCount == 0 && result.AudioUsage == nil &&
+				result.SearchCount == 0 && flatUnifiedGatewayServiceTier(result.ServiceTier) &&
+				!unifiedGatewayTokenBasePriceHasDynamicGroupPeak(apiKey, pricingAt) &&
+				(result.ReasoningEffort == nil || strings.TrimSpace(*result.ReasoningEffort) == "") &&
+				cost != nil && !cost.LongContextBillingApplied,
+		},
+	)
 
 	// 判断计费方式：订阅模式 vs 余额模式
 	isSubscriptionBilling := subscription != nil && apiKey.Group != nil && apiKey.Group.IsSubscriptionType()

@@ -25,6 +25,18 @@ func TestRequestMaxOutputTokens(t *testing.T) {
 	require.Equal(t, 0, requestMaxOutputTokens([]byte(`{}`)))
 }
 
+func TestGrokImageInflightEstimateDoesNotInventQualityTier(t *testing.T) {
+	estimate := grokMediaInflightEstimate(
+		service.GrokMediaEndpointImagesGenerations,
+		"grok-imagine-image",
+		service.GrokMediaRequestInfo{N: 1, Size: "1024x1024", SizeTier: "1K"},
+		[]byte(`{"model":"grok-imagine-image"}`),
+	)
+	require.Equal(t, service.InflightEstimateImage, estimate.Kind)
+	require.Equal(t, "1024x1024", estimate.ImageSize)
+	require.Empty(t, estimate.ImageQuality, "unknown quality must not match a configured fixed price")
+}
+
 type countingEstimator struct {
 	calls  int
 	cost   float64
@@ -34,6 +46,63 @@ type countingEstimator struct {
 func (e *countingEstimator) EstimateInflightReservation(context.Context, *service.APIKey, service.InflightEstimateRequest) (float64, bool) {
 	e.calls++
 	return e.cost, e.priced
+}
+
+type routePricingReservationEstimator struct {
+	nativeEstimate float64
+	nativePriced   bool
+	routeEstimate  float64
+	decision       service.UnifiedGatewayRoutePricingDecision
+	allowed        bool
+	prepared       bool
+}
+
+func (e *routePricingReservationEstimator) EstimateInflightReservation(context.Context, *service.APIKey, service.InflightEstimateRequest) (float64, bool) {
+	return e.nativeEstimate, e.nativePriced
+}
+
+func (e *routePricingReservationEstimator) PrepareUnifiedGatewayRoutePricingReservation(ctx context.Context, _ *service.APIKey, _ service.InflightEstimateRequest, nativeEstimate float64, nativePriced bool) (context.Context, float64, bool) {
+	e.prepared = true
+	// Keep the exact values passed by the reservation planner observable in test
+	// through a decision revision and a non-zero estimate check below.
+	if nativeEstimate != e.nativeEstimate || nativePriced != e.nativePriced {
+		return ctx, 0, false
+	}
+	return service.WithUnifiedGatewayRoutePricingDecision(ctx, e.decision), e.routeEstimate, true
+}
+
+func routePricingTestDecision() service.UnifiedGatewayRoutePricingDecision {
+	multiplier := 2.0
+	return service.UnifiedGatewayRoutePricingDecision{
+		Revision: 3,
+		GroupID:  7,
+		Model:    "m",
+		Kind:     service.UnifiedGatewayRoutePricingToken,
+		Entries: []service.UnifiedGatewayRoutePricingEntry{{
+			AccountID:  55,
+			Model:      "m",
+			Kind:       service.UnifiedGatewayRoutePricingToken,
+			Multiplier: &multiplier,
+		}},
+	}
+}
+
+func routePricingBasePriceTestDecision() service.UnifiedGatewayRoutePricingDecision {
+	input, output, cacheRead := 10.0, 20.0, 5.0
+	cacheWrite, cacheWrite5m, cacheWrite1h := 7.0, 15.0, 30.0
+	return service.UnifiedGatewayRoutePricingDecision{
+		Revision: 3,
+		GroupID:  7,
+		Model:    "m",
+		Kind:     service.UnifiedGatewayRoutePricingToken,
+		Entries: []service.UnifiedGatewayRoutePricingEntry{{
+			AccountID: 55, Model: "m", Kind: service.UnifiedGatewayRoutePricingToken,
+			TokenBasePrice: &service.UnifiedGatewayTokenBasePrice{
+				InputPerMillion: &input, OutputPerMillion: &output, CacheReadPerMillion: &cacheRead,
+				CacheWritePerMillion: &cacheWrite, CacheWrite5mPerMillion: &cacheWrite5m, CacheWrite1hPerMillion: &cacheWrite1h,
+			},
+		}},
+	}
 }
 
 func newInflightTestGinContext() *gin.Context {
@@ -79,6 +148,158 @@ func TestReserveInflightBalance_UnpricedFailOpenByDefaultFailClosedOptIn(t *test
 	cfg.Billing.InflightReservation.FailClosedOnUnpriced = true
 	_, err = reserveInflightBalance(newInflightTestGinContext(), billing, est, apiKey, nil, tokenInflightEstimate("unknown", nil))
 	require.ErrorIs(t, err, service.ErrInsufficientBalance)
+}
+
+func TestReserveInflightBalance_RouteEstimateUsesMaxAndEnablesOnlyAfterReservation(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		nativeEstimate float64
+		routeEstimate  float64
+		wantEstimate   float64
+	}{
+		{name: "native estimate is larger", nativeEstimate: 0.75, routeEstimate: 0.5, wantEstimate: 0.75},
+		{name: "route estimate is larger", nativeEstimate: 0.4, routeEstimate: 1.2, wantEstimate: 1.2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cache := newHandlerInflightCache(5)
+			cfg := &config.Config{}
+			cfg.Billing.InflightReservation = config.InflightReservationConfig{Enabled: true, TTLSeconds: 60}
+			billing := service.NewBillingCacheService(cache, nil, nil, nil, nil, nil, cfg, nil)
+			t.Cleanup(billing.Stop)
+			groupID := int64(7)
+			apiKey := &service.APIKey{ID: 9, GroupID: &groupID, User: &service.User{ID: 1}, Group: &service.Group{ID: groupID, Platform: service.PlatformComposite}}
+			estimator := &routePricingReservationEstimator{
+				nativeEstimate: tc.nativeEstimate,
+				nativePriced:   true,
+				routeEstimate:  tc.routeEstimate,
+				decision:       routePricingTestDecision(),
+			}
+
+			ctx, done, err := reserveInflightBalanceCtx(context.Background(), billing, estimator, apiKey, nil, tokenInflightEstimate("m", nil))
+			require.NoError(t, err)
+			require.True(t, estimator.prepared)
+			decision, ok := service.UnifiedGatewayRoutePricingDecisionFromContext(ctx)
+			require.True(t, ok)
+			require.True(t, decision.Allowed, "a successful reservation enables route pricing")
+			cache.mu.Lock()
+			var reserved float64
+			for _, amount := range cache.res {
+				reserved = amount
+			}
+			cache.mu.Unlock()
+			require.InDelta(t, tc.wantEstimate, reserved, 1e-9, "reserve max(native estimate, route estimate)")
+			done()
+			require.Zero(t, cache.count())
+		})
+	}
+}
+
+func TestReserveInflightBalance_RoutePricingDisabledWhenReservationFailsOpen(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Billing.InflightReservation = config.InflightReservationConfig{Enabled: true, TTLSeconds: 60}
+	// No reservation cache makes ReserveInflight return nil without error (native
+	// fail-open). Route price must stay disabled so settlement uses native cost.
+	billing := service.NewBillingCacheService(&handlerBalanceOnlyCache{}, nil, nil, nil, nil, nil, cfg, nil)
+	t.Cleanup(billing.Stop)
+	groupID := int64(7)
+	apiKey := &service.APIKey{ID: 9, GroupID: &groupID, User: &service.User{ID: 1}, Group: &service.Group{ID: groupID, Platform: service.PlatformComposite}}
+	estimator := &routePricingReservationEstimator{
+		nativeEstimate: 0.4,
+		nativePriced:   true,
+		routeEstimate:  1.2,
+		decision:       routePricingTestDecision(),
+	}
+
+	ctx, done, err := reserveInflightBalanceCtx(context.Background(), billing, estimator, apiKey, nil, tokenInflightEstimate("m", nil))
+	require.NoError(t, err)
+	done()
+	decision, ok := service.UnifiedGatewayRoutePricingDecisionFromContext(ctx)
+	require.True(t, ok)
+	require.False(t, decision.Allowed, "nil fail-open reservation must preserve native settlement")
+
+	cost := &service.CostBreakdown{ActualCost: 3.5, TotalCost: 2.1}
+	service.ApplyUnifiedGatewayRoutePricing(ctx, apiKey, 55, "m", "", "", nil, 0, 0, "", 0, cost, 1, 1)
+	require.Equal(t, 3.5, cost.ActualCost, "settlement remains at native actual cost")
+	require.Equal(t, 2.1, cost.TotalCost, "route pricing never changes native cost-side total")
+}
+
+func TestReserveInflightBalance_TokenBasePriceRequiresSuccessfulReservation(t *testing.T) {
+	groupID := int64(7)
+	apiKey := &service.APIKey{ID: 9, GroupID: &groupID, User: &service.User{ID: 1}, Group: &service.Group{ID: groupID, Platform: service.PlatformComposite}}
+	estimator := &routePricingReservationEstimator{
+		nativeEstimate: 0.1, nativePriced: true, routeEstimate: 0.5, decision: routePricingBasePriceTestDecision(),
+	}
+
+	t.Run("disabled reservation blocks before route price is authorized", func(t *testing.T) {
+		cfg := &config.Config{}
+		billing := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
+		t.Cleanup(billing.Stop)
+		disabledEstimator := &routePricingReservationEstimator{decision: routePricingBasePriceTestDecision(), routeEstimate: 0.5}
+		ctx, done, err := reserveInflightBalanceCtx(context.Background(), billing, disabledEstimator, apiKey, nil, tokenInflightEstimate("m", []byte(`{"max_tokens":100}`)))
+		done()
+		require.ErrorIs(t, err, service.ErrInsufficientBalance)
+		decision, ok := service.UnifiedGatewayRoutePricingDecisionFromContext(ctx)
+		require.True(t, ok)
+		require.False(t, decision.Allowed)
+	})
+
+	t.Run("fail-open reservation facility blocks base price", func(t *testing.T) {
+		cfg := &config.Config{}
+		cfg.Billing.InflightReservation = config.InflightReservationConfig{Enabled: true, TTLSeconds: 60}
+		billing := service.NewBillingCacheService(&handlerBalanceOnlyCache{}, nil, nil, nil, nil, nil, cfg, nil)
+		t.Cleanup(billing.Stop)
+		ctx, done, err := reserveInflightBalanceCtx(context.Background(), billing, estimator, apiKey, nil, tokenInflightEstimate("m", []byte(`{"max_tokens":100}`)))
+		done()
+		require.ErrorIs(t, err, service.ErrInsufficientBalance)
+		decision, ok := service.UnifiedGatewayRoutePricingDecisionFromContext(ctx)
+		require.True(t, ok)
+		require.False(t, decision.Allowed)
+	})
+
+	t.Run("reservation cap cannot silently under-reserve", func(t *testing.T) {
+		cache := newHandlerInflightCache(10)
+		cfg := &config.Config{}
+		cfg.Billing.InflightReservation = config.InflightReservationConfig{Enabled: true, TTLSeconds: 60, MaxReservationUSD: 0.2}
+		billing := service.NewBillingCacheService(cache, nil, nil, nil, nil, nil, cfg, nil)
+		t.Cleanup(billing.Stop)
+		ctx, done, err := reserveInflightBalanceCtx(context.Background(), billing, estimator, apiKey, nil, tokenInflightEstimate("m", []byte(`{"max_tokens":100}`)))
+		done()
+		require.ErrorIs(t, err, service.ErrInsufficientBalance)
+		require.Zero(t, cache.count(), "request is rejected before an undersized reservation is registered")
+		decision, ok := service.UnifiedGatewayRoutePricingDecisionFromContext(ctx)
+		require.True(t, ok)
+		require.False(t, decision.Allowed)
+	})
+}
+
+func TestReserveInflightBalance_ZeroEffectiveTokenBasePriceDoesNotRequireReservation(t *testing.T) {
+	cache := newHandlerInflightCache(10)
+	cfg := &config.Config{}
+	cfg.Billing.InflightReservation = config.InflightReservationConfig{Enabled: true, TTLSeconds: 60, FailClosedOnUnpriced: true}
+	billing := service.NewBillingCacheService(cache, nil, nil, nil, nil, nil, cfg, nil)
+	t.Cleanup(billing.Stop)
+	groupID := int64(7)
+	apiKey := &service.APIKey{ID: 9, GroupID: &groupID, User: &service.User{ID: 1}, Group: &service.Group{ID: groupID, Platform: service.PlatformComposite}}
+	estimator := &routePricingReservationEstimator{
+		nativeEstimate: 0,
+		nativePriced:   false,
+		routeEstimate:  0, // positive unit prices multiplied by an effective group/user rate of zero
+		decision:       routePricingBasePriceTestDecision(),
+	}
+
+	ctx, done, err := reserveInflightBalanceCtx(context.Background(), billing, estimator, apiKey, nil, tokenInflightEstimate("m", []byte(`{"max_tokens":100}`)))
+	done()
+	require.NoError(t, err, "a valid zero-charge request has no amount to reserve and must not be treated as unpriced")
+	require.Zero(t, cache.count(), "zero estimate must not create an empty reservation")
+	decision, ok := service.UnifiedGatewayRoutePricingDecisionFromContext(ctx)
+	require.True(t, ok)
+	require.True(t, decision.Allowed, "the exact matched base card remains eligible for settlement at zero effective rate")
+}
+
+type handlerBalanceOnlyCache struct{ service.BillingCache }
+
+func (handlerBalanceOnlyCache) GetUserBalance(context.Context, int64) (float64, error) {
+	return 10, nil
 }
 
 // handlerInflightCache 内存版余额缓存 + 在途预留（语义同 Redis Lua）。

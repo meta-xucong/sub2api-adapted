@@ -697,9 +697,10 @@ export default {
       paidPrice: 'Your Price (Discounted)',
       officialPrice: 'Official Price',
       rate: 'Rate',
-      unitPerMillion: '$ / 1M tokens',
-      perUnitRequest: '/ request',
-      perUnitImage: '/ image',
+      paidUnitPerMillion: '⭐️ / 1M tokens',
+      officialUnitPerMillion: '$ / 1M tokens',
+      perUnitRequest: '⭐️ / request',
+      perUnitImage: '⭐️ / image',
       perRequest: 'Per request',
       perImage: 'Per image'
     },

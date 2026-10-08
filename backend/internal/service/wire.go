@@ -836,10 +836,14 @@ func ProvideOpsIngressRejectAggregator(opsRepo OpsRepository, opsService *OpsSer
 }
 
 // ProvideSettingService wires SettingService with group reader and proxy repo.
-func ProvideSettingService(settingRepo SettingRepository, groupRepo GroupRepository, proxyRepo ProxyRepository, cfg *config.Config) *SettingService {
+func ProvideSettingService(settingRepo SettingRepository, groupRepo GroupRepository, accountRepo AccountRepository, proxyRepo ProxyRepository, cfg *config.Config) *SettingService {
 	svc := NewSettingService(settingRepo, cfg)
 	svc.SetDefaultSubscriptionGroupReader(groupRepo)
+	svc.SetUnifiedGatewayRoutePricingRepositories(groupRepo, accountRepo)
 	svc.SetProxyRepository(proxyRepo)
+	if err := svc.LoadUnifiedGatewayRoutePricingAtStartup(context.Background()); err != nil {
+		logger.LegacyPrintf("service.setting", "Warning: load unified gateway route pricing failed; native pricing remains active: %v", err)
+	}
 	if err := svc.LoadForwardedClientIPSettings(context.Background()); err != nil {
 		logger.LegacyPrintf("service.setting", "Warning: load forwarded client IP settings failed: %v", err)
 	}

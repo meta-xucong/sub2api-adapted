@@ -74,6 +74,20 @@ export function formatCurrency(amount: number | null | undefined, currency: stri
   }).format(amount)
 }
 
+/** Format a platform balance or usage amount in the platform's points unit. */
+export function formatPoints(amount: number | null | undefined): string {
+  if (amount === null || amount === undefined || !Number.isFinite(amount)) return '⭐️0.00'
+
+  const locale = getLocale()
+  const fractionDigits = amount > 0 && amount < 0.01 ? 6 : 2
+  const formatted = new Intl.NumberFormat(locale, {
+    minimumFractionDigits: fractionDigits,
+    maximumFractionDigits: fractionDigits,
+  }).format(amount)
+
+  return `⭐️${formatted}`
+}
+
 /**
  * 格式化字节大小
  * @param bytes 字节数

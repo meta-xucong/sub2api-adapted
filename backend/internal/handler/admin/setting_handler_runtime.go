@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"errors"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
@@ -9,6 +10,35 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+// GetUnifiedGatewayRoutePricing returns the saved route prices and the immutable
+// revision currently active in this process.
+func (h *SettingHandler) GetUnifiedGatewayRoutePricing(c *gin.Context) {
+	state, err := h.settingService.GetUnifiedGatewayRoutePricingAdminState(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, state)
+}
+
+func (h *SettingHandler) UpdateUnifiedGatewayRoutePricing(c *gin.Context) {
+	var update service.UnifiedGatewayRoutePricingUpdate
+	if err := c.ShouldBindJSON(&update); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	state, err := h.settingService.UpdateUnifiedGatewayRoutePricing(c.Request.Context(), update)
+	if err != nil {
+		if errors.Is(err, service.ErrUnifiedGatewayRoutePricingRevisionConflict) {
+			response.ErrorFrom(c, err)
+			return
+		}
+		response.BadRequest(c, err.Error())
+		return
+	}
+	response.Success(c, state)
+}
 
 // GetAdminAPIKey 获取管理员 API Key 状态
 // GET /api/v1/admin/settings/admin-api-key

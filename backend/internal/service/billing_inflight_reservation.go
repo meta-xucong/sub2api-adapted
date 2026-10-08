@@ -211,6 +211,16 @@ func (s *BillingCacheService) InflightReservationFailClosedOnUnpriced() bool {
 	return ok && cfg.FailClosedOnUnpriced
 }
 
+// InflightReservationMaxAmount returns the configured cap, or zero when there
+// is no cap / reservation is disabled.
+func (s *BillingCacheService) InflightReservationMaxAmount() float64 {
+	cfg, ok := s.inflightReservationConfig()
+	if !ok {
+		return 0
+	}
+	return cfg.MaxReservationUSD
+}
+
 // ReserveInflightBalance 简化封装：返回释放函数，不续期、不做计费交接（预留最长存活 TTL）。
 func (s *BillingCacheService) ReserveInflightBalance(ctx context.Context, user *User, group *Group, subscription *UserSubscription, estimate float64) (func(), error) {
 	r, err := s.reserveInflight(ctx, user, group, subscription, estimate, false)
@@ -307,10 +317,12 @@ const (
 
 // InflightEstimateRequest 单请求估算输入。
 type InflightEstimateRequest struct {
-	Model     string
-	BodyBytes int
-	MaxTokens int
-	Kind      InflightEstimateKind
+	Model        string
+	BodyBytes    int
+	MaxTokens    int
+	Kind         InflightEstimateKind
+	ImageSize    string
+	ImageQuality string
 	// Units 按次/按张数量（<=0 视为 1）。
 	Units int
 	// SearchCalls 叠加的搜索次数（按分组 search_price_per_1k 计）。

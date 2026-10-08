@@ -209,6 +209,7 @@ type CostBreakdown struct {
 	ActualCost                float64 // 应用倍率后的实际费用
 	BillingMode               string  // 计费模式（"token"/"per_request"/"image"），由 CalculateCostUnified 填充
 	LongContextBillingApplied bool
+	routePricingApplied       bool // Marks a matched unified-gateway route tariff for subscription billing classification.
 }
 
 func applyCostBreakdownMultiplier(cost *CostBreakdown, multiplier float64) {

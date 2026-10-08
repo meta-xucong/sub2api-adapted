@@ -780,6 +780,7 @@ const adminNavItems = computed((): NavItem[] => {
     { path: '/admin/users', label: t('nav.users'), icon: UsersIcon, hideInSimpleMode: true },
     { path: '/admin/groups', label: t('nav.groups'), icon: FolderIcon },
     { path: '/admin/unified-gateway', label: t('admin.unifiedGateway.title'), icon: ServerIcon, hideInSimpleMode: true },
+    { path: '/admin/unified-gateway/pricing', label: t('admin.unifiedGateway.pricingTitle'), icon: ServerIcon, hideInSimpleMode: true },
     {
       path: '/admin/channels',
       label: t('nav.channelManagement'),

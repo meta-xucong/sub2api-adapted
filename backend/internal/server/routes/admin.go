@@ -604,6 +604,9 @@ func registerSettingsRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		// 请求整流器配置
 		adminSettings.GET("/rectifier", h.Admin.Setting.GetRectifierSettings)
 		adminSettings.PUT("/rectifier", h.Admin.Setting.UpdateRectifierSettings)
+		// Unified Gateway route-specific user pricing (separate from the read-only dashboard).
+		adminSettings.GET("/unified-gateway-route-pricing", h.Admin.Setting.GetUnifiedGatewayRoutePricing)
+		adminSettings.PUT("/unified-gateway-route-pricing", h.Admin.Setting.UpdateUnifiedGatewayRoutePricing)
 		// Beta 策略配置
 		adminSettings.GET("/beta-policy", h.Admin.Setting.GetBetaPolicySettings)
 		adminSettings.PUT("/beta-policy", h.Admin.Setting.UpdateBetaPolicySettings)

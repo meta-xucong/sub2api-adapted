@@ -2,6 +2,8 @@ import { defineComponent } from 'vue'
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import UnifiedGatewayView from '../UnifiedGatewayView.vue'
+import zhUnifiedGateway from '@/i18n/locales/zh/admin/unifiedGateway'
+import enUnifiedGateway from '@/i18n/locales/en/admin/unifiedGateway'
 
 const api = vi.hoisted(() => ({
   listAccounts: vi.fn(),
@@ -64,6 +66,19 @@ describe('Unified Gateway read-only usage dashboard', () => {
         { account_id: 99, billing_type: 0, actual_cost: 2, account_cost: 1 },
       ],
     })
+  })
+
+  it('labels the read-only ledger in the owner-defined star unit without converting values', () => {
+    const zh = zhUnifiedGateway.unifiedGateway
+    const en = enUnifiedGateway.unifiedGateway
+    expect(zh.description).toContain('1 星 = 1 元')
+    expect(zh.balanceCharge).toContain('星')
+    expect(zh.balanceLineCost).toContain('星')
+    expect(zh.subscriptionUsage).toContain('星')
+    expect(zh.subscriptionLineCost).toContain('星')
+    expect(en.description).toContain('1 star = CNY 1')
+    expect(en.balanceCharge).toContain('stars')
+    expect(en.subscriptionLineCost).toContain('stars')
   })
 
   it('groups native balance and subscription amounts by actual account and calculates estimated spreads', async () => {
@@ -141,7 +156,7 @@ describe('Unified Gateway read-only usage dashboard', () => {
     expect(api.getAccountBillingBreakdown).not.toHaveBeenCalled()
   })
 
-  it('keeps sub-micro USD amounts visible in the table and CSV', async () => {
+  it('keeps sub-micro star amounts visible in the table and CSV', async () => {
     api.getAccountBillingBreakdown.mockResolvedValueOnce({
       accounts: [
         { account_id: 7, billing_type: 0, actual_cost: 0.0000001, account_cost: 0.00000001 },

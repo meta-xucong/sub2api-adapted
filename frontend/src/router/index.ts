@@ -476,6 +476,18 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/admin/unified-gateway/pricing',
+    name: 'AdminUnifiedGatewayPricing',
+    component: () => import('@/views/admin/UnifiedGatewayPricingView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Unified Gateway Route Pricing',
+      titleKey: 'admin.unifiedGateway.pricingTitle',
+      descriptionKey: 'admin.unifiedGateway.pricingDescription'
+    }
+  },
+  {
     path: '/admin/channels',
     redirect: '/admin/channels/pricing'
   },

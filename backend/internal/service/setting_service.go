@@ -134,6 +134,9 @@ type SettingService struct {
 	claudeCodeVersionSF         singleflight.Group
 	codexRestrictionPolicyCache atomic.Value // *cachedCodexRestrictionPolicy
 	codexRestrictionPolicySF    singleflight.Group
+	routePricingSnapshot        atomic.Pointer[unifiedGatewayRoutePricingSnapshot]
+	routePricingGroupRepo       GroupRepository
+	routePricingAccountRepo     AccountRepository
 
 	cyberSessionBlockRuntimeMu    sync.Mutex
 	cyberSessionBlockRuntimeCache atomic.Value // *cachedCyberSessionBlockRuntime

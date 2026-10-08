@@ -858,6 +858,8 @@ func TestOpenAIGatewayServiceForwardImages_OAuthPassesNAndReturnsAllImages(t *te
 	require.Equal(t, "gpt-image-1", result.Model)
 	require.Equal(t, "gpt-image-1", result.UpstreamModel)
 	require.Equal(t, 3, result.ImageCount)
+	require.Equal(t, "high", result.ImageQuality)
+	require.Equal(t, "1K", result.ImageSize)
 	require.Equal(t, 46, result.Usage.InputTokens)
 	require.Equal(t, 2459, result.Usage.OutputTokens)
 	require.Equal(t, 2459, result.Usage.ImageOutputTokens)
