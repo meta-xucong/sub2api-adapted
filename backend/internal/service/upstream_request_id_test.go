@@ -58,6 +58,33 @@ func TestUsageUpstreamRequestIDPtr(t *testing.T) {
 	require.Len(t, *got, maxUsageUpstreamRequestIDLen)
 }
 
+func TestUpstreamRequestIDFromHeaders_AutoCapturesWokeyOnlyWhenUnconfigured(t *testing.T) {
+	h := http.Header{}
+	h.Set("x-wokey-request-id", "  wk_123  ")
+	wokeyOpenAI := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://api.wokey.ai/v1"}}
+	wokeyGrok := &Account{Platform: PlatformGrok, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://api.wokey.ai"}}
+	require.Equal(t, "wk_123", UpstreamRequestIDFromHeaders(wokeyOpenAI, h))
+	require.Equal(t, "wk_123", UpstreamRequestIDFromHeaders(wokeyGrok, h))
+
+	configured := &Account{
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"base_url": "https://api.wokey.ai"},
+		Extra:       map[string]any{AccountExtraUpstreamRequestIDHeader: "x-custom-upstream-id"},
+	}
+	h.Set("x-custom-upstream-id", "custom_456")
+	require.Equal(t, "custom_456", UpstreamRequestIDFromHeaders(configured, h), "explicit account header keeps priority")
+
+	for _, account := range []*Account{
+		{Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{"base_url": "https://api.wokey.ai"}},
+		{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://other.example"}},
+		{Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://api.wokey.ai"}},
+	} {
+		require.Empty(t, UpstreamRequestIDFromHeaders(account, h))
+		require.Nil(t, usageUpstreamRequestIDPtr(account, h, true), "WS usage has no response header snapshot")
+	}
+}
+
 func TestValidateUpstreamRequestIDHeaderExtra(t *testing.T) {
 	require.NoError(t, ValidateUpstreamRequestIDHeaderExtra(nil))
 	require.NoError(t, ValidateUpstreamRequestIDHeaderExtra(map[string]any{}))

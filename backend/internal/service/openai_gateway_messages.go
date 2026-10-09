@@ -859,13 +859,13 @@ func (s *OpenAIGatewayService) readOpenAICompatBufferedTerminal(
 						acc.ProcessEvent(&event)
 						if response := openAICompatTerminalResponse(&event, []byte(payload)); isOpenAICompatResponsesTerminalEvent(event.Type) && response != nil {
 							if event.Usage != nil {
-								usage = copyOpenAIUsageFromResponsesUsage(event.Usage)
+								mergeOpenAIUsageFromJSONNodes(&usage, gjson.Get(payload, "usage"), gjson.Get(payload, "tool_usage.image_gen"))
 								if response.Usage == nil {
 									response.Usage = event.Usage
 								}
 							}
 							if response.Usage != nil {
-								usage = copyOpenAIUsageFromResponsesUsage(response.Usage)
+								mergeOpenAIUsageFromJSONNodes(&usage, gjson.Get(payload, "response.usage"), gjson.Get(payload, "response.tool_usage.image_gen"))
 							}
 							return response, usage, acc, nil
 						}
@@ -908,13 +908,13 @@ func (s *OpenAIGatewayService) readOpenAICompatBufferedTerminal(
 
 			if response := openAICompatTerminalResponse(&event, []byte(payload)); isOpenAICompatResponsesTerminalEvent(event.Type) && response != nil {
 				if event.Usage != nil {
-					usage = copyOpenAIUsageFromResponsesUsage(event.Usage)
+					mergeOpenAIUsageFromJSONNodes(&usage, gjson.Get(payload, "usage"), gjson.Get(payload, "tool_usage.image_gen"))
 					if response.Usage == nil {
 						response.Usage = event.Usage
 					}
 				}
 				if response.Usage != nil {
-					usage = copyOpenAIUsageFromResponsesUsage(response.Usage)
+					mergeOpenAIUsageFromJSONNodes(&usage, gjson.Get(payload, "response.usage"), gjson.Get(payload, "response.tool_usage.image_gen"))
 				}
 				return response, usage, acc, nil
 			}
@@ -1039,11 +1039,11 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 					responseID = id
 				}
 				if event.Response.Usage != nil {
-					usage = copyOpenAIUsageFromResponsesUsage(event.Response.Usage)
+					mergeOpenAIUsageFromJSONNodes(&usage, gjson.Get(payload, "response.usage"), gjson.Get(payload, "response.tool_usage.image_gen"))
 				}
 			}
 			if event.Usage != nil {
-				usage = copyOpenAIUsageFromResponsesUsage(event.Usage)
+				mergeOpenAIUsageFromJSONNodes(&usage, gjson.Get(payload, "usage"), gjson.Get(payload, "tool_usage.image_gen"))
 			}
 			// cyber_policy 致命不可重试：标记供 handler 事后记录；以 Anthropic SSE error 事件
 			// 回写让客户端感知并停止重试（F4），丢弃后续转换输出。

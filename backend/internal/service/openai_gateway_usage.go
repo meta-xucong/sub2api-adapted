@@ -132,12 +132,15 @@ func openAIUsagePricingAt(input *OpenAIRecordUsageInput) time.Time {
 	return timezone.Now()
 }
 
-func openAIUnifiedGatewayRouteTokenPricingEligible(result *OpenAIForwardResult, cost *CostBreakdown, apiKey *APIKey, pricingAt time.Time) bool {
-	return result != nil && cost != nil && !cost.LongContextBillingApplied &&
-		result.ImageCount == 0 && result.VideoCount == 0 && result.WebSearchCalls == 0 &&
-		result.AudioUsage == nil && result.SearchCount == 0 && flatUnifiedGatewayServiceTier(result.ServiceTier) &&
-		!unifiedGatewayTokenBasePriceHasDynamicGroupPeak(apiKey, pricingAt) &&
-		(result.ReasoningEffort == nil || strings.TrimSpace(*result.ReasoningEffort) == "")
+func openAIUnifiedGatewayRouteTokenPricingEligible(ctx context.Context, result *OpenAIForwardResult, cost *CostBreakdown, apiKey *APIKey, pricingAt time.Time, accountID int64, billingModel string) bool {
+	if result == nil || cost == nil ||
+		result.ImageCount != 0 || result.VideoCount != 0 || result.WebSearchCalls != 0 ||
+		result.AudioUsage != nil || result.SearchCount != 0 || !flatUnifiedGatewayServiceTier(result.ServiceTier) ||
+		unifiedGatewayTokenBasePriceHasDynamicGroupPeak(apiKey, pricingAt) ||
+		(result.ReasoningEffort != nil && strings.TrimSpace(*result.ReasoningEffort) != "") {
+		return false
+	}
+	return !cost.LongContextBillingApplied || unifiedGatewayLongContextRouteCardAvailable(ctx, accountID, billingModel)
 }
 
 func groupBillsOpenAIFastAtStandard(apiKey *APIKey, account *Account, serviceTier string) bool {
@@ -277,7 +280,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		candidateBillingModel := firstUsageBillingModel(billingModels)
 		decision, hasDecision := UnifiedGatewayRoutePricingDecisionFromContext(ctx)
 		if hasDecision && decision.Allowed && apiKey.GroupID != nil && *apiKey.GroupID == decision.GroupID &&
-			openAIUnifiedGatewayRouteTokenPricingEligible(result, cost, apiKey, pricingAt) &&
+			openAIUnifiedGatewayRouteTokenPricingEligible(ctx, result, cost, apiKey, pricingAt, account.ID, candidateBillingModel) &&
 			decision.HasTokenBasePriceFor(account.ID, candidateBillingModel) {
 			// A configured route base card can price an otherwise unlisted model,
 			// but only for the exact request/billing model and selected account.
@@ -346,6 +349,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 			effectiveBillingModel = standardBillingModel
 		}
 	}
+	routeTokenPricingEligible := openAIUnifiedGatewayRouteTokenPricingEligible(ctx, result, cost, apiKey, pricingAt, account.ID, effectiveBillingModel)
 	cost = ApplyUnifiedGatewayRoutePricingWithTokenUsage(
 		ctx,
 		apiKey,
@@ -364,8 +368,12 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		UnifiedGatewayRouteTokenUsage{
 			Tokens:         tokens,
 			RateMultiplier: baseMultiplier,
-			Eligible:       openAIUnifiedGatewayRouteTokenPricingEligible(result, cost, apiKey, pricingAt),
+			Eligible:       routeTokenPricingEligible,
+			PricingAt:      input.PricingAt,
 		},
+	)
+	applyUnifiedGatewayWokeyActualBillingCost(
+		ctx, s.wokeyActualBillingLookup, result.RequestID, result.UpstreamHeaders, apiKey, account, effectiveBillingModel, cost, routeTokenPricingEligible, baseMultiplier,
 	)
 
 	// Determine billing type

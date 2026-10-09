@@ -1285,23 +1285,104 @@ func (s *OpenAIGatewayService) parseSSEUsageBytesWithType(data []byte, eventType
 		return
 	}
 	parsedUsage, ok := extractOpenAIUsageFromJSONBytes(data)
+	usageNode, imageUsageNode := openAIUsageNodesFromJSONBytes(data)
+	inputNode := usageNode.Get("input_tokens")
+	if !inputNode.Exists() {
+		inputNode = usageNode.Get("prompt_tokens")
+	}
+	outputNode := usageNode.Get("output_tokens")
+	if !outputNode.Exists() {
+		outputNode = usageNode.Get("completion_tokens")
+	}
 	if !ok {
 		return
 	}
 	if openAIStreamEventTypeIsTerminal(effectiveOpenAISSEEventType(data, eventType)) {
-		if !openAIUsageHasTokens(&parsedUsage) && openAIUsageHasTokens(usage) {
-			return
-		}
-		*usage = parsedUsage
+		mergeOpenAIUsagePresentFields(usage, parsedUsage, usageNode, imageUsageNode)
 		return
 	}
 	mergeOpenAIUsageNonZero(usage, parsedUsage)
 }
 
 // Compatible Responses upstreams may report usage before the terminal event.
-// Retain those non-zero fields as a fallback. A terminal usage with any billed
-// tokens is authoritative as a whole; an all-zero terminal does not erase a
+// Terminal usage updates fields it actually contains, while omitted fields keep
+// their earlier progressive values. An all-zero terminal does not erase a
 // non-zero progressive observation from the same turn.
+func mergeOpenAIUsagePresentFields(dst *OpenAIUsage, src OpenAIUsage, usageNode, imageUsageNode gjson.Result) {
+	if dst == nil {
+		return
+	}
+	if !openAIUsageHasTokens(&src) && openAIUsageHasTokens(dst) {
+		return
+	}
+	if gjsonHasAnyPath(usageNode, "input_tokens", "prompt_tokens") {
+		dst.InputTokens = src.InputTokens
+	}
+	if gjsonHasAnyPath(usageNode,
+		"output_tokens",
+		"completion_tokens",
+		"output_tokens_details.reasoning_tokens",
+		"completion_tokens_details.reasoning_tokens",
+	) {
+		dst.OutputTokens = src.OutputTokens
+	}
+	if gjsonHasAnyPath(usageNode,
+		"input_tokens_details.cached_tokens",
+		"prompt_tokens_details.cached_tokens",
+		"cache_read_input_tokens",
+		"cache_read_tokens",
+		"cached_tokens",
+	) {
+		dst.CacheReadInputTokens = src.CacheReadInputTokens
+	}
+	if gjsonHasAnyPath(usageNode,
+		"input_tokens_details.cache_write_tokens",
+		"prompt_tokens_details.cache_write_tokens",
+		"input_tokens_details.cache_creation_tokens",
+		"prompt_tokens_details.cache_creation_tokens",
+		"cache_write_tokens",
+		"cache_creation_input_tokens",
+		"cache_write_input_tokens",
+		"cache_creation_tokens",
+	) {
+		dst.CacheCreationInputTokens = src.CacheCreationInputTokens
+	}
+	if gjsonHasAnyPath(usageNode,
+		"input_tokens_details.image_tokens",
+		"prompt_tokens_details.image_tokens",
+	) || gjsonHasAnyPath(imageUsageNode,
+		"input_tokens_details.image_tokens",
+	) {
+		dst.ImageInputTokens = src.ImageInputTokens
+	}
+	if gjsonHasAnyPath(usageNode,
+		"output_tokens_details.image_tokens",
+		"completion_tokens_details.image_tokens",
+	) || gjsonHasAnyPath(imageUsageNode,
+		"output_tokens_details.image_tokens",
+	) {
+		dst.ImageOutputTokens = src.ImageOutputTokens
+	}
+}
+
+func mergeOpenAIUsageFromJSONNodes(dst *OpenAIUsage, usageNode, imageUsageNode gjson.Result) {
+	parsedUsage, ok := openAIUsageFromGJSON(usageNode)
+	if !ok {
+		return
+	}
+	mergeHostedImageGenToolUsage(imageUsageNode, &parsedUsage)
+	mergeOpenAIUsagePresentFields(dst, parsedUsage, usageNode, imageUsageNode)
+}
+
+func gjsonHasAnyPath(value gjson.Result, paths ...string) bool {
+	for _, path := range paths {
+		if value.Get(path).Exists() {
+			return true
+		}
+	}
+	return false
+}
+
 func mergeOpenAIUsageNonZero(dst *OpenAIUsage, src OpenAIUsage) {
 	if dst == nil {
 		return
@@ -1400,6 +1481,16 @@ func extractOpenAIUsageFromJSONBytes(body []byte) (OpenAIUsage, bool) {
 	if len(body) == 0 || !gjson.ValidBytes(body) {
 		return OpenAIUsage{}, false
 	}
+	usageNode, imageUsageNode := openAIUsageNodesFromJSONBytes(body)
+	usage, ok := openAIUsageFromGJSON(usageNode)
+	if !ok {
+		return OpenAIUsage{}, false
+	}
+	mergeHostedImageGenToolUsage(imageUsageNode, &usage)
+	return usage, true
+}
+
+func openAIUsageNodesFromJSONBytes(body []byte) (gjson.Result, gjson.Result) {
 	// 部分 OpenAI 兼容上游（例如 Cline API）会将标准响应包在 data 字段中：
 	// {"data":{"choices": [...], "usage": {...}}, "success":true}。
 	// 按优先级先保留原有路径，再尝试兼容层 data 包装，
@@ -1414,12 +1505,12 @@ func extractOpenAIUsageFromJSONBytes(body []byte) (OpenAIUsage, bool) {
 		{usagePath: "data.response.usage", imageUsagePath: "data.response.tool_usage.image_gen"},
 	}
 	for _, candidate := range candidates {
-		if usage, ok := openAIUsageFromGJSON(gjson.GetBytes(body, candidate.usagePath)); ok {
-			mergeHostedImageGenToolUsage(gjson.GetBytes(body, candidate.imageUsagePath), &usage)
-			return usage, true
+		usageNode := gjson.GetBytes(body, candidate.usagePath)
+		if usageNode.Exists() && usageNode.IsObject() {
+			return usageNode, gjson.GetBytes(body, candidate.imageUsagePath)
 		}
 	}
-	return OpenAIUsage{}, false
+	return gjson.Result{}, gjson.Result{}
 }
 
 // openAIResponsesCompletedEventIsEmpty reports whether a response.completed /
@@ -1694,7 +1785,6 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 			return nil, fmt.Errorf("convert Grok compact response: %w", err)
 		}
 	}
-
 	usageValue, usageOK := extractOpenAIUsageFromJSONBytes(body)
 	if !usageOK {
 		if bodyLooksLikeSSE {
@@ -1790,9 +1880,8 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 
 	usage := s.parseSSEUsageFromBody(bodyText)
 	if ok {
-		if parsedUsage, parsed := extractOpenAIUsageFromJSONBytes(finalResponse); parsed {
-			*usage = parsedUsage
-		}
+		usageNode, imageUsageNode := openAIUsageNodesFromJSONBytes(finalResponse)
+		mergeOpenAIUsageFromJSONNodes(usage, usageNode, imageUsageNode)
 		// When the terminal event has an empty output array, reconstruct
 		// output from accumulated delta events so the client gets full content.
 		// gjson Array() returns empty slice for null, missing, or empty arrays.

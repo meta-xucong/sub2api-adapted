@@ -424,9 +424,8 @@ func populateOpenAIUsageFromResponseJSON(body []byte, usage *OpenAIUsage) {
 	if usage == nil || len(body) == 0 {
 		return
 	}
-	if parsed, ok := extractOpenAIUsageFromJSONBytes(body); ok {
-		*usage = parsed
-	}
+	usageNode, imageUsageNode := openAIUsageNodesFromJSONBytes(body)
+	mergeOpenAIUsageFromJSONNodes(usage, usageNode, imageUsageNode)
 }
 
 func getOpenAIGroupIDFromContext(c *gin.Context) int64 {

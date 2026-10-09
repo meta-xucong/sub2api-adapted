@@ -856,6 +856,11 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 			}
 		}
 	}
+	routeTokenPricingEligible := result.ImageCount == 0 && result.AudioUsage == nil &&
+		result.SearchCount == 0 && flatUnifiedGatewayServiceTier(result.ServiceTier) &&
+		!unifiedGatewayTokenBasePriceHasDynamicGroupPeak(apiKey, pricingAt) &&
+		(result.ReasoningEffort == nil || strings.TrimSpace(*result.ReasoningEffort) == "") &&
+		cost != nil && !cost.LongContextBillingApplied
 	cost = ApplyUnifiedGatewayRoutePricingWithTokenUsage(
 		ctx, apiKey, account.ID, effectiveBillingModel, result.ImageSize, "", result.ImageSizeBreakdown, 0, 0, "", 0, cost, imageMultiplier, 1,
 		UnifiedGatewayRouteTokenUsage{
@@ -866,12 +871,12 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 				ImageOutputTokens: result.Usage.ImageOutputTokens,
 			},
 			RateMultiplier: routeBaseMultiplier,
-			Eligible: result.ImageCount == 0 && result.AudioUsage == nil &&
-				result.SearchCount == 0 && flatUnifiedGatewayServiceTier(result.ServiceTier) &&
-				!unifiedGatewayTokenBasePriceHasDynamicGroupPeak(apiKey, pricingAt) &&
-				(result.ReasoningEffort == nil || strings.TrimSpace(*result.ReasoningEffort) == "") &&
-				cost != nil && !cost.LongContextBillingApplied,
+			Eligible:       routeTokenPricingEligible,
+			PricingAt:      input.PricingAt,
 		},
+	)
+	applyUnifiedGatewayWokeyActualBillingCost(
+		ctx, s.wokeyActualBillingLookup, result.RequestID, result.UpstreamHeaders, apiKey, account, effectiveBillingModel, cost, routeTokenPricingEligible, routeBaseMultiplier,
 	)
 
 	// 判断计费方式：订阅模式 vs 余额模式

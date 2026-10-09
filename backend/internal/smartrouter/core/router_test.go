@@ -25,7 +25,7 @@ func TestOrder_FiltersCapabilityModelAndConcurrencyButSkipsCoolingGPTImage2(t *t
 
 	require.NotEmpty(t, plan.OrderedLaneIDs)
 	require.Contains(t, plan.OrderedLaneIDs, "ok")
-	require.Equal(t, "gpt_image2_health_cooldown", plan.SkipReasons["cool"])
+	require.Equal(t, "gpt_image_health_cooldown", plan.SkipReasons["cool"])
 	require.NotContains(t, plan.OrderedLaneIDs, "cool")
 	require.Equal(t, "capability_mismatch", plan.SkipReasons["chat"])
 	require.Equal(t, "model_mismatch", plan.SkipReasons["model"])
@@ -72,6 +72,25 @@ func TestOrder_AllLanesCoolingStillLeavesLastResortCandidates(t *testing.T) {
 	// Priority layering still chooses the least-bad lane first; a failed
 	// attempt excludes it and the next scheduling pass advances to the next.
 	require.Len(t, plan.Candidates, 1)
+}
+
+func TestOrder_GPTImage25PrefersHealthyLaneAndKeepsAllCoolingAsLastResort(t *testing.T) {
+	policy := DefaultPolicy()
+	policy.Enabled = true
+
+	plan := Order(RouteRequest{Model: "gpt-image-2.5", Capability: CapabilityImageGeneration, NowUnix: 100, Seed: 45}, []LaneSnapshot{
+		{LaneID: "cool", AccountID: 1, Priority: 1, CooldownUntilUnix: 200, RecoveryStage: RecoveryCooling},
+		{LaneID: "healthy", AccountID: 2, Priority: 2},
+	}, policy)
+	require.Equal(t, []string{"healthy"}, plan.OrderedLaneIDs)
+	require.Equal(t, "gpt_image_health_cooldown", plan.SkipReasons["cool"])
+
+	allCooling := Order(RouteRequest{Model: "gpt-image-2.5", Capability: CapabilityImageGeneration, NowUnix: 100, Seed: 46}, []LaneSnapshot{
+		{LaneID: "cool-a", AccountID: 3, Priority: 1, CooldownUntilUnix: 200, RecoveryStage: RecoveryCooling},
+		{LaneID: "cool-b", AccountID: 4, Priority: 2, CooldownUntilUnix: 200, RecoveryStage: RecoveryCooling},
+	}, policy)
+	require.NotEmpty(t, allCooling.OrderedLaneIDs)
+	require.NotEmpty(t, allCooling.Candidates)
 }
 
 func TestOrder_NonGPTImageCoolingRemainsSoftFallback(t *testing.T) {

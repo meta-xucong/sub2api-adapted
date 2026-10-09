@@ -656,14 +656,17 @@ func (s *defaultOpenAIAccountScheduler) shouldEscapeStickyAccount(accountID int6
 }
 
 type openAIAccountCandidateScore struct {
-	account   *Account
-	loadInfo  *AccountLoadInfo
-	loadKnown bool
-	score     float64
-	priority  int
-	errorRate float64
-	ttft      float64
-	hasTTFT   bool
+	account          *Account
+	loadInfo         *AccountLoadInfo
+	loadKnown        bool
+	score            float64
+	priority         int
+	errorRate        float64
+	ttft             float64
+	hasTTFT          bool
+	routePrioritySet bool
+	routeHealthLayer int
+	routePriceLayer  int
 }
 
 type openAIAccountCandidateHeap []openAIAccountCandidateScore
@@ -698,6 +701,14 @@ func (h *openAIAccountCandidateHeap) Pop() any {
 }
 
 func isOpenAIAccountCandidateBetter(left openAIAccountCandidateScore, right openAIAccountCandidateScore) bool {
+	if left.routePrioritySet && right.routePrioritySet {
+		if left.routeHealthLayer != right.routeHealthLayer {
+			return left.routeHealthLayer < right.routeHealthLayer
+		}
+		if left.routePriceLayer != right.routePriceLayer {
+			return left.routePriceLayer < right.routePriceLayer
+		}
+	}
 	if left.score != right.score {
 		return left.score > right.score
 	}
@@ -804,6 +815,37 @@ func deriveOpenAISelectionSeed(req OpenAIAccountScheduleRequest) uint64 {
 }
 
 func buildOpenAIWeightedSelectionOrder(
+	candidates []openAIAccountCandidateScore,
+	req OpenAIAccountScheduleRequest,
+) []openAIAccountCandidateScore {
+	if len(candidates) == 0 {
+		return nil
+	}
+	hasRoutePriority := false
+	for _, candidate := range candidates {
+		if candidate.routePrioritySet {
+			hasRoutePriority = true
+			break
+		}
+	}
+	if hasRoutePriority {
+		ordered := make([]openAIAccountCandidateScore, 0, len(candidates))
+		for start := 0; start < len(candidates); {
+			current := candidates[start]
+			end := start + 1
+			for end < len(candidates) && candidates[end].routePrioritySet == current.routePrioritySet &&
+				candidates[end].routeHealthLayer == current.routeHealthLayer && candidates[end].routePriceLayer == current.routePriceLayer {
+				end++
+			}
+			ordered = append(ordered, buildOpenAIWeightedSelectionOrderNative(candidates[start:end], req)...)
+			start = end
+		}
+		return ordered
+	}
+	return buildOpenAIWeightedSelectionOrderNative(candidates, req)
+}
+
+func buildOpenAIWeightedSelectionOrderNative(
 	candidates []openAIAccountCandidateScore,
 	req OpenAIAccountScheduleRequest,
 ) []openAIAccountCandidateScore {
@@ -1061,6 +1103,25 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAISelectionOrder(
 	buildSelectionOrder := func(pool []openAIAccountCandidateScore) []openAIAccountCandidateScore {
 		if len(pool) == 0 || plan.topK <= 0 {
 			return nil
+		}
+		pool = append([]openAIAccountCandidateScore(nil), pool...)
+		if s.service != nil {
+			accounts := make([]*Account, 0, len(pool))
+			for _, candidate := range pool {
+				accounts = append(accounts, candidate.account)
+			}
+			if ranks := s.service.openAIRoutePriorityRanksForRequest(ctx, req, accounts); len(ranks) > 0 {
+				for i := range pool {
+					if pool[i].account == nil {
+						continue
+					}
+					if rank, ok := ranks[pool[i].account.ID]; ok {
+						pool[i].routePrioritySet = true
+						pool[i].routeHealthLayer = rank.HealthLayer
+						pool[i].routePriceLayer = rank.PriceLayer
+					}
+				}
+			}
 		}
 		groupTopK := plan.topK
 		if groupTopK > len(pool) {

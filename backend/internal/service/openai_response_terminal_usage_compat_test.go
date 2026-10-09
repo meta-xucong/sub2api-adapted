@@ -59,6 +59,37 @@ func TestParseSSEUsageEffectiveTerminalRules(t *testing.T) {
 	require.Equal(t, OpenAIUsage{InputTokens: 2}, *usage)
 }
 
+func TestParseSSEUsagePartialTerminalPreservesOmittedFields(t *testing.T) {
+	t.Parallel()
+
+	svc := &OpenAIGatewayService{}
+	usage := &OpenAIUsage{}
+	svc.parseSSEUsageBytesWithType([]byte(`{"response":{"usage":{"input_tokens":21,"output_tokens":1,"input_tokens_details":{"cached_tokens":7}}}}`), "response.in_progress", usage)
+	svc.parseSSEUsageBytesWithType([]byte(`{"response":{"usage":{"output_tokens":5}}}`), "response.completed", usage)
+
+	require.Equal(t, OpenAIUsage{InputTokens: 21, OutputTokens: 5, CacheReadInputTokens: 7}, *usage)
+}
+
+func TestParseOpenAIWSResponseUsagePartialTerminalPreservesOmittedFields(t *testing.T) {
+	t.Parallel()
+
+	usage := &OpenAIUsage{}
+	parseOpenAIWSResponseUsageFromCompletedEvent([]byte(`{"type":"response.in_progress","response":{"usage":{"input_tokens":21,"output_tokens":1,"input_tokens_details":{"cached_tokens":7}}}}`), usage)
+	parseOpenAIWSResponseUsageFromCompletedEvent([]byte(`{"type":"response.completed","response":{"usage":{"output_tokens":5}}}`), usage)
+
+	require.Equal(t, OpenAIUsage{InputTokens: 21, OutputTokens: 5, CacheReadInputTokens: 7}, *usage)
+}
+
+func TestPopulateOpenAIUsageFromResponseJSONPreservesOmittedProgressiveFields(t *testing.T) {
+	t.Parallel()
+
+	usage := &OpenAIUsage{}
+	parseOpenAIWSResponseUsageFromCompletedEvent([]byte(`{"type":"response.in_progress","response":{"usage":{"input_tokens":21,"output_tokens":1,"input_tokens_details":{"cached_tokens":7}}}}`), usage)
+	populateOpenAIUsageFromResponseJSON([]byte(`{"id":"resp_1","usage":{"output_tokens":5}}`), usage)
+
+	require.Equal(t, OpenAIUsage{InputTokens: 21, OutputTokens: 5, CacheReadInputTokens: 7}, *usage)
+}
+
 func BenchmarkParseSSEUsageNoUsageDelta(b *testing.B) {
 	svc := &OpenAIGatewayService{}
 	usage := &OpenAIUsage{}

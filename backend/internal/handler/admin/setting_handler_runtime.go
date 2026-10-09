@@ -40,6 +40,37 @@ func (h *SettingHandler) UpdateUnifiedGatewayRoutePricing(c *gin.Context) {
 	response.Success(c, state)
 }
 
+func (h *SettingHandler) SyncUnifiedGatewayWokeyPrices(c *gin.Context) {
+	state, err := h.settingService.SyncWokeyPriceCatalog(c.Request.Context())
+	if err != nil {
+		if errors.Is(err, service.ErrUnifiedGatewayWokeySyncBusy) || errors.Is(err, service.ErrUnifiedGatewayWokeySyncDisabled) || errors.Is(err, service.ErrUnifiedGatewayWokeySyncScope) {
+			response.ErrorFrom(c, err)
+			return
+		}
+		response.BadRequest(c, "Wokey price sync failed: "+service.WokeyPriceSyncErrorCode(err))
+		return
+	}
+	response.Success(c, state)
+}
+
+func (h *SettingHandler) ManualizeUnifiedGatewayWokeyPrice(c *gin.Context) {
+	var request service.UnifiedGatewayWokeyManualizeRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	state, err := h.settingService.ManualizeUnifiedGatewayWokeyPriceCard(c.Request.Context(), request)
+	if err != nil {
+		if errors.Is(err, service.ErrUnifiedGatewayRoutePricingRevisionConflict) {
+			response.ErrorFrom(c, err)
+			return
+		}
+		response.BadRequest(c, err.Error())
+		return
+	}
+	response.Success(c, state)
+}
+
 // GetAdminAPIKey 获取管理员 API Key 状态
 // GET /api/v1/admin/settings/admin-api-key
 func (h *SettingHandler) GetAdminAPIKey(c *gin.Context) {

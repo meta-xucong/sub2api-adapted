@@ -607,6 +607,8 @@ func registerSettingsRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		// Unified Gateway route-specific user pricing (separate from the read-only dashboard).
 		adminSettings.GET("/unified-gateway-route-pricing", h.Admin.Setting.GetUnifiedGatewayRoutePricing)
 		adminSettings.PUT("/unified-gateway-route-pricing", h.Admin.Setting.UpdateUnifiedGatewayRoutePricing)
+		adminSettings.POST("/unified-gateway-route-pricing/wokey-sync", h.Admin.Setting.SyncUnifiedGatewayWokeyPrices)
+		adminSettings.POST("/unified-gateway-route-pricing/wokey-sync/manualize", h.Admin.Setting.ManualizeUnifiedGatewayWokeyPrice)
 		// Beta 策略配置
 		adminSettings.GET("/beta-policy", h.Admin.Setting.GetBetaPolicySettings)
 		adminSettings.PUT("/beta-policy", h.Admin.Setting.UpdateBetaPolicySettings)

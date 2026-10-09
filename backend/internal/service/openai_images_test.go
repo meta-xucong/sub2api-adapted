@@ -940,6 +940,25 @@ func TestParseOpenAIImagesSSEUsageBytes_MalformedCompletedDoesNotOverrideUsage(t
 	require.Equal(t, OpenAIUsage{InputTokens: 3, OutputTokens: 4, ImageOutputTokens: 2}, usage)
 }
 
+func TestParseOpenAIImagesSSEUsageBytes_ToolUsagePreservesOmittedProgressiveFields(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	usage := OpenAIUsage{
+		InputTokens:              3,
+		OutputTokens:             4,
+		CacheReadInputTokens:     2,
+		CacheCreationInputTokens: 1,
+	}
+
+	svc.parseOpenAIImagesSSEUsageBytes([]byte(`{"type":"response.completed","response":{"tool_usage":{"image_gen":{"input_tokens":46,"input_tokens_details":{"image_tokens":2},"output_tokens":2459,"output_tokens_details":{"image_tokens":2459}}}}}`), &usage)
+
+	require.Equal(t, 46, usage.InputTokens)
+	require.Equal(t, 2459, usage.OutputTokens)
+	require.Equal(t, 2, usage.ImageInputTokens)
+	require.Equal(t, 2459, usage.ImageOutputTokens)
+	require.Equal(t, 2, usage.CacheReadInputTokens)
+	require.Equal(t, 1, usage.CacheCreationInputTokens)
+}
+
 func TestBoundedJSONNonNegativeInt(t *testing.T) {
 	tests := []struct {
 		name string

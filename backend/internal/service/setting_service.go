@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
@@ -134,9 +135,16 @@ type SettingService struct {
 	claudeCodeVersionSF         singleflight.Group
 	codexRestrictionPolicyCache atomic.Value // *cachedCodexRestrictionPolicy
 	codexRestrictionPolicySF    singleflight.Group
+	routePricingMu              sync.Mutex
 	routePricingSnapshot        atomic.Pointer[unifiedGatewayRoutePricingSnapshot]
 	routePricingGroupRepo       GroupRepository
 	routePricingAccountRepo     AccountRepository
+	wokeySyncLifecycleMu        sync.Mutex
+	wokeySyncWorkerMu           sync.Mutex
+	wokeySyncWorker             *wokeyPriceSyncWorker
+	wokeySyncRunMu              sync.Mutex
+	wokeyCatalogFetcher         wokeyCatalogFetcher
+	wokeySyncTickerFactory      func(time.Duration) wokeyPriceSyncTicker
 
 	cyberSessionBlockRuntimeMu    sync.Mutex
 	cyberSessionBlockRuntimeCache atomic.Value // *cachedCyberSessionBlockRuntime

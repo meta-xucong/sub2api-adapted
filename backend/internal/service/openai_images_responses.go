@@ -1174,8 +1174,9 @@ func (s *OpenAIGatewayService) parseOpenAIImagesSSEUsageBytes(data []byte, usage
 	if usage == nil || !gjson.ValidBytes(data) || gjson.GetBytes(data, "type").String() != "response.completed" {
 		return
 	}
-	if toolUsage, ok := openAIImagesToolUsageFromGJSON(gjson.GetBytes(data, "response.tool_usage.image_gen")); ok {
-		*usage = toolUsage
+	toolUsageNode := gjson.GetBytes(data, "response.tool_usage.image_gen")
+	if toolUsage, ok := openAIImagesToolUsageFromGJSON(toolUsageNode); ok {
+		mergeOpenAIUsagePresentFields(usage, toolUsage, toolUsageNode, gjson.Result{})
 	}
 }
 

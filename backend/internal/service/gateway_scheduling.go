@@ -18,6 +18,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
+	"github.com/Wei-Shaw/sub2api/internal/routepriority"
 )
 
 // SelectAccount 选择账号（粘性会话+优先级）
@@ -118,6 +119,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 	}
 	ctx = s.withGroupContext(ctx, group)
 	ctx = s.withGatewayProfitControlGate(ctx, groupID)
+	ctx = withUnifiedGatewayRoutePriorityRequest(ctx, s.cfg, s.settingService, groupID, requestedModel, false)
 
 	// Claude Code 限制可能已将 groupID 解析为 fallback group，
 	// 渠道限制预检查必须使用解析后的分组。
@@ -434,6 +436,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 			}
 
 			// 2. 批量获取负载信息
+			routingRanks := unifiedGatewayRoutePriorityRanks(ctx, routingCandidates, nil, nil)
 			routingLoads := make([]AccountWithConcurrency, 0, len(routingCandidates))
 			for _, acc := range routingCandidates {
 				routingLoads = append(routingLoads, AccountWithConcurrency{
@@ -456,27 +459,32 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 			}
 
 			if len(routingAvailable) > 0 {
+				if len(routingRanks) > 0 {
+					routingAvailable = sortGatewayAccountLoadsWithRoutePriority(routingAvailable, routingRanks)
+				}
 				// 排序：优先级 > 负载率 > 最后使用时间
-				sort.SliceStable(routingAvailable, func(i, j int) bool {
-					a, b := routingAvailable[i], routingAvailable[j]
-					if a.account.Priority != b.account.Priority {
-						return a.account.Priority < b.account.Priority
-					}
-					if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
-						return a.loadInfo.LoadRate < b.loadInfo.LoadRate
-					}
-					switch {
-					case a.account.LastUsedAt == nil && b.account.LastUsedAt != nil:
-						return true
-					case a.account.LastUsedAt != nil && b.account.LastUsedAt == nil:
-						return false
-					case a.account.LastUsedAt == nil && b.account.LastUsedAt == nil:
-						return false
-					default:
-						return a.account.LastUsedAt.Before(*b.account.LastUsedAt)
-					}
-				})
-				shuffleWithinSortGroups(routingAvailable)
+				if len(routingRanks) == 0 {
+					sort.SliceStable(routingAvailable, func(i, j int) bool {
+						a, b := routingAvailable[i], routingAvailable[j]
+						if a.account.Priority != b.account.Priority {
+							return a.account.Priority < b.account.Priority
+						}
+						if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
+							return a.loadInfo.LoadRate < b.loadInfo.LoadRate
+						}
+						switch {
+						case a.account.LastUsedAt == nil && b.account.LastUsedAt != nil:
+							return true
+						case a.account.LastUsedAt != nil && b.account.LastUsedAt == nil:
+							return false
+						case a.account.LastUsedAt == nil && b.account.LastUsedAt == nil:
+							return false
+						default:
+							return a.account.LastUsedAt.Before(*b.account.LastUsedAt)
+						}
+					})
+					shuffleWithinSortGroups(routingAvailable)
+				}
 
 				// 4. 尝试获取槽位
 				for _, item := range routingAvailable {
@@ -704,6 +712,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 		}
 		return nil, ErrNoAvailableAccounts
 	}
+	routeRanks := unifiedGatewayRoutePriorityRanks(ctx, candidates, nil, nil)
 
 	accountLoads := make([]AccountWithConcurrency, 0, len(candidates))
 	for _, acc := range candidates {
@@ -737,8 +746,12 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 
 		// 分层过滤选择：优先级 →（可选）最早重置 → 负载率 → LRU
 		for len(available) > 0 {
+			priorityPool := available
+			if len(routeRanks) > 0 {
+				priorityPool = filterGatewayAccountLoadsByMinRoutePriority(available, routeRanks)
+			}
 			// 1. 取优先级最小的集合
-			candidates := filterByMinPriority(available)
+			candidates := filterByMinPriority(priorityPool)
 			// 2. （可选）use-it-or-lose-it：优先选用会话窗口最早重置的账号
 			if cfg.PreferSoonestReset {
 				candidates = filterBySoonestReset(candidates)
@@ -778,6 +791,9 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 
 	// ============ Layer 3: 兜底排队 ============
 	s.sortCandidatesForFallback(candidates, preferOAuth, cfg.FallbackSelectionMode)
+	if len(routeRanks) > 0 {
+		stableSortAccountsByRoutePriority(candidates, routeRanks)
+	}
 	for _, acc := range candidates {
 		// 会话数量限制检查（等待计划也需要占用会话配额）
 		if !s.checkAndRegisterSession(ctx, acc, sessionHash) {
@@ -796,6 +812,9 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 func (s *GatewayService) tryAcquireByLegacyOrder(ctx context.Context, candidates []*Account, groupID *int64, sessionHash string, preferOAuth bool) (*AccountSelectionResult, bool, error) {
 	ordered := append([]*Account(nil), candidates...)
 	sortAccountsByPriorityAndLastUsed(ordered, preferOAuth)
+	if ranks := unifiedGatewayRoutePriorityRanks(ctx, ordered, nil, nil); len(ranks) > 0 {
+		stableSortAccountsByRoutePriority(ordered, ranks)
+	}
 
 	for _, acc := range ordered {
 		result, err := s.tryAcquireAccountSlot(ctx, acc.ID, acc.Concurrency)
@@ -1762,6 +1781,136 @@ func shuffleWithinSortGroups(accounts []accountWithLoad) {
 	}
 }
 
+func routePriorityMinLayerAccounts(accounts []*Account, ranks map[int64]routepriority.Rank) []*Account {
+	if len(accounts) == 0 || len(ranks) == 0 {
+		return accounts
+	}
+	min := routepriority.Rank{HealthLayer: int(^uint(0) >> 1), PriceLayer: int(^uint(0) >> 1)}
+	for _, account := range accounts {
+		if account == nil {
+			continue
+		}
+		rank := ranks[account.ID]
+		if rank.HealthLayer < min.HealthLayer || (rank.HealthLayer == min.HealthLayer && rank.PriceLayer < min.PriceLayer) {
+			min = rank
+		}
+	}
+	filtered := make([]*Account, 0, len(accounts))
+	for _, account := range accounts {
+		if account == nil {
+			continue
+		}
+		if ranks[account.ID] == min {
+			filtered = append(filtered, account)
+		}
+	}
+	return filtered
+}
+
+func selectGatewayAccountByNativeOrder(accounts []*Account, preferOAuth, mixed bool) *Account {
+	var selected *Account
+	for _, account := range accounts {
+		if account == nil {
+			continue
+		}
+		if selected == nil || gatewayAccountNativeOrderBetter(account, selected, preferOAuth, mixed) {
+			selected = account
+		}
+	}
+	return selected
+}
+
+func gatewayAccountNativeOrderBetter(candidate, current *Account, preferOAuth, mixed bool) bool {
+	if candidate.Priority != current.Priority {
+		return candidate.Priority < current.Priority
+	}
+	switch {
+	case candidate.LastUsedAt == nil && current.LastUsedAt != nil:
+		return true
+	case candidate.LastUsedAt != nil && current.LastUsedAt == nil:
+		return false
+	case candidate.LastUsedAt == nil && current.LastUsedAt == nil:
+		if preferOAuth && candidate.Type != current.Type && candidate.Type == AccountTypeOAuth {
+			return !mixed || (candidate.Platform == PlatformGemini && current.Platform == PlatformGemini)
+		}
+		return false
+	default:
+		return candidate.LastUsedAt.Before(*current.LastUsedAt)
+	}
+}
+
+func stableSortAccountsByRoutePriority(accounts []*Account, ranks map[int64]routepriority.Rank) {
+	if len(accounts) < 2 || len(ranks) == 0 {
+		return
+	}
+	sort.SliceStable(accounts, func(i, j int) bool {
+		return unifiedGatewayRoutePriorityRankLess(accounts[i].ID, accounts[j].ID, ranks)
+	})
+}
+
+func filterGatewayAccountLoadsByMinRoutePriority(accounts []accountWithLoad, ranks map[int64]routepriority.Rank) []accountWithLoad {
+	if len(accounts) == 0 || len(ranks) == 0 {
+		return accounts
+	}
+	min := routepriority.Rank{HealthLayer: int(^uint(0) >> 1), PriceLayer: int(^uint(0) >> 1)}
+	for _, item := range accounts {
+		if item.account == nil {
+			continue
+		}
+		rank := ranks[item.account.ID]
+		if rank.HealthLayer < min.HealthLayer || (rank.HealthLayer == min.HealthLayer && rank.PriceLayer < min.PriceLayer) {
+			min = rank
+		}
+	}
+	filtered := make([]accountWithLoad, 0, len(accounts))
+	for _, item := range accounts {
+		if item.account != nil && ranks[item.account.ID] == min {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered
+}
+
+func sortGatewayAccountLoadsWithRoutePriority(accounts []accountWithLoad, ranks map[int64]routepriority.Rank) []accountWithLoad {
+	if len(accounts) < 2 || len(ranks) == 0 {
+		return accounts
+	}
+	ordered := append([]accountWithLoad(nil), accounts...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return unifiedGatewayRoutePriorityRankLess(ordered[i].account.ID, ordered[j].account.ID, ranks)
+	})
+	for start := 0; start < len(ordered); {
+		layer := ranks[ordered[start].account.ID]
+		end := start + 1
+		for end < len(ordered) && ranks[ordered[end].account.ID] == layer {
+			end++
+		}
+		segment := ordered[start:end]
+		sort.SliceStable(segment, func(i, j int) bool {
+			a, b := segment[i], segment[j]
+			if a.account.Priority != b.account.Priority {
+				return a.account.Priority < b.account.Priority
+			}
+			if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
+				return a.loadInfo.LoadRate < b.loadInfo.LoadRate
+			}
+			switch {
+			case a.account.LastUsedAt == nil && b.account.LastUsedAt != nil:
+				return true
+			case a.account.LastUsedAt != nil && b.account.LastUsedAt == nil:
+				return false
+			case a.account.LastUsedAt == nil && b.account.LastUsedAt == nil:
+				return false
+			default:
+				return a.account.LastUsedAt.Before(*b.account.LastUsedAt)
+			}
+		})
+		shuffleWithinSortGroups(segment)
+		start = end
+	}
+	return ordered
+}
+
 // sameAccountWithLoadGroup 判断两个 accountWithLoad 是否属于同一排序组
 func sameAccountWithLoadGroup(a, b accountWithLoad) bool {
 	if a.account.Priority != b.account.Priority {
@@ -1890,6 +2039,7 @@ func shuffleWithinPriority(accounts []*Account) {
 
 // selectAccountForModelWithPlatform 选择单平台账户（完全隔离）
 func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}, platform string) (*Account, error) {
+	ctx = withUnifiedGatewayRoutePriorityRequest(ctx, s.cfg, s.settingService, groupID, requestedModel, false)
 	preferOAuth := platform == PlatformGemini
 	routingAccountIDs := s.routingAccountIDsForRequest(ctx, groupID, requestedModel, platform)
 
@@ -1957,6 +2107,7 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 		}
 
 		var selected *Account
+		routedEligible := make([]*Account, 0, len(accounts))
 		for i := range accounts {
 			acc := &accounts[i]
 			if _, ok := routingSet[acc.ID]; !ok {
@@ -1994,6 +2145,7 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 			if !s.isAccountSchedulableForRPM(ctx, acc, false) {
 				continue
 			}
+			routedEligible = append(routedEligible, acc)
 			if selected == nil {
 				selected = acc
 				continue
@@ -2016,6 +2168,9 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 					}
 				}
 			}
+		}
+		if ranks := unifiedGatewayRoutePriorityRanks(ctx, routedEligible, nil, nil); len(ranks) > 0 {
+			selected = selectGatewayAccountByNativeOrder(routePriorityMinLayerAccounts(routedEligible, ranks), preferOAuth, false)
 		}
 
 		if selected != nil {
@@ -2074,6 +2229,7 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 	// 因为粘性会话优先保持连接一致性，且 upstream 计费基准极少使用。
 	needsUpstreamCheck := s.needsUpstreamChannelRestrictionCheck(ctx, groupID)
 	var selected *Account
+	eligible := make([]*Account, 0, len(accounts))
 	for i := range accounts {
 		acc := &accounts[i]
 		if _, excluded := excludedIDs[acc.ID]; excluded {
@@ -2111,6 +2267,7 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 		if !s.isAccountSchedulableForRPM(ctx, acc, false) {
 			continue
 		}
+		eligible = append(eligible, acc)
 		if selected == nil {
 			selected = acc
 			continue
@@ -2134,6 +2291,9 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 			}
 		}
 	}
+	if ranks := unifiedGatewayRoutePriorityRanks(ctx, eligible, nil, nil); len(ranks) > 0 {
+		selected = selectGatewayAccountByNativeOrder(routePriorityMinLayerAccounts(eligible, ranks), preferOAuth, false)
+	}
 
 	if selected == nil {
 		stats := s.logDetailedSelectionFailure(ctx, groupID, sessionHash, requestedModel, platform, accounts, excludedIDs, false)
@@ -2156,6 +2316,7 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 // selectAccountWithMixedScheduling 选择账户（支持混合调度）
 // 查询原生平台账户 + 启用 mixed_scheduling 的 antigravity 账户
 func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}, nativePlatform string) (*Account, error) {
+	ctx = withUnifiedGatewayRoutePriorityRequest(ctx, s.cfg, s.settingService, groupID, requestedModel, false)
 	preferOAuth := nativePlatform == PlatformGemini
 	routingAccountIDs := s.routingAccountIDsForRequest(ctx, groupID, requestedModel, nativePlatform)
 
@@ -2219,6 +2380,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 		}
 
 		var selected *Account
+		routedEligible := make([]*Account, 0, len(accounts))
 		for i := range accounts {
 			acc := &accounts[i]
 			if _, ok := routingSet[acc.ID]; !ok {
@@ -2260,6 +2422,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 			if !s.isAccountSchedulableForRPM(ctx, acc, false) {
 				continue
 			}
+			routedEligible = append(routedEligible, acc)
 			if selected == nil {
 				selected = acc
 				continue
@@ -2282,6 +2445,9 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 					}
 				}
 			}
+		}
+		if ranks := unifiedGatewayRoutePriorityRanks(ctx, routedEligible, nil, nil); len(ranks) > 0 {
+			selected = selectGatewayAccountByNativeOrder(routePriorityMinLayerAccounts(routedEligible, ranks), preferOAuth, true)
 		}
 
 		if selected != nil {
@@ -2337,6 +2503,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 	// needsUpstreamCheck 仅在主选择循环中使用；粘性会话命中时跳过此检查。
 	needsUpstreamCheck := s.needsUpstreamChannelRestrictionCheck(ctx, groupID)
 	var selected *Account
+	eligible := make([]*Account, 0, len(accounts))
 	for i := range accounts {
 		acc := &accounts[i]
 		if _, excluded := excludedIDs[acc.ID]; excluded {
@@ -2378,6 +2545,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 		if !s.isAccountSchedulableForRPM(ctx, acc, false) {
 			continue
 		}
+		eligible = append(eligible, acc)
 		if selected == nil {
 			selected = acc
 			continue
@@ -2400,6 +2568,9 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 				}
 			}
 		}
+	}
+	if ranks := unifiedGatewayRoutePriorityRanks(ctx, eligible, nil, nil); len(ranks) > 0 {
+		selected = selectGatewayAccountByNativeOrder(routePriorityMinLayerAccounts(eligible, ranks), preferOAuth, true)
 	}
 
 	if selected == nil {

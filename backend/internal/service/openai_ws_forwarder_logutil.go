@@ -204,10 +204,8 @@ func parseOpenAIWSResponseUsageFromCompletedEvent(message []byte, usage *OpenAIU
 	}
 	if parsedUsage, ok := extractOpenAIUsageFromJSONBytes(message); ok {
 		if openAIStreamEventTypeIsTerminal(effectiveOpenAISSEEventType(message, "")) {
-			if !openAIUsageHasTokens(&parsedUsage) && openAIUsageHasTokens(usage) {
-				return
-			}
-			*usage = parsedUsage
+			usageNode, imageUsageNode := openAIUsageNodesFromJSONBytes(message)
+			mergeOpenAIUsagePresentFields(usage, parsedUsage, usageNode, imageUsageNode)
 		} else {
 			mergeOpenAIUsageNonZero(usage, parsedUsage)
 		}

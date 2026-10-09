@@ -573,17 +573,18 @@ func TestOpenAIResponseFlush_ReusedTypeKeepsSSEBytesAndTerminalSemantics(t *test
 
 func TestOpenAIResponseFlush_ClientDisconnectStillDrainsUsage(t *testing.T) {
 	first := "data: {\"type\":\"response.output_text.delta\",\"delta\":\"a\"}\n\n"
-	terminal := "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":7,\"output_tokens\":5,\"input_tokens_details\":{\"cached_tokens\":2}}}}\n\n"
+	progressive := "data: {\"type\":\"response.in_progress\",\"response\":{\"usage\":{\"input_tokens\":21,\"output_tokens\":1,\"input_tokens_details\":{\"cached_tokens\":7}}}}\n\n"
+	terminal := "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[],\"usage\":{\"output_tokens\":5}}}\n\n"
 	recorder := newOpenAIResponseFlushRecorder()
 	recorder.failAfterWrites = 1
 
-	result, err := runOpenAIResponseFlushTest(recorder, io.NopCloser(strings.NewReader(first+terminal)), config.GatewayConfig{})
+	result, err := runOpenAIResponseFlushTest(recorder, io.NopCloser(strings.NewReader(first+progressive+terminal)), config.GatewayConfig{})
 
 	require.NoError(t, err)
 	require.NotNil(t, result)
-	require.Equal(t, 7, result.usage.InputTokens)
+	require.Equal(t, 21, result.usage.InputTokens)
 	require.Equal(t, 5, result.usage.OutputTokens)
-	require.Equal(t, 2, result.usage.CacheReadInputTokens)
+	require.Equal(t, 7, result.usage.CacheReadInputTokens)
 	gotBody, flushes := recorder.snapshot()
 	require.Equal(t, first, gotBody)
 	require.Len(t, flushes, 1)

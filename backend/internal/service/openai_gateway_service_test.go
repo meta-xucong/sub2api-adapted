@@ -3696,7 +3696,7 @@ func TestParseSSEUsage_NonTerminalUsageMergesNonZeroFields(t *testing.T) {
 	require.Equal(t, 3, usage.CacheCreationInputTokens)
 }
 
-func TestParseSSEUsage_TerminalUsageReplacesFallback(t *testing.T) {
+func TestParseSSEUsage_TerminalUsageMergesPresentFields(t *testing.T) {
 	svc := &OpenAIGatewayService{}
 	usage := &OpenAIUsage{}
 
@@ -3705,7 +3705,7 @@ func TestParseSSEUsage_TerminalUsageReplacesFallback(t *testing.T) {
 
 	require.Equal(t, 19, usage.InputTokens)
 	require.Equal(t, 7, usage.OutputTokens)
-	require.Zero(t, usage.CacheReadInputTokens)
+	require.Equal(t, 4, usage.CacheReadInputTokens)
 }
 
 func TestParseSSEUsage_TerminalWithoutUsageKeepsFallback(t *testing.T) {
@@ -3817,6 +3817,57 @@ func TestHandleSSEToJSON_CompletedEventReturnsJSON(t *testing.T) {
 	require.NotContains(t, rec.Body.String(), "event:")
 	require.Contains(t, rec.Body.String(), `"id":"resp_2"`)
 	require.NotContains(t, rec.Body.String(), "data:")
+}
+
+func TestHandleSSEToJSON_PreservesProgressiveUsageWhenTerminalIsPartial(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	}
+	body := []byte(strings.Join([]string{
+		`data: {"type":"response.in_progress","response":{"id":"resp_3","usage":{"input_tokens":21,"output_tokens":1,"input_tokens_details":{"cached_tokens":7}}}}`,
+		`data: {"type":"response.completed","response":{"id":"resp_3","model":"gpt-4o","usage":{"output_tokens":5}}}`,
+		`data: [DONE]`,
+	}, "\n"))
+
+	result, err := svc.handleSSEToJSON(resp, c, nil, body, "gpt-4o", "gpt-4o")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 21, result.InputTokens)
+	require.Equal(t, 5, result.OutputTokens)
+	require.Equal(t, 7, result.CacheReadInputTokens)
+}
+
+func TestHandlePassthroughSSEToJSON_PreservesProgressiveUsageWhenTerminalIsPartial(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	}
+	body := []byte(strings.Join([]string{
+		`data: {"type":"response.in_progress","response":{"id":"resp_4","usage":{"input_tokens":21,"output_tokens":1,"input_tokens_details":{"cached_tokens":7}}}}`,
+		`data: {"type":"response.completed","response":{"id":"resp_4","model":"gpt-4o","usage":{"output_tokens":5}}}`,
+		`data: [DONE]`,
+	}, "\n"))
+
+	result, err := svc.handlePassthroughSSEToJSON(resp, c, nil, body, "gpt-4o", "gpt-4o")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, result.OpenAIUsage)
+	require.Equal(t, 21, result.OpenAIUsage.InputTokens)
+	require.Equal(t, 5, result.OpenAIUsage.OutputTokens)
+	require.Equal(t, 7, result.OpenAIUsage.CacheReadInputTokens)
 }
 
 func TestHandleNonStreamingResponse_APIKeyFallsBackToSSEBodyWhenContentTypeIsWrong(t *testing.T) {

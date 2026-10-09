@@ -87,6 +87,20 @@ func TestSmartRouterDefaultsAndValidation(t *testing.T) {
 	require.ErrorContains(t, cfg.Validate(), "gateway.smart_router.cost_bias_max must be non-negative")
 }
 
+func TestUnifiedRoutePriorityDefaultsOffAndCanBeEnabled(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.False(t, cfg.Gateway.UnifiedRoutePriority.Enabled)
+
+	configFile := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(configFile, []byte("gateway:\n  unified_route_priority:\n    enabled: true\n"), 0o600))
+	t.Setenv("CONFIG_FILE", configFile)
+	cfg, err = Load()
+	require.NoError(t, err)
+	require.True(t, cfg.Gateway.UnifiedRoutePriority.Enabled)
+}
+
 func TestUpstreamModelRefreshDefaultsAndValidation(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	cfg, err := Load()

@@ -531,7 +531,8 @@ func (s *OpenAIGatewayService) bufferRawChatCompletions(
 	observer.ObserveOpenAI(respBody, strings.TrimSpace(gjson.GetBytes(respBody, "type").String()))
 
 	var usage OpenAIUsage
-	if parsedUsage, ok := extractOpenAIUsageFromJSONBytes(respBody); ok {
+	parsedUsage, usageParsed := extractOpenAIUsageFromJSONBytes(respBody)
+	if usageParsed {
 		usage = parsedUsage
 	}
 	responseModel := gjson.GetBytes(respBody, "model").String()

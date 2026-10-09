@@ -56,7 +56,7 @@ func Order(req RouteRequest, lanes []LaneSnapshot, policy Policy) RoutePlan {
 			plan.SkipReasons[lane.LaneID] = "model_unavailable_until_calibration"
 			continue
 		}
-		// Health cooldown is normally a soft penalty. The gpt-image-2 admission
+		// Health cooldown is normally a soft penalty. The GPT image model admission
 		// guard below skips cooling lanes only when a healthy same-capability
 		// alternative exists; otherwise they remain last-resort candidates.
 		if lane.MaxConcurrency > 0 && lane.CurrentConcurrency >= lane.MaxConcurrency {
@@ -72,13 +72,13 @@ func Order(req RouteRequest, lanes []LaneSnapshot, policy Policy) RoutePlan {
 	if len(filtered) == 0 {
 		return plan
 	}
-	// gpt-image-2 is intermittently unavailable on individual upstream
-	// capability lanes. When at least one non-cooling lane exists, keep new
-	// requests off cooling lanes; if the whole pool is cooling, retain every
-	// lane as a last-resort candidate. This is deliberately model-scoped so
+	// gpt-image-2 and gpt-image-2.5 can be intermittently unavailable on
+	// individual upstream capability lanes. When at least one non-cooling lane
+	// exists, keep new requests off cooling lanes; if the whole pool is cooling,
+	// retain every lane as a last-resort candidate. This remains model-scoped so
 	// other image models keep their historical soft-fallback behavior.
-	if shouldPreferHealthyGPTImage2(req) {
-		filtered = filterCoolingGPTImage2Lanes(filtered, nowUnix, plan.SkipReasons)
+	if shouldPreferHealthyGPTImageModel(req) {
+		filtered = filterCoolingGPTImageLanes(filtered, nowUnix, plan.SkipReasons)
 	}
 	// Explicit size-specialized lanes get first use for their matching tier.
 	// Once all of them are unavailable, generic lanes become the fallback.
@@ -205,14 +205,15 @@ func Order(req RouteRequest, lanes []LaneSnapshot, policy Policy) RoutePlan {
 	return plan
 }
 
-func shouldPreferHealthyGPTImage2(req RouteRequest) bool {
+func shouldPreferHealthyGPTImageModel(req RouteRequest) bool {
 	if !isImageCapability(req.Capability) {
 		return false
 	}
-	return strings.EqualFold(strings.TrimSpace(req.Model), "gpt-image-2")
+	model := strings.TrimSpace(req.Model)
+	return strings.EqualFold(model, "gpt-image-2") || strings.EqualFold(model, "gpt-image-2.5")
 }
 
-func filterCoolingGPTImage2Lanes(lanes []LaneSnapshot, nowUnix int64, skipReasons map[string]string) []LaneSnapshot {
+func filterCoolingGPTImageLanes(lanes []LaneSnapshot, nowUnix int64, skipReasons map[string]string) []LaneSnapshot {
 	if len(lanes) <= 1 {
 		return lanes
 	}
@@ -230,7 +231,7 @@ func filterCoolingGPTImage2Lanes(lanes []LaneSnapshot, nowUnix int64, skipReason
 	}
 	if skipReasons != nil {
 		for _, lane := range cooling {
-			skipReasons[lane.LaneID] = "gpt_image2_health_cooldown"
+			skipReasons[lane.LaneID] = "gpt_image_health_cooldown"
 		}
 	}
 	return healthy

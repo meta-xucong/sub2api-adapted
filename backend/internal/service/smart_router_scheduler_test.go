@@ -426,39 +426,43 @@ func TestSmartRouterEmptyLaneOrderFallsBackToNativeCandidates(t *testing.T) {
 	})
 }
 
-func TestSmartRouterGPTImage2CooldownUsesLastResortOnlyWhenAllLanesCool(t *testing.T) {
-	makeService := func(ids []int64, stages map[int64]core.RecoveryStage) (*OpenAIGatewayService, []openAIAccountCandidateScore) {
-		enableSmartRouterSchedulerTest(t)
-		svc := &OpenAIGatewayService{cfg: &config.Config{
-			Gateway: config.GatewayConfig{SmartRouter: config.GatewaySmartRouterConfig{Enabled: true}},
-		}}
-		candidates := make([]openAIAccountCandidateScore, 0, len(ids))
-		for _, id := range ids {
-			candidates = append(candidates, openAIAccountCandidateScore{account: smartRouterTestAccount(id, AccountTypeOAuth, nil, nil)})
-		}
-		tracker := smartRouterTrackerWithHealthStates(stages, core.CapabilityImageGeneration, "gpt-image-2")
-		svc.smartRouterHealthOnce.Do(func() { svc.smartRouterHealthTracker = tracker })
-		return svc, candidates
-	}
-	request := OpenAIAccountScheduleRequest{
-		RequestedModel:          "gpt-image-2",
-		RequiredImageCapability: OpenAIImagesCapabilityBasic,
-		SmartRouterCapability:   core.CapabilityImageGeneration,
-	}
+func TestSmartRouterGPTImageCooldownUsesLastResortOnlyWhenAllLanesCool(t *testing.T) {
+	for _, model := range []string{"gpt-image-2", "gpt-image-2.5"} {
+		t.Run(model, func(t *testing.T) {
+			makeService := func(ids []int64, stages map[int64]core.RecoveryStage) (*OpenAIGatewayService, []openAIAccountCandidateScore) {
+				enableSmartRouterSchedulerTest(t)
+				svc := &OpenAIGatewayService{cfg: &config.Config{
+					Gateway: config.GatewayConfig{SmartRouter: config.GatewaySmartRouterConfig{Enabled: true}},
+				}}
+				candidates := make([]openAIAccountCandidateScore, 0, len(ids))
+				for _, id := range ids {
+					candidates = append(candidates, openAIAccountCandidateScore{account: smartRouterTestAccount(id, AccountTypeOAuth, nil, nil)})
+				}
+				tracker := smartRouterTrackerWithHealthStates(stages, core.CapabilityImageGeneration, model)
+				svc.smartRouterHealthOnce.Do(func() { svc.smartRouterHealthTracker = tracker })
+				return svc, candidates
+			}
+			request := OpenAIAccountScheduleRequest{
+				RequestedModel:          model,
+				RequiredImageCapability: OpenAIImagesCapabilityBasic,
+				SmartRouterCapability:   core.CapabilityImageGeneration,
+			}
 
-	coolingService, coolingCandidates := makeService([]int64{161, 162}, map[int64]core.RecoveryStage{
-		161: core.RecoveryCooling,
-		162: core.RecoveryCooling,
-	})
-	lastResort := coolingService.reorderSmartRouterSelectionCandidates(context.Background(), request, coolingCandidates)
-	require.Len(t, lastResort, 2, "all-cooling GPT-Image-2 lanes remain as last-resort candidates")
+			coolingService, coolingCandidates := makeService([]int64{161, 162}, map[int64]core.RecoveryStage{
+				161: core.RecoveryCooling,
+				162: core.RecoveryCooling,
+			})
+			lastResort := coolingService.reorderSmartRouterSelectionCandidates(context.Background(), request, coolingCandidates)
+			require.Len(t, lastResort, 2, "all-cooling GPT image lanes remain as last-resort candidates")
 
-	mixedService, mixedCandidates := makeService([]int64{163, 164}, map[int64]core.RecoveryStage{
-		163: core.RecoveryCooling,
-	})
-	healthyAlternative := mixedService.reorderSmartRouterSelectionCandidates(context.Background(), request, mixedCandidates)
-	require.Len(t, healthyAlternative, 1)
-	require.Equal(t, int64(164), healthyAlternative[0].account.ID)
+			mixedService, mixedCandidates := makeService([]int64{163, 164}, map[int64]core.RecoveryStage{
+				163: core.RecoveryCooling,
+			})
+			healthyAlternative := mixedService.reorderSmartRouterSelectionCandidates(context.Background(), request, mixedCandidates)
+			require.Len(t, healthyAlternative, 1)
+			require.Equal(t, int64(164), healthyAlternative[0].account.ID)
+		})
+	}
 }
 
 func TestSmartRouterNativeStickyAndPreviousResponsePathsBypassHealthReorder(t *testing.T) {

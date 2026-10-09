@@ -28,14 +28,17 @@ func UpstreamRequestIDHeaderName(account *Account) string {
 }
 
 // UpstreamRequestIDFromHeaders 从直接上游的响应头解析请求标识。
-// 只读账户指定的头；账户未指定头名时恒为空串。
+// 优先读取账户明确指定的头；未指定时只为已识别的 Wokey API-key 账号读取其账单关联头。
 func UpstreamRequestIDFromHeaders(account *Account, h http.Header) string {
 	if len(h) == 0 {
 		return ""
 	}
 	name := UpstreamRequestIDHeaderName(account)
 	if name == "" {
-		return ""
+		if !isWokeyAPIKeyAccount(account) {
+			return ""
+		}
+		name = "x-wokey-request-id"
 	}
 	return strings.TrimSpace(h.Get(name))
 }

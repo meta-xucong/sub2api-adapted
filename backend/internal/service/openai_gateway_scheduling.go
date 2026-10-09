@@ -1027,6 +1027,7 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 // true); the third contains deterministic
 // exclusion diagnostics for the evaluated snapshot.
 func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *int64, platform string, accounts []Account, requestedModel string, excludedIDs map[int64]struct{}, requireCompact bool, requiredCapability OpenAIEndpointCapability, preferLowUpstreamRate bool) (*Account, bool, openAISelectionFilterStats) {
+	ctx = withUnifiedGatewayRoutePriorityRequest(ctx, s.cfg, s.settingService, groupID, requestedModel, requireCompact || requiredCapability == OpenAIEndpointCapabilityEmbeddings || OpenAIImageGenerationIntentFromContext(ctx))
 	platform = NormalizeOpenAICompatiblePlatform(platform)
 	compactBlocked := false
 	filterStats := openAISelectionFilterStats{pool: len(accounts)}
@@ -1087,10 +1088,18 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 	if preferLowUpstreamRate {
 		rateOrder = newOpenAILegacyUpstreamRateOrder(eligible, time.Now(), s.openAIOAuthSchedulingRateMultiplier(ctx))
 	}
+	priorityRequest := OpenAIAccountScheduleRequest{GroupID: groupID, RequestedModel: requestedModel, RequiredCapability: requiredCapability, RequireCompact: requireCompact}
+	routeRanks := s.openAIRoutePriorityRanksForRequest(ctx, priorityRequest, eligible)
 	sort.SliceStable(eligible, func(i, j int) bool {
 		a, b := eligible[i], eligible[j]
 		if requireCompact && compactTiers[a.ID] != compactTiers[b.ID] {
 			return compactTiers[a.ID] > compactTiers[b.ID]
+		}
+		if unifiedGatewayRoutePriorityRankLess(a.ID, b.ID, routeRanks) {
+			return true
+		}
+		if unifiedGatewayRoutePriorityRankLess(b.ID, a.ID, routeRanks) {
+			return false
 		}
 		if rateCmp := rateOrder.compare(a, b); rateCmp != 0 {
 			return rateCmp < 0
@@ -1145,6 +1154,7 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 
 func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Context, groupID *int64, platform string, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}, requireCompact bool, requiredCapability OpenAIEndpointCapability, useUpstreamTokenCost bool) (*AccountSelectionResult, error) {
 	platform = NormalizeOpenAICompatiblePlatform(platform)
+	ctx = withUnifiedGatewayRoutePriorityRequest(ctx, s.cfg, s.settingService, groupID, requestedModel, requireCompact || requiredCapability == OpenAIEndpointCapabilityEmbeddings || OpenAIImageGenerationIntentFromContext(ctx))
 	if s.checkChannelPricingRestriction(ctx, groupID, requestedModel) {
 		slog.Warn("channel pricing restriction blocked request",
 			"group_id", derefGroupID(groupID),

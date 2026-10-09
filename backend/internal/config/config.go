@@ -1052,8 +1052,17 @@ type GatewaySmartRouterScoringConfig struct {
 	Recovery float64 `mapstructure:"recovery"`
 }
 
+// GatewayUnifiedRoutePriorityConfig controls the optional per-route price
+// ordering adapter. Its zero value deliberately preserves native scheduling.
+type GatewayUnifiedRoutePriorityConfig struct {
+	Enabled bool `mapstructure:"enabled"`
+}
+
 // GatewayConfig API网关相关配置
 type GatewayConfig struct {
+	// UnifiedRoutePriority is an independent, default-off Unified Gateway
+	// selection adapter. It does not alter native eligibility or billing.
+	UnifiedRoutePriority GatewayUnifiedRoutePriorityConfig `mapstructure:"unified_route_priority"`
 	// 等待上游响应头的超时时间（秒），0表示无超时
 	// 注意：这不影响流式数据传输，只控制等待响应头的时间
 	ResponseHeaderTimeout int `mapstructure:"response_header_timeout"`

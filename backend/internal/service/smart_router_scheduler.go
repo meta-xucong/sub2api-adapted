@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -17,7 +18,7 @@ const smartRouterExtraKey = "smart_router"
 
 const (
 	smartRouterSkipModelUnavailableUntilCalibration = "model_unavailable_until_calibration"
-	smartRouterSkipGPTImage2HealthCooldown          = "gpt_image2_health_cooldown"
+	smartRouterSkipGPTImageHealthCooldown           = "gpt_image_health_cooldown"
 )
 
 type smartRouterAccountExtra struct {
@@ -128,6 +129,32 @@ func (s *OpenAIGatewayService) reorderSmartRouterSelectionCandidates(
 	req OpenAIAccountScheduleRequest,
 	candidates []openAIAccountCandidateScore,
 ) []openAIAccountCandidateScore {
+	hasRoutePriority := false
+	for _, candidate := range candidates {
+		if candidate.routePrioritySet {
+			hasRoutePriority = true
+			break
+		}
+	}
+	if hasRoutePriority {
+		ordered := s.reorderSmartRouterSelectionCandidatesNative(ctx, req, candidates)
+		sort.SliceStable(ordered, func(i, j int) bool {
+			left, right := ordered[i], ordered[j]
+			if left.routeHealthLayer != right.routeHealthLayer {
+				return left.routeHealthLayer < right.routeHealthLayer
+			}
+			return left.routePriceLayer < right.routePriceLayer
+		})
+		return ordered
+	}
+	return s.reorderSmartRouterSelectionCandidatesNative(ctx, req, candidates)
+}
+
+func (s *OpenAIGatewayService) reorderSmartRouterSelectionCandidatesNative(
+	ctx context.Context,
+	req OpenAIAccountScheduleRequest,
+	candidates []openAIAccountCandidateScore,
+) []openAIAccountCandidateScore {
 	if len(candidates) == 0 || s == nil || !s.isSmartRouterEnabled() || !s.isOpenAIAdvancedSchedulerEnabled(ctx) {
 		return candidates
 	}
@@ -206,7 +233,7 @@ func reorderSmartRouterCandidateSlots(
 	orderedLaneIDs := seenLaneIDs
 	hardHealthSkips := make(map[string]struct{})
 	for laneID, reason := range plan.SkipReasons {
-		if reason == smartRouterSkipModelUnavailableUntilCalibration || reason == smartRouterSkipGPTImage2HealthCooldown {
+		if reason == smartRouterSkipModelUnavailableUntilCalibration || reason == smartRouterSkipGPTImageHealthCooldown {
 			hardHealthSkips[laneID] = struct{}{}
 		}
 	}

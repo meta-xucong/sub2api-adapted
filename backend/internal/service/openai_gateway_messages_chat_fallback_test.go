@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/gin-gonic/gin"
@@ -172,6 +173,60 @@ func TestForwardAsAnthropic_ForceChatCompletionsNonStreaming(t *testing.T) {
 	require.Nil(t, result.ServiceTier)
 	require.Equal(t, "priority", result.UpstreamResponseServiceTier)
 	require.False(t, result.Stream)
+}
+
+func TestOpenAIMessagesStreamingPreservesProgressiveUsageWhenTerminalIsPartial(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	upstreamBody := strings.Join([]string{
+		`event: response.in_progress`,
+		`data: {"type":"response.in_progress","response":{"usage":{"input_tokens":21,"output_tokens":1,"input_tokens_details":{"cached_tokens":7}}}}`,
+		"",
+		`event: response.output_text.delta`,
+		`data: {"type":"response.output_text.delta","delta":"ok"}`,
+		"",
+		`event: response.completed`,
+		`data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[],"usage":{"output_tokens":5}}}`,
+		"",
+	}, "\n")
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(upstreamBody)),
+	}
+
+	result, err := (&OpenAIGatewayService{}).handleAnthropicStreamingResponse(
+		resp, c, &Account{}, "gpt-5.6-luna", "gpt-5.6-luna", "gpt-5.6-luna", time.Now(),
+	)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 21, result.Usage.InputTokens)
+	require.Equal(t, 5, result.Usage.OutputTokens)
+	require.Equal(t, 7, result.Usage.CacheReadInputTokens)
+}
+
+func TestReadOpenAICompatBufferedTerminalPreservesProgressiveUsageWhenTerminalIsPartial(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	upstreamBody := strings.Join([]string{
+		`event: response.in_progress`,
+		`data: {"type":"response.in_progress","response":{"usage":{"input_tokens":21,"output_tokens":1,"input_tokens_details":{"cached_tokens":7}}}}`,
+		"",
+		`event: response.completed`,
+		`data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[],"usage":{"output_tokens":5}}}`,
+		"",
+	}, "\n")
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader(upstreamBody))}
+
+	_, usage, _, err := (&OpenAIGatewayService{}).readOpenAICompatBufferedTerminal(resp, c, "test", "")
+	require.NoError(t, err)
+	require.Equal(t, 21, usage.InputTokens)
+	require.Equal(t, 5, usage.OutputTokens)
+	require.Equal(t, 7, usage.CacheReadInputTokens)
 }
 
 // Covers the fully-new streaming composition: text block is still open when

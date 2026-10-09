@@ -843,6 +843,8 @@ func ProvideSettingService(settingRepo SettingRepository, groupRepo GroupReposit
 	svc.SetProxyRepository(proxyRepo)
 	if err := svc.LoadUnifiedGatewayRoutePricingAtStartup(context.Background()); err != nil {
 		logger.LegacyPrintf("service.setting", "Warning: load unified gateway route pricing failed; native pricing remains active: %v", err)
+	} else if err := svc.StartWokeyPriceSync(); err != nil {
+		logger.LegacyPrintf("service.setting", "Warning: Wokey price sync was not started: %s", WokeyPriceSyncErrorCode(err))
 	}
 	if err := svc.LoadForwardedClientIPSettings(context.Background()); err != nil {
 		logger.LegacyPrintf("service.setting", "Warning: load forwarded client IP settings failed: %v", err)
