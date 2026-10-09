@@ -127,6 +127,64 @@ func TestBuildOpenAIModelsURL(t *testing.T) {
 	}
 }
 
+func TestFetchUpstreamSupportedModelsForWokeyRequestsAllModalities(t *testing.T) {
+	for _, platform := range []string{PlatformOpenAI, PlatformGrok} {
+		t.Run(string(platform), func(t *testing.T) {
+			upstream := &httpUpstreamRecorder{resp: &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body: io.NopCloser(strings.NewReader(`{"object":"list","data":[
+					{"id":"gpt-6.1-sol"},
+					{"id":"gpt-image-2.5"},
+					{"id":"grok-imagine-video-1.5"}
+				]}`)),
+			}}
+			svc := &AccountTestService{httpUpstream: upstream, cfg: upstreamModelSyncTestConfig()}
+			account := &Account{
+				ID: 201, Platform: platform, Type: AccountTypeAPIKey,
+				Credentials: map[string]any{
+					"api_key":  "wokey-test-key",
+					"base_url": "https://api.wokey.ai/v1",
+				},
+			}
+
+			models, err := svc.FetchUpstreamSupportedModels(context.Background(), account)
+			require.NoError(t, err)
+			require.ElementsMatch(t, []string{"gpt-6.1-sol", "gpt-image-2.5", "grok-imagine-video-1.5"}, models)
+			require.Len(t, upstream.requests, 1)
+			require.Equal(t, "https://api.wokey.ai/v1/models?output_modalities=all", upstream.requests[0].URL.String())
+			require.Equal(t, "Bearer wokey-test-key", upstream.requests[0].Header.Get("Authorization"))
+		})
+	}
+}
+
+func TestWokeyAllModalitiesCatalogQueryIsExactHostScoped(t *testing.T) {
+	for _, baseURL := range []string{
+		"https://api.wokey.ai/v1",
+		"https://api.wokey.ai:443/v1",
+		"https://api.wokey.ai.evil.example/v1",
+		"http://api.wokey.ai/v1",
+		"https://api.wokey.ai:8443/v1",
+		"https://user@api.wokey.ai/v1",
+		"https://provider.example/v1",
+	} {
+		t.Run(baseURL, func(t *testing.T) {
+			request, err := http.NewRequest(http.MethodGet, "https://catalog.example/v1/models?keep=1", nil)
+			require.NoError(t, err)
+			applyWokeyAllModalitiesModelCatalogQuery(request, &Account{
+				Type:        AccountTypeAPIKey,
+				Credentials: map[string]any{"base_url": baseURL},
+			})
+			if baseURL == "https://api.wokey.ai/v1" || baseURL == "https://api.wokey.ai:443/v1" {
+				require.Equal(t, "all", request.URL.Query().Get("output_modalities"))
+			} else {
+				require.Empty(t, request.URL.Query().Get("output_modalities"))
+			}
+			require.Equal(t, "1", request.URL.Query().Get("keep"))
+		})
+	}
+}
+
 func TestBuildGeminiModelsURL(t *testing.T) {
 	t.Parallel()
 
@@ -585,6 +643,7 @@ func TestSyncUpstreamModelCatalogUsesConfiguredModelsWhenListEndpointUnsupported
 	require.NoError(t, err)
 	require.Contains(t, account.GetUpstreamModelMetadataSnapshot().Models, "old-live-model", "an unavailable model-list endpoint is not evidence of removal")
 	require.Equal(t, []string{"glm-5.3"}, catalog.Models)
+	require.False(t, catalog.LiveListAvailable, "configured-model fallback is not fresh availability evidence")
 	require.Empty(t, catalog.Warnings)
 	require.Len(t, upstream.requests, 2)
 	require.Equal(t, "https://provider.example/v1/models", upstream.requests[0].URL.String())
@@ -667,6 +726,7 @@ func TestSyncUpstreamModelCatalogPrefersDirectUpstreamMetadata(t *testing.T) {
 		Credentials: map[string]any{"api_key": "key", "base_url": "https://provider.example/v1"},
 	})
 	require.NoError(t, err)
+	require.True(t, catalog.LiveListAvailable)
 	require.Len(t, upstream.requests, 1, "complete upstream metadata must not be replaced by a registry fetch")
 	metadata := catalog.Metadata["custom-thinking-model"]
 	require.Equal(t, "Upstream Display", metadata.DisplayName)

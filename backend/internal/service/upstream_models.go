@@ -52,6 +52,8 @@ type UpstreamModelCatalog struct {
 	Models   []string                         `json:"models"`
 	Metadata map[string]UpstreamModelMetadata `json:"metadata,omitempty"`
 	Warnings []UpstreamModelSyncWarning       `json:"warnings,omitempty"`
+	// LiveListAvailable is false when Models came from a configured-model fallback.
+	LiveListAvailable bool `json:"live_list_available"`
 }
 
 type UpstreamModelSyncWarning struct {
@@ -245,7 +247,11 @@ func (s *AccountTestService) syncUpstreamModelCatalogFromFetched(
 	directMetadata map[string]UpstreamModelMetadata,
 	liveListAvailable bool,
 ) (*UpstreamModelCatalog, error) {
-	catalog := &UpstreamModelCatalog{Models: append([]string(nil), models...), Metadata: make(map[string]UpstreamModelMetadata, len(directMetadata))}
+	catalog := &UpstreamModelCatalog{
+		Models:            append([]string(nil), models...),
+		Metadata:          make(map[string]UpstreamModelMetadata, len(directMetadata)),
+		LiveListAvailable: liveListAvailable,
+	}
 	for modelID, metadata := range directMetadata {
 		catalog.Metadata[modelID] = metadata
 	}
@@ -763,6 +769,7 @@ func (s *AccountTestService) fetchUpstreamModelList(ctx context.Context, account
 	if err != nil {
 		return nil, nil, err
 	}
+	applyWokeyAllModalitiesModelCatalogQuery(req, account)
 
 	proxyURL := upstreamModelsProxyURL(account)
 	resp, err := s.doUpstreamModelsRequest(req, proxyURL, account)
@@ -830,6 +837,24 @@ func (s *AccountTestService) buildUpstreamModelsRequest(ctx context.Context, acc
 			fmt.Sprintf("Unsupported platform for upstream model sync: %s", account.Platform), nil,
 		)
 	}
+}
+
+// applyWokeyAllModalitiesModelCatalogQuery asks Wokey for its full callable
+// catalog. Its default /models response is text-only; adding this query affects
+// only the account model-discovery GET and leaves generation requests untouched.
+func applyWokeyAllModalitiesModelCatalogQuery(req *http.Request, account *Account) {
+	if req == nil || req.URL == nil || account == nil || account.Type != AccountTypeAPIKey {
+		return
+	}
+	parsedBaseURL, err := url.Parse(strings.TrimSpace(account.GetCredential("base_url")))
+	if err != nil || !strings.EqualFold(parsedBaseURL.Scheme, "https") ||
+		!strings.EqualFold(parsedBaseURL.Hostname(), "api.wokey.ai") ||
+		(parsedBaseURL.Port() != "" && parsedBaseURL.Port() != "443") || parsedBaseURL.User != nil {
+		return
+	}
+	query := req.URL.Query()
+	query.Set("output_modalities", "all")
+	req.URL.RawQuery = query.Encode()
 }
 
 func (s *AccountTestService) buildGrokUpstreamModelsRequest(ctx context.Context, account *Account) (*http.Request, error) {
