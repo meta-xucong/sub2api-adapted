@@ -23,6 +23,9 @@ import (
 
 func TestRefreshPersistenceChildProcess(t *testing.T) {
 	dsn := os.Getenv("SUB2API_PHASE4_REFRESH_DSN")
+	if dsn == "" {
+		t.Skip("this probe is run by the parent repository integration test")
+	}
 	accountIDValue := os.Getenv("SUB2API_PHASE4_REFRESH_ACCOUNT")
 	runID := os.Getenv("SUB2API_PHASE4_REFRESH_RUN_ID")
 	require.NotEmpty(t, dsn)

@@ -19,6 +19,9 @@ import (
 
 func TestSmartRouterHealthRestoreThroughPostgresLedgerInChildProcess(t *testing.T) {
 	dsn := os.Getenv("SUB2API_SMART_ROUTER_RESTORE_TEST_DSN")
+	if dsn == "" {
+		t.Skip("this probe is run by the parent repository integration test")
+	}
 	require.NotEmpty(t, dsn)
 	laneID := os.Getenv("SUB2API_SMART_ROUTER_RESTORE_TEST_LANE")
 	model := os.Getenv("SUB2API_SMART_ROUTER_RESTORE_TEST_MODEL")

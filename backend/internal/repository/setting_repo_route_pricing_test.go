@@ -22,7 +22,7 @@ func TestSettingRepositoryCompareAndSetValueUsesAtomicPredicates(t *testing.T) {
 	mock.ExpectExec(`UPDATE .*settings.*`).
 		WithArgs("new", sqlmock.AnyArg(), "route-pricing", "old").
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	updated, err := repo.CompareAndSetValue(context.Background(), "route-pricing", stringPtr("old"), "new")
+	updated, err := repo.CompareAndSetValue(context.Background(), "route-pricing", routePricingTestStringPtr("old"), "new")
 	require.NoError(t, err)
 	require.True(t, updated)
 
@@ -45,4 +45,4 @@ func TestSettingRepositoryCompareAndSetValueUsesAtomicPredicates(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-func stringPtr(value string) *string { return &value }
+func routePricingTestStringPtr(value string) *string { return &value }
