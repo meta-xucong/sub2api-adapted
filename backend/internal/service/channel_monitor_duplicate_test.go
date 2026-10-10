@@ -36,7 +36,7 @@ func (r *duplicateChannelMonitorRepoStub) Create(_ context.Context, monitor *Cha
 
 	stored := *monitor
 	stored.ExtraModels = append([]string(nil), monitor.ExtraModels...)
-	stored.ExtraHeaders = cloneStringMap(monitor.ExtraHeaders)
+	stored.ExtraHeaders = cloneChannelMonitorStringMap(monitor.ExtraHeaders)
 	stored.BodyOverride = mustCloneJSONMap(monitor.BodyOverride)
 	if monitor.TemplateID != nil {
 		templateID := *monitor.TemplateID
@@ -59,12 +59,12 @@ func (r *duplicateChannelMonitorRepoStub) FindByDuplicateOperationID(_ context.C
 	}
 	cloned := *monitor
 	cloned.ExtraModels = append([]string(nil), monitor.ExtraModels...)
-	cloned.ExtraHeaders = cloneStringMap(monitor.ExtraHeaders)
+	cloned.ExtraHeaders = cloneChannelMonitorStringMap(monitor.ExtraHeaders)
 	cloned.BodyOverride = mustCloneJSONMap(monitor.BodyOverride)
 	return &cloned, nil
 }
 
-func cloneStringMap(source map[string]string) map[string]string {
+func cloneChannelMonitorStringMap(source map[string]string) map[string]string {
 	if source == nil {
 		return nil
 	}

@@ -2797,6 +2797,7 @@ func setDefaults() {
 // environment. Any subsystem that wants a richer default still applies it after
 // unmarshal, exactly as before.
 func setEnvReachableDefaults() {
+	viper.SetDefault("gateway.unified_route_priority.enabled", false)
 	viper.SetDefault("gateway.forced_codex_instructions_template_file", "")
 	viper.SetDefault("gateway.session_idle_timeout_minutes", 0)
 	viper.SetDefault("gateway.user_message_queue.mode", "")
