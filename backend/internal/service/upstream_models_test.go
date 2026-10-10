@@ -136,7 +136,9 @@ func TestFetchUpstreamSupportedModelsForWokeyRequestsAllModalities(t *testing.T)
 				Body: io.NopCloser(strings.NewReader(`{"object":"list","data":[
 					{"id":"gpt-6.1-sol"},
 					{"id":"gpt-image-2.5"},
-					{"id":"grok-imagine-video-1.5"}
+					{"id":"grok-imagine-video-1.5"},
+					{"id":"claude-sonnet-4-6"},
+					{"id":"cursor-claude-opus-5"}
 				]}`)),
 			}}
 			svc := &AccountTestService{httpUpstream: upstream, cfg: upstreamModelSyncTestConfig()}
@@ -150,12 +152,82 @@ func TestFetchUpstreamSupportedModelsForWokeyRequestsAllModalities(t *testing.T)
 
 			models, err := svc.FetchUpstreamSupportedModels(context.Background(), account)
 			require.NoError(t, err)
-			require.ElementsMatch(t, []string{"gpt-6.1-sol", "gpt-image-2.5", "grok-imagine-video-1.5"}, models)
+			require.ElementsMatch(t, []string{"gpt-6.1-sol", "gpt-image-2.5", "grok-imagine-video-1.5", "cursor-claude-opus-5"}, models)
 			require.Len(t, upstream.requests, 1)
 			require.Equal(t, "https://api.wokey.ai/v1/models?output_modalities=all", upstream.requests[0].URL.String())
 			require.Equal(t, "Bearer wokey-test-key", upstream.requests[0].Header.Get("Authorization"))
 		})
 	}
+}
+
+func TestWokeyNativeClaudeExclusionIsScopedToOpenAIGrokAPIKeyAccounts(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		account *Account
+		want    bool
+	}{
+		{
+			name:    "Wokey OpenAI API key",
+			account: &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://api.wokey.ai/v1"}},
+			want:    true,
+		},
+		{
+			name:    "Wokey Grok API key",
+			account: &Account{Platform: PlatformGrok, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://api.wokey.ai:443"}},
+			want:    true,
+		},
+		{
+			name:    "Wokey Anthropic",
+			account: &Account{Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://api.wokey.ai"}},
+		},
+		{
+			name:    "other OpenAI provider",
+			account: &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://provider.example/v1"}},
+		},
+		{
+			name:    "Wokey OpenAI OAuth",
+			account: &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{"base_url": "https://api.wokey.ai/v1"}},
+		},
+		{
+			name:    "Wokey OpenAI nonstandard port",
+			account: &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://api.wokey.ai:8443/v1"}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, tt.want, isWokeyOpenAIGrokAPIKeyAccount(tt.account))
+		})
+	}
+	require.True(t, isWokeyNativeClaudeModelID(" Claude-Sonnet-4-6 "))
+	require.False(t, isWokeyNativeClaudeModelID("cursor-claude-opus-5"))
+	require.False(t, isWokeyNativeClaudeModelID("openai-claude-compat"))
+}
+
+func TestSyncUpstreamModelCatalogTreatsFilteredOnlyWokeyClaudeListAsLiveEmptyCatalog(t *testing.T) {
+	account := &Account{
+		ID: 202, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{"api_key": "wokey-test-key", "base_url": "https://api.wokey.ai/v1"},
+	}
+	newService := func(body string) *AccountTestService {
+		return &AccountTestService{
+			httpUpstream: &httpUpstreamRecorder{resp: &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(body)),
+			}},
+			cfg: upstreamModelSyncTestConfig(),
+		}
+	}
+
+	catalog, err := newService(`{"object":"list","data":[{"id":"claude-sonnet-4-6"},{"id":"claude-haiku-5-5"}]}`).SyncUpstreamModelCatalog(context.Background(), account)
+	require.NoError(t, err)
+	require.Empty(t, catalog.Models)
+	require.True(t, catalog.LiveListAvailable, "a nonempty live catalog filtered by the Wokey policy remains valid evidence")
+
+	_, err = newService(`{"object":"list","data":[]}`).SyncUpstreamModelCatalog(context.Background(), account)
+	require.ErrorContains(t, err, "no supported models", "a genuinely empty raw upstream list must remain an error")
 }
 
 func TestWokeyAllModalitiesCatalogQueryIsExactHostScoped(t *testing.T) {

@@ -814,8 +814,37 @@ func (s *AccountTestService) fetchUpstreamModelList(ctx context.Context, account
 		}
 		models = filtered
 	}
+	if isWokeyOpenAIGrokAPIKeyAccount(account) {
+		models = filterWokeyNativeClaudeModelIDs(models)
+	}
 
 	return models, body, nil
+}
+
+// isWokeyOpenAIGrokAPIKeyAccount limits the Claude exclusion to the Wokey
+// OpenAI-compatible account routes. Wokey's Anthropic platform remains native.
+func isWokeyOpenAIGrokAPIKeyAccount(account *Account) bool {
+	if account == nil || account.Type != AccountTypeAPIKey ||
+		(account.Platform != PlatformOpenAI && account.Platform != PlatformGrok) {
+		return false
+	}
+	return isWokeyBaseURL(account.GetCredential("base_url"))
+}
+
+// isWokeyNativeClaudeModelID matches Wokey's native Claude SKU family only.
+// Anchor at the start so IDs such as cursor-claude-opus-5 are left untouched.
+func isWokeyNativeClaudeModelID(modelID string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(modelID)), "claude-")
+}
+
+func filterWokeyNativeClaudeModelIDs(models []string) []string {
+	filtered := make([]string, 0, len(models))
+	for _, modelID := range models {
+		if !isWokeyNativeClaudeModelID(modelID) {
+			filtered = append(filtered, modelID)
+		}
+	}
+	return filtered
 }
 
 func (s *AccountTestService) buildUpstreamModelsRequest(ctx context.Context, account *Account) (*http.Request, error) {

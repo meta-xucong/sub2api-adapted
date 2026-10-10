@@ -1472,6 +1472,10 @@ func recalculateWokeyManagedEntry(entry UnifiedGatewayRoutePricingEntry, fx deci
 }
 
 func mergeWokeyPriceCards(cfg UnifiedGatewayRoutePricingConfig, accountIDs []int64, candidates map[string]wokeyCardCandidates, unsupported map[string]string, catalog *wokeyCatalog, catalogHash string, fx decimal.Decimal) ([]UnifiedGatewayRoutePricingEntry, wokeyMergeCounts) {
+	return mergeWokeyPriceCardsForAccounts(cfg, accountIDs, nil, candidates, unsupported, catalog, catalogHash, fx)
+}
+
+func mergeWokeyPriceCardsForAccounts(cfg UnifiedGatewayRoutePricingConfig, accountIDs []int64, accountsByID map[int64]Account, candidates map[string]wokeyCardCandidates, unsupported map[string]string, catalog *wokeyCatalog, catalogHash string, fx decimal.Decimal) ([]UnifiedGatewayRoutePricingEntry, wokeyMergeCounts) {
 	selected := make(map[int64]struct{}, len(accountIDs))
 	for _, id := range accountIDs {
 		selected[id] = struct{}{}
@@ -1496,8 +1500,12 @@ func mergeWokeyPriceCards(cfg UnifiedGatewayRoutePricingConfig, accountIDs []int
 	candidateLists := make(map[int64]map[string]UnifiedGatewayRoutePricingEntry, len(accountIDs))
 	for _, accountID := range accountIDs {
 		byKey := make(map[string]UnifiedGatewayRoutePricingEntry)
+		account, hasAccount := accountsByID[accountID]
 		for _, set := range candidates {
 			for _, template := range set.Cards {
+				if hasAccount && isWokeyOpenAIGrokAPIKeyAccount(&account) && isWokeyNativeClaudeModelID(template.Model) {
+					continue
+				}
 				entry := template
 				entry.AccountID = accountID
 				entry.SourceCatalogSHA256 = catalogHash
@@ -1517,6 +1525,12 @@ func mergeWokeyPriceCards(cfg UnifiedGatewayRoutePricingConfig, accountIDs []int
 			continue
 		}
 		if _, inScope := selected[entry.AccountID]; !inScope {
+			continue
+		}
+		if account, known := accountsByID[entry.AccountID]; known &&
+			isWokeyOpenAIGrokAPIKeyAccount(&account) && isWokeyNativeClaudeModelID(entry.Model) {
+			// A route-policy exclusion is not a transient catalog failure;
+			// remove only this managed card for the selected OpenAI/Grok route.
 			continue
 		}
 		key := unifiedGatewayRoutePricingKey(cfg.TargetGroupID, entry.AccountID, entry.Model, entry.Kind, entry.ImagePricingMode, entry.ImageSize, entry.ImageQuality, entry.VideoResolution, entry.VideoDurationSeconds)
@@ -1908,7 +1922,11 @@ func (s *SettingService) publishWokeyCatalog(ctx context.Context, catalog *wokey
 			return nil, &wokeyPriceSyncFailure{Code: "invalid_fx"}
 		}
 		candidateByModel, unsupported := buildWokeyPriceCards(catalog, fx)
-		entries, counts := mergeWokeyPriceCards(cfg, ids, candidateByModel, unsupported, catalog, catalog.Hash, fx)
+		accountsByID := make(map[int64]Account, len(accounts))
+		for _, account := range accounts {
+			accountsByID[account.ID] = account
+		}
+		entries, counts := mergeWokeyPriceCardsForAccounts(cfg, ids, accountsByID, candidateByModel, unsupported, catalog, catalog.Hash, fx)
 		cfg.Entries = entries
 		now := time.Now().UTC()
 		cfg.WokeySync.Status = UnifiedGatewayWokeySyncStatus{

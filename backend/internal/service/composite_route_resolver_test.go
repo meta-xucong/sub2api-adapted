@@ -257,6 +257,68 @@ func TestCompositeRouteResolverPrefixExplicitUpstreamStillFixed(t *testing.T) {
 	}
 }
 
+func TestCompositeRouteResolverGPTNamespacePrefixRoutesCurrentAndFutureResponsesModels(t *testing.T) {
+	resolver := NewCompositeRouteResolver(compositeRouteRepoStub{
+		routes: []CompositeModelRoute{
+			{
+				ID:             10,
+				GroupID:        7,
+				PublicModel:    "gpt-",
+				MatchType:      CompositeRouteMatchPrefix,
+				TargetPlatform: PlatformOpenAI,
+				Endpoint:       CompositeRouteEndpointResponses,
+				Enabled:        true,
+			},
+			{
+				ID:             11,
+				GroupID:        7,
+				PublicModel:    "gpt-6-sol",
+				MatchType:      CompositeRouteMatchExact,
+				TargetPlatform: PlatformOpenAI,
+				UpstreamModel:  "gpt-6-sol",
+				Endpoint:       CompositeRouteEndpointAny,
+				Enabled:        true,
+			},
+		},
+	})
+	resolver.SetModelOwnershipResolver(func(context.Context, int64, string) (CompositeModelOwnership, error) {
+		return CompositeModelOwnership{Ambiguous: true}, nil
+	})
+
+	for _, model := range []string{
+		"gpt-6-luna",
+		"gpt-6-sol",
+		"gpt-6-astra",
+		"gpt-7-luna", // future name: route behavior is namespace-based, not catalog-version-based.
+		"gpt-next-preview-2030",
+	} {
+		decision, err := resolver.Resolve(context.Background(), 7, model, CompositeRouteEndpointResponses)
+		require.NoError(t, err)
+		require.True(t, decision.Matched, "model %q must match the GPT namespace route", model)
+		require.Equal(t, CompositeRouteSourceExplicit, decision.Source)
+		require.Equal(t, PlatformOpenAI, decision.TargetPlatform)
+		if model == "gpt-6-sol" {
+			require.Equal(t, int64(11), decision.Route.ID, "an exact route must take precedence over the namespace prefix")
+			require.Equal(t, model, decision.UpstreamModel, "the exact route preserves the requested model ID")
+			continue
+		}
+		require.Equal(t, int64(10), decision.Route.ID)
+		require.Equal(t, model, decision.UpstreamModel, "blank prefix upstream model must pass through the requested ID")
+	}
+
+	for _, model := range []string{"gpt-6-luna", "gpt-7-luna"} {
+		decision, err := resolver.Resolve(context.Background(), 7, model, CompositeRouteEndpointChatCompletions)
+		require.NoError(t, err)
+		require.False(t, decision.Matched, "Responses-only GPT prefix must not match Chat Completions")
+		require.Equal(t, "model is exposed by multiple provider platforms", decision.Reason)
+	}
+
+	claudeDecision, err := resolver.Resolve(context.Background(), 7, "claude-sonnet-4-6", CompositeRouteEndpointResponses)
+	require.NoError(t, err)
+	require.False(t, claudeDecision.Matched, "non-GPT duplicate ownership remains fail-closed")
+	require.Equal(t, "model is exposed by multiple provider platforms", claudeDecision.Reason)
+}
+
 func TestCompositeRouteResolverIgnoresDisabledRoutesAndFallsBackToDetector(t *testing.T) {
 	resolver := NewCompositeRouteResolver(compositeRouteRepoStub{
 		routes: []CompositeModelRoute{

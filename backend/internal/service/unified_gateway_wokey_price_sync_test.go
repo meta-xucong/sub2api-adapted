@@ -530,6 +530,76 @@ func TestWokeyPriceCardMergePreservesManualUnselectedAndLastGoodCards(t *testing
 	}
 }
 
+func TestWokeyClaudePriceCardsAreExcludedPerOpenAICompatibleAccount(t *testing.T) {
+	catalog := parseWokeyFixture(t)
+	claudeModel := catalog.Models["claude-haiku-5-5"]
+	claudeModel.ID = "cursor-claude-opus-5"
+	catalog.Models[claudeModel.ID] = claudeModel
+	fx := decimal.RequireFromString("6.9")
+	candidates, unsupported := buildWokeyPriceCards(catalog, fx)
+	claudeCard := candidates["claude-haiku-5-5"].Cards[0]
+	cursorClaudeCard := candidates["cursor-claude-opus-5"].Cards[0]
+
+	managedClaude := func(accountID int64) UnifiedGatewayRoutePricingEntry {
+		entry := claudeCard
+		entry.AccountID = accountID
+		entry.Source = UnifiedGatewayWokeySource
+		entry.SyncState = "current"
+		entry.SourceFX = "6.9"
+		return entry
+	}
+	managedCursorClaude := cursorClaudeCard
+	managedCursorClaude.AccountID = 42
+	managedCursorClaude.Source = UnifiedGatewayWokeySource
+	manualClaude := UnifiedGatewayRoutePricingEntry{
+		AccountID: 42, Model: "claude-haiku-5-5", Kind: UnifiedGatewayRoutePricingToken,
+		TokenBasePrice: routePricingTokenBase(1, 1, 1, 0, 0, 0),
+	}
+	unselectedClaude := managedClaude(45)
+
+	accountsByID := map[int64]Account{
+		42: {ID: 42, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://api.wokey.ai/v1"}},
+		43: {ID: 43, Platform: PlatformGrok, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://api.wokey.ai/v1"}},
+		44: {ID: 44, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://api.wokey.ai/v1"}},
+	}
+	cfg := UnifiedGatewayRoutePricingConfig{
+		TargetGroupID: 7,
+		Entries: []UnifiedGatewayRoutePricingEntry{
+			managedClaude(42), managedClaude(43), managedClaude(44),
+			managedCursorClaude, manualClaude, unselectedClaude,
+		},
+	}
+	entries, _ := mergeWokeyPriceCardsForAccounts(cfg, []int64{42, 43, 44}, accountsByID, candidates, unsupported, catalog, catalog.Hash, fx)
+
+	var openAIClaudeManaged, grokClaudeManaged, anthropicClaudeManaged bool
+	var openAICursorClaudeManaged, grokCursorClaudeManaged, manualClaudePreserved, unselectedClaudePreserved bool
+	for _, entry := range entries {
+		switch {
+		case entry.AccountID == 42 && entry.Model == "claude-haiku-5-5" && entry.Source == UnifiedGatewayWokeySource:
+			openAIClaudeManaged = true
+		case entry.AccountID == 43 && entry.Model == "claude-haiku-5-5" && entry.Source == UnifiedGatewayWokeySource:
+			grokClaudeManaged = true
+		case entry.AccountID == 44 && entry.Model == "claude-haiku-5-5" && entry.Source == UnifiedGatewayWokeySource:
+			anthropicClaudeManaged = true
+		case entry.AccountID == 42 && entry.Model == "cursor-claude-opus-5" && entry.Source == UnifiedGatewayWokeySource:
+			openAICursorClaudeManaged = true
+		case entry.AccountID == 43 && entry.Model == "cursor-claude-opus-5" && entry.Source == UnifiedGatewayWokeySource:
+			grokCursorClaudeManaged = true
+		case entry.AccountID == 42 && entry.Model == "claude-haiku-5-5" && entry.Source == "":
+			manualClaudePreserved = true
+		case entry.AccountID == 45 && entry.Model == "claude-haiku-5-5" && entry.Source == UnifiedGatewayWokeySource:
+			unselectedClaudePreserved = true
+		}
+	}
+	require.False(t, openAIClaudeManaged, "selected Wokey OpenAI routes must not receive managed native-Claude cards")
+	require.False(t, grokClaudeManaged, "selected Wokey Grok routes must not receive managed native-Claude cards")
+	require.True(t, anthropicClaudeManaged, "the native Wokey Anthropic route retains its Claude card")
+	require.True(t, openAICursorClaudeManaged, "a non-Claude-prefix model containing claude remains eligible")
+	require.True(t, grokCursorClaudeManaged, "a non-Claude-prefix model containing claude remains eligible")
+	require.True(t, manualClaudePreserved, "price refresh does not take ownership of manual cards")
+	require.True(t, unselectedClaudePreserved, "unselected account cards are untouched")
+}
+
 func TestWokeyImageCardDoesNotConflictWithManualDifferentKindsForSameModel(t *testing.T) {
 	catalog := parseWokeyFixture(t)
 	candidates, unsupported := buildWokeyPriceCards(catalog, decimal.RequireFromString("6.9"))

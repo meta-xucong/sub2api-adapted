@@ -103,6 +103,54 @@ func TestResolveCompositeModelOwnershipAllowsSamePlatformAndRejectsCrossPlatform
 	require.Equal(t, CompositeModelOwnership{Ambiguous: true}, ambiguous)
 }
 
+func TestWokeyClaudeRefreshFilterLeavesAnthropicAsSoleCompositeOwner(t *testing.T) {
+	groupID := int64(7)
+	const claudeModel = "claude-sonnet-4-6"
+	wokeyPlatforms := []string{PlatformOpenAI, PlatformGrok}
+	accounts := make([]Account, 0, len(wokeyPlatforms)+1)
+	for i, platform := range wokeyPlatforms {
+		accounts = append(accounts, Account{
+			ID:       int64(i + 1),
+			Platform: platform,
+			Type:     AccountTypeAPIKey,
+			Credentials: map[string]any{
+				"base_url":      "https://api.wokey.ai/v1",
+				"model_mapping": map[string]any{claudeModel: claudeModel},
+			},
+		})
+	}
+	accounts = append(accounts, Account{
+		ID:       3,
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"base_url":      "https://flowing.example/v1",
+			"model_mapping": map[string]any{claudeModel: claudeModel},
+		},
+	})
+	repo := &compositeOwnershipAccountRepo{accounts: accounts}
+	svc := &GatewayService{accountRepo: repo}
+
+	before, err := svc.resolveCompositeModelOwnership(context.Background(), groupID, claudeModel)
+	require.NoError(t, err)
+	require.Equal(t, CompositeModelOwnership{Ambiguous: true}, before, "the duplicate OpenAI/Grok + Anthropic claims reproduce the conflict")
+
+	for i := range repo.accounts {
+		account := &repo.accounts[i]
+		if isWokeyOpenAIGrokAPIKeyAccount(account) {
+			mapping := map[string]any{}
+			for _, modelID := range filterWokeyNativeClaudeModelIDs([]string{claudeModel}) {
+				mapping[modelID] = modelID
+			}
+			account.Credentials["model_mapping"] = mapping
+		}
+	}
+	after, err := svc.resolveCompositeModelOwnership(context.Background(), groupID, claudeModel)
+	require.NoError(t, err)
+	require.Equal(t, CompositeModelOwnership{TargetPlatform: PlatformAnthropic, Matched: true}, after,
+		"after Wokey refresh removes the native-Claude claim, the existing Anthropic route is the sole owner")
+}
+
 func TestNewGatewayServiceWiresCompositeModelOwnershipResolver(t *testing.T) {
 	groupID := int64(7)
 	repo := &compositeOwnershipAccountRepo{
