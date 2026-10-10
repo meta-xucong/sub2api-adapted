@@ -139,7 +139,7 @@ func TestWokeyClaudeRefreshFilterLeavesAnthropicAsSoleCompositeOwner(t *testing.
 		account := &repo.accounts[i]
 		if isWokeyOpenAIGrokAPIKeyAccount(account) {
 			mapping := map[string]any{}
-			for _, modelID := range filterWokeyNativeClaudeModelIDs([]string{claudeModel}) {
+			for _, modelID := range filterWokeyModelIDsForAccount(account, []string{claudeModel}) {
 				mapping[modelID] = modelID
 			}
 			account.Credentials["model_mapping"] = mapping
@@ -149,6 +149,59 @@ func TestWokeyClaudeRefreshFilterLeavesAnthropicAsSoleCompositeOwner(t *testing.
 	require.NoError(t, err)
 	require.Equal(t, CompositeModelOwnership{TargetPlatform: PlatformAnthropic, Matched: true}, after,
 		"after Wokey refresh removes the native-Claude claim, the existing Anthropic route is the sole owner")
+}
+
+func TestWokeyMediaRefreshPartitionRoutesGPTAndGrokImagesSeparately(t *testing.T) {
+	groupID := int64(7)
+	models := []string{
+		"gpt-image-2.5",
+		"openai/grok-custom",
+		"xai/grok-imagine-image-2.0",
+		"vendor/grok-future",
+		"vendor / grok-future",
+		"openai / grok-custom",
+		"grok-imagine-image-2.0",
+		"grok-imagine-video-1.5",
+		"grok-imagine-image-3.0",
+	}
+	accounts := make([]Account, 0, 2)
+	for i, platform := range []string{PlatformOpenAI, PlatformGrok} {
+		account := Account{
+			ID:       int64(i + 1),
+			Platform: platform,
+			Type:     AccountTypeAPIKey,
+			Credentials: map[string]any{
+				"base_url": "https://api.wokey.ai/v1",
+			},
+		}
+		mapping := make(map[string]any)
+		for _, modelID := range filterWokeyModelIDsForAccount(&account, models) {
+			mapping[modelID] = modelID
+		}
+		account.Credentials["model_mapping"] = mapping
+		accounts = append(accounts, account)
+	}
+
+	repo := &compositeOwnershipAccountRepo{accounts: accounts}
+	svc := &GatewayService{accountRepo: repo}
+	for _, tc := range []struct {
+		model    string
+		platform string
+	}{
+		{model: "gpt-image-2.5", platform: PlatformOpenAI},
+		{model: "openai/grok-custom", platform: PlatformOpenAI},
+		{model: "xai/grok-imagine-image-2.0", platform: PlatformGrok},
+		{model: "vendor/grok-future", platform: PlatformGrok},
+		{model: "vendor / grok-future", platform: PlatformGrok},
+		{model: "openai / grok-custom", platform: PlatformOpenAI},
+		{model: "grok-imagine-image-2.0", platform: PlatformGrok},
+		{model: "grok-imagine-video-1.5", platform: PlatformGrok},
+		{model: "grok-imagine-image-3.0", platform: PlatformGrok},
+	} {
+		ownership, err := svc.resolveCompositeModelOwnership(context.Background(), groupID, tc.model)
+		require.NoError(t, err)
+		require.Equal(t, CompositeModelOwnership{TargetPlatform: tc.platform, Matched: true}, ownership, "model=%s", tc.model)
+	}
 }
 
 func TestNewGatewayServiceWiresCompositeModelOwnershipResolver(t *testing.T) {

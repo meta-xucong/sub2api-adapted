@@ -815,7 +815,7 @@ func (s *AccountTestService) fetchUpstreamModelList(ctx context.Context, account
 		models = filtered
 	}
 	if isWokeyOpenAIGrokAPIKeyAccount(account) {
-		models = filterWokeyNativeClaudeModelIDs(models)
+		models = filterWokeyModelIDsForAccount(account, models)
 	}
 
 	return models, body, nil
@@ -829,6 +829,33 @@ func isWokeyOpenAIGrokAPIKeyAccount(account *Account) bool {
 		return false
 	}
 	return isWokeyBaseURL(account.GetCredential("base_url"))
+}
+
+// filterWokeyModelIDsForAccount keeps Wokey's shared live catalog from being
+// written into both the OpenAI and Grok account adapters. Composite routing
+// already classifies grok-* model IDs as PlatformGrok; keep that same boundary
+// here so the refresher and request resolver agree without rewriting IDs.
+func filterWokeyModelIDsForAccount(account *Account, models []string) []string {
+	if !isWokeyOpenAIGrokAPIKeyAccount(account) {
+		return models
+	}
+
+	filtered := make([]string, 0, len(models))
+	for _, modelID := range models {
+		if isWokeyNativeClaudeModelID(modelID) {
+			continue
+		}
+		platform, known := DetectModelPlatform(modelID)
+		isGrokModel := known && platform == PlatformGrok
+		if account.Platform == PlatformGrok && !isGrokModel {
+			continue
+		}
+		if account.Platform == PlatformOpenAI && isGrokModel {
+			continue
+		}
+		filtered = append(filtered, modelID)
+	}
+	return filtered
 }
 
 // isWokeyNativeClaudeModelID matches Wokey's native Claude SKU family only.

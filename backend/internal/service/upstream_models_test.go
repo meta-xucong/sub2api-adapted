@@ -128,22 +128,46 @@ func TestBuildOpenAIModelsURL(t *testing.T) {
 }
 
 func TestFetchUpstreamSupportedModelsForWokeyRequestsAllModalities(t *testing.T) {
-	for _, platform := range []string{PlatformOpenAI, PlatformGrok} {
-		t.Run(string(platform), func(t *testing.T) {
+	modelsBody := `{"object":"list","data":[
+		{"id":"gpt-6.1-sol"},
+		{"id":"gpt-image-2.5"},
+		{"id":"glm-5.3"},
+		{"id":"grok-4.5"},
+		{"id":"xai/grok-imagine-image-2.0"},
+		{"id":"vendor/grok-future"},
+		{"id":"vendor / grok-future"},
+		{"id":"openai/grok-custom"},
+		{"id":"openai / grok-custom"},
+		{"id":"grok-imagine-image-2.0"},
+		{"id":"grok-imagine-video-1.5"},
+		{"id":"grok-imagine-video-1.5-lite"},
+		{"id":"grok-imagine-image-3.0"},
+		{"id":"claude-sonnet-4-6"},
+		{"id":"cursor-claude-opus-5"}
+	]}`
+	tests := []struct {
+		platform string
+		want     []string
+	}{
+		{
+			platform: PlatformOpenAI,
+			want:     []string{"gpt-6.1-sol", "gpt-image-2.5", "glm-5.3", "openai/grok-custom", "openai / grok-custom", "cursor-claude-opus-5"},
+		},
+		{
+			platform: PlatformGrok,
+			want:     []string{"grok-4.5", "xai/grok-imagine-image-2.0", "vendor/grok-future", "vendor / grok-future", "grok-imagine-image-2.0", "grok-imagine-video-1.5", "grok-imagine-video-1.5-lite", "grok-imagine-image-3.0"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.platform, func(t *testing.T) {
 			upstream := &httpUpstreamRecorder{resp: &http.Response{
 				StatusCode: http.StatusOK,
 				Header:     http.Header{"Content-Type": []string{"application/json"}},
-				Body: io.NopCloser(strings.NewReader(`{"object":"list","data":[
-					{"id":"gpt-6.1-sol"},
-					{"id":"gpt-image-2.5"},
-					{"id":"grok-imagine-video-1.5"},
-					{"id":"claude-sonnet-4-6"},
-					{"id":"cursor-claude-opus-5"}
-				]}`)),
+				Body:       io.NopCloser(strings.NewReader(modelsBody)),
 			}}
 			svc := &AccountTestService{httpUpstream: upstream, cfg: upstreamModelSyncTestConfig()}
 			account := &Account{
-				ID: 201, Platform: platform, Type: AccountTypeAPIKey,
+				ID: 201, Platform: tt.platform, Type: AccountTypeAPIKey,
 				Credentials: map[string]any{
 					"api_key":  "wokey-test-key",
 					"base_url": "https://api.wokey.ai/v1",
@@ -152,7 +176,7 @@ func TestFetchUpstreamSupportedModelsForWokeyRequestsAllModalities(t *testing.T)
 
 			models, err := svc.FetchUpstreamSupportedModels(context.Background(), account)
 			require.NoError(t, err)
-			require.ElementsMatch(t, []string{"gpt-6.1-sol", "gpt-image-2.5", "grok-imagine-video-1.5", "cursor-claude-opus-5"}, models)
+			require.ElementsMatch(t, tt.want, models)
 			require.Len(t, upstream.requests, 1)
 			require.Equal(t, "https://api.wokey.ai/v1/models?output_modalities=all", upstream.requests[0].URL.String())
 			require.Equal(t, "Bearer wokey-test-key", upstream.requests[0].Header.Get("Authorization"))
@@ -203,6 +227,27 @@ func TestWokeyNativeClaudeExclusionIsScopedToOpenAIGrokAPIKeyAccounts(t *testing
 	require.True(t, isWokeyNativeClaudeModelID(" Claude-Sonnet-4-6 "))
 	require.False(t, isWokeyNativeClaudeModelID("cursor-claude-opus-5"))
 	require.False(t, isWokeyNativeClaudeModelID("openai-claude-compat"))
+}
+
+func TestFilterWokeyModelIDsForAccountIsProviderScoped(t *testing.T) {
+	models := []string{
+		"gpt-image-2.5",
+		"grok-imagine-image-2.0",
+		"grok-imagine-video-1.5",
+		"glm-5.3",
+		"claude-sonnet-4-6",
+		"cursor-claude-opus-5",
+	}
+
+	wokeyOpenAI := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://api.wokey.ai/v1"}}
+	wokeyGrok := &Account{Platform: PlatformGrok, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://api.wokey.ai/v1"}}
+	wokeyAnthropic := &Account{Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://api.wokey.ai/v1"}}
+	otherOpenAI := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://provider.example/v1"}}
+
+	require.ElementsMatch(t, []string{"gpt-image-2.5", "glm-5.3", "cursor-claude-opus-5"}, filterWokeyModelIDsForAccount(wokeyOpenAI, models))
+	require.ElementsMatch(t, []string{"grok-imagine-image-2.0", "grok-imagine-video-1.5"}, filterWokeyModelIDsForAccount(wokeyGrok, models))
+	require.Equal(t, models, filterWokeyModelIDsForAccount(wokeyAnthropic, models))
+	require.Equal(t, models, filterWokeyModelIDsForAccount(otherOpenAI, models))
 }
 
 func TestSyncUpstreamModelCatalogTreatsFilteredOnlyWokeyClaudeListAsLiveEmptyCatalog(t *testing.T) {
