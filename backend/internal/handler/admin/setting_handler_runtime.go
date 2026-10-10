@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"errors"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
@@ -9,6 +10,66 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+// GetUnifiedGatewayRoutePricing returns the saved route prices and the immutable
+// revision currently active in this process.
+func (h *SettingHandler) GetUnifiedGatewayRoutePricing(c *gin.Context) {
+	state, err := h.settingService.GetUnifiedGatewayRoutePricingAdminState(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, state)
+}
+
+func (h *SettingHandler) UpdateUnifiedGatewayRoutePricing(c *gin.Context) {
+	var update service.UnifiedGatewayRoutePricingUpdate
+	if err := c.ShouldBindJSON(&update); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	state, err := h.settingService.UpdateUnifiedGatewayRoutePricing(c.Request.Context(), update)
+	if err != nil {
+		if errors.Is(err, service.ErrUnifiedGatewayRoutePricingRevisionConflict) {
+			response.ErrorFrom(c, err)
+			return
+		}
+		response.BadRequest(c, err.Error())
+		return
+	}
+	response.Success(c, state)
+}
+
+func (h *SettingHandler) SyncUnifiedGatewayWokeyPrices(c *gin.Context) {
+	state, err := h.settingService.SyncWokeyPriceCatalog(c.Request.Context())
+	if err != nil {
+		if errors.Is(err, service.ErrUnifiedGatewayWokeySyncBusy) || errors.Is(err, service.ErrUnifiedGatewayWokeySyncDisabled) || errors.Is(err, service.ErrUnifiedGatewayWokeySyncScope) {
+			response.ErrorFrom(c, err)
+			return
+		}
+		response.BadRequest(c, "Wokey price sync failed: "+service.WokeyPriceSyncErrorCode(err))
+		return
+	}
+	response.Success(c, state)
+}
+
+func (h *SettingHandler) ManualizeUnifiedGatewayWokeyPrice(c *gin.Context) {
+	var request service.UnifiedGatewayWokeyManualizeRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	state, err := h.settingService.ManualizeUnifiedGatewayWokeyPriceCard(c.Request.Context(), request)
+	if err != nil {
+		if errors.Is(err, service.ErrUnifiedGatewayRoutePricingRevisionConflict) {
+			response.ErrorFrom(c, err)
+			return
+		}
+		response.BadRequest(c, err.Error())
+		return
+	}
+	response.Success(c, state)
+}
 
 // GetAdminAPIKey 获取管理员 API Key 状态
 // GET /api/v1/admin/settings/admin-api-key
@@ -152,6 +213,33 @@ func (h *SettingHandler) UpdateRateLimit429CooldownSettings(c *gin.Context) {
 		Enabled:         updatedSettings.Enabled,
 		CooldownSeconds: updatedSettings.CooldownSeconds,
 	})
+}
+
+func (h *SettingHandler) GetOpenAIImagesOAuthUnavailableCooldownSettings(c *gin.Context) {
+	settings, err := h.settingService.GetOpenAIImagesOAuthUnavailableCooldownSettings(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, dto.OpenAIImagesOAuthUnavailableCooldownSettings{CooldownMinutes: settings.CooldownMinutes})
+}
+
+type UpdateOpenAIImagesOAuthUnavailableCooldownSettingsRequest struct {
+	CooldownMinutes int `json:"cooldown_minutes"`
+}
+
+func (h *SettingHandler) UpdateOpenAIImagesOAuthUnavailableCooldownSettings(c *gin.Context) {
+	var req UpdateOpenAIImagesOAuthUnavailableCooldownSettingsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	settings := &service.OpenAIImagesOAuthUnavailableCooldownSettings{CooldownMinutes: req.CooldownMinutes}
+	if err := h.settingService.SetOpenAIImagesOAuthUnavailableCooldownSettings(c.Request.Context(), settings); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+	response.Success(c, dto.OpenAIImagesOAuthUnavailableCooldownSettings{CooldownMinutes: settings.CooldownMinutes})
 }
 
 // GetPanelRateLimitSettings 获取面板 API 限流配置

@@ -372,6 +372,53 @@ func TestBackupService_S3ConfigKeepExistingSecret(t *testing.T) {
 	require.Equal(t, "AKID-NEW", internal.AccessKeyID)
 }
 
+// 一次不带 secret 的保存（表单第二次提交、改端点、存定时配置）继承的是 loadS3Config
+// 解密后的明文。若那条路径跳过加密，明文就会覆盖库里的密文，而读取侧“兼容未加密旧
+// 数据”的回退会把它掩盖成一条日志，功能照常，密钥却是明文落库的。
+func TestBackupService_S3ConfigStaysEncryptedAfterSecondSave(t *testing.T) {
+	repo := newMockSettingRepo()
+	svc := newTestBackupService(repo, &mockDumper{}, newMockObjectStore())
+
+	_, err := svc.UpdateS3Config(context.Background(), BackupS3Config{
+		Bucket:          "my-bucket",
+		AccessKeyID:     "AKID",
+		SecretAccessKey: "original-secret",
+	})
+	require.NoError(t, err)
+
+	storedSecret := func() string {
+		raw, _ := repo.GetValue(context.Background(), settingKeyBackupS3Config)
+		var stored BackupS3Config
+		require.NoError(t, json.Unmarshal([]byte(raw), &stored))
+		return stored.SecretAccessKey
+	}
+	require.Equal(t, "ENC:original-secret", storedSecret())
+
+	// 第二次保存不带 secret，只改别的字段。
+	_, err = svc.UpdateS3Config(context.Background(), BackupS3Config{
+		Bucket:      "my-bucket",
+		AccessKeyID: "AKID-NEW",
+	})
+	require.NoError(t, err)
+
+	require.Equal(t, "ENC:original-secret", storedSecret(),
+		"secret must stay encrypted at rest after a save that inherits it")
+	require.NotEqual(t, "original-secret", storedSecret(), "secret must never be stored as plaintext")
+
+	// 第三次保存，确认不会反复套壳加密。
+	_, err = svc.UpdateS3Config(context.Background(), BackupS3Config{
+		Bucket:      "my-bucket",
+		AccessKeyID: "AKID-THIRD",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "ENC:original-secret", storedSecret(), "secret must not be double-encrypted")
+
+	internal, err := svc.loadS3Config(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, "original-secret", internal.SecretAccessKey)
+	require.Equal(t, "AKID-THIRD", internal.AccessKeyID)
+}
+
 func TestBackupService_UpdateS3Config_RejectsEphemeralKey(t *testing.T) {
 	repo := newMockSettingRepo()
 	svc := newTestBackupServiceEphemeralKey(repo)
@@ -627,6 +674,56 @@ func TestBackupService_CreateBackup_ConcurrentBlocked(t *testing.T) {
 
 	_, err := svc.CreateBackup(context.Background(), "manual", 14)
 	require.ErrorIs(t, err, ErrBackupInProgress)
+}
+
+// TestBackupService_RunScheduledBackup_LeaderElection verifies the scheduled
+// backup is gated by a cross-instance leader lock: a non-leader instance skips
+// the dump entirely so a clustered deployment does not run N identical backups
+// against the same database, while the leader runs it and releases the lock
+// afterward. Manual backups (CreateBackup/StartBackup) are intentionally left
+// ungated and are covered by the other tests.
+func TestBackupService_RunScheduledBackup_LeaderElection(t *testing.T) {
+	t.Run("non-leader skips", func(t *testing.T) {
+		repo := newMockSettingRepo()
+		seedS3Config(t, repo)
+		store := newMockObjectStore()
+		svc := newTestBackupService(repo, &mockDumper{dumpData: []byte("data")}, store)
+
+		// A peer already owns the lock, so this instance is not the leader.
+		cache := &fakeLeaderLockCache{}
+		peerRelease, ok := tryAcquireSingletonLeaderLock(context.Background(), cache, nil, backupScheduledLeaderLockKey, "peer", time.Minute)
+		require.True(t, ok)
+		defer peerRelease()
+
+		svc.SetLeaderLock(cache, nil)
+		svc.runScheduledBackup()
+
+		store.mu.Lock()
+		require.Empty(t, store.objects, "non-leader must not upload a backup")
+		store.mu.Unlock()
+
+		records, err := svc.ListBackups(context.Background())
+		require.NoError(t, err)
+		require.Empty(t, records, "non-leader must not create a backup record")
+		require.Equal(t, "peer", cache.heldBy(backupScheduledLeaderLockKey), "peer keeps the lock")
+	})
+
+	t.Run("leader runs and releases", func(t *testing.T) {
+		repo := newMockSettingRepo()
+		seedS3Config(t, repo)
+		store := newMockObjectStore()
+		svc := newTestBackupService(repo, &mockDumper{dumpData: []byte("-- dump\n")}, store)
+
+		cache := &fakeLeaderLockCache{}
+		svc.SetLeaderLock(cache, nil)
+		svc.runScheduledBackup()
+
+		records, err := svc.ListBackups(context.Background())
+		require.NoError(t, err)
+		require.Len(t, records, 1, "leader creates exactly one backup record")
+		require.Equal(t, "completed", records[0].Status)
+		require.Empty(t, cache.heldBy(backupScheduledLeaderLockKey), "leader releases the lock when done")
+	})
 }
 
 func TestBackupService_RestoreBackup_Streaming(t *testing.T) {
@@ -1096,10 +1193,11 @@ func TestRecoverStaleRecords(t *testing.T) {
 	})
 	// 模拟一条孤立的恢复中记录
 	_ = svc.saveRecord(context.Background(), &BackupRecord{
-		ID:            "stale-2",
-		Status:        "completed",
-		RestoreStatus: "running",
-		StartedAt:     time.Now().Add(-1 * time.Hour).Format(time.RFC3339),
+		ID:               "stale-2",
+		Status:           "completed",
+		RestoreStatus:    "running",
+		RestoreStartedAt: time.Now().Add(-1 * time.Hour).Format(time.RFC3339),
+		StartedAt:        time.Now().Add(-1 * time.Hour).Format(time.RFC3339),
 	})
 
 	svc.recoverStaleRecords()

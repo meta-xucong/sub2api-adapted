@@ -7,21 +7,65 @@ import (
 )
 
 var stableAutoDiscoveryModels = map[string]struct{}{
-	"codex-auto-review":   {},
-	"gpt-5.3-codex-spark": {},
-	"gpt-5.4":             {},
-	"gpt-5.4-mini":        {},
-	"gpt-5.4-nano":        {},
-	"gpt-5.5":             {},
-	"gpt-5.5-pro":         {},
-	"gpt-5.6":             {},
-	"gpt-5.6-luna":        {},
-	"gpt-5.6-sol":         {},
-	"gpt-5.6-terra":       {},
-	"gpt-image-2":         {},
+	"gpt-5.3-codex-spark":    {},
+	"gpt-5.4":                {},
+	"gpt-5.4-mini":           {},
+	"gpt-5.4-nano":           {},
+	"gpt-5.5":                {},
+	"gpt-5.5-pro":            {},
+	"gpt-5.6-luna":           {},
+	"gpt-5.6-sol":            {},
+	"gpt-5.6-terra":          {},
+	"gpt-6-astra":            {},
+	"gpt-6-luna":             {},
+	"gpt-6-sol":              {},
+	"gpt-image-2":            {},
+	"gpt-image-2.5-flare":    {},
+	"gpt-image-2.5-sunburst": {},
 }
 
 var deprecatedAutoDiscoveryModels = map[string]struct{}{
+	"chatgpt-image-latest": {},
+	"gpt-5-chat-latest":    {},
+	"gpt-5.1-chat-latest":  {},
+	"gpt-5.1-codex":        {},
+	"gpt-5.1-codex-max":    {},
+	"gpt-5.1-codex-mini":   {},
+	"gpt-5.2":              {},
+	"gpt-5.2-chat-latest":  {},
+	"gpt-5.2-codex":        {},
+	"gpt-5.2-pro":          {},
+	"gpt-5.6":              {},
+	"gpt-5.3-chat-latest":  {},
+	"gpt-image-1":          {},
+	"gpt-image-1-mini":     {},
+	"gpt-image-1.5":        {},
+	"gpt-6":                {},
+}
+
+// legacyAdminSelectableOpenAIModels preserves the source patch's explicit
+// choices. Current official catalog entries are also eligible unless the
+// frozen source explicitly classifies them as hidden or deprecated.
+var legacyAdminSelectableOpenAIModels = map[string]struct{}{
+	"gpt-5.4-mini":  {},
+	"gpt-5.4":       {},
+	"gpt-5.5":       {},
+	"gpt-5.6-sol":   {},
+	"gpt-5.6-terra": {},
+	"gpt-5.6-luna":  {},
+	"gpt-image-2":   {},
+}
+
+var adminHiddenOpenAIModels = map[string]struct{}{
+	"codex-auto-review":   {},
+	"gpt-5.3-codex-spark": {},
+	"gpt-5.4-nano":        {},
+	"gpt-5.5-pro":         {},
+	"gpt-5.6":             {},
+	"codex-mini-latest":   {},
+}
+
+var adminDeprecatedOpenAIModels = map[string]struct{}{
 	"chatgpt-image-latest": {},
 	"gpt-5-chat-latest":    {},
 	"gpt-5.1-chat-latest":  {},
@@ -38,40 +82,47 @@ var deprecatedAutoDiscoveryModels = map[string]struct{}{
 	"gpt-image-1.5":        {},
 }
 
-// adminSelectableOpenAIModels is the intentionally small list shown in
-// ordinary admin model pickers. Internal aliases and upstream snapshots may
-// remain routable, but they should not become accidental user-facing choices.
-var adminSelectableOpenAIModels = []string{
-	"gpt-5.4-mini",
-	"gpt-5.4",
-	"gpt-5.5",
-	"gpt-5.6-sol",
-	"gpt-5.6-terra",
-	"gpt-5.6-luna",
-	"gpt-image-2",
-}
-
-var adminSelectableOpenAIModelSet = makeModelSet(adminSelectableOpenAIModels)
-
-var adminHiddenOpenAIModels = map[string]struct{}{
-	"codex-auto-review":   {},
-	"gpt-5.3-codex-spark": {},
-	"gpt-5.4-nano":        {},
-	"gpt-5.5-pro":         {},
-	"gpt-5.6":             {},
-	"codex-mini-latest":   {},
-}
-
-// AdminSelectableModelIDs returns the curated OpenAI model IDs intended for
-// ordinary admin model-list configuration. This is deliberately separate from
-// DefaultModelIDs: the latter is also used for routing compatibility.
+// AdminSelectableModelIDs returns curated IDs intended for ordinary OpenAI
+// admin model pickers. It is deliberately separate from DefaultModelIDs,
+// which remains the gateway routing compatibility catalog.
 func AdminSelectableModelIDs() []string {
-	return append([]string(nil), adminSelectableOpenAIModels...)
+	ids := make([]string, 0, len(DefaultModels))
+	for _, model := range DefaultModels {
+		if IsAdminSelectableModelID(model.ID) {
+			ids = append(ids, model.ID)
+		}
+	}
+	return ids
 }
 
-// IsAdminSelectableModelID reports whether a model may be offered as a normal
-// OpenAI admin picker choice. Non-OpenAI-looking aliases are preserved because
-// providers commonly expose custom names such as "aiai-gpt-image-2".
+// AdminSelectableModels returns the curated model descriptors, retaining the
+// target catalog's current display metadata for IDs that are present there.
+func AdminSelectableModels() []Model {
+	defaultsByID := make(map[string]Model, len(DefaultModels))
+	for _, model := range DefaultModels {
+		defaultsByID[model.ID] = model
+	}
+
+	modelIDs := AdminSelectableModelIDs()
+	models := make([]Model, 0, len(modelIDs))
+	for _, modelID := range modelIDs {
+		if model, ok := defaultsByID[modelID]; ok {
+			models = append(models, model)
+			continue
+		}
+		models = append(models, Model{
+			ID:          modelID,
+			Object:      "model",
+			Type:        "model",
+			OwnedBy:     "openai",
+			DisplayName: modelID,
+		})
+	}
+	return models
+}
+
+// IsAdminSelectableModelID reports whether a model should be shown in normal
+// admin OpenAI selectors. Non-OpenAI aliases are preserved for custom providers.
 func IsAdminSelectableModelID(model string) bool {
 	model = normalizeListedModelID(model)
 	if model == "" {
@@ -81,7 +132,15 @@ func IsAdminSelectableModelID(model string) bool {
 	if _, ok := adminHiddenOpenAIModels[lower]; ok {
 		return false
 	}
-	if _, ok := adminSelectableOpenAIModelSet[lower]; ok {
+	if _, ok := adminDeprecatedOpenAIModels[lower]; ok {
+		return false
+	}
+	for _, defaultModel := range DefaultModels {
+		if strings.EqualFold(defaultModel.ID, lower) {
+			return true
+		}
+	}
+	if _, ok := legacyAdminSelectableOpenAIModels[lower]; ok {
 		return true
 	}
 	if looksLikeOpenAIManagedModel(lower) {
@@ -90,22 +149,28 @@ func IsAdminSelectableModelID(model string) bool {
 	return true
 }
 
-// FilterAdminSelectableModelIDs filters OpenAI IDs for admin-facing pickers
-// while preserving custom provider aliases. The input order is retained so
-// callers can keep their configured priority order.
+// FilterAdminSelectableModelIDs filters OpenAI-managed IDs while preserving
+// custom provider aliases and input order.
 func FilterAdminSelectableModelIDs(models []string) []string {
 	filtered := make([]string, 0, len(models))
+	seen := make(map[string]struct{}, len(models))
 	for _, model := range models {
-		if IsAdminSelectableModelID(model) {
-			filtered = append(filtered, normalizeListedModelID(model))
+		if !IsAdminSelectableModelID(model) {
+			continue
 		}
+		model = normalizeListedModelID(model)
+		if _, exists := seen[model]; exists {
+			continue
+		}
+		seen[model] = struct{}{}
+		filtered = append(filtered, model)
 	}
-	return dedupeModelIDs(filtered)
+	return filtered
 }
 
-// FilterAutoDiscoveredModelIDs returns model IDs safe to add through automatic
-// upstream sync. It intentionally removes OpenAI snapshot IDs and deprecated
-// image/chat aliases while leaving non-OpenAI custom provider IDs alone.
+// FilterAutoDiscoveredModelIDs returns IDs safe for automatic upstream catalog
+// refresh. OpenAI snapshots/internal aliases are removed without applying
+// OpenAI naming rules to custom provider IDs.
 func FilterAutoDiscoveredModelIDs(models []string) []string {
 	filtered := make([]string, 0, len(models))
 	for _, model := range models {
@@ -122,19 +187,51 @@ func IsAutoDiscoveredModelID(model string) bool {
 		return false
 	}
 	lower := strings.ToLower(model)
+	if strings.HasPrefix(lower, "codex-auto-") {
+		return false
+	}
 	if _, ok := stableAutoDiscoveryModels[lower]; ok {
 		return true
 	}
 	if _, ok := deprecatedAutoDiscoveryModels[lower]; ok {
 		return false
 	}
-	if isOpenAIDatedSnapshot(lower) || strings.HasPrefix(lower, "ft:") {
-		return false
-	}
-	if !looksLikeOpenAIManagedModel(lower) {
+	if !looksLikeAutoDiscoveredOpenAIManagedModel(lower) {
 		return true
 	}
-	return isFutureStableOpenAIModel(lower)
+	if isOpenAIDatedSnapshot(lower) {
+		return false
+	}
+	if isFutureStableOpenAIModel(lower) {
+		return true
+	}
+	return !strings.HasSuffix(lower, "-latest")
+}
+
+// FilterAdminSelectableModels applies the same selector-only filter to a
+// discovered account model list without changing the stored catalog.
+func FilterAdminSelectableModels(models []Model) []Model {
+	ids := make([]string, 0, len(models))
+	byID := make(map[string]Model, len(models))
+	for _, model := range models {
+		id := normalizeListedModelID(model.ID)
+		ids = append(ids, id)
+		if _, exists := byID[id]; !exists {
+			byID[id] = model
+		}
+	}
+
+	filteredIDs := FilterAdminSelectableModelIDs(ids)
+	filtered := make([]Model, 0, len(filteredIDs))
+	for _, id := range filteredIDs {
+		model, ok := byID[id]
+		if !ok {
+			continue
+		}
+		model.ID = id
+		filtered = append(filtered, model)
+	}
+	return filtered
 }
 
 func normalizeListedModelID(model string) string {
@@ -142,6 +239,14 @@ func normalizeListedModelID(model string) string {
 }
 
 func looksLikeOpenAIManagedModel(model string) bool {
+	return looksLikeNumberedGPTModel(model) ||
+		strings.HasPrefix(model, "chatgpt-") ||
+		strings.HasPrefix(model, "codex-") ||
+		strings.HasPrefix(model, "computer-use") ||
+		looksLikeOFamilyModel(model)
+}
+
+func looksLikeAutoDiscoveredOpenAIManagedModel(model string) bool {
 	return strings.HasPrefix(model, "gpt-") ||
 		strings.HasPrefix(model, "chatgpt-") ||
 		strings.HasPrefix(model, "codex-") ||
@@ -149,11 +254,19 @@ func looksLikeOpenAIManagedModel(model string) bool {
 		looksLikeOFamilyModel(model)
 }
 
-func looksLikeOFamilyModel(model string) bool {
-	if len(model) < 2 || model[0] != 'o' {
+func looksLikeNumberedGPTModel(model string) bool {
+	if !strings.HasPrefix(model, "gpt-") {
 		return false
 	}
-	return model[1] >= '0' && model[1] <= '9'
+	name := strings.TrimPrefix(model, "gpt-")
+	if strings.HasPrefix(name, "image-") {
+		return true
+	}
+	return len(name) > 0 && name[0] >= '0' && name[0] <= '9'
+}
+
+func looksLikeOFamilyModel(model string) bool {
+	return len(model) >= 2 && model[0] == 'o' && model[1] >= '0' && model[1] <= '9'
 }
 
 func isFutureStableOpenAIModel(model string) bool {
@@ -164,14 +277,20 @@ func isFutureStableOpenAIModel(model string) bool {
 		return false
 	}
 	version, suffix, ok := splitGPTVersionAndSuffix(strings.TrimPrefix(model, "gpt-"))
-	if !ok || compareGPTVersion(version, []int{5, 6}) < 0 {
+	if !ok {
+		return false
+	}
+	if strings.HasPrefix(suffix, "codex") && compareGPTVersion(version, []int{5, 5}) >= 0 {
+		return true
+	}
+	if compareGPTVersion(version, []int{5, 6}) < 0 {
 		return false
 	}
 	if suffix == "" {
 		return true
 	}
 	switch suffix {
-	case "mini", "nano", "pro", "sol", "terra", "luna":
+	case "mini", "nano", "pro", "sol", "terra", "luna", "codex", "codex-max", "codex-mini":
 		return true
 	default:
 		return false
@@ -288,29 +407,4 @@ func dedupeAndSortModelIDs(models []string) []string {
 	}
 	sort.Strings(result)
 	return result
-}
-
-func dedupeModelIDs(models []string) []string {
-	seen := make(map[string]struct{}, len(models))
-	result := make([]string, 0, len(models))
-	for _, model := range models {
-		model = normalizeListedModelID(model)
-		if model == "" {
-			continue
-		}
-		if _, exists := seen[model]; exists {
-			continue
-		}
-		seen[model] = struct{}{}
-		result = append(result, model)
-	}
-	return result
-}
-
-func makeModelSet(models []string) map[string]struct{} {
-	set := make(map[string]struct{}, len(models))
-	for _, model := range models {
-		set[strings.ToLower(normalizeListedModelID(model))] = struct{}{}
-	}
-	return set
 }

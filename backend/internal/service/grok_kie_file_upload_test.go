@@ -119,6 +119,7 @@ func TestMaterializeKIEJobsVideoRelayUploadFailureStopsBeforeCreate(t *testing.T
 }
 
 func TestForwardGrokMediaKIEJobsUploadsRelayBeforeCreate(t *testing.T) {
+	useOfflineKIEVideoURLValidator(t)
 	t.Setenv(xai.EnvAllowUnsafeURLOverrides, "true")
 	gin.SetMode(gin.TestMode)
 	previousProber := kieJobsVideoImageURLProber

@@ -11,134 +11,109 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestOperatorTestGuardBlocksLocalScriptWithCustomerKey(t *testing.T) {
-	router := newOperatorTestGuardRouter(t, operatorTestGuardCustomerKey())
-
-	response := serveOperatorTestGuardRequest(router, "/v1/images/generations", "141.11.138.220:45678", "curl/7.74.0")
-
-	require.Equal(t, http.StatusForbidden, response.Code)
-	require.Contains(t, response.Body.String(), "OPERATOR_TEST_KEY_REQUIRED")
+func operatorGuardTestConfig() *config.Config {
+	return &config.Config{Gateway: config.GatewayConfig{OperatorTestGuard: config.GatewayOperatorTestGuardConfig{
+		Enabled:            true,
+		RequireAdminUser:   true,
+		TrustedClientIPs:   []string{"127.0.0.1/32"},
+		BlockedUserAgents:  []string{"curl/", "python-requests/"},
+		AllowedUserEmails:  []string{"operator@example.test"},
+		AllowedAPIKeyNames: []string{"ops-test*"},
+		Paths:              []string{"/v1/responses", "/v1/responses/*"},
+	}}}
 }
 
-func TestOperatorTestGuardAllowsDedicatedOpsKey(t *testing.T) {
-	router := newOperatorTestGuardRouter(t, operatorTestGuardOpsKey())
-
-	response := serveOperatorTestGuardRequest(router, "/v1/images/generations", "141.11.138.220:45678", "curl/7.74.0")
-
-	require.Equal(t, http.StatusOK, response.Code)
-}
-
-func TestOperatorTestGuardRejectsOpsNamedCustomerKeyWhenAdminRequired(t *testing.T) {
-	apiKey := operatorTestGuardCustomerKey()
-	apiKey.Name = "ops-test-image"
-	router := newOperatorTestGuardRouter(t, apiKey)
-
-	response := serveOperatorTestGuardRequest(router, "/v1/images/generations", "141.11.138.220:45678", "curl/7.74.0")
-
-	require.Equal(t, http.StatusForbidden, response.Code)
-	require.Contains(t, response.Body.String(), "OPERATOR_TEST_KEY_REQUIRED")
-}
-
-func TestOperatorTestGuardAllowsExternalCustomerTraffic(t *testing.T) {
-	router := newOperatorTestGuardRouter(t, operatorTestGuardCustomerKey())
-
-	response := serveOperatorTestGuardRequest(router, "/v1/images/generations", "203.0.113.10:45678", "curl/7.74.0")
-
-	require.Equal(t, http.StatusOK, response.Code)
-}
-
-func TestOperatorTestGuardAllowsNonScriptClient(t *testing.T) {
-	router := newOperatorTestGuardRouter(t, operatorTestGuardCustomerKey())
-
-	response := serveOperatorTestGuardRequest(router, "/v1/images/generations", "141.11.138.220:45678", "Codex CLI")
-
-	require.Equal(t, http.StatusOK, response.Code)
-}
-
-func TestOperatorTestGuardDisabled(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	cfg := operatorTestGuardConfig()
-	cfg.Gateway.OperatorTestGuard.Enabled = false
-	router := gin.New()
-	router.Use(func(c *gin.Context) {
-		c.Set(string(ContextKeyAPIKey), operatorTestGuardCustomerKey())
-		c.Next()
-	})
-	router.Use(OperatorTestGuard(cfg))
-	router.POST("/v1/images/generations", func(c *gin.Context) {
-		c.Status(http.StatusOK)
-	})
-
-	response := serveOperatorTestGuardRequest(router, "/v1/images/generations", "141.11.138.220:45678", "curl/7.74.0")
-
-	require.Equal(t, http.StatusOK, response.Code)
-}
-
-func newOperatorTestGuardRouter(t *testing.T, apiKey *service.APIKey) *gin.Engine {
+func runOperatorGuardTest(t *testing.T, cfg *config.Config, requestPath, userAgent, remoteAddr, forwardedFor, realIP string, apiKey *service.APIKey) *httptest.ResponseRecorder {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	router.Use(func(c *gin.Context) {
-		c.Set(string(ContextKeyAPIKey), apiKey)
+	require.NoError(t, router.SetTrustedProxies(nil))
+	router.POST("/v1/responses", func(c *gin.Context) {
+		if apiKey != nil {
+			c.Set(string(ContextKeyAPIKey), apiKey)
+		}
 		c.Next()
+	}, OperatorTestGuard(cfg), func(c *gin.Context) {
+		c.Status(http.StatusNoContent)
 	})
-	router.Use(OperatorTestGuard(operatorTestGuardConfig()))
-	router.POST("/v1/images/generations", func(c *gin.Context) {
-		c.Status(http.StatusOK)
-	})
-	return router
-}
 
-func serveOperatorTestGuardRequest(router http.Handler, target, remoteAddr, userAgent string) *httptest.ResponseRecorder {
-	request := httptest.NewRequest(http.MethodPost, target, nil)
-	request.RemoteAddr = remoteAddr
-	request.Header.Set("User-Agent", userAgent)
-	response := httptest.NewRecorder()
-	router.ServeHTTP(response, request)
-	return response
-}
-
-func operatorTestGuardConfig() *config.Config {
-	cfg := &config.Config{}
-	cfg.Gateway.OperatorTestGuard = config.GatewayOperatorTestGuardConfig{
-		Enabled:           true,
-		RequireAdminUser:  true,
-		TrustedClientIPs:  []string{"127.0.0.1", "::1", "141.11.138.220"},
-		BlockedUserAgents: []string{"curl/"},
-		AllowedUserEmails: []string{"ops-test@404token.local"},
-		AllowedAPIKeyNames: []string{
-			"ops-test*",
-			"operator-test*",
-		},
-		Paths: []string{"/v1/images/*", "/v1/responses"},
+	req := httptest.NewRequest(http.MethodPost, requestPath, nil)
+	req.RemoteAddr = remoteAddr
+	if userAgent != "" {
+		req.Header.Set("User-Agent", userAgent)
 	}
-	return cfg
+	if forwardedFor != "" {
+		req.Header.Set("X-Forwarded-For", forwardedFor)
+	}
+	if realIP != "" {
+		req.Header.Set("X-Real-IP", realIP)
+	}
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+	return recorder
 }
 
-func operatorTestGuardCustomerKey() *service.APIKey {
-	return &service.APIKey{
-		ID:     14,
-		Name:   "simple-image",
-		UserID: 13,
-		User: &service.User{
-			ID:     13,
-			Email:  "customer@example.com",
-			Role:   service.RoleUser,
-			Status: service.StatusActive,
-		},
+func TestOperatorTestGuardBlocksLocalScriptUsingCustomerKey(t *testing.T) {
+	customer := &service.APIKey{Name: "customer", User: &service.User{Role: service.RoleUser}}
+	recorder := runOperatorGuardTest(t, operatorGuardTestConfig(), "/v1/responses", "curl/8.0", "127.0.0.1:3456", "", "", customer)
+	require.Equal(t, http.StatusForbidden, recorder.Code)
+	require.Contains(t, recorder.Body.String(), "OPERATOR_TEST_KEY_REQUIRED")
+}
+
+func TestOperatorTestGuardAllowsDedicatedAdminKey(t *testing.T) {
+	opsKey := &service.APIKey{Name: "ops-test-local", User: &service.User{Email: "ops@example.test", Role: service.RoleAdmin}}
+	recorder := runOperatorGuardTest(t, operatorGuardTestConfig(), "/v1/responses", "curl/8.0", "127.0.0.1:3456", "", "", opsKey)
+	require.Equal(t, http.StatusNoContent, recorder.Code)
+}
+
+func TestOperatorTestGuardRequiresAdminForMatchingKeyName(t *testing.T) {
+	customer := &service.APIKey{Name: "ops-test-customer", User: &service.User{Role: service.RoleUser}}
+	recorder := runOperatorGuardTest(t, operatorGuardTestConfig(), "/v1/responses", "curl/8.0", "127.0.0.1:3456", "", "", customer)
+	require.Equal(t, http.StatusForbidden, recorder.Code)
+}
+
+func TestOperatorTestGuardDoesNotTrustForgedForwardedHeaders(t *testing.T) {
+	customer := &service.APIKey{Name: "customer", User: &service.User{Role: service.RoleUser}}
+	recorder := runOperatorGuardTest(t, operatorGuardTestConfig(), "/v1/responses", "curl/8.0", "198.51.100.8:3456", "127.0.0.1", "127.0.0.1", customer)
+	require.Equal(t, http.StatusNoContent, recorder.Code)
+}
+
+func TestOperatorTestGuardOnlyAppliesWhenEveryGuardConditionMatches(t *testing.T) {
+	customer := &service.APIKey{Name: "customer", User: &service.User{Role: service.RoleUser}}
+	tests := []struct {
+		name       string
+		request    string
+		userAgent  string
+		remoteAddr string
+		cfg        *config.Config
+		key        *service.APIKey
+	}{
+		{name: "ordinary user agent", request: "/v1/responses", userAgent: "Codex/1.0", remoteAddr: "127.0.0.1:3456", cfg: operatorGuardTestConfig(), key: customer},
+		{name: "unconfigured path", request: "/v1/responses", userAgent: "curl/8.0", remoteAddr: "127.0.0.1:3456", cfg: &config.Config{Gateway: config.GatewayConfig{OperatorTestGuard: config.GatewayOperatorTestGuardConfig{Enabled: true, TrustedClientIPs: []string{"127.0.0.1"}, BlockedUserAgents: []string{"curl/"}, Paths: []string{"/v1/images/*"}, AllowedAPIKeyNames: []string{"ops-test*"}}}}, key: customer},
+		{name: "guard disabled", request: "/v1/responses", userAgent: "curl/8.0", remoteAddr: "127.0.0.1:3456", cfg: &config.Config{}, key: customer},
+		{name: "missing authenticated key context", request: "/v1/responses", userAgent: "curl/8.0", remoteAddr: "127.0.0.1:3456", cfg: operatorGuardTestConfig()},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := runOperatorGuardTest(t, test.cfg, test.request, test.userAgent, test.remoteAddr, "", "", test.key)
+			require.Equal(t, http.StatusNoContent, recorder.Code)
+		})
 	}
 }
 
-func operatorTestGuardOpsKey() *service.APIKey {
-	return &service.APIKey{
-		ID:     2001,
-		Name:   "ops-test-image",
-		UserID: 2001,
-		User: &service.User{
-			ID:     2001,
-			Email:  "ops-test@404token.local",
-			Role:   service.RoleAdmin,
-			Status: service.StatusActive,
-		},
+func TestOperatorTestGuardWildcardMatchesOnlyOnePathSegment(t *testing.T) {
+	patterns := []string{
+		"/v1/responses/*",
+		"/v1/images/generations/async", "/images/generations/async",
+		"/v1/images/edits/async", "/images/edits/async",
 	}
+	require.True(t, operatorGuardPathMatches("/v1/responses/compact", patterns))
+	require.False(t, operatorGuardPathMatches("/v1/responses/a/b", patterns))
+	require.False(t, operatorGuardPathMatches("/v1/images/generations", patterns), "synchronous image endpoints are outside the async test guard")
+	require.False(t, operatorGuardPathMatches("/v1/images/batches", patterns), "batch image submission is outside the async test guard")
+	require.True(t, operatorGuardPathMatches("/v1/images/generations/async", patterns), "the target's nested async image routes are explicitly covered")
+	require.True(t, operatorGuardPathMatches("/images/generations/async", patterns))
+	require.True(t, operatorGuardPathMatches("/v1/images/edits/async", patterns))
+	require.True(t, operatorGuardPathMatches("/images/edits/async", patterns))
+	require.False(t, operatorGuardPathMatches("/v1/images/tasks/task_1", patterns), "task polling is not one of the local script submission paths")
 }

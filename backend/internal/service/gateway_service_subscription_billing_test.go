@@ -21,6 +21,7 @@ func TestBuildUsageBillingCommand_SubscriptionAppliesRateMultiplier(t *testing.T
 		totalCost      float64
 		actualCost     float64
 		isSubscription bool
+		routePriced    bool
 		wantSub        float64
 		wantBalance    float64
 	}{
@@ -49,6 +50,23 @@ func TestBuildUsageBillingCommand_SubscriptionAppliesRateMultiplier(t *testing.T
 			wantBalance:    0,
 		},
 		{
+			name:           "explicit route price stays in subscription quota when native cost is zero",
+			totalCost:      0,
+			actualCost:     0.29,
+			isSubscription: true,
+			routePriced:    true,
+			wantSub:        0.29,
+			wantBalance:    0,
+		},
+		{
+			name:           "native zero-cost subscription keeps existing classification without route price",
+			totalCost:      0,
+			actualCost:     0.29,
+			isSubscription: true,
+			wantSub:        0,
+			wantBalance:    0.29,
+		},
+		{
 			name:           "balance billing keeps using ActualCost (regression)",
 			totalCost:      1.0,
 			actualCost:     2.0,
@@ -62,7 +80,7 @@ func TestBuildUsageBillingCommand_SubscriptionAppliesRateMultiplier(t *testing.T
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			p := &postUsageBillingParams{
-				Cost:               &CostBreakdown{TotalCost: tt.totalCost, ActualCost: tt.actualCost},
+				Cost:               &CostBreakdown{TotalCost: tt.totalCost, ActualCost: tt.actualCost, routePricingApplied: tt.routePriced},
 				User:               &User{ID: 1},
 				APIKey:             &APIKey{ID: 2, GroupID: &groupID},
 				Account:            &Account{ID: 3},

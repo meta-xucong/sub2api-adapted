@@ -127,51 +127,6 @@ func TestHealthTrackerGPT56TransientFailureRemainsSoft(t *testing.T) {
 	require.NotEqual(t, RecoveryModelUnavailable, lane.RecoveryStage)
 }
 
-func TestHealthTrackerCompactConcurrencyFailureUsesShortCooldownAndTemporaryPenalty(t *testing.T) {
-	now := time.Unix(9_500, 0)
-	var events []HealthEvent
-	tracker := NewHealthTracker(HealthPolicy{}, func() time.Time { return now }, func(event HealthEvent) { events = append(events, event) })
-
-	snapshot := tracker.Observe(RouteResult{
-		LaneID:       "compact-busy",
-		BasePriority: 4,
-		Capability:   CapabilityResponsesCompact,
-		Model:        "gpt-5.5",
-		StatusCode:   http.StatusTooManyRequests,
-		ErrorClass:   FailureConcurrencyLimited,
-		ErrorSummary: "Too many pending requests",
-	})
-
-	require.Equal(t, RecoveryCooling, snapshot.RecoveryStage)
-	require.Equal(t, now.Add(30*time.Second).Unix(), snapshot.CooldownUntilUnix)
-	require.Equal(t, 1, snapshot.HealthPenalty)
-	require.Zero(t, snapshot.RecoveryPriority)
-	require.Equal(t, "compact_concurrency_cooldown", events[0].Action)
-
-	lane := tracker.Snapshot(LaneSnapshot{LaneID: "compact-busy", Priority: 4}, CapabilityResponsesCompact, "gpt-5.5", now.Unix())
-	require.Equal(t, 5, lane.Priority)
-	now = now.Add(31 * time.Second)
-	expired := tracker.Snapshot(LaneSnapshot{LaneID: "compact-busy", Priority: 4}, CapabilityResponsesCompact, "gpt-5.5", now.Unix())
-	require.Zero(t, expired.CooldownUntilUnix)
-	require.Equal(t, RecoveryProbeDue, expired.RecoveryStage)
-
-	// The same busy signal on a normal Responses lane remains request-scoped
-	// and must not mutate its lane health.
-	tracker.Observe(RouteResult{
-		LaneID:       "normal-busy",
-		BasePriority: 4,
-		Capability:   CapabilityResponses,
-		Model:        "gpt-5.5",
-		StatusCode:   http.StatusTooManyRequests,
-		ErrorClass:   FailureConcurrencyLimited,
-		ErrorSummary: "Too many pending requests",
-	})
-	normal := tracker.Snapshot(LaneSnapshot{LaneID: "normal-busy", Priority: 4}, CapabilityResponses, "gpt-5.5", now.Unix())
-	require.Equal(t, 4, normal.Priority)
-	require.Equal(t, RecoveryNormal, normal.RecoveryStage)
-	require.Zero(t, normal.CooldownUntilUnix)
-}
-
 func TestHealthTrackerCancelledDoesNotPenalizeLane(t *testing.T) {
 	now := time.Unix(2_000, 0)
 	tracker := NewHealthTracker(HealthPolicy{}, func() time.Time { return now }, nil)
@@ -299,43 +254,6 @@ func TestHealthTrackerSustainedTransientFailuresFreezeUntilCalibration(t *testin
 	blocked := tracker.Snapshot(LaneSnapshot{LaneID: "764", Priority: 2}, CapabilityImageGeneration, "gpt-image-2", now.Unix())
 	require.Equal(t, calibrationAt.Unix(), blocked.CooldownUntilUnix)
 	require.Greater(t, blocked.Priority, 2)
-}
-
-func TestHealthTrackerCompactFailureFreezesUntilCalibrationImmediately(t *testing.T) {
-	now := time.Date(2026, time.July, 27, 14, 41, 0, 0, time.FixedZone("Asia/Shanghai", 8*60*60))
-	calibrationAt := time.Date(2026, time.July, 28, 4, 0, 0, 0, now.Location())
-	var events []HealthEvent
-	tracker := NewHealthTracker(HealthPolicy{
-		TransientCooldown:         30 * time.Second,
-		SecondTransientCooldown:   10 * time.Minute,
-		SustainedFailureThreshold: 3,
-		SustainedFailureUntil: func(time.Time) time.Time {
-			return calibrationAt
-		},
-		RecoveryPriorityStep: 30,
-	}, func() time.Time { return now }, func(event HealthEvent) { events = append(events, event) })
-
-	snapshot := tracker.Observe(RouteResult{
-		LaneID:       "yetoken-value",
-		BasePriority: 3,
-		Capability:   CapabilityResponsesCompact,
-		Model:        "gpt-5.5",
-		StatusCode:   http.StatusBadGateway,
-		ErrorClass:   FailureUpstream5xx,
-		ErrorSummary: "upstream response failed",
-	})
-
-	require.Equal(t, calibrationAt.Unix(), snapshot.CooldownUntilUnix)
-	require.Equal(t, RecoveryCooling, snapshot.RecoveryStage)
-	require.Equal(t, 1, snapshot.ConsecutiveFailures)
-	require.Equal(t, 2, snapshot.HealthPenalty)
-	require.Equal(t, 33, snapshot.RecoveryPriority)
-	require.Len(t, events, 1)
-	require.Equal(t, "compact_failure_quarantine", events[0].Action)
-
-	degraded := tracker.Snapshot(LaneSnapshot{LaneID: "yetoken-value", Priority: 3}, CapabilityResponsesCompact, "gpt-5.5", now.Unix())
-	require.Equal(t, 33, degraded.Priority)
-	require.Equal(t, calibrationAt.Unix(), degraded.CooldownUntilUnix)
 }
 
 func TestHealthTrackerCompactUsesExactGPT5ModelKey(t *testing.T) {

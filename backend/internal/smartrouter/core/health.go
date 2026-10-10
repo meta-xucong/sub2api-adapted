@@ -367,12 +367,9 @@ func (t *HealthTracker) Observe(result RouteResult) HealthSnapshot {
 			}
 		}
 	} else if result.Capability == CapabilityResponsesCompact && class == FailureConcurrencyLimited {
-		// Compact requests are especially sensitive to a saturated upstream
-		// account, but a busy response is not evidence that the lane is broken.
-		// Apply the normal short exponential cooldown and a single temporary
-		// priority penalty; do not quarantine until calibration or allocate a
-		// recovery slot.  A later success clears the cooldown and gradually
-		// removes the penalty through the existing recovery path.
+		// Compact requests are sensitive to a saturated upstream account, but a
+		// busy response is not evidence that the lane is broken. Apply a normal
+		// short cooldown and a small priority penalty; do not quarantine it.
 		state.ConsecutiveFailures++
 		state.ConsecutiveSuccesses = 0
 		state.HealthScore = maxFloat(0.05, state.HealthScore*0.85)
@@ -459,7 +456,7 @@ func (t *HealthTracker) Observe(result RouteResult) HealthSnapshot {
 			state.HealthScore = maxFloat(0.05, state.HealthScore*0.45)
 			state.HealthPenalty = minInt(state.HealthPenalty+2, t.policy.MaxPenalty)
 			until := now.Add(t.streamInterruptedCooldown())
-			if threshold := t.policy.sustainedFailureThreshold(result.Capability); threshold > 0 && state.ConsecutiveFailures >= threshold && t.policy.SustainedFailureUntil != nil {
+			if threshold := t.policy.sustainedFailureThreshold(result.Capability); shouldEscalateSustainedFailure(result.Capability, class) && threshold > 0 && state.ConsecutiveFailures >= threshold && t.policy.SustainedFailureUntil != nil {
 				if sustainedUntil := t.policy.SustainedFailureUntil(now); sustainedUntil.After(now) {
 					until = sustainedUntil
 					action = "stream_interrupted_quarantine"
@@ -480,7 +477,7 @@ func (t *HealthTracker) Observe(result RouteResult) HealthSnapshot {
 			if state.ConsecutiveFailures == 2 && t.policy.SecondTransientCooldown > 0 {
 				until = now.Add(t.policy.SecondTransientCooldown)
 			}
-			if threshold := t.policy.sustainedFailureThreshold(result.Capability); threshold > 0 && state.ConsecutiveFailures >= threshold && t.policy.SustainedFailureUntil != nil {
+			if threshold := t.policy.sustainedFailureThreshold(result.Capability); shouldEscalateSustainedFailure(result.Capability, class) && threshold > 0 && state.ConsecutiveFailures >= threshold && t.policy.SustainedFailureUntil != nil {
 				if sustainedUntil := t.policy.SustainedFailureUntil(now); sustainedUntil.After(now) {
 					until = sustainedUntil
 					action = "sustained_failure_quarantine"
@@ -695,8 +692,18 @@ func (t *HealthTracker) streamInterruptedCooldown() time.Duration {
 }
 
 func shouldStrictCompactQuarantine(class FailureClass) bool {
+	// Upstream 5xx responses, timeouts, and broken streams are transient
+	// transport signals. A single provider blip must not quarantine the entire
+	// compact pool until the next scheduled calibration.
+	return class == FailureCapabilityError
+}
+
+func shouldEscalateSustainedFailure(capability Capability, class FailureClass) bool {
+	if capability != CapabilityResponsesCompact {
+		return true
+	}
 	switch class {
-	case FailureCancelled, FailureClientError, FailurePayloadRejected:
+	case FailureUpstream5xx, FailureTimeout, FailureStreamInterrupted:
 		return false
 	default:
 		return true

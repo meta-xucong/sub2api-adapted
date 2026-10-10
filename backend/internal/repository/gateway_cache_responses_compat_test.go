@@ -11,27 +11,28 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestGatewayCacheResponsesCompatStateIsSharedAcrossInstances(t *testing.T) {
-	redisServer := miniredis.RunT(t)
-	rdb := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
-	first := NewGatewayCache(rdb)
-	second := NewGatewayCache(rdb)
-
-	firstState, ok := first.(service.ResponsesCompatStateCache)
+func TestGatewayCacheResponsesCompatStateSharedAcrossInstances(t *testing.T) {
+	mr := miniredis.RunT(t)
+	firstClient := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	secondClient := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	first, ok := NewGatewayCache(firstClient).(service.ResponsesCompatStateCache)
 	require.True(t, ok)
-	secondState, ok := second.(service.ResponsesCompatStateCache)
+	second, ok := NewGatewayCache(secondClient).(service.ResponsesCompatStateCache)
 	require.True(t, ok)
-
 	ctx := context.Background()
-	payload := []byte(`{"response_id":"resp_shared","history_input":[{"type":"message"}]}`)
-	require.NoError(t, firstState.SetResponsesCompatState(ctx, "session-digest", payload, time.Minute))
 
-	got, err := secondState.GetResponsesCompatState(ctx, "session-digest")
+	if payload, err := second.GetResponsesCompatState(ctx, "state-key"); err != nil {
+		t.Fatal(err)
+	} else {
+		require.Nil(t, payload)
+	}
+	payload := []byte(`{"response_id":"resp_shared","history_input":[{"type":"reasoning","summary":[{"text":"thinking"}]}]}`)
+	require.NoError(t, first.SetResponsesCompatState(ctx, "state-key", payload, time.Minute))
+	got, err := second.GetResponsesCompatState(ctx, "state-key")
 	require.NoError(t, err)
 	require.JSONEq(t, string(payload), string(got))
-
-	require.NoError(t, secondState.DeleteResponsesCompatState(ctx, "session-digest"))
-	got, err = firstState.GetResponsesCompatState(ctx, "session-digest")
+	require.NoError(t, second.DeleteResponsesCompatState(ctx, "state-key"))
+	got, err = first.GetResponsesCompatState(ctx, "state-key")
 	require.NoError(t, err)
 	require.Nil(t, got)
 }

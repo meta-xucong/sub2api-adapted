@@ -130,10 +130,6 @@ func TestBuildGrokMediaURLs(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, DefaultBaseURL+"/videos/generations", videosURL)
 
-	videosCreateURL, err := BuildVideosURLWithValidator(DefaultBaseURL, nil)
-	require.NoError(t, err)
-	require.Equal(t, DefaultBaseURL+"/videos", videosCreateURL)
-
 	videoEditsURL, err := BuildVideosEditsURL(DefaultBaseURL)
 	require.NoError(t, err)
 	require.Equal(t, DefaultBaseURL+"/videos/edits", videoEditsURL)
@@ -145,10 +141,6 @@ func TestBuildGrokMediaURLs(t *testing.T) {
 	videoURL, err := BuildVideoURL(DefaultBaseURL, "req 123")
 	require.NoError(t, err)
 	require.Equal(t, DefaultBaseURL+"/videos/req%20123", videoURL)
-
-	contentURL, err := BuildVideoContentURL(DefaultBaseURL, "req 123")
-	require.NoError(t, err)
-	require.Equal(t, DefaultBaseURL+"/videos/req%20123/content", contentURL)
 
 	_, err = BuildVideoURL(DefaultBaseURL, " ")
 	require.Error(t, err)
@@ -358,12 +350,14 @@ func TestDefaultModelMappingIncludesGrokAliases(t *testing.T) {
 	t.Cleanup(func() { SetRuntimeModelMappingOptions(original) })
 	SetRuntimeModelMappingOptions(ModelMappingOptions{})
 	mapping := DefaultModelMapping()
-	require.Equal(t, "grok-4.5", mapping["grok"])
-	require.Equal(t, "grok-4.5", mapping["grok-latest"])
+	require.Equal(t, "grok-4.6", mapping["grok"])
+	require.Equal(t, "grok-4.6", mapping["grok-latest"])
+	require.Equal(t, "grok-4.6", mapping["grok-4.6"])
+	require.Equal(t, "grok-4.6", mapping["grok-4.6-latest"])
 	require.Equal(t, "grok-4.5", mapping["grok-4.5"])
 	require.Equal(t, "grok-4.5", mapping["grok-4.5-latest"])
 	require.Equal(t, "grok-build-0.1", mapping["grok-build"])
-	require.Equal(t, "grok-4.5", mapping["grok-build-latest"])
+	require.Equal(t, "grok-build-0.1", mapping["grok-build-latest"])
 	require.Equal(t, "grok-composer-2.5-fast", mapping["grok-composer"])
 	require.Equal(t, "grok-composer-2.5-fast", mapping["composer-2.5"])
 	require.Equal(t, "grok-4.20-0309-reasoning", mapping["grok-4.20-reasoning"])
@@ -374,7 +368,7 @@ func TestDefaultModelMappingIncludesGrokAliases(t *testing.T) {
 	require.Equal(t, DefaultImagineImageQualityModel, mapping["grok-imagine-image-quality"])
 	require.Equal(t, DefaultImagineImageQualityModel, mapping["grok-imagine-edit"])
 	require.Equal(t, DefaultImagineVideoModel, mapping["grok-imagine-video"])
-	require.Equal(t, DefaultImagineVideo15LegacyModel, mapping["grok-imagine-video-1.5"])
+	require.Equal(t, DefaultImagineVideo15Model, mapping["grok-imagine-video-1.5"])
 	require.Equal(t, DefaultImagineVideo15Model, mapping["grok-imagine-video-1.5-preview"])
 	_, hasGPT := mapping["gpt-*"]
 	require.False(t, hasGPT, "cross-client wildcards must be opt-in")

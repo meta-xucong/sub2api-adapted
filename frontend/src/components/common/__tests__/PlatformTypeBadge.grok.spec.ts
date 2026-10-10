@@ -76,6 +76,12 @@ describe('PlatformTypeBadge Grok plans', () => {
     expect(heavy.text()).toContain('Heavy')
     expect(heavy.html()).toContain('bg-purple-100')
     expect(heavy.find('[data-testid="grok-plan-icon"]').exists()).toBe(true)
+
+    const lite = mount(PlatformTypeBadge, {
+      props: { platform: 'grok', type: 'oauth', planType: 'supergrok_lite' },
+    })
+    expect(lite.text()).toContain('SuperGrok Lite')
+    expect(lite.html()).toContain('bg-cyan-100')
   })
 
   it('uses a dedicated 12px currentColor Grok mark with a Free sparkle', () => {
@@ -106,5 +112,21 @@ describe('PlatformTypeBadge OpenAI authentication modes', () => {
 
     await wrapper.setProps({ authMode: undefined })
     expect(wrapper.text()).toContain('OAuth')
+  })
+})
+
+describe('PlatformTypeBadge MiniMax', () => {
+  it('labels MiniMax API keys as MiniMax, not Gemini', () => {
+    const wrapper = mount(PlatformTypeBadge, {
+      props: {
+        platform: 'minimax',
+        type: 'apikey',
+      },
+    })
+
+    expect(wrapper.text()).toContain('MiniMax')
+    expect(wrapper.text()).toContain('Key')
+    expect(wrapper.text()).not.toContain('Gemini')
+    expect(wrapper.html()).toContain('bg-rose-100')
   })
 })

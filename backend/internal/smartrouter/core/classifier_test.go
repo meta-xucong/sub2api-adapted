@@ -89,26 +89,6 @@ func TestClassifyFailureDetails_StreamInterruptedIsDistinctFromClientCancel(t *t
 	}
 }
 
-func TestClassifyFailureDetails_CompactPendingRequestsIsConcurrencyLimited(t *testing.T) {
-	require.Equal(t, FailureConcurrencyLimited, ClassifyFailureDetails(
-		0,
-		CapabilityResponsesCompact,
-		"upstream response failed: Too many pending requests, please retry later",
-		"",
-		false,
-	))
-	// A normal Responses lane keeps the same concurrency classification, but
-	// its health policy remains request-scoped (the compact-only cooldown is
-	// applied by HealthTracker).
-	require.Equal(t, FailureConcurrencyLimited, ClassifyFailureDetails(
-		http.StatusTooManyRequests,
-		CapabilityResponses,
-		"Too many pending requests",
-		"server_error",
-		false,
-	))
-}
-
 func TestClassifyFailureDetailsDetectsTemporaryModelChannelFailure(t *testing.T) {
 	tests := []struct {
 		status  int

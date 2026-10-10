@@ -50,6 +50,10 @@ type KIEImageProbeSummary struct {
 // Kept injectable so request validation can be tested without network access.
 var kieJobsVideoImageURLProber = probeKIEJobsVideoImageURL
 
+var kieJobsVideoReferenceURLValidator = func(rawURL string) (string, error) {
+	return urlvalidator.ValidateHTTPSURL(rawURL, urlvalidator.ValidationOptions{AllowPrivate: false})
+}
+
 // validateKIEJobsVideoImageURLs prevents a paid KIE task from being created
 // when an image URL is already known to be unreachable or not an image. KIE's
 // native API fetches image_urls asynchronously, so without this small preflight
@@ -67,7 +71,7 @@ func validateKIEJobsVideoImageURLsWithSummary(ctx context.Context, imageURLs []s
 			URLSHA256: kieImageURLSHA256(rawURL),
 		}
 		probeStarted := time.Now()
-		normalized, err := urlvalidator.ValidateHTTPSURL(rawURL, urlvalidator.ValidationOptions{AllowPrivate: false})
+		normalized, err := kieJobsVideoReferenceURLValidator(rawURL)
 		if err != nil {
 			record.DurationMs = time.Since(probeStarted).Milliseconds()
 			record.ErrorClass = "invalid_public_https_url"

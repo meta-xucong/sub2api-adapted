@@ -189,12 +189,12 @@ func TestAccountAllowsOpenAICompact(t *testing.T) {
 			want: true,
 		},
 		{
-			name: "failed probe remains allowed for calibration",
+			name: "unsupported openai account is rejected",
 			account: &Account{
 				Platform: PlatformOpenAI,
 				Extra:    map[string]any{"openai_compact_supported": false},
 			},
-			want: true,
+			want: false,
 		},
 		{
 			name: "force on is allowed",
@@ -220,39 +220,6 @@ func TestAccountAllowsOpenAICompact(t *testing.T) {
 				t.Fatalf("AllowsOpenAICompact() = %v, want %v", got, tt.want)
 			}
 		})
-	}
-}
-
-func TestAccountUsesNativeOpenAICompactSeparatesResponsesAndCompactSupport(t *testing.T) {
-	thirdParty := &Account{
-		Platform: PlatformOpenAI,
-		Type:     AccountTypeAPIKey,
-		Credentials: map[string]any{
-			"base_url": "https://example.com/v1",
-		},
-		Extra: map[string]any{
-			"openai_responses_supported": true,
-		},
-	}
-	if thirdParty.UsesNativeOpenAICompact() {
-		t.Fatal("third-party account without compact evidence must use the portable fallback")
-	}
-
-	native := &Account{
-		Platform: PlatformOpenAI,
-		Type:     AccountTypeAPIKey,
-		Credentials: map[string]any{
-			"base_url": "https://api.openai.com/v1",
-		},
-	}
-	if !native.UsesNativeOpenAICompact() {
-		t.Fatal("native OpenAI account should retain the native compact path")
-	}
-
-	verified := *thirdParty
-	verified.Extra = map[string]any{"openai_compact_supported": true}
-	if !verified.UsesNativeOpenAICompact() {
-		t.Fatal("explicit compact support should use the native compact path")
 	}
 }
 

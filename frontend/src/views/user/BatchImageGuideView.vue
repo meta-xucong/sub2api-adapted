@@ -1029,10 +1029,7 @@ const currentDisplayJob = computed(() => {
 
 const endpointBase = computed(() => {
   const configured = appStore.apiBaseUrl?.trim()
-  if (configured) {
-    const normalized = configured.replace(/\/+$/, '')
-    return normalized.replace(/\/v1$/, '')
-  }
+  if (configured) return configured.replace(/\/+$/, '')
   if (typeof window !== 'undefined') return window.location.origin.replace(/\/+$/, '')
   return '<你的 Sub2API API 端点>'
 })
@@ -2388,8 +2385,8 @@ function friendlyItemError(error: BatchImageItem['error']) {
 }
 
 function formatMoney(value: number | null | undefined) {
-  if (value === null || value === undefined || Number.isNaN(Number(value))) return '$0.00'
-  return `$${Number(value).toFixed(2)}`
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return '⭐️0.00'
+  return `⭐️${Number(value).toFixed(2)}`
 }
 
 function terminalZeroCost(job: Pick<BatchImageJob, 'status' | 'actual_cost'>) {

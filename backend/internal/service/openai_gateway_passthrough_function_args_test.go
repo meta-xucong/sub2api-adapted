@@ -71,49 +71,6 @@ func TestHandleStreamingResponsePassthroughDeduplicatesFunctionCallArguments(t *
 	requireJSONArgument(t, gjson.Get(completed, "response.output.1.arguments").String())
 }
 
-func TestHandleStreamingResponseReconcilesTerminalFunctionCallItemID(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	upstreamBody := strings.Join([]string{
-		passthroughSSEData(`{"type":"response.created","response":{"id":"resp_item_id","model":"glm-5.2"}}`),
-		passthroughSSEData(`{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_stream","call_id":"call_glm","name":"unified_exec","arguments":"","status":"in_progress"}}`),
-		passthroughSSEData(outputItemDoneJSON(0, "fc_stream", "call_glm", "unified_exec", `{"cmd":"Get-Date"}`)),
-		passthroughSSEData(completedWithMismatchedFunctionCallItemIDJSON("fc_rebuilt", "call_glm", "unified_exec", `{"cmd":"Get-Date"}`)),
-		"data: [DONE]\n\n",
-	}, "")
-
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
-	resp := &http.Response{
-		StatusCode: http.StatusOK,
-		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
-		Body:       io.NopCloser(strings.NewReader(upstreamBody)),
-	}
-
-	svc := &OpenAIGatewayService{toolCorrector: NewCodexToolCorrector()}
-	result, err := svc.handleStreamingResponseWithReasoning(
-		context.Background(),
-		resp,
-		c,
-		&Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey},
-		time.Now(),
-		"glm-5.2",
-		"glm-5.2",
-		"",
-	)
-	require.NoError(t, err)
-	require.NotNil(t, result)
-
-	events := collectSSEDataPayloads(t, rec.Body.String())
-	added := findSSEEvent(t, events, "response.output_item.added", "call_glm")
-	done := findSSEEvent(t, events, "response.output_item.done", "call_glm")
-	completed := findSSEEvent(t, events, "response.completed", "")
-	require.Equal(t, "fc_stream", gjson.Get(added, "item.id").String())
-	require.Equal(t, "fc_stream", gjson.Get(done, "item.id").String())
-	require.Equal(t, "fc_stream", gjson.Get(completed, "response.output.0.id").String())
-}
-
 func TestForwardResponsesChatCompletionsFallbackKeepsFunctionArgumentsSingle(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -200,16 +157,6 @@ func completedWithFunctionCallsJSON(argsA, argsB string) string {
 		`{"type":"response.completed","response":{"id":"resp_passthrough_args","status":"completed","output":[{"type":"function_call","id":"fc_a","call_id":"call_a","name":"exec_command","arguments":%s,"status":"completed"},{"type":"function_call","id":"fc_b","call_id":"call_b","name":"apply_patch","arguments":%s,"status":"completed"}],"usage":{"input_tokens":2,"output_tokens":3,"total_tokens":5}}}`,
 		strconv.Quote(argsA),
 		strconv.Quote(argsB),
-	)
-}
-
-func completedWithMismatchedFunctionCallItemIDJSON(itemID, callID, name, arguments string) string {
-	return fmt.Sprintf(
-		`{"type":"response.completed","response":{"id":"resp_item_id","status":"completed","output":[{"type":"function_call","id":%s,"call_id":%s,"name":%s,"arguments":%s,"status":"completed"}],"usage":{"input_tokens":2,"output_tokens":3,"total_tokens":5}}}`,
-		strconv.Quote(itemID),
-		strconv.Quote(callID),
-		strconv.Quote(name),
-		strconv.Quote(arguments),
 	)
 }
 

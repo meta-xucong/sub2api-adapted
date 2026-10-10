@@ -2,796 +2,586 @@ package service
 
 import (
 	"context"
-	"net/http"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
-	smartrouter "github.com/Wei-Shaw/sub2api/internal/smartrouter/core"
+	"github.com/Wei-Shaw/sub2api/internal/smartrouter/core"
 	"github.com/stretchr/testify/require"
 )
 
-func TestOpenAIGatewayService_SmartRouterDemotesImageGenerationCapabilityAfterDeterministicFailure(t *testing.T) {
+func enableSmartRouterSchedulerTest(t *testing.T) {
+	t.Helper()
 	resetOpenAIAdvancedSchedulerSettingCacheForTest()
-	ctx := context.Background()
-	groupID := int64(7301)
-	accounts := []Account{
-		{
-			ID:          73001,
-			Name:        "flowyun-image",
-			Platform:    PlatformOpenAI,
-			Type:        AccountTypeAPIKey,
-			Status:      StatusActive,
-			Schedulable: true,
-			Concurrency: 1,
-			Priority:    1,
-			GroupIDs:    []int64{groupID},
-			Extra: map[string]any{"smart_router": map[string]any{
-				"source_group": "flowyun",
-			}},
-		},
-		{
-			ID:          73002,
-			Name:        "stable-fallback",
-			Platform:    PlatformOpenAI,
-			Type:        AccountTypeAPIKey,
-			Status:      StatusActive,
-			Schedulable: true,
-			Concurrency: 1,
-			Priority:    2,
-			GroupIDs:    []int64{groupID},
-			Extra: map[string]any{"smart_router": map[string]any{
-				"source_group": "stable",
-			}},
-		},
-	}
-	svc := &OpenAIGatewayService{
-		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
-		cache:              &schedulerTestGatewayCache{},
-		cfg:                newSmartRouterSchedulerTestConfig(),
-		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
-		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
-	}
-
-	selection, _, err := svc.SelectAccountWithSchedulerForImageOperation(ctx, &groupID, "", "gpt-image-2", nil, OpenAIImagesCapabilityBasic, false)
-	require.NoError(t, err)
-	require.Equal(t, int64(73001), selection.Account.ID)
-	if selection.ReleaseFunc != nil {
-		selection.ReleaseFunc()
-	}
-
-	svc.ReportSmartRouterImageResult(
-		&accounts[0],
-		&OpenAIImagesRequest{Endpoint: openAIImagesGenerationsEndpoint, Model: "gpt-image-2"},
-		nil,
-		&OpenAIImagesUpstreamError{StatusCode: http.StatusBadRequest, Code: "upstream_text_reply", Message: "requires a usable image target"},
-		140000,
-	)
-
-	selection, _, err = svc.SelectAccountWithSchedulerForImageOperation(ctx, &groupID, "", "gpt-image-2", nil, OpenAIImagesCapabilityBasic, false)
-	require.NoError(t, err)
-	require.Equal(t, int64(73002), selection.Account.ID)
-	if selection.ReleaseFunc != nil {
-		selection.ReleaseFunc()
-	}
-
-	// The same lane remains eligible for edits because health is capability-scoped.
-	selection, _, err = svc.SelectAccountWithSchedulerForImageOperation(ctx, &groupID, "", "gpt-image-2", nil, OpenAIImagesCapabilityBasic, true)
-	require.NoError(t, err)
-	require.Equal(t, int64(73001), selection.Account.ID)
-	if selection.ReleaseFunc != nil {
-		selection.ReleaseFunc()
-	}
+	openAIAdvancedSchedulerSettingCache.Store(&cachedOpenAIAdvancedSchedulerSetting{
+		enabled:   true,
+		expiresAt: time.Now().Add(time.Minute).UnixNano(),
+	})
+	t.Cleanup(resetOpenAIAdvancedSchedulerSettingCacheForTest)
 }
 
-func TestOpenAIGatewayService_SmartRouterEscapesCoolingGPTImage2Session(t *testing.T) {
-	resetOpenAIAdvancedSchedulerSettingCacheForTest()
-	ctx := context.Background()
-	groupID := int64(7302)
-	accounts := []Account{
-		{
-			ID: 73021, Name: "sticky-image2", Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
-			Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 1, GroupIDs: []int64{groupID},
-		},
-		{
-			ID: 73022, Name: "fallback-image2", Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
-			Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 2, GroupIDs: []int64{groupID},
-		},
-	}
-	cache := &schedulerTestGatewayCache{sessionBindings: map[string]int64{"image2-sticky": 73021}}
-	svc := &OpenAIGatewayService{
-		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
-		cache:              cache,
-		cfg:                newSmartRouterSchedulerTestConfig(),
-		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
-		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
-	}
-
-	for i := 0; i < 3; i++ {
-		svc.ReportSmartRouterImageResult(
-			&accounts[0],
-			&OpenAIImagesRequest{Endpoint: openAIImagesGenerationsEndpoint, Model: "gpt-image-2"},
-			nil,
-			&UpstreamFailoverError{StatusCode: http.StatusBadGateway, ResponseBody: []byte(`{"error":{"message":"upstream unavailable"}}`)},
-			90000,
-		)
-	}
-
-	selection, decision, err := svc.SelectAccountWithSchedulerForImageOperation(
-		ctx, &groupID, "image2-sticky", "gpt-image-2", nil, OpenAIImagesCapabilityBasic, false,
-	)
-	require.NoError(t, err)
-	require.NotNil(t, selection)
-	require.Equal(t, int64(73022), selection.Account.ID)
-	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
-	require.Equal(t, int64(73021), cache.sessionBindings["image2-sticky"], "cooling should bypass, not delete, the sticky binding")
-	if selection.ReleaseFunc != nil {
-		selection.ReleaseFunc()
-	}
-	require.Equal(t, int64(73021), cache.sessionBindings["image2-sticky"], "cooling should bypass, not rewrite, the sticky binding")
-}
-
-func TestOpenAIGatewayService_SmartRouterTracksCompactFailuresSeparately(t *testing.T) {
-	resetOpenAIAdvancedSchedulerSettingCacheForTest()
-	cfg := newSmartRouterSchedulerTestConfig()
-	svc := &OpenAIGatewayService{cfg: cfg}
-	account := &Account{
-		ID:       73101,
-		Name:     "compact-lane",
-		Platform: PlatformOpenAI,
-		Type:     AccountTypeAPIKey,
-		Extra:    map[string]any{"openai_compact_supported": true},
-	}
-
-	svc.ReportSmartRouterCompactResult(account, "gpt-5.5", nil, &UpstreamFailoverError{
-		StatusCode:   http.StatusServiceUnavailable,
-		ResponseBody: []byte(`{"error":{"message":"service temporarily unavailable"}}`),
-	}, 120000)
-
-	lane, ok := smartRouterLaneSnapshot(account, nil, 0, 0, false)
-	require.True(t, ok)
-	compact := svc.smartRouterHealth().Snapshot(lane, smartrouter.CapabilityResponsesCompact, "gpt-5.5", time.Now().Unix())
-	ordinary := svc.smartRouterHealth().Snapshot(lane, smartrouter.CapabilityResponses, "gpt-5.5", time.Now().Unix())
-	require.Greater(t, compact.Priority, lane.Priority)
-	require.Equal(t, lane.Priority, ordinary.Priority, "compact failure must not downgrade ordinary responses")
-}
-
-func TestOpenAIGatewayService_SmartRouterRateLimitBackoffUsesRetryAfter(t *testing.T) {
-	cfg := newSmartRouterSchedulerTestConfig()
-	cfg.Gateway.SmartRouter.RateLimitBackoff.Enabled = true
-	cfg.Gateway.SmartRouter.RateLimitBackoff.InitialSeconds = 5
-	cfg.Gateway.SmartRouter.RateLimitBackoff.MaxSeconds = 60
-	cfg.Gateway.SmartRouter.RateLimitBackoff.MaxAttempts = 4
-	cfg.Gateway.SmartRouter.RateLimitBackoff.JitterRatio = 0
-	cfg.Gateway.SmartRouter.RateLimitBackoff.RetryAfterMaxSeconds = 90
-	svc := &OpenAIGatewayService{cfg: cfg}
-	err := &UpstreamFailoverError{
-		StatusCode:      http.StatusTooManyRequests,
-		ResponseBody:    []byte(`{"error":{"message":"Concurrency limit exceeded for user, please retry later"}}`),
-		ResponseHeaders: http.Header{"Retry-After": []string{"12"}},
-	}
-	require.True(t, svc.IsSmartRouterConcurrencyRateLimit(err))
-	require.Equal(t, 12*time.Second, svc.SmartRouterRateLimitBackoffDelay(err, 0, 123))
-	require.Equal(t, 0, int(svc.SmartRouterRateLimitBackoffDelay(err, 4, 123)))
-}
-
-func newSmartRouterSchedulerTestConfig() *config.Config {
-	cfg := &config.Config{}
-	cfg.Gateway.SmartRouter.Enabled = true
-	cfg.Gateway.SmartRouter.TopK = 5
-	cfg.Gateway.SmartRouter.MaxAttemptsImage = 2
-	cfg.Gateway.SmartRouter.MaxAttemptsChat = 3
-	cfg.Gateway.SmartRouter.MaxAttemptsDefault = 3
-	cfg.Gateway.SmartRouter.SameSourceGroupAttempts = 1
-	cfg.Gateway.SmartRouter.CostBiasMax = 3
-	cfg.Gateway.SmartRouter.Scoring.Priority = 0.8
-	cfg.Gateway.SmartRouter.Scoring.Cost = 1
-	cfg.Gateway.SmartRouter.Scoring.Health = 1.2
-	cfg.Gateway.SmartRouter.Scoring.Load = 1
-	cfg.Gateway.SmartRouter.Scoring.Queue = 0.6
-	cfg.Gateway.SmartRouter.Scoring.Latency = 0.4
-	cfg.Gateway.SmartRouter.Scoring.Recovery = 0.8
-	return cfg
-}
-
-func TestOpenAIGatewayService_SmartRouterImageBudgetDefaultsAndOverrides(t *testing.T) {
-	cfg := newSmartRouterSchedulerTestConfig()
-	svc := &OpenAIGatewayService{cfg: cfg}
-
-	budget := svc.OpenAIImageSmartRouterBudget()
-	require.Equal(t, 600.0, budget.TotalSeconds)
-	require.Equal(t, 180.0, budget.MinimumAttemptSeconds)
-	require.Equal(t, 15.0, budget.FinalizationReserveSeconds)
-
-	cfg.Gateway.SmartRouter.ImageTotalBudgetSeconds = 420
-	cfg.Gateway.SmartRouter.ImageAttemptSeconds = 120
-	cfg.Gateway.SmartRouter.ImageReserveSeconds = 10
-	budget = svc.OpenAIImageSmartRouterBudget()
-	require.Equal(t, 420.0, budget.TotalSeconds)
-	require.Equal(t, 120.0, budget.MinimumAttemptSeconds)
-	require.Equal(t, 10.0, budget.FinalizationReserveSeconds)
-}
-
-func TestOpenAIGatewayService_SmartRouterPrefersExplicitImageSizeSpecialist(t *testing.T) {
-	resetOpenAIAdvancedSchedulerSettingCacheForTest()
-	groupID := int64(7401)
-	accounts := []Account{
-		{
-			ID: 74001, Name: "generic-image", Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
-			Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 1, GroupIDs: []int64{groupID},
-			Extra: map[string]any{"smart_router": map[string]any{
-				"capabilities": []any{"image_generation"},
-			}},
-		},
-		{
-			ID: 74002, Name: "two-k-specialist", Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
-			Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 9, GroupIDs: []int64{groupID},
-			Extra: map[string]any{"smart_router": map[string]any{
-				"capabilities": []any{"image_generation"}, "image_size_tiers": []any{"2K", "4K"},
-			}},
-		},
-	}
-	svc := &OpenAIGatewayService{
-		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
-		cache:              &schedulerTestGatewayCache{},
-		cfg:                newSmartRouterSchedulerTestConfig(),
-		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
-		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
-	}
-
-	selection, _, err := svc.SelectAccountWithSchedulerForImageOperation(
-		WithOpenAIImageSmartRouterSizeTier(context.Background(), "2k"),
-		&groupID, "", "gpt-image-2", nil, OpenAIImagesCapabilityBasic, false,
-	)
-	require.NoError(t, err)
-	require.Equal(t, int64(74002), selection.Account.ID)
-	if selection.ReleaseFunc != nil {
-		selection.ReleaseFunc()
-	}
-
-	selection, _, err = svc.SelectAccountWithSchedulerForImageOperation(
-		context.Background(), &groupID, "", "gpt-image-2", nil, OpenAIImagesCapabilityBasic, false,
-	)
-	require.NoError(t, err)
-	require.Equal(t, int64(74001), selection.Account.ID)
-	if selection.ReleaseFunc != nil {
-		selection.ReleaseFunc()
-	}
-}
-
-func TestOpenAIGatewayService_SmartRouterSkipsFailedSourceGroupForImageRetry(t *testing.T) {
-	resetOpenAIAdvancedSchedulerSettingCacheForTest()
-	ctx := context.Background()
-	groupID := int64(7101)
-	accounts := []Account{
-		{
-			ID:          71001,
-			Name:        "same-primary",
-			Platform:    PlatformOpenAI,
-			Type:        AccountTypeAPIKey,
-			Status:      StatusActive,
-			Schedulable: true,
-			Concurrency: 1,
-			Priority:    1,
-			Extra: map[string]any{"smart_router": map[string]any{
-				"source_group": "same-upstream",
-			}},
-		},
-		{
-			ID:          71002,
-			Name:        "same-secondary",
-			Platform:    PlatformOpenAI,
-			Type:        AccountTypeAPIKey,
-			Status:      StatusActive,
-			Schedulable: true,
-			Concurrency: 1,
-			Priority:    1,
-			Extra: map[string]any{"smart_router": map[string]any{
-				"source_group": "same-upstream",
-			}},
-		},
-		{
-			ID:          71003,
-			Name:        "other-fallback",
-			Platform:    PlatformOpenAI,
-			Type:        AccountTypeAPIKey,
-			Status:      StatusActive,
-			Schedulable: true,
-			Concurrency: 1,
-			Priority:    50,
-			Extra: map[string]any{"smart_router": map[string]any{
-				"source_group": "other-upstream",
-			}},
-		},
-	}
-
-	svc := &OpenAIGatewayService{
-		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
-		cache:              &schedulerTestGatewayCache{},
-		cfg:                newSmartRouterSchedulerTestConfig(),
-		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
-		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
-	}
-	failed := map[int64]struct{}{71001: {}}
-
-	selection, decision, err := svc.SelectAccountWithSchedulerForImageOperation(
-		ctx,
-		&groupID,
-		"",
-		"gpt-image-2",
-		failed,
-		OpenAIImagesCapabilityBasic,
-		true,
-	)
-
-	require.NoError(t, err)
-	require.NotNil(t, selection)
-	require.NotNil(t, selection.Account)
-	require.Equal(t, int64(71003), selection.Account.ID)
-	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
-	if selection.ReleaseFunc != nil {
-		selection.ReleaseFunc()
-	}
-}
-
-func TestOpenAIGatewayService_ImageRetryUsesFreshDBWhenSnapshotMissesFallback(t *testing.T) {
-	resetOpenAIAdvancedSchedulerSettingCacheForTest()
-	ctx := context.Background()
-	groupID := int64(7102)
-	snapshotAccounts := []*Account{
-		{
-			ID:          71021,
-			Name:        "k12-a",
-			Platform:    PlatformOpenAI,
-			Type:        AccountTypeOAuth,
-			Status:      StatusActive,
-			Schedulable: true,
-			Concurrency: 1,
-			Priority:    1,
-			GroupIDs:    []int64{groupID},
-			Credentials: map[string]any{"model_mapping": map[string]any{"gpt-image-2": "gpt-image-2"}},
-		},
-		{
-			ID:          71022,
-			Name:        "k12-b",
-			Platform:    PlatformOpenAI,
-			Type:        AccountTypeOAuth,
-			Status:      StatusActive,
-			Schedulable: true,
-			Concurrency: 1,
-			Priority:    1,
-			GroupIDs:    []int64{groupID},
-			Credentials: map[string]any{"model_mapping": map[string]any{"gpt-image-2": "gpt-image-2"}},
-		},
-	}
-	fallback := Account{
-		ID:          71023,
-		Name:        "404token-image-fallback",
+func smartRouterTestAccount(id int64, accountType string, credentials map[string]any, extra map[string]any) *Account {
+	return &Account{
+		ID:          id,
+		Name:        "smart-router-test-account",
 		Platform:    PlatformOpenAI,
-		Type:        AccountTypeAPIKey,
-		Status:      StatusActive,
-		Schedulable: true,
-		Concurrency: 1,
-		Priority:    2,
-		GroupIDs:    []int64{groupID},
-		Credentials: map[string]any{"model_mapping": map[string]any{"gpt-image-2": "gpt-image-2"}},
-		Extra:       map[string]any{"smart_router": map[string]any{"capabilities": []any{"image_generation", "image_edit"}}},
-	}
-	accounts := []Account{*snapshotAccounts[0], *snapshotAccounts[1], fallback}
-	repo := schedulerTestOpenAIAccountRepo{accounts: accounts}
-	svc := &OpenAIGatewayService{
-		accountRepo:        repo,
-		schedulerSnapshot:  NewSchedulerSnapshotService(&openAISnapshotCacheStub{snapshotAccounts: snapshotAccounts}, nil, repo, nil, nil),
-		cache:              &schedulerTestGatewayCache{},
-		cfg:                &config.Config{},
-		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
-		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
-	}
-	failed := map[int64]struct{}{71021: {}, 71022: {}}
-
-	selection, decision, err := svc.SelectAccountWithSchedulerForImageOperation(
-		ctx,
-		&groupID,
-		"",
-		"gpt-image-2",
-		failed,
-		OpenAIImagesCapabilityNative,
-		true,
-	)
-
-	require.NoError(t, err)
-	require.NotNil(t, selection)
-	require.NotNil(t, selection.Account)
-	require.Equal(t, int64(71023), selection.Account.ID)
-	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
-	if selection.ReleaseFunc != nil {
-		selection.ReleaseFunc()
+		Type:        accountType,
+		Credentials: credentials,
+		Extra:       extra,
 	}
 }
 
-func TestOpenAIGatewayService_SmartRouterHonorsExtraMaxConcurrency(t *testing.T) {
-	resetOpenAIAdvancedSchedulerSettingCacheForTest()
-	ctx := context.Background()
-	groupID := int64(7201)
-	cheapRate := 0.2
-	expensiveRate := 1.0
-	accounts := []Account{
+func TestSmartRouterAccountAdmissionMatchesT0ModelScope(t *testing.T) {
+	tests := []struct {
+		name       string
+		account    *Account
+		capability core.Capability
+		model      string
+		required   OpenAIEndpointCapability
+		want       bool
+	}{
 		{
-			ID:             72001,
-			Name:           "cheap-busy",
-			Platform:       PlatformOpenAI,
-			Type:           AccountTypeAPIKey,
-			Status:         StatusActive,
-			Schedulable:    true,
-			Concurrency:    10,
-			Priority:       1,
-			RateMultiplier: &cheapRate,
-			Extra: map[string]any{"smart_router": map[string]any{
-				"source_group":    "cheap",
-				"max_concurrency": 1,
-			}},
+			name:       "unmapped oauth",
+			account:    smartRouterTestAccount(1, AccountTypeOAuth, nil, nil),
+			capability: core.CapabilityResponses,
+			model:      "gpt-5.6-sol",
+			want:       true,
 		},
 		{
-			ID:             72002,
-			Name:           "stable-fallback",
-			Platform:       PlatformOpenAI,
-			Type:           AccountTypeAPIKey,
-			Status:         StatusActive,
-			Schedulable:    true,
-			Concurrency:    10,
-			Priority:       20,
-			RateMultiplier: &expensiveRate,
-			Extra: map[string]any{"smart_router": map[string]any{
-				"source_group": "fallback",
-			}},
+			name: "native api key",
+			account: smartRouterTestAccount(2, AccountTypeAPIKey, map[string]any{
+				"base_url": "https://api.openai.com/v1",
+			}, nil),
+			capability: core.CapabilityResponses,
+			model:      "gpt-5.6-sol",
+			want:       true,
+		},
+		{
+			name: "unmapped third-party API key",
+			account: smartRouterTestAccount(7, AccountTypeAPIKey, map[string]any{
+				"base_url": "https://gateway.example/v1",
+			}, nil),
+			capability: core.CapabilityResponses,
+			model:      "gpt-5.6-sol",
+			want:       false,
+		},
+		{
+			name: "gpt public alias mapped to non-gpt upstream",
+			account: smartRouterTestAccount(3, AccountTypeAPIKey, map[string]any{
+				"model_mapping": map[string]any{"gpt-5.5": "kimi-k2"},
+			}, nil),
+			capability: core.CapabilityResponses,
+			model:      "gpt-5.5",
+			want:       false,
+		},
+		{
+			name: "compact mapping matches independently",
+			account: smartRouterTestAccount(4, AccountTypeAPIKey, map[string]any{
+				"compact_model_mapping": map[string]any{"gpt-5.5*": "gpt-5.5-openai-compact"},
+			}, nil),
+			capability: core.CapabilityResponsesCompact,
+			model:      "gpt-5.5-sol",
+			want:       true,
+		},
+		{
+			name: "compact mapping mismatch",
+			account: smartRouterTestAccount(5, AccountTypeAPIKey, map[string]any{
+				"compact_model_mapping": map[string]any{"gpt-5.6*": "gpt-5.6-openai-compact"},
+			}, nil),
+			capability: core.CapabilityResponsesCompact,
+			model:      "gpt-5.5-sol",
+			want:       false,
+		},
+		{
+			name: "embedding-only mapping",
+			account: smartRouterTestAccount(6, AccountTypeAPIKey, map[string]any{
+				"model_mapping": map[string]any{"text-embedding-3-large": "text-embedding-3-large"},
+			}, nil),
+			capability: core.CapabilityEmbedding,
+			model:      "text-embedding-3-large",
+			required:   OpenAIEndpointCapabilityEmbeddings,
+			want:       true,
 		},
 	}
-	concurrencyCache := schedulerTestConcurrencyCache{
-		loadMap: map[int64]*AccountLoadInfo{
-			72001: {AccountID: 72001, CurrentConcurrency: 1, LoadRate: 10},
-			72002: {AccountID: 72002, CurrentConcurrency: 0, LoadRate: 20},
-		},
-	}
-	svc := &OpenAIGatewayService{
-		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
-		cache:              &schedulerTestGatewayCache{},
-		cfg:                newSmartRouterSchedulerTestConfig(),
-		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
-		concurrencyService: NewConcurrencyService(concurrencyCache),
-	}
 
-	selection, decision, err := svc.SelectAccountWithScheduler(
-		ctx,
-		&groupID,
-		"",
-		"",
-		"gpt-5.5",
-		nil,
-		OpenAIUpstreamTransportAny,
-		false,
-	)
-
-	require.NoError(t, err)
-	require.NotNil(t, selection)
-	require.NotNil(t, selection.Account)
-	require.Equal(t, int64(72002), selection.Account.ID)
-	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
-	if selection.ReleaseFunc != nil {
-		selection.ReleaseFunc()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, smartRouterAccountEligibleForSmartRouter(tt.account, tt.capability, tt.model, tt.required))
+		})
 	}
 }
 
-func TestOpenAIGatewayService_SmartRouterAutoProtectsUnconfiguredBusyLane(t *testing.T) {
-	resetOpenAIAdvancedSchedulerSettingCacheForTest()
-	ctx := context.Background()
-	groupID := int64(7251)
-	cheapRate := 0.2
-	fallbackRate := 1.0
-	accounts := []Account{
-		{
-			ID:             72501,
-			Name:           "chatgpt-7646881-plus",
-			Platform:       PlatformOpenAI,
-			Type:           AccountTypeAPIKey,
-			Status:         StatusActive,
-			Schedulable:    true,
-			Concurrency:    10,
-			Priority:       1,
-			RateMultiplier: &cheapRate,
-		},
-		{
-			ID:             72502,
-			Name:           "stable-new-provider",
-			Platform:       PlatformOpenAI,
-			Type:           AccountTypeAPIKey,
-			Status:         StatusActive,
-			Schedulable:    true,
-			Concurrency:    10,
-			Priority:       50,
-			RateMultiplier: &fallbackRate,
-		},
+func TestSmartRouterDisabledPreservesNativeCandidateOrder(t *testing.T) {
+	tests := []struct {
+		name            string
+		smartRouterOn   bool
+		advancedSchedOn bool
+	}{
+		{name: "master flag off", smartRouterOn: false, advancedSchedOn: true},
+		{name: "official scheduler gate off", smartRouterOn: true, advancedSchedOn: false},
 	}
-	concurrencyCache := schedulerTestConcurrencyCache{
-		loadMap: map[int64]*AccountLoadInfo{
-			72501: {AccountID: 72501, CurrentConcurrency: 1, WaitingCount: 1, LoadRate: 95},
-			72502: {AccountID: 72502, CurrentConcurrency: 0, LoadRate: 10},
-		},
-		acquireResults: map[int64]bool{72502: true},
-	}
-	svc := &OpenAIGatewayService{
-		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
-		cache:              &schedulerTestGatewayCache{},
-		cfg:                newSmartRouterSchedulerTestConfig(),
-		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
-		concurrencyService: NewConcurrencyService(concurrencyCache),
-		openaiAccountStats: newOpenAIAccountRuntimeStats(),
-	}
-	for i := 0; i < 5; i++ {
-		svc.openaiAccountStats.report(72501, false, nil)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resetOpenAIAdvancedSchedulerSettingCacheForTest()
+			openAIAdvancedSchedulerSettingCache.Store(&cachedOpenAIAdvancedSchedulerSetting{
+				enabled:   tt.advancedSchedOn,
+				expiresAt: time.Now().Add(time.Minute).UnixNano(),
+			})
+			t.Cleanup(resetOpenAIAdvancedSchedulerSettingCacheForTest)
 
-	selection, decision, err := svc.SelectAccountWithScheduler(
-		ctx,
-		&groupID,
-		"",
-		"",
-		"gpt-5.5",
-		nil,
-		OpenAIUpstreamTransportAny,
-		false,
-	)
+			ledger := &smartRouterRuntimeTestLedger{}
+			svc := &OpenAIGatewayService{cfg: &config.Config{
+				Gateway: config.GatewayConfig{SmartRouter: config.GatewaySmartRouterConfig{Enabled: tt.smartRouterOn}},
+			}}
+			svc.SetSmartRouterHealthLedger(ledger)
+			candidates := []openAIAccountCandidateScore{
+				{account: smartRouterTestAccount(111, AccountTypeOAuth, nil, nil)},
+				{account: smartRouterTestAccount(112, AccountTypeOAuth, nil, nil)},
+				{account: smartRouterTestAccount(113, AccountTypeOAuth, nil, nil)},
+			}
+			request := OpenAIAccountScheduleRequest{
+				RequestedModel:        "gpt-5.6-sol",
+				RequiredCapability:    OpenAIEndpointCapabilityResponses,
+				SmartRouterCapability: core.CapabilityResponses,
+			}
 
-	require.NoError(t, err)
-	require.NotNil(t, selection)
-	require.NotNil(t, selection.Account)
-	require.Equal(t, int64(72502), selection.Account.ID)
-	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
-	if selection.ReleaseFunc != nil {
-		selection.ReleaseFunc()
+			got := svc.reorderSmartRouterSelectionCandidates(context.Background(), request, candidates)
+			require.Equal(t, candidates, got, "disabled Smart Router must leave the official candidate order unchanged")
+			if !tt.smartRouterOn {
+				require.Nil(t, svc.smartRouterHealth(), "master-off Smart Router must not initialize health state")
+			} else {
+				require.Nil(t, svc.smartRouterHealthTracker, "the official scheduler gate must prevent Smart Router from initializing health state")
+			}
+			require.Empty(t, ledger.events, "disabled Smart Router must not write health events")
+		})
 	}
 }
 
-func TestSmartRouterRouteRequestCarriesFastIntentToCoreRouter(t *testing.T) {
-	svc := &OpenAIGatewayService{cfg: newSmartRouterSchedulerTestConfig()}
-	scheduler := &defaultOpenAIAccountScheduler{service: svc}
-
-	chatReq := scheduler.smartRouterRouteRequest(OpenAIAccountScheduleRequest{
-		RequestedModel:              "gpt-5.6-sol",
-		SmartRouterCapability:       smartrouter.CapabilityResponses,
-		SmartRouterPreferLowLatency: true,
+func TestSmartRouterReordersOnlyAdmittedCandidateSlots(t *testing.T) {
+	enableSmartRouterSchedulerTest(t)
+	svc := &OpenAIGatewayService{cfg: &config.Config{
+		Gateway: config.GatewayConfig{SmartRouter: config.GatewaySmartRouterConfig{Enabled: true}},
+	}}
+	first := smartRouterTestAccount(101, AccountTypeOAuth, nil, map[string]any{
+		smartRouterExtraKey: map[string]any{"base_weight": 0.001},
 	})
-	require.True(t, chatReq.PreferLowLatency)
-	require.Equal(t, smartrouter.CapabilityResponses, chatReq.Capability)
-
-	compactReq := scheduler.smartRouterRouteRequest(OpenAIAccountScheduleRequest{
-		RequestedModel:              "gpt-5.6-sol",
-		RequireCompact:              true,
-		SmartRouterPreferLowLatency: true,
+	nonAdmitted := smartRouterTestAccount(102, AccountTypeAPIKey, map[string]any{
+		"model_mapping": map[string]any{"gpt-5.5": "kimi-k2"},
+	}, nil)
+	third := smartRouterTestAccount(103, AccountTypeOAuth, nil, map[string]any{
+		smartRouterExtraKey: map[string]any{"base_weight": 1000.0},
 	})
-	require.True(t, compactReq.PreferLowLatency)
-	require.Equal(t, smartrouter.CapabilityResponsesCompact, compactReq.Capability)
-}
-
-func TestSmartRouterLaneSnapshotParsesAccountExtra(t *testing.T) {
-	account := &Account{
-		ID:          73001,
-		Name:        "configured",
-		Concurrency: 5,
-		Extra: map[string]any{"smart_router": map[string]any{
-			"lane_id":                      "configured-lane",
-			"source_group":                 "configured-source",
-			"base_weight":                  1.5,
-			"cost_multiplier":              0.4,
-			"max_concurrency":              2,
-			"source_group_max_concurrency": 3,
-			"capabilities":                 []any{"image_generation", "image_edit"},
-			"image_size_tiers":             []any{"2K", "4k", "invalid"},
-		}},
+	candidates := []openAIAccountCandidateScore{
+		{account: first},
+		{account: nonAdmitted},
+		{account: third},
+	}
+	req := OpenAIAccountScheduleRequest{
+		RequestedModel:        "gpt-5.5",
+		RequiredCapability:    OpenAIEndpointCapabilityResponses,
+		SmartRouterCapability: core.CapabilityResponses,
 	}
 
-	lane, ok := smartRouterLaneSnapshot(account, &AccountLoadInfo{
-		CurrentConcurrency: 1,
-		WaitingCount:       0,
-		LoadRate:           30,
-	}, 0.10, 1200, true)
-
-	require.True(t, ok)
-	require.Equal(t, "configured-lane", lane.LaneID)
-	require.Equal(t, "configured-source", lane.SourceGroup)
-	require.Equal(t, 1.5, lane.BaseWeight)
-	require.Equal(t, 0.4, lane.CostMultiplier)
-	require.Equal(t, 2, lane.MaxConcurrency)
-	require.Equal(t, 3, lane.SourceGroupMaxConcurrency)
-	require.True(t, lane.Capabilities["image_generation"])
-	require.True(t, lane.Capabilities["image_edit"])
-	require.Equal(t, []string{"2K", "4K"}, lane.ImageSizeTiers)
-	require.Equal(t, 1, lane.CurrentConcurrency)
-	require.Equal(t, 0, lane.CurrentWaiting)
-	require.Equal(t, 30, lane.LoadRate)
-	require.Equal(t, 0.10, lane.ErrorRateEWMA)
-	require.Equal(t, 1200.0, lane.LatencyEWMAms)
+	ordered := svc.reorderSmartRouterSelectionCandidates(context.Background(), req, candidates)
+	require.Len(t, ordered, len(candidates))
+	require.Equal(t, nonAdmitted.ID, ordered[1].account.ID, "a non-admitted native candidate must keep its original slot")
+	gotSlotIDs := []int64{ordered[0].account.ID, ordered[2].account.ID}
+	require.ElementsMatch(t, []int64{first.ID, third.ID}, gotSlotIDs)
 }
 
-func TestSmartRouterLaneSnapshotAutoInfersSourceGroupAndConcurrency(t *testing.T) {
-	account := &Account{
-		ID:          73002,
-		Name:        "404token chatgpt-7646881 plus",
-		Concurrency: 10,
-		Credentials: map[string]any{
-			"base_url": "https://example.invalid/api/v1",
-		},
+func TestSmartRouterNonCompactOrderRanksCoreResultsBeforeOmittedAdmittedLanes(t *testing.T) {
+	omittedBeforeRanked := openAIAccountCandidateScore{account: smartRouterTestAccount(201, AccountTypeOAuth, nil, nil)}
+	nativeOnly := openAIAccountCandidateScore{account: smartRouterTestAccount(202, AccountTypeAPIKey, nil, nil)}
+	ranked := openAIAccountCandidateScore{account: smartRouterTestAccount(203, AccountTypeOAuth, nil, nil)}
+	omittedAfterRanked := openAIAccountCandidateScore{account: smartRouterTestAccount(204, AccountTypeOAuth, nil, nil)}
+	candidates := []openAIAccountCandidateScore{omittedBeforeRanked, nativeOnly, ranked, omittedAfterRanked}
+	laneByAccountID := map[int64]string{
+		omittedBeforeRanked.account.ID: "lane-omitted-before",
+		ranked.account.ID:              "lane-ranked",
+		omittedAfterRanked.account.ID:  "lane-omitted-after",
+	}
+	candidateByLane := map[string]openAIAccountCandidateScore{
+		"lane-omitted-before": omittedBeforeRanked,
+		"lane-ranked":         ranked,
+		"lane-omitted-after":  omittedAfterRanked,
 	}
 
-	lane, ok := smartRouterLaneSnapshot(account, &AccountLoadInfo{
-		CurrentConcurrency: 1,
-		WaitingCount:       1,
-		LoadRate:           95,
-	}, 0.70, 0, false)
+	got := reorderSmartRouterCandidateSlots(candidates, laneByAccountID, candidateByLane, core.RoutePlan{
+		OrderedLaneIDs: []string{"lane-ranked"},
+	}, core.CapabilityResponses)
 
-	require.True(t, ok)
-	require.Equal(t, "name-key:7646881", lane.SourceGroup)
-	require.Equal(t, 1, lane.MaxConcurrency)
-	require.Equal(t, 1, lane.SourceGroupMaxConcurrency)
+	require.Equal(t, []int64{203, 202, 201, 204}, smartRouterCandidateAccountIDs(got))
+	require.Equal(t, len(candidates), len(got), "core omissions must not remove an admitted candidate")
+	require.Equal(t, nativeOnly.account.ID, got[1].account.ID, "a non-admitted candidate must remain in its native slot")
 }
 
-func TestSmartRouterLaneSnapshotAutoInfersHostWhenNoNameKey(t *testing.T) {
-	account := &Account{
-		ID:          73003,
-		Name:        "new-provider-plus",
-		Concurrency: 4,
-		Credentials: map[string]any{
-			"base_url": "https://www.vendor.example:8443/openai",
-		},
-	}
-
-	lane, ok := smartRouterLaneSnapshot(account, nil, 0, 0, false)
-
-	require.True(t, ok)
-	require.Equal(t, "host:vendor.example", lane.SourceGroup)
-	require.Equal(t, 4, lane.MaxConcurrency)
-	require.Equal(t, 0, lane.SourceGroupMaxConcurrency)
-}
-
-func TestSmartRouterLaneSnapshotTreatsLegacyTextCapabilitiesAsCompactEligible(t *testing.T) {
-	account := &Account{
-		ID:       73004,
-		Name:     "legacy-chat-capability-map",
-		Platform: PlatformOpenAI,
-		Extra: map[string]any{
-			"smart_router": map[string]any{
-				"capabilities": []any{"chat", "responses"},
-			},
-		},
-	}
-
-	lane, ok := smartRouterLaneSnapshot(account, nil, 0, 0, false)
-	require.True(t, ok)
-	require.True(t, lane.Capabilities[smartrouter.CapabilityResponsesCompact])
-}
-
-func TestSmartRouterAutoEnrollmentProbesCompactForLegacyCapabilityMap(t *testing.T) {
-	account := &Account{
-		ID:       73005,
-		Name:     "legacy-chat-capability-map",
-		Platform: PlatformOpenAI,
-		Type:     AccountTypeAPIKey,
-		Credentials: map[string]any{
-			"model_mapping": map[string]any{"gpt-5.6-terra": "gpt-5.6-terra"},
-		},
-		Extra: map[string]any{
-			"smart_router": map[string]any{
-				"capabilities": []any{"chat", "responses"},
-			},
-		},
-	}
-
-	probes := smartRouterAutoEnrollmentProbes(account)
-	seenCompact := false
-	for _, probe := range probes {
-		if probe.Capability == smartrouter.CapabilityResponsesCompact {
-			seenCompact = true
+func smartRouterCandidateAccountIDs(candidates []openAIAccountCandidateScore) []int64 {
+	ids := make([]int64, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.account != nil {
+			ids = append(ids, candidate.account.ID)
 		}
 	}
-	require.True(t, seenCompact)
+	return ids
 }
 
-func TestSmartRouterCompactCapabilityDoesNotEnrollImageOnlyLane(t *testing.T) {
-	account := &Account{
-		ID:       730051,
-		Name:     "image-only-lane",
-		Platform: PlatformOpenAI,
-		Type:     AccountTypeAPIKey,
-		Credentials: map[string]any{
-			"model_mapping": map[string]any{"gpt-image-2": "gpt-image-2"},
-		},
-		Extra: map[string]any{
-			"smart_router": map[string]any{
-				"capabilities": []any{"image_generation", "image_edit"},
+func TestSmartRouterSameSourceOmissionDoesNotBecomeNativeRetryCap(t *testing.T) {
+	enableSmartRouterSchedulerTest(t)
+	svc := &OpenAIGatewayService{cfg: &config.Config{
+		Gateway: config.GatewayConfig{SmartRouter: config.GatewaySmartRouterConfig{Enabled: true}},
+	}}
+	one := smartRouterTestAccount(111, AccountTypeOAuth, nil, map[string]any{
+		smartRouterExtraKey: map[string]any{"source_group": "same-upstream", "base_weight": 1000.0},
+	})
+	two := smartRouterTestAccount(112, AccountTypeOAuth, nil, map[string]any{
+		smartRouterExtraKey: map[string]any{"source_group": "same-upstream", "base_weight": 0.001},
+	})
+	candidates := []openAIAccountCandidateScore{{account: one}, {account: two}}
+	ordered := svc.reorderSmartRouterSelectionCandidates(context.Background(), OpenAIAccountScheduleRequest{
+		RequestedModel:        "gpt-5.5",
+		RequiredCapability:    OpenAIEndpointCapabilityResponses,
+		SmartRouterCapability: core.CapabilityResponses,
+	}, candidates)
+	require.Equal(t, []int64{one.ID, two.ID}, []int64{ordered[0].account.ID, ordered[1].account.ID})
+}
+
+func TestSmartRouterHardModelQuarantineIsNotReinsertedForNonCompact(t *testing.T) {
+	enableSmartRouterSchedulerTest(t)
+	svc := &OpenAIGatewayService{cfg: &config.Config{
+		Gateway: config.GatewayConfig{SmartRouter: config.GatewaySmartRouterConfig{Enabled: true}},
+	}}
+	quarantined := smartRouterTestAccount(121, AccountTypeOAuth, nil, nil)
+	healthy := smartRouterTestAccount(122, AccountTypeOAuth, nil, nil)
+	tracker := core.NewHealthTracker(core.DefaultHealthPolicy(), time.Now, nil)
+	tracker.Restore(core.NewHealthKey("account:121", core.CapabilityResponses, "gpt-5.5"), core.HealthSnapshot{
+		HealthScore:       1,
+		RecoveryStage:     core.RecoveryModelUnavailable,
+		CooldownUntilUnix: time.Now().Add(time.Hour).Unix(),
+	}, time.Now().Unix())
+	svc.smartRouterHealthOnce.Do(func() { svc.smartRouterHealthTracker = tracker })
+	ordered := svc.reorderSmartRouterSelectionCandidates(context.Background(), OpenAIAccountScheduleRequest{
+		RequestedModel:        "gpt-5.5",
+		RequiredCapability:    OpenAIEndpointCapabilityResponses,
+		SmartRouterCapability: core.CapabilityResponses,
+	}, []openAIAccountCandidateScore{{account: quarantined}, {account: healthy}})
+	require.Len(t, ordered, 1)
+	require.Equal(t, healthy.ID, ordered[0].account.ID)
+}
+
+func TestSmartRouterCompactHealthStateOnlyReordersAdmittedSlots(t *testing.T) {
+	enableSmartRouterSchedulerTest(t)
+	svc := &OpenAIGatewayService{cfg: &config.Config{
+		Gateway: config.GatewayConfig{SmartRouter: config.GatewaySmartRouterConfig{Enabled: true}},
+	}}
+	unavailable := smartRouterTestAccount(123, AccountTypeOAuth, nil, nil)
+	nonAdmitted := smartRouterTestAccount(124, AccountTypeAPIKey, map[string]any{
+		"compact_model_mapping": map[string]any{"gpt-5.5*": "compact-gpt-5.5"},
+	}, nil)
+	healthy := smartRouterTestAccount(125, AccountTypeOAuth, nil, nil)
+	tracker := smartRouterTrackerWithHealthStates(map[int64]core.RecoveryStage{
+		unavailable.ID: core.RecoveryModelUnavailable,
+	}, core.CapabilityResponsesCompact, "gpt-5.6-sol")
+	svc.smartRouterHealthOnce.Do(func() { svc.smartRouterHealthTracker = tracker })
+	request := OpenAIAccountScheduleRequest{
+		RequestedModel:        "gpt-5.6-sol",
+		RequireCompact:        true,
+		RequiredCapability:    OpenAIEndpointCapabilityResponses,
+		SmartRouterCapability: core.CapabilityResponsesCompact,
+	}
+	candidates := []openAIAccountCandidateScore{{account: unavailable}, {account: nonAdmitted}, {account: healthy}}
+
+	ordered := svc.reorderSmartRouterSelectionCandidates(context.Background(), request, candidates)
+	require.Len(t, ordered, len(candidates), "compact health must not remove a native candidate")
+	require.Equal(t, healthy.ID, ordered[0].account.ID, "ranked healthy lane should lead admitted slots")
+	require.Equal(t, nonAdmitted.ID, ordered[1].account.ID, "non-admitted candidate must retain its exact native slot")
+	require.Equal(t, unavailable.ID, ordered[2].account.ID, "model-unavailable lane remains as the last admitted fallback")
+}
+
+func TestSmartRouterCompactEmptyLaneOrderFallsBackToNativeOrder(t *testing.T) {
+	enableSmartRouterSchedulerTest(t)
+	svc := &OpenAIGatewayService{cfg: &config.Config{
+		Gateway: config.GatewayConfig{SmartRouter: config.GatewaySmartRouterConfig{Enabled: true}},
+	}}
+	first := smartRouterTestAccount(126, AccountTypeOAuth, nil, nil)
+	second := smartRouterTestAccount(127, AccountTypeOAuth, nil, nil)
+	tracker := smartRouterTrackerWithHealthStates(map[int64]core.RecoveryStage{
+		first.ID:  core.RecoveryModelUnavailable,
+		second.ID: core.RecoveryModelUnavailable,
+	}, core.CapabilityResponsesCompact, "gpt-5.6-sol")
+	svc.smartRouterHealthOnce.Do(func() { svc.smartRouterHealthTracker = tracker })
+	request := OpenAIAccountScheduleRequest{
+		RequestedModel:        "gpt-5.6-sol",
+		RequireCompact:        true,
+		RequiredCapability:    OpenAIEndpointCapabilityResponses,
+		SmartRouterCapability: core.CapabilityResponsesCompact,
+	}
+	candidates := []openAIAccountCandidateScore{{account: first}, {account: second}}
+
+	ordered := svc.reorderSmartRouterSelectionCandidates(context.Background(), request, candidates)
+	require.Len(t, ordered, len(candidates))
+	require.Equal(t, []int64{first.ID, second.ID}, []int64{ordered[0].account.ID, ordered[1].account.ID})
+}
+
+func TestSmartRouterDuplicateLaneIDFallsBackToNativeCandidates(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		req  OpenAIAccountScheduleRequest
+	}{
+		{
+			name: "responses",
+			req: OpenAIAccountScheduleRequest{
+				RequestedModel:        "gpt-5.6-sol",
+				RequiredCapability:    OpenAIEndpointCapabilityResponses,
+				SmartRouterCapability: core.CapabilityResponses,
 			},
 		},
-	}
-
-	lane, ok := smartRouterLaneSnapshot(account, nil, 0, 0, false)
-	require.True(t, ok)
-	require.False(t, lane.Capabilities[smartrouter.CapabilityResponsesCompact])
-
-	probes := smartRouterAutoEnrollmentProbes(account)
-	for _, probe := range probes {
-		require.NotEqual(t, smartrouter.CapabilityResponsesCompact, probe.Capability)
-	}
-}
-
-func TestOpenAIImageCooldownDoesNotBlockNonImageScheduling(t *testing.T) {
-	until := time.Now().Add(time.Minute)
-	account := &Account{
-		ID:                      73006,
-		Platform:                PlatformOpenAI,
-		Type:                    AccountTypeAPIKey,
-		Status:                  StatusActive,
-		Schedulable:             true,
-		TempUnschedulableUntil:  &until,
-		TempUnschedulableReason: "OpenAI 403 temporary cooldown: Image generation is not enabled",
-		Credentials: map[string]any{
-			"model_mapping": map[string]any{"gpt-5.6-terra": "gpt-5.6-terra", "gpt-image-2": "gpt-image-2"},
+		{
+			name: "legacy compact",
+			req: OpenAIAccountScheduleRequest{
+				RequestedModel:        "gpt-5.6-sol",
+				RequireCompact:        true,
+				RequiredCapability:    OpenAIEndpointCapabilityResponses,
+				SmartRouterCapability: core.CapabilityResponsesCompact,
+			},
 		},
-	}
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			enableSmartRouterSchedulerTest(t)
+			svc := &OpenAIGatewayService{cfg: &config.Config{
+				Gateway: config.GatewayConfig{SmartRouter: config.GatewaySmartRouterConfig{Enabled: true}},
+			}}
+			first := smartRouterTestAccount(181, AccountTypeOAuth, nil, map[string]any{
+				smartRouterExtraKey: map[string]any{"lane_id": "shared-custom-lane"},
+			})
+			nonAdmitted := smartRouterTestAccount(182, AccountTypeAPIKey, map[string]any{
+				"compact_model_mapping": map[string]any{"gpt-5.5*": "compact-gpt-5.5"},
+			}, nil)
+			second := smartRouterTestAccount(183, AccountTypeOAuth, nil, map[string]any{
+				smartRouterExtraKey: map[string]any{"lane_id": "shared-custom-lane"},
+			})
+			candidates := []openAIAccountCandidateScore{
+				{account: first},
+				{account: nonAdmitted},
+				{account: second},
+			}
 
-	require.True(t, isOpenAIAccountSchedulableForRequest(context.Background(), account, "gpt-5.6-terra", true))
-	require.False(t, isOpenAIAccountSchedulableForRequest(context.Background(), account, "gpt-image-2", false))
+			got := svc.reorderSmartRouterSelectionCandidates(context.Background(), tc.req, candidates)
+			require.Equal(t, candidates, got, "ambiguous lane-to-account mapping must leave the complete native candidate order intact")
+		})
+	}
 }
 
-func TestCompactSelectionBypassesStaleSchedulerSnapshot(t *testing.T) {
-	resetOpenAIAdvancedSchedulerSettingCacheForTest()
-	groupID := int64(7307)
-	stale := &Account{
-		ID:          73071,
-		Name:        "stale-snapshot-lane",
-		Platform:    PlatformOpenAI,
-		Type:        AccountTypeAPIKey,
-		Status:      StatusActive,
-		Schedulable: true,
-		Concurrency: 1,
-		Priority:    1,
-		GroupIDs:    []int64{groupID},
-		Credentials: map[string]any{"model_mapping": map[string]any{"gpt-5.6-terra": "gpt-5.6-terra"}},
+func smartRouterTrackerWithHealthStates(states map[int64]core.RecoveryStage, capability core.Capability, model string) *core.HealthTracker {
+	tracker := core.NewHealthTracker(core.DefaultHealthPolicy(), time.Now, nil)
+	now := time.Now()
+	for accountID, stage := range states {
+		tracker.Restore(core.NewHealthKey("account:"+strconv.FormatInt(accountID, 10), capability, model), core.HealthSnapshot{
+			HealthScore:       1,
+			RecoveryStage:     stage,
+			CooldownUntilUnix: now.Add(time.Hour).Unix(),
+		}, now.Unix())
 	}
-	fresh := Account{
-		ID:          73072,
-		Name:        "fresh-db-lane",
-		Platform:    PlatformOpenAI,
-		Type:        AccountTypeAPIKey,
-		Status:      StatusActive,
-		Schedulable: true,
-		Concurrency: 1,
-		Priority:    2,
-		GroupIDs:    []int64{groupID},
-		Credentials: map[string]any{"model_mapping": map[string]any{"gpt-5.6-terra": "gpt-5.6-terra"}},
-	}
-	repo := schedulerTestOpenAIAccountRepo{accounts: []Account{fresh}}
-	service := &OpenAIGatewayService{
-		accountRepo: repo,
-		cache:       &schedulerTestGatewayCache{},
-		cfg:         newSmartRouterSchedulerTestConfig(),
-		schedulerSnapshot: NewSchedulerSnapshotService(
-			&openAISnapshotCacheStub{snapshotAccounts: []*Account{stale}},
-			nil,
-			repo,
-			nil,
-			nil,
-		),
-		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
-		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	return tracker
+}
+
+func TestSmartRouterEmptyLaneOrderFallsBackToNativeCandidates(t *testing.T) {
+	enableSmartRouterSchedulerTest(t)
+	svc := &OpenAIGatewayService{cfg: &config.Config{
+		Gateway: config.GatewayConfig{SmartRouter: config.GatewaySmartRouterConfig{Enabled: true}},
+	}}
+	first := smartRouterTestAccount(151, AccountTypeOAuth, nil, nil)
+	second := smartRouterTestAccount(152, AccountTypeOAuth, nil, nil)
+	nonAdmitted := smartRouterTestAccount(153, AccountTypeAPIKey, map[string]any{
+		"model_mapping": map[string]any{"gpt-5.5": "kimi-k2"},
+	}, nil)
+	tracker := smartRouterTrackerWithHealthStates(map[int64]core.RecoveryStage{
+		first.ID:  core.RecoveryModelUnavailable,
+		second.ID: core.RecoveryModelUnavailable,
+	}, core.CapabilityResponses, "gpt-5.5")
+	svc.smartRouterHealthOnce.Do(func() { svc.smartRouterHealthTracker = tracker })
+	request := OpenAIAccountScheduleRequest{
+		RequestedModel:        "gpt-5.5",
+		RequiredCapability:    OpenAIEndpointCapabilityResponses,
+		SmartRouterCapability: core.CapabilityResponses,
 	}
 
-	selection, _, err := service.SelectAccountWithSchedulerForCapability(
-		context.Background(), &groupID, "", "", "gpt-5.6-terra", nil,
-		OpenAIUpstreamTransportAny, OpenAIEndpointCapabilityChatCompletions,
-		true, false, false,
-	)
-	require.NoError(t, err)
-	require.NotNil(t, selection)
-	require.Equal(t, fresh.ID, selection.Account.ID)
-	if selection.ReleaseFunc != nil {
-		selection.ReleaseFunc()
+	got := svc.reorderSmartRouterSelectionCandidates(context.Background(), request, []openAIAccountCandidateScore{
+		{account: first}, {account: nonAdmitted}, {account: second},
+	})
+	require.Len(t, got, 3)
+	require.Equal(t, []int64{first.ID, nonAdmitted.ID, second.ID}, []int64{
+		got[0].account.ID,
+		got[1].account.ID,
+		got[2].account.ID,
+	})
+
+	allAdmitted := svc.reorderSmartRouterSelectionCandidates(context.Background(), request, []openAIAccountCandidateScore{
+		{account: first}, {account: second},
+	})
+	require.Len(t, allAdmitted, 2)
+	require.Equal(t, []int64{first.ID, second.ID}, []int64{
+		allAdmitted[0].account.ID,
+		allAdmitted[1].account.ID,
+	})
+}
+
+func TestSmartRouterGPTImageCooldownUsesLastResortOnlyWhenAllLanesCool(t *testing.T) {
+	for _, model := range []string{"gpt-image-2", "gpt-image-2.5"} {
+		t.Run(model, func(t *testing.T) {
+			makeService := func(ids []int64, stages map[int64]core.RecoveryStage) (*OpenAIGatewayService, []openAIAccountCandidateScore) {
+				enableSmartRouterSchedulerTest(t)
+				svc := &OpenAIGatewayService{cfg: &config.Config{
+					Gateway: config.GatewayConfig{SmartRouter: config.GatewaySmartRouterConfig{Enabled: true}},
+				}}
+				candidates := make([]openAIAccountCandidateScore, 0, len(ids))
+				for _, id := range ids {
+					candidates = append(candidates, openAIAccountCandidateScore{account: smartRouterTestAccount(id, AccountTypeOAuth, nil, nil)})
+				}
+				tracker := smartRouterTrackerWithHealthStates(stages, core.CapabilityImageGeneration, model)
+				svc.smartRouterHealthOnce.Do(func() { svc.smartRouterHealthTracker = tracker })
+				return svc, candidates
+			}
+			request := OpenAIAccountScheduleRequest{
+				RequestedModel:          model,
+				RequiredImageCapability: OpenAIImagesCapabilityBasic,
+				SmartRouterCapability:   core.CapabilityImageGeneration,
+			}
+
+			coolingService, coolingCandidates := makeService([]int64{161, 162}, map[int64]core.RecoveryStage{
+				161: core.RecoveryCooling,
+				162: core.RecoveryCooling,
+			})
+			lastResort := coolingService.reorderSmartRouterSelectionCandidates(context.Background(), request, coolingCandidates)
+			require.Len(t, lastResort, 2, "all-cooling GPT image lanes remain as last-resort candidates")
+
+			mixedService, mixedCandidates := makeService([]int64{163, 164}, map[int64]core.RecoveryStage{
+				163: core.RecoveryCooling,
+			})
+			healthyAlternative := mixedService.reorderSmartRouterSelectionCandidates(context.Background(), request, mixedCandidates)
+			require.Len(t, healthyAlternative, 1)
+			require.Equal(t, int64(164), healthyAlternative[0].account.ID)
+		})
 	}
+}
+
+func TestSmartRouterNativeStickyAndPreviousResponsePathsBypassHealthReorder(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		request OpenAIAccountScheduleRequest
+	}{
+		{
+			name: "weighted sticky",
+			request: OpenAIAccountScheduleRequest{
+				StickyWeighted:  true,
+				StickyAccountID: 171,
+			},
+		},
+		{
+			name:    "previous response",
+			request: OpenAIAccountScheduleRequest{PreviousResponseID: "resp_existing"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			enableSmartRouterSchedulerTest(t)
+			svc := &OpenAIGatewayService{cfg: &config.Config{
+				Gateway: config.GatewayConfig{SmartRouter: config.GatewaySmartRouterConfig{Enabled: true}},
+			}}
+			quarantined := smartRouterTestAccount(171, AccountTypeOAuth, nil, nil)
+			healthy := smartRouterTestAccount(172, AccountTypeOAuth, nil, nil)
+			tracker := smartRouterTrackerWithHealthStates(map[int64]core.RecoveryStage{
+				quarantined.ID: core.RecoveryModelUnavailable,
+			}, core.CapabilityResponses, "gpt-5.5")
+			svc.smartRouterHealthOnce.Do(func() { svc.smartRouterHealthTracker = tracker })
+			tc.request.RequestedModel = "gpt-5.5"
+			tc.request.RequiredCapability = OpenAIEndpointCapabilityResponses
+			tc.request.SmartRouterCapability = core.CapabilityResponses
+			if tc.name != "weighted sticky" {
+				tc.request.StickyWeighted = false
+			}
+			scheduler := &defaultOpenAIAccountScheduler{service: svc}
+			candidates := []openAIAccountCandidateScore{
+				{account: quarantined, loadInfo: &AccountLoadInfo{}},
+				{account: healthy, loadInfo: &AccountLoadInfo{}},
+			}
+			require.NotNil(t, candidates[0].account)
+			require.NotNil(t, candidates[1].account)
+			ordered := scheduler.buildOpenAISelectionOrder(context.Background(), tc.request, openAIAccountLoadPlan{
+				candidates: candidates,
+				topK:       2,
+			})
+			require.Len(t, ordered, 2, "native sticky/continuation ordering must not be hard-filtered by Smart Router")
+		})
+	}
+}
+
+func TestSmartRouterPolicyUsesT0RankingControls(t *testing.T) {
+	svc := &OpenAIGatewayService{cfg: &config.Config{
+		Gateway: config.GatewayConfig{SmartRouter: config.GatewaySmartRouterConfig{
+			Enabled:                 true,
+			TopK:                    2,
+			SameSourceGroupAttempts: 3,
+			CostBiasMax:             4.5,
+			Scoring: config.GatewaySmartRouterScoringConfig{
+				Priority: 0.4,
+				Cost:     1.1,
+				Health:   1.3,
+				Load:     0.8,
+				Queue:    0.5,
+				Latency:  0.2,
+				Recovery: 0.7,
+			},
+		}},
+	}}
+	policy := svc.smartRouterPolicy()
+	require.True(t, policy.Enabled)
+	require.Equal(t, 2, policy.TopK)
+	require.Equal(t, 3, policy.SameSourceGroupAttempts)
+	require.Equal(t, 4.5, policy.CostBiasMax)
+	require.Equal(t, core.ScoreWeights{Priority: 0.4, Cost: 1.1, Health: 1.3, Load: 0.8, Queue: 0.5, Latency: 0.2, Recovery: 0.7}, policy.Weights)
+}
+
+func TestSmartRouterCapabilityForSelectionKeepsResponsesImagesSeparate(t *testing.T) {
+	request := OpenAIAccountScheduleRequest{RequiredCapability: OpenAIEndpointCapabilityResponses}
+	require.Equal(t, core.CapabilityResponses, smartRouterCapabilityForSelection(context.Background(), request))
+	require.Equal(t, core.CapabilityImageGeneration, smartRouterCapabilityForSelection(
+		WithOpenAIImageGenerationIntent(context.Background()), request,
+	))
+	request.RequireCompact = true
+	require.Equal(t, core.CapabilityResponsesCompact, smartRouterCapabilityForSelection(
+		WithOpenAIImageGenerationIntent(context.Background()), request,
+	), "compact remains the explicit capability even if a request context carries an image intent")
+}
+
+func TestSmartRouterCompactLaneUsesCompactModelMapping(t *testing.T) {
+	account := smartRouterTestAccount(131, AccountTypeAPIKey, map[string]any{
+		"model_mapping":         map[string]any{"gpt-5.6-*": "gpt-5.6-sol"},
+		"compact_model_mapping": map[string]any{"gpt-5.5": "compact-gpt-5.5"},
+	}, nil)
+	require.Equal(t, []string{"gpt-5.5"}, smartRouterModelPatterns(account, core.CapabilityResponsesCompact))
+	require.Equal(t, []string{"gpt-5.6-*"}, smartRouterModelPatterns(account, core.CapabilityResponses))
+}
+
+func TestSmartRouterLaneSnapshotHandlesExplicitEmptyCapabilities(t *testing.T) {
+	account := smartRouterTestAccount(141, AccountTypeAPIKey, nil, map[string]any{
+		smartRouterExtraKey: map[string]any{"capabilities": []any{}},
+	})
+	lane, ok := smartRouterLaneSnapshot(account, nil, false, 0, 0, false, core.CapabilityChat)
+	require.True(t, ok)
+	require.Contains(t, lane.Capabilities, core.CapabilityResponsesCompact)
+}
+
+func TestSmartRouterLaneSnapshotDoesNotApplyDeferredConcurrencyCaps(t *testing.T) {
+	account := smartRouterTestAccount(142, AccountTypeAPIKey, nil, map[string]any{
+		smartRouterExtraKey: map[string]any{
+			"max_concurrency":              1,
+			"source_group_max_concurrency": 1,
+		},
+	})
+	lane, ok := smartRouterLaneSnapshot(account, &AccountLoadInfo{CurrentConcurrency: 3}, true, 0, 0, false, core.CapabilityResponses)
+
+	require.True(t, ok)
+	require.Equal(t, 3, lane.CurrentConcurrency, "observed load remains available to Smart Router")
+	require.Zero(t, lane.MaxConcurrency, "the deferred T0 cap must not become a second candidate-exclusion policy")
+	require.Zero(t, lane.SourceGroupMaxConcurrency, "the deferred source-group cap must not become a second candidate-exclusion policy")
 }

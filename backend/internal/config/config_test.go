@@ -23,6 +23,191 @@ func resetViperWithJWTSecret(t *testing.T) {
 	t.Setenv("JWT_SECRET", strings.Repeat("x", 32))
 }
 
+func TestLoadDefaultModelsListReadMaxBytes(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.Equal(t, DefaultModelsListReadMaxBytes, cfg.Gateway.ModelsListReadMaxBytes)
+}
+
+func TestOpenAIImageFailoverSettingsDefaultsAndValidation(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.Equal(t, 180, cfg.Gateway.ImageUpstreamTimeoutSeconds)
+	require.Equal(t, 600, cfg.Gateway.ImageRequestTimeoutSeconds)
+	require.Equal(t, 12, cfg.Gateway.ImageEditTransientCooldownSeconds)
+	require.Equal(t, 30, cfg.Gateway.ImageGenerationTransientCooldownSeconds)
+
+	cfg.Gateway.ImageUpstreamTimeoutSeconds = -1
+	require.ErrorContains(t, cfg.Validate(), "gateway.image_upstream_timeout_seconds must be non-negative")
+	cfg.Gateway.ImageUpstreamTimeoutSeconds = 180
+	cfg.Gateway.ImageRequestTimeoutSeconds = -1
+	require.ErrorContains(t, cfg.Validate(), "gateway.image_request_timeout_seconds must be non-negative")
+	cfg.Gateway.ImageRequestTimeoutSeconds = 600
+	cfg.Gateway.ImageEditTransientCooldownSeconds = -1
+	require.ErrorContains(t, cfg.Validate(), "gateway.image_edit_transient_cooldown_seconds must be non-negative")
+	cfg.Gateway.ImageEditTransientCooldownSeconds = 12
+	cfg.Gateway.ImageGenerationTransientCooldownSeconds = -1
+	require.ErrorContains(t, cfg.Validate(), "gateway.image_generation_transient_cooldown_seconds must be non-negative")
+}
+
+func TestSmartRouterDefaultsAndValidation(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.False(t, cfg.Gateway.SmartRouter.Enabled)
+	require.Equal(t, 5, cfg.Gateway.SmartRouter.TopK)
+	require.Equal(t, 1, cfg.Gateway.SmartRouter.SameSourceGroupAttempts)
+	require.Equal(t, 3.0, cfg.Gateway.SmartRouter.CostBiasMax)
+	require.Equal(t, GatewaySmartRouterCalibrationConfig{
+		Enabled:                   true,
+		AutoEnrollEnabled:         true,
+		AutoEnrollIntervalSeconds: 300,
+		Hour:                      4,
+		Minute:                    0,
+		TotalBudgetSeconds:        1800,
+		ProbeTimeoutSeconds:       180,
+	}, cfg.Gateway.SmartRouter.Calibration)
+	require.NoError(t, cfg.Validate())
+
+	cfg.Gateway.SmartRouter.Calibration.Hour = 24
+	require.ErrorContains(t, cfg.Validate(), "gateway.smart_router.calibration.hour must be between 0 and 23")
+	cfg.Gateway.SmartRouter.Calibration.Hour = 4
+	cfg.Gateway.SmartRouter.Scoring.Health = math.NaN()
+	require.ErrorContains(t, cfg.Validate(), "gateway.smart_router.scoring values must be finite and non-negative")
+	cfg.Gateway.SmartRouter.Scoring.Health = 1.2
+	cfg.Gateway.SmartRouter.TopK = -1
+	require.ErrorContains(t, cfg.Validate(), "gateway.smart_router.top_k must be non-negative")
+	cfg.Gateway.SmartRouter.TopK = 5
+	cfg.Gateway.SmartRouter.SameSourceGroupAttempts = -1
+	require.ErrorContains(t, cfg.Validate(), "gateway.smart_router.same_source_group_attempts must be non-negative")
+	cfg.Gateway.SmartRouter.SameSourceGroupAttempts = 1
+	cfg.Gateway.SmartRouter.CostBiasMax = -1
+	require.ErrorContains(t, cfg.Validate(), "gateway.smart_router.cost_bias_max must be non-negative")
+}
+
+func TestUnifiedRoutePriorityDefaultsOffAndCanBeEnabled(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.False(t, cfg.Gateway.UnifiedRoutePriority.Enabled)
+
+	configFile := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(configFile, []byte("gateway:\n  unified_route_priority:\n    enabled: true\n"), 0o600))
+	t.Setenv("CONFIG_FILE", configFile)
+	cfg, err = Load()
+	require.NoError(t, err)
+	require.True(t, cfg.Gateway.UnifiedRoutePriority.Enabled)
+}
+
+func TestUpstreamModelRefreshDefaultsAndValidation(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.Equal(t, GatewayUpstreamModelRefreshConfig{
+		Enabled:               true,
+		Hour:                  4,
+		Minute:                0,
+		AccountTimeoutSeconds: 30,
+		TotalBudgetSeconds:    1800,
+		MaxConcurrency:        4,
+	}, cfg.Gateway.UpstreamModelRefresh)
+	require.NoError(t, cfg.Validate())
+
+	cfg.Gateway.UpstreamModelRefresh.Hour = 24
+	require.ErrorContains(t, cfg.Validate(), "gateway.upstream_model_refresh.hour must be between 0 and 23")
+	cfg.Gateway.UpstreamModelRefresh.Hour = 4
+	cfg.Gateway.UpstreamModelRefresh.MaxConcurrency = 9
+	require.ErrorContains(t, cfg.Validate(), "gateway.upstream_model_refresh.max_concurrency must be between 1 and 8")
+}
+
+func TestResponsesImageBridgeDefaultsAndValidation(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.Equal(t, ResponsesImageBridgeConfig{
+		Enabled:           false,
+		ApplyToProtocol:   "images_api_only",
+		MaxRequestBytes:   16 << 20,
+		PreserveStreaming: true,
+	}, cfg.Gateway.ResponsesImageBridge)
+
+	cfg.Gateway.ResponsesImageBridge.MaxRequestBytes = 0
+	require.ErrorContains(t, cfg.Validate(), "gateway.responses_image_bridge.max_request_bytes must be positive")
+	cfg.Gateway.ResponsesImageBridge.MaxRequestBytes = 16 << 20
+	cfg.Gateway.ResponsesImageBridge.ApplyToProtocol = "all"
+	require.ErrorContains(t, cfg.Validate(), "gateway.responses_image_bridge.apply_to_protocol must be images_api_only")
+}
+
+func TestOperatorTestGuardDefaultsAndValidation(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.False(t, cfg.Gateway.OperatorTestGuard.Enabled)
+	require.True(t, cfg.Gateway.OperatorTestGuard.RequireAdminUser)
+	require.Contains(t, cfg.Gateway.OperatorTestGuard.Paths, "/v1/responses")
+	require.Contains(t, cfg.Gateway.OperatorTestGuard.Paths, "/backend-api/codex/responses")
+	require.Contains(t, cfg.Gateway.OperatorTestGuard.Paths, "/v1/images/generations/async")
+	require.Contains(t, cfg.Gateway.OperatorTestGuard.Paths, "/v1/images/edits/async")
+	require.Contains(t, cfg.Gateway.OperatorTestGuard.Paths, "/images/generations/async")
+	require.Contains(t, cfg.Gateway.OperatorTestGuard.Paths, "/images/edits/async")
+	require.NotContains(t, cfg.Gateway.OperatorTestGuard.Paths, "/v1/images/*/*")
+	require.NotContains(t, cfg.Gateway.OperatorTestGuard.Paths, "/v1/images/*")
+	require.NotContains(t, cfg.Gateway.OperatorTestGuard.Paths, "/images/*")
+	require.NotContains(t, cfg.Gateway.OperatorTestGuard.Paths, "/v1/images/batches")
+
+	guard := cfg.Gateway.OperatorTestGuard
+	cfg.Gateway.OperatorTestGuard = GatewayOperatorTestGuardConfig{Enabled: true}
+	require.ErrorContains(t, cfg.Validate(), "trusted_client_ips is required")
+
+	cfg.Gateway.OperatorTestGuard = guard
+	cfg.Gateway.OperatorTestGuard.Enabled = true
+	cfg.Gateway.OperatorTestGuard.AllowedUserEmails = nil
+	cfg.Gateway.OperatorTestGuard.AllowedAPIKeyNames = nil
+	require.ErrorContains(t, cfg.Validate(), "allowed_user_emails or allowed_api_key_names is required")
+
+	cfg.Gateway.OperatorTestGuard = guard
+	cfg.Gateway.OperatorTestGuard.Enabled = true
+	cfg.Gateway.OperatorTestGuard.TrustedClientIPs = []string{"not-an-ip"}
+	require.NoError(t, cfg.Validate(), "the legacy source only requires a non-empty client allowlist; runtime matching still rejects malformed entries")
+
+	cfg.Gateway.OperatorTestGuard = guard
+	require.NoError(t, cfg.Validate())
+}
+
+func TestLoadTimezonePrecedence(t *testing.T) {
+	tests := []struct {
+		name         string
+		fileTimezone string
+		timezoneEnv  string
+		tzEnv        string
+		want         string
+	}{
+		{name: "default", want: "Asia/Shanghai"},
+		{name: "config_file", fileTimezone: "Europe/London", want: "Europe/London"},
+		{name: "timezone_env", fileTimezone: "Europe/London", timezoneEnv: "UTC", want: "UTC"},
+		{name: "tz_env", fileTimezone: "Europe/London", timezoneEnv: "UTC", tzEnv: "America/New_York", want: "America/New_York"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resetViperWithJWTSecret(t)
+			t.Setenv("TIMEZONE", tt.timezoneEnv)
+			t.Setenv("TZ", tt.tzEnv)
+			if tt.fileTimezone != "" {
+				configFile := filepath.Join(t.TempDir(), "config.yaml")
+				require.NoError(t, os.WriteFile(configFile, []byte("timezone: "+tt.fileTimezone+"\n"), 0o600))
+				t.Setenv("CONFIG_FILE", configFile)
+			}
+
+			cfg, err := Load()
+			require.NoError(t, err)
+			require.Equal(t, tt.want, cfg.Timezone)
+		})
+	}
+}
+
 func TestLoadServerTimingConfig(t *testing.T) {
 	t.Run("disabled by default", func(t *testing.T) {
 		resetViperWithJWTSecret(t)
@@ -38,6 +223,15 @@ func TestLoadServerTimingConfig(t *testing.T) {
 		require.NoError(t, err)
 		require.True(t, cfg.Server.EnableServerTiming)
 	})
+}
+
+func TestLoadSimpleModeKeyRateLimitEnabledFromEnvironment(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	t.Setenv("SIMPLE_MODE_KEY_RATE_LIMIT_ENABLED", "true")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.True(t, cfg.SimpleModeKeyRateLimitEnabled)
 }
 
 func TestLoadRedisUsernameFromEnvironment(t *testing.T) {
@@ -413,11 +607,11 @@ func TestLoadDefaultOpenAIWSConfig(t *testing.T) {
 	if !cfg.Gateway.OpenAIWS.DynamicMaxConnsByAccountConcurrencyEnabled {
 		t.Fatalf("Gateway.OpenAIWS.DynamicMaxConnsByAccountConcurrencyEnabled = false, want true")
 	}
-	if cfg.Gateway.OpenAIWS.OAuthMaxConnsFactor != 1.0 {
-		t.Fatalf("Gateway.OpenAIWS.OAuthMaxConnsFactor = %v, want 1.0", cfg.Gateway.OpenAIWS.OAuthMaxConnsFactor)
+	if cfg.Gateway.OpenAIWS.OAuthMaxConnsFactor != 5.0 {
+		t.Fatalf("Gateway.OpenAIWS.OAuthMaxConnsFactor = %v, want 5.0", cfg.Gateway.OpenAIWS.OAuthMaxConnsFactor)
 	}
-	if cfg.Gateway.OpenAIWS.APIKeyMaxConnsFactor != 1.0 {
-		t.Fatalf("Gateway.OpenAIWS.APIKeyMaxConnsFactor = %v, want 1.0", cfg.Gateway.OpenAIWS.APIKeyMaxConnsFactor)
+	if cfg.Gateway.OpenAIWS.APIKeyMaxConnsFactor != 5.0 {
+		t.Fatalf("Gateway.OpenAIWS.APIKeyMaxConnsFactor = %v, want 5.0", cfg.Gateway.OpenAIWS.APIKeyMaxConnsFactor)
 	}
 	if cfg.Gateway.OpenAIWS.StickySessionTTLSeconds != 3600 {
 		t.Fatalf("Gateway.OpenAIWS.StickySessionTTLSeconds = %d, want 3600", cfg.Gateway.OpenAIWS.StickySessionTTLSeconds)
@@ -521,12 +715,21 @@ func TestLoadOpenAIWSClientFirstMessageTimeoutFromEnv(t *testing.T) {
 	require.Equal(t, 120, cfg.Gateway.OpenAIWS.ClientFirstMessageTimeoutSeconds)
 }
 
+func TestLoadOpenAIWSForceHTTPFromEnv(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	t.Setenv("GATEWAY_OPENAI_WS_FORCE_HTTP", "true")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.True(t, cfg.Gateway.OpenAIWS.ForceHTTP)
+}
+
 func TestLoadDefaultOpenAICompactModel(t *testing.T) {
 	resetViperWithJWTSecret(t)
 
 	cfg, err := Load()
 	require.NoError(t, err)
-	require.Empty(t, cfg.Gateway.OpenAICompactModel)
+	require.Equal(t, "gpt-5.5", cfg.Gateway.OpenAICompactModel)
 }
 
 func TestLoadOpenAICompactModelFromEnv(t *testing.T) {
@@ -1140,6 +1343,21 @@ func TestLoadDefaultUsageCleanupConfig(t *testing.T) {
 	}
 	if cfg.UsageCleanup.TaskTimeoutSeconds != 1800 {
 		t.Fatalf("UsageCleanup.TaskTimeoutSeconds = %d, want 1800", cfg.UsageCleanup.TaskTimeoutSeconds)
+	}
+}
+
+func TestLoadDefaultOpsCleanupConfig(t *testing.T) {
+	resetViperWithJWTSecret(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if !cfg.Ops.Cleanup.Enabled {
+		t.Fatal("Ops.Cleanup.Enabled = false, want true")
+	}
+	if cfg.Ops.Cleanup.SystemLogRetentionDays != 30 {
+		t.Fatalf("Ops.Cleanup.SystemLogRetentionDays = %d, want 30", cfg.Ops.Cleanup.SystemLogRetentionDays)
 	}
 }
 
@@ -1763,6 +1981,11 @@ func TestValidateConfigErrors(t *testing.T) {
 			wantErr: "gateway.text_max_body_size",
 		},
 		{
+			name:    "gateway models list read limit",
+			mutate:  func(c *Config) { c.Gateway.ModelsListReadMaxBytes = 0 },
+			wantErr: "gateway.models_list_read_max_bytes",
+		},
+		{
 			name:    "gateway response header timeout",
 			mutate:  func(c *Config) { c.Gateway.ResponseHeaderTimeout = -1 },
 			wantErr: "gateway.response_header_timeout",
@@ -1906,148 +2129,6 @@ func TestValidateConfigErrors(t *testing.T) {
 			name:    "gateway image stream data interval negative",
 			mutate:  func(c *Config) { c.Gateway.ImageStreamDataIntervalTimeout = -1 },
 			wantErr: "gateway.image_stream_data_interval_timeout must be non-negative",
-		},
-		{
-			name:    "gateway image edit transient cooldown negative",
-			mutate:  func(c *Config) { c.Gateway.ImageEditTransientCooldownSeconds = -1 },
-			wantErr: "gateway.image_edit_transient_cooldown_seconds must be non-negative",
-		},
-		{
-			name:    "gateway smart router image total budget negative",
-			mutate:  func(c *Config) { c.Gateway.SmartRouter.ImageTotalBudgetSeconds = -1 },
-			wantErr: "gateway.smart_router.image_total_budget_seconds must be non-negative",
-		},
-		{
-			name:    "gateway smart router image attempt negative",
-			mutate:  func(c *Config) { c.Gateway.SmartRouter.ImageAttemptSeconds = -1 },
-			wantErr: "gateway.smart_router.image_attempt_seconds must be non-negative",
-		},
-		{
-			name:    "gateway smart router image reserve negative",
-			mutate:  func(c *Config) { c.Gateway.SmartRouter.ImageReserveSeconds = -1 },
-			wantErr: "gateway.smart_router.image_finalization_reserve_seconds must be non-negative",
-		},
-		{
-			name:    "gateway smart router second failure cooldown negative",
-			mutate:  func(c *Config) { c.Gateway.SmartRouter.Recovery.SecondFailureCooldownSeconds = -1 },
-			wantErr: "gateway.smart_router.recovery.second_failure_cooldown_seconds must be non-negative",
-		},
-		{
-			name:    "gateway smart router sustained failure threshold negative",
-			mutate:  func(c *Config) { c.Gateway.SmartRouter.Recovery.SustainedFailureThreshold = -1 },
-			wantErr: "gateway.smart_router.recovery.sustained_failure_threshold must be non-negative",
-		},
-		{
-			name:    "gateway smart router image sustained failure threshold negative",
-			mutate:  func(c *Config) { c.Gateway.SmartRouter.Recovery.ImageSustainedFailureThreshold = -1 },
-			wantErr: "gateway.smart_router.recovery.image_sustained_failure_threshold must be non-negative",
-		},
-		{
-			name:    "gateway smart router recovery escalation threshold negative",
-			mutate:  func(c *Config) { c.Gateway.SmartRouter.Recovery.RecoveryEscalationFailureThreshold = -1 },
-			wantErr: "gateway.smart_router.recovery.recovery_escalation_failure_threshold must be non-negative",
-		},
-		{
-			name:    "gateway smart router recovery priority step negative",
-			mutate:  func(c *Config) { c.Gateway.SmartRouter.Recovery.RecoveryPriorityStep = -1 },
-			wantErr: "gateway.smart_router.recovery.recovery_priority_step must be non-negative",
-		},
-		{
-			name:    "gateway smart router calibration hour invalid",
-			mutate:  func(c *Config) { c.Gateway.SmartRouter.Calibration.Hour = 24 },
-			wantErr: "gateway.smart_router.calibration.hour must be between 0 and 23",
-		},
-		{
-			name:    "gateway smart router calibration probe timeout negative",
-			mutate:  func(c *Config) { c.Gateway.SmartRouter.Calibration.ProbeTimeoutSeconds = -1 },
-			wantErr: "gateway.smart_router.calibration.probe_timeout_seconds must be non-negative",
-		},
-		{
-			name: "gateway smart router image budget too small",
-			mutate: func(c *Config) {
-				c.Gateway.SmartRouter.Enabled = true
-				c.Gateway.SmartRouter.ImageTotalBudgetSeconds = 195
-				c.Gateway.SmartRouter.ImageAttemptSeconds = 180
-				c.Gateway.SmartRouter.ImageReserveSeconds = 15
-			},
-			wantErr: "gateway.smart_router.image_total_budget_seconds must exceed",
-		},
-		{
-			name:    "gateway image generation transient cooldown negative",
-			mutate:  func(c *Config) { c.Gateway.ImageGenerationTransientCooldownSeconds = -1 },
-			wantErr: "gateway.image_generation_transient_cooldown_seconds must be non-negative",
-		},
-		{
-			name:    "gateway responses image bridge request limit invalid",
-			mutate:  func(c *Config) { c.Gateway.ResponsesImageBridge.MaxRequestBytes = 0 },
-			wantErr: "gateway.responses_image_bridge.max_request_bytes must be positive",
-		},
-		{
-			name:    "gateway responses image bridge protocol invalid",
-			mutate:  func(c *Config) { c.Gateway.ResponsesImageBridge.ApplyToProtocol = "all" },
-			wantErr: "gateway.responses_image_bridge.apply_to_protocol must be images_api_only",
-		},
-		{
-			name:    "gateway smart router top k negative",
-			mutate:  func(c *Config) { c.Gateway.SmartRouter.TopK = -1 },
-			wantErr: "gateway.smart_router.top_k must be non-negative",
-		},
-		{
-			name:    "gateway smart router adaptive timeout window negative",
-			mutate:  func(c *Config) { c.Gateway.SmartRouter.AdaptiveTimeout.WindowSize = -1 },
-			wantErr: "gateway.smart_router.adaptive_timeout durations and window_size must be non-negative",
-		},
-		{
-			name:    "gateway smart router adaptive timeout success step negative",
-			mutate:  func(c *Config) { c.Gateway.SmartRouter.AdaptiveTimeout.SuccessStepSeconds = -1 },
-			wantErr: "gateway.smart_router.adaptive_timeout durations and window_size must be non-negative",
-		},
-		{
-			name: "gateway smart router adaptive timeout enabled without default",
-			mutate: func(c *Config) {
-				c.Gateway.SmartRouter.AdaptiveTimeout.Enabled = true
-				c.Gateway.SmartRouter.AdaptiveTimeout.DefaultSeconds = 0
-			},
-			wantErr: "gateway.smart_router.adaptive_timeout.default_seconds must be positive",
-		},
-		{
-			name: "gateway smart router adaptive timeout failure multiplier out of range",
-			mutate: func(c *Config) {
-				c.Gateway.SmartRouter.AdaptiveTimeout.Enabled = true
-				c.Gateway.SmartRouter.AdaptiveTimeout.FailureBackoffMultiplier = 1.1
-			},
-			wantErr: "gateway.smart_router.adaptive_timeout.failure_backoff_multiplier must be greater than 0 and at most 1",
-		},
-		{
-			name:    "gateway smart router image resilience negative",
-			mutate:  func(c *Config) { c.Gateway.SmartRouter.ImageResilience.StandardMinSeconds = -1 },
-			wantErr: "gateway.smart_router.image_resilience durations and limits must be non-negative",
-		},
-		{
-			name: "gateway smart router image resilience has no capability",
-			mutate: func(c *Config) {
-				c.Gateway.SmartRouter.ImageResilience.Enabled = true
-				c.Gateway.SmartRouter.ImageResilience.GenerationEnabled = false
-				c.Gateway.SmartRouter.ImageResilience.EditEnabled = false
-			},
-			wantErr: "gateway.smart_router.image_resilience must enable generation or edit",
-		},
-		{
-			name: "gateway smart router image resilience invalid range",
-			mutate: func(c *Config) {
-				c.Gateway.SmartRouter.ImageResilience.Enabled = true
-				c.Gateway.SmartRouter.ImageResilience.StandardMinSeconds = 250
-				c.Gateway.SmartRouter.ImageResilience.StandardMaxSeconds = 240
-			},
-			wantErr: "gateway.smart_router.image_resilience.standard_min_seconds must be <= standard_max_seconds",
-		},
-		{
-			name: "gateway smart router zero weights",
-			mutate: func(c *Config) {
-				c.Gateway.SmartRouter.Enabled = true
-				c.Gateway.SmartRouter.Scoring = GatewaySmartRouterScoringConfig{}
-			},
-			wantErr: "gateway.smart_router.scoring must not all be zero",
 		},
 		{
 			name:    "gateway image concurrency max negative",
@@ -2225,6 +2306,11 @@ func TestValidateConfigErrors(t *testing.T) {
 			name:    "ops cleanup retention",
 			mutate:  func(c *Config) { c.Ops.Cleanup.ErrorLogRetentionDays = -1 },
 			wantErr: "ops.cleanup.error_log_retention_days",
+		},
+		{
+			name:    "ops cleanup system log retention",
+			mutate:  func(c *Config) { c.Ops.Cleanup.SystemLogRetentionDays = 0 },
+			wantErr: "ops.cleanup.system_log_retention_days",
 		},
 		{
 			name:    "ops cleanup minute retention",
@@ -2697,5 +2783,44 @@ func TestLoad_DefaultGatewayImageStreamConfig(t *testing.T) {
 	}
 	if cfg.Gateway.ImageStreamDataIntervalTimeout <= cfg.Gateway.StreamDataIntervalTimeout {
 		t.Fatalf("image stream timeout = %d, want greater than ordinary stream timeout %d", cfg.Gateway.ImageStreamDataIntervalTimeout, cfg.Gateway.StreamDataIntervalTimeout)
+	}
+}
+
+func TestLoadSimpleModeAutoCreateDefaultGroups(t *testing.T) {
+	for _, loader := range []struct {
+		name string
+		load func() (*Config, error)
+	}{{"Load", Load}, {"LoadForBootstrap", LoadForBootstrap}} {
+		t.Run(loader.name, func(t *testing.T) {
+			for _, tt := range []struct {
+				name  string
+				yaml  string
+				env   string
+				unset bool
+				want  bool
+			}{
+				{name: "unset env uses application default", unset: true, want: true},
+				{name: "empty env uses application default", want: true},
+				{name: "unset env preserves yaml false", unset: true, yaml: "simple_mode:\n  auto_create_default_groups: false\n", want: false},
+				{name: "empty env preserves yaml false", yaml: "simple_mode:\n  auto_create_default_groups: false\n", want: false},
+				{name: "env false overrides yaml true", yaml: "simple_mode:\n  auto_create_default_groups: true\n", env: "false", want: false},
+				{name: "env false without yaml", env: "false", want: false},
+				{name: "env true overrides yaml false", yaml: "simple_mode:\n  auto_create_default_groups: false\n", env: "true", want: true},
+			} {
+				t.Run(tt.name, func(t *testing.T) {
+					resetViperWithJWTSecret(t)
+					t.Setenv("SIMPLE_MODE_AUTO_CREATE_DEFAULT_GROUPS", tt.env)
+					if tt.unset {
+						require.NoError(t, os.Unsetenv("SIMPLE_MODE_AUTO_CREATE_DEFAULT_GROUPS"))
+					}
+					path := filepath.Join(t.TempDir(), "config.yaml")
+					require.NoError(t, os.WriteFile(path, []byte("run_mode: simple\n"+tt.yaml), 0o600))
+					t.Setenv("CONFIG_FILE", path)
+					cfg, err := loader.load()
+					require.NoError(t, err)
+					require.Equal(t, tt.want, cfg.SimpleMode.AutoCreateDefaultGroups)
+				})
+			}
+		})
 	}
 }

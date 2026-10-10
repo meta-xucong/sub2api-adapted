@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -14,6 +15,39 @@ import (
 	"entgo.io/ent/dialect"
 	entsql "entgo.io/ent/dialect/sql"
 )
+
+func TestMergeCurrentAccountExtraKeysUsesLockedDatabaseValues(t *testing.T) {
+	stale := map[string]any{
+		service.UpstreamModelPolicyExtraKey: "manual",
+		service.UpstreamModelAvailabilityExtraKey: map[string]any{
+			"status": "old",
+		},
+		"unrelated": "preserved",
+	}
+	current := map[string][]byte{
+		service.UpstreamModelPolicyExtraKey:       json.RawMessage(`"follow_upstream"`),
+		service.UpstreamModelAvailabilityExtraKey: json.RawMessage(`{"status":"fresh"}`),
+	}
+	require.NoError(t, mergeCurrentAccountExtraKeys(stale, current))
+	require.Equal(t, service.UpstreamModelPolicyFollow, stale[service.UpstreamModelPolicyExtraKey])
+	require.Equal(t, map[string]any{"status": "fresh"}, stale[service.UpstreamModelAvailabilityExtraKey])
+	require.Equal(t, "preserved", stale["unrelated"])
+}
+
+func TestMergeCurrentAccountExtraKeysRemovesValuesDeletedAfterStaleRead(t *testing.T) {
+	stale := map[string]any{
+		service.UpstreamModelPolicyExtraKey: "follow_upstream",
+		service.UpstreamModelAvailabilityExtraKey: map[string]any{
+			"status": "stale",
+		},
+	}
+	require.NoError(t, mergeCurrentAccountExtraKeys(stale, map[string][]byte{
+		service.UpstreamModelPolicyExtraKey:       []byte("null"),
+		service.UpstreamModelAvailabilityExtraKey: nil,
+	}))
+	require.NotContains(t, stale, service.UpstreamModelPolicyExtraKey)
+	require.NotContains(t, stale, service.UpstreamModelAvailabilityExtraKey)
+}
 
 func TestListModelAvailabilityCandidates_GroupQueryIgnoresTransientState(t *testing.T) {
 	var capturedSQL string

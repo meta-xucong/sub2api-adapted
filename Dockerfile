@@ -8,17 +8,12 @@
 # =============================================================================
 
 ARG NODE_IMAGE=node:24-alpine
-ARG GOLANG_IMAGE=golang:1.26.5-alpine
+ARG GOLANG_IMAGE=golang:1.27.0-alpine
 ARG ALPINE_IMAGE=alpine:3.21
 ARG POSTGRES_IMAGE=postgres:18-alpine
-# Docker 20.10's classic builder does not inject BuildKit's automatic
-# BUILDPLATFORM argument. Keep the amd64 VPS build reproducible while newer
-# BuildKit builders may still override it explicitly.
-ARG BUILDPLATFORM=linux/amd64
 ARG GOPROXY=https://goproxy.cn,direct
 ARG GOSUMDB=sum.golang.google.cn
 ARG NPM_CONFIG_REGISTRY=
-ARG FRONTEND_NODE_OPTIONS=
 
 # -----------------------------------------------------------------------------
 # Stage 1: Frontend Builder
@@ -27,8 +22,6 @@ ARG FRONTEND_NODE_OPTIONS=
 # it on the native host arch instead of under QEMU emulation for the target.
 FROM --platform=${BUILDPLATFORM} ${NODE_IMAGE} AS frontend-builder
 ARG NPM_CONFIG_REGISTRY
-ARG FRONTEND_NODE_OPTIONS
-ENV NODE_OPTIONS=${FRONTEND_NODE_OPTIONS}
 
 WORKDIR /app/frontend
 
@@ -59,10 +52,12 @@ RUN pnpm run build
 # build (emulated networking here was dropping module fetches with EOF).
 FROM --platform=${BUILDPLATFORM} ${GOLANG_IMAGE} AS backend-builder
 
+# Build arguments for version info (set by CI)
+ARG VERSION=
+ARG COMMIT=docker
+ARG DATE
 ARG GOPROXY
 ARG GOSUMDB
-ARG VERSION
-ARG COMMIT
 # Populated by buildx from the --platform target (e.g. linux/amd64).
 ARG TARGETOS
 ARG TARGETARCH

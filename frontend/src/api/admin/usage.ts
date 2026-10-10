@@ -26,6 +26,17 @@ export interface AdminUsageStatsResponse {
   endpoint_paths?: EndpointStat[]
 }
 
+export interface AccountBillingBreakdownRow {
+  account_id: number
+  billing_type: number
+  actual_cost: number
+  account_cost: number
+}
+
+export interface AccountBillingBreakdownResponse {
+  accounts: AccountBillingBreakdownRow[]
+}
+
 export interface SimpleUser {
   id: number
   email: string
@@ -124,6 +135,7 @@ export async function getStats(params: {
   model?: string
   request_type?: UsageRequestType
   stream?: boolean
+  native_compaction_v2?: boolean | null
   upstream_model_mismatch?: boolean
   period?: string
   start_date?: string
@@ -133,6 +145,23 @@ export async function getStats(params: {
 }): Promise<AdminUsageStatsResponse> {
   const { data } = await apiClient.get<AdminUsageStatsResponse>('/admin/usage/stats', {
     params
+  })
+  return data
+}
+
+/**
+ * Get one API key's native usage amounts grouped by account and billing type.
+ * @param params - API key and explicit date range
+ * @returns Grouped billing rows from the existing usage stats endpoint
+ */
+export async function getAccountBillingBreakdown(params: {
+  api_key_id: number
+  start_date: string
+  end_date: string
+  timezone?: string
+}): Promise<AccountBillingBreakdownResponse> {
+  const { data } = await apiClient.get<AccountBillingBreakdownResponse>('/admin/usage/stats', {
+    params: { ...params, account_billing_breakdown: true }
   })
   return data
 }
@@ -209,6 +238,7 @@ export async function cancelCleanupTask(taskId: number): Promise<{ id: number; s
 export const adminUsageAPI = {
   list,
   getStats,
+  getAccountBillingBreakdown,
   searchUsers,
   searchApiKeys,
   listCleanupTasks,

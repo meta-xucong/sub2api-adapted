@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
@@ -113,6 +112,8 @@ type UserUpdateFields struct {
 	BalanceNotifyExtraEmails bool
 	// AllowedGroups 为 true 时才同步 user_allowed_groups 关联表。
 	AllowedGroups bool
+	// RestrictPublicGroups 覆盖 restrict_public_groups 列。
+	RestrictPublicGroups bool
 }
 
 // BalanceChange 记录一次余额变更前后的值。
@@ -194,24 +195,6 @@ type RegistrationEmailDomainRepository interface {
 type RedeemUserAdjustmentRepository interface {
 	ApplyRedeemBalanceAdjustment(ctx context.Context, id int64, delta float64) error
 	ApplyRedeemConcurrencyAdjustment(ctx context.Context, id int64, delta int) error
-}
-
-type UserBalanceDebitInput struct {
-	UserID             int64
-	Amount             float64
-	IdempotencyKey     string
-	RequestFingerprint string
-}
-
-type UserBalanceDebitResult struct {
-	UserID       int64
-	Amount       float64
-	BalanceAfter float64
-	Replayed     bool
-}
-
-type userBalanceDebitRepository interface {
-	DebitBalanceIfSufficient(ctx context.Context, input UserBalanceDebitInput) (*UserBalanceDebitResult, error)
 }
 
 type UserAuthIdentityRecord struct {
@@ -1191,31 +1174,6 @@ func (s *UserService) UpdateBalance(ctx context.Context, userID int64, amount fl
 	return nil
 }
 
-// DebitBalanceIfSufficient performs an idempotent, atomic debit for Veyra.
-func (s *UserService) DebitBalanceIfSufficient(ctx context.Context, input UserBalanceDebitInput) (*UserBalanceDebitResult, error) {
-	repo, ok := s.userRepo.(userBalanceDebitRepository)
-	if !ok || repo == nil {
-		return nil, fmt.Errorf("user repository does not support atomic debit")
-	}
-	result, err := repo.DebitBalanceIfSufficient(ctx, input)
-	if err != nil {
-		return nil, err
-	}
-	if s.authCacheInvalidator != nil {
-		s.authCacheInvalidator.InvalidateAuthCacheByUserID(ctx, result.UserID)
-	}
-	if s.billingCache != nil {
-		go func(userID int64) {
-			cacheCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if err := s.billingCache.InvalidateUserBalance(cacheCtx, userID); err != nil {
-				slog.Error("invalidate user balance cache failed", "user_id", userID, "error", err)
-			}
-		}(result.UserID)
-	}
-	return result, nil
-}
-
 // UpdateConcurrency 更新用户并发数（管理员功能）
 func (s *UserService) UpdateConcurrency(ctx context.Context, userID int64, concurrency int) error {
 	if err := s.userRepo.UpdateConcurrency(ctx, userID, concurrency); err != nil {
@@ -1359,28 +1317,7 @@ func (s *UserService) VerifyAndAddNotifyEmail(ctx context.Context, userID int64,
 
 // verifyNotifyCode validates the verification code against the cached data.
 func verifyNotifyCode(ctx context.Context, cache EmailCache, email, code string) error {
-	data, err := cache.GetNotifyVerifyCode(ctx, email)
-	if err != nil || data == nil {
-		return ErrInvalidVerifyCode
-	}
-	if data.Attempts >= maxVerifyCodeAttempts {
-		return ErrVerifyCodeMaxAttempts
-	}
-	if subtle.ConstantTimeCompare([]byte(data.Code), []byte(code)) != 1 {
-		data.Attempts++
-		remaining := time.Until(data.ExpiresAt)
-		if remaining <= 0 {
-			return ErrInvalidVerifyCode
-		}
-		if err := cache.SetNotifyVerifyCode(ctx, email, data, remaining); err != nil {
-			slog.Error("failed to update notify verify code attempts", "email", email, "error", err)
-		}
-		if data.Attempts >= maxVerifyCodeAttempts {
-			return ErrVerifyCodeMaxAttempts
-		}
-		return ErrInvalidVerifyCode
-	}
-	return nil
+	return verifyCodeWithAttempts(ctx, email, code, cache.GetNotifyVerifyCode, cache.IncrNotifyVerifyCodeAttempts, nil)
 }
 
 // addOrVerifyNotifyEmail adds the email to user's extra notification emails or marks it as verified.

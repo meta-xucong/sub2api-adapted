@@ -76,6 +76,39 @@ func TestGatewayRoutesOpenAIResponsesCompactPathIsRegistered(t *testing.T) {
 	}
 }
 
+func TestGatewayRoutesOperatorTestGuardCoversResponsesAliases(t *testing.T) {
+	cfg := &config.Config{Gateway: config.GatewayConfig{
+		MaxBodySize:     1024 * 1024,
+		TextMaxBodySize: 1024 * 1024,
+		OperatorTestGuard: config.GatewayOperatorTestGuardConfig{
+			Enabled:            true,
+			RequireAdminUser:   true,
+			TrustedClientIPs:   []string{"127.0.0.1/32"},
+			BlockedUserAgents:  []string{"curl/"},
+			AllowedAPIKeyNames: []string{"ops-test*"},
+			Paths: []string{
+				"/v1/responses", "/v1/responses/*", "/responses", "/responses/*",
+				"/backend-api/codex/responses", "/backend-api/codex/responses/*",
+			},
+		},
+	}}
+	router := newGatewayRoutesTestRouterWithConfig(cfg)
+	for _, path := range []string{
+		"/v1/responses",
+		"/v1/responses/compact",
+		"/responses",
+		"/backend-api/codex/responses",
+	} {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"model":"gpt-5.5","input":"test"}`))
+		req.RemoteAddr = "127.0.0.1:3456"
+		req.Header.Set("User-Agent", "curl/8.0")
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, req)
+		require.Equal(t, http.StatusForbidden, recorder.Code, "path=%s", path)
+		require.Contains(t, recorder.Body.String(), "OPERATOR_TEST_KEY_REQUIRED", "path=%s", path)
+	}
+}
+
 func TestGatewayRoutesOpenAIAlphaSearchPathsAreRegistered(t *testing.T) {
 	router := newGatewayRoutesTestRouter()
 	registered := make(map[string]bool)
@@ -94,7 +127,7 @@ func TestGatewayRoutesOpenAIAlphaSearchPathsAreRegistered(t *testing.T) {
 	}
 }
 
-func TestGatewayRoutesAlphaSearchRejectsNonOpenAIGroup(t *testing.T) {
+func TestGatewayRoutesAlphaSearchRejectsUnsupportedGroup(t *testing.T) {
 	router := newGatewayRoutesTestRouter(service.PlatformGrok)
 	req := httptest.NewRequest(http.MethodPost, "/v1/alpha/search", strings.NewReader(`{"model":"gpt-5.6-sol"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -103,7 +136,7 @@ func TestGatewayRoutesAlphaSearchRejectsNonOpenAIGroup(t *testing.T) {
 	router.ServeHTTP(w, req)
 
 	require.Equal(t, http.StatusNotFound, w.Code)
-	require.Contains(t, w.Body.String(), "only available for OpenAI groups")
+	require.Contains(t, w.Body.String(), "only available for OpenAI and Composite groups")
 }
 
 func TestGatewayRoutesOpenAIImagesPathsAreRegistered(t *testing.T) {
@@ -343,6 +376,18 @@ func TestGatewayRoutesNonGrokVideosAreRejectedAtPlatformGate(t *testing.T) {
 		require.Equal(t, http.StatusNotFound, w.Code, "method=%s path=%s", tc.method, tc.path)
 		require.Contains(t, w.Body.String(), "Videos API is not supported for this platform")
 	}
+}
+
+func TestGatewayRoutesCompositeVideoGenerationAllowed(t *testing.T) {
+	router := newGatewayRoutesTestRouter(service.PlatformComposite)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/videos/generations", strings.NewReader(`{"model":"grok-imagine-video-1.5","prompt":"waves"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+	require.NotEqual(t, http.StatusNotFound, w.Code)
+	require.NotContains(t, w.Body.String(), "not supported")
 }
 
 func TestGatewayRoutesCompositeOpenAIOnlyEndpointsRequireOpenAITarget(t *testing.T) {

@@ -2,11 +2,14 @@ package repository
 
 import (
 	"context"
+	"sort"
+	"strings"
 	"testing"
 	"time"
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	smartrouter "github.com/Wei-Shaw/sub2api/internal/smartrouter/core"
+	"github.com/Wei-Shaw/sub2api/migrations"
 	"github.com/stretchr/testify/require"
 )
 
@@ -114,4 +117,35 @@ func TestSmartRouterHealthRepositoryCalibrationRunIsIdempotent(t *testing.T) {
 	require.False(t, acquired)
 	require.Nil(t, run)
 	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestSmartRouterHealthLedgerMigrationMatchesFinalSchemaAndRunnerOrder(t *testing.T) {
+	ledgerSQL, err := migrations.FS.ReadFile("242_smart_router_health_ledger.sql")
+	require.NoError(t, err)
+
+	ledger := strings.Join(strings.Fields(string(ledgerSQL)), " ")
+	for _, table := range []string{
+		"smart_router_health_events",
+		"smart_router_lane_state",
+		"smart_router_calibration_runs",
+		"smart_router_calibration_results",
+	} {
+		require.Contains(t, ledger, "CREATE TABLE IF NOT EXISTS "+table)
+	}
+	require.Contains(t, ledger, "smart_router_health_events_lane_capability_idx")
+	require.Contains(t, ledger, "smart_router_calibration_results_run_idx")
+	require.Contains(t, ledger, "recovery_priority INTEGER NOT NULL DEFAULT 0")
+	require.Contains(t, ledger, "ALTER TABLE smart_router_health_events ADD COLUMN IF NOT EXISTS recovery_priority INTEGER NOT NULL DEFAULT 0")
+	require.Contains(t, ledger, "ALTER TABLE smart_router_lane_state ADD COLUMN IF NOT EXISTS recovery_priority INTEGER NOT NULL DEFAULT 0")
+
+	entries, err := migrations.FS.ReadDir(".")
+	require.NoError(t, err)
+	names := make([]string, 0, 1)
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "242_smart_router") || strings.HasPrefix(entry.Name(), "243_smart_router") {
+			names = append(names, entry.Name())
+		}
+	}
+	sort.Strings(names)
+	require.Equal(t, []string{"242_smart_router_health_ledger.sql"}, names)
 }

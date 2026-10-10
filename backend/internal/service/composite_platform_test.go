@@ -8,6 +8,198 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type compositeOwnershipAccountRepo struct {
+	AccountRepository
+	accounts []Account
+}
+
+func (r *compositeOwnershipAccountRepo) ListSchedulableByGroupID(context.Context, int64) ([]Account, error) {
+	return r.accounts, nil
+}
+
+// Scenario: 唯一平台的精确别名可路由
+func TestResolveCompositeModelOwnershipKeepsProviderAccountsIsolated(t *testing.T) {
+	groupID := int64(7)
+	repo := &compositeOwnershipAccountRepo{
+		accounts: []Account{
+			{
+				ID:       1,
+				Platform: PlatformOpenAI,
+				Credentials: map[string]any{
+					"model_mapping": map[string]any{"gpt-public": "gpt-5"},
+				},
+			},
+			{
+				ID:       2,
+				Platform: PlatformDeepseek,
+				Credentials: map[string]any{
+					"model_mapping": map[string]any{"reasoning-alias": "deepseek-v4-pro"},
+				},
+			},
+		},
+	}
+	svc := &GatewayService{accountRepo: repo}
+
+	deepSeekOwnership, err := svc.resolveCompositeModelOwnership(context.Background(), groupID, "reasoning-alias")
+	require.NoError(t, err)
+	require.Equal(t, CompositeModelOwnership{TargetPlatform: PlatformDeepseek, Matched: true}, deepSeekOwnership)
+
+	openAIOwnership, err := svc.resolveCompositeModelOwnership(context.Background(), groupID, "gpt-public")
+	require.NoError(t, err)
+	require.Equal(t, CompositeModelOwnership{TargetPlatform: PlatformOpenAI, Matched: true}, openAIOwnership)
+}
+
+// Scenario: 通配符和空映射不声明所有权
+func TestResolveCompositeModelOwnershipRequiresNonEmptyExactMappings(t *testing.T) {
+	groupID := int64(7)
+	repo := &compositeOwnershipAccountRepo{
+		accounts: []Account{
+			{
+				ID:       1,
+				Platform: PlatformOpenAI,
+				Credentials: map[string]any{
+					"model_mapping": map[string]any{"*": "gpt-5", "gpt-*": "gpt-5", "empty-alias": ""},
+				},
+			},
+			{
+				ID:       2,
+				Platform: PlatformGrok,
+				Credentials: map[string]any{
+					"model_mapping": map[string]any{"grok-public": "grok-4"},
+				},
+			},
+		},
+	}
+	svc := &GatewayService{accountRepo: repo}
+
+	for _, model := range []string{"gpt-5", "empty-alias", "unknown-alias"} {
+		ownership, err := svc.resolveCompositeModelOwnership(context.Background(), groupID, model)
+		require.NoError(t, err)
+		require.Equal(t, CompositeModelOwnership{}, ownership, "model=%s", model)
+	}
+
+	ownership, err := svc.resolveCompositeModelOwnership(context.Background(), groupID, "grok-public")
+	require.NoError(t, err)
+	require.Equal(t, CompositeModelOwnership{TargetPlatform: PlatformGrok, Matched: true}, ownership)
+}
+
+func TestResolveCompositeModelOwnershipAllowsSamePlatformAndRejectsCrossPlatformAliases(t *testing.T) {
+	groupID := int64(7)
+	repo := &compositeOwnershipAccountRepo{
+		accounts: []Account{
+			{ID: 1, Platform: PlatformOpenAI, Credentials: map[string]any{"model_mapping": map[string]any{"shared-openai": "gpt-5", "ambiguous": "gpt-5"}}},
+			{ID: 2, Platform: PlatformOpenAI, Credentials: map[string]any{"model_mapping": map[string]any{"shared-openai": "gpt-5.1"}}},
+			{ID: 3, Platform: PlatformDeepseek, Credentials: map[string]any{"model_mapping": map[string]any{"ambiguous": "deepseek-v4-pro"}}},
+		},
+	}
+	svc := &GatewayService{accountRepo: repo}
+
+	samePlatform, err := svc.resolveCompositeModelOwnership(context.Background(), groupID, "shared-openai")
+	require.NoError(t, err)
+	require.Equal(t, CompositeModelOwnership{TargetPlatform: PlatformOpenAI, Matched: true}, samePlatform)
+
+	ambiguous, err := svc.resolveCompositeModelOwnership(context.Background(), groupID, "ambiguous")
+	require.NoError(t, err)
+	require.Equal(t, CompositeModelOwnership{Ambiguous: true}, ambiguous)
+}
+
+func TestWokeyClaudeRefreshFilterLeavesAnthropicAsSoleCompositeOwner(t *testing.T) {
+	groupID := int64(7)
+	const claudeModel = "claude-sonnet-4-6"
+	wokeyPlatforms := []string{PlatformOpenAI, PlatformGrok}
+	accounts := make([]Account, 0, len(wokeyPlatforms)+1)
+	for i, platform := range wokeyPlatforms {
+		accounts = append(accounts, Account{
+			ID:       int64(i + 1),
+			Platform: platform,
+			Type:     AccountTypeAPIKey,
+			Credentials: map[string]any{
+				"base_url":      "https://api.wokey.ai/v1",
+				"model_mapping": map[string]any{claudeModel: claudeModel},
+			},
+		})
+	}
+	accounts = append(accounts, Account{
+		ID:       3,
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"base_url":      "https://flowing.example/v1",
+			"model_mapping": map[string]any{claudeModel: claudeModel},
+		},
+	})
+	repo := &compositeOwnershipAccountRepo{accounts: accounts}
+	svc := &GatewayService{accountRepo: repo}
+
+	before, err := svc.resolveCompositeModelOwnership(context.Background(), groupID, claudeModel)
+	require.NoError(t, err)
+	require.Equal(t, CompositeModelOwnership{Ambiguous: true}, before, "the duplicate OpenAI/Grok + Anthropic claims reproduce the conflict")
+
+	for i := range repo.accounts {
+		account := &repo.accounts[i]
+		if isWokeyOpenAIGrokAPIKeyAccount(account) {
+			mapping := map[string]any{}
+			for _, modelID := range filterWokeyNativeClaudeModelIDs([]string{claudeModel}) {
+				mapping[modelID] = modelID
+			}
+			account.Credentials["model_mapping"] = mapping
+		}
+	}
+	after, err := svc.resolveCompositeModelOwnership(context.Background(), groupID, claudeModel)
+	require.NoError(t, err)
+	require.Equal(t, CompositeModelOwnership{TargetPlatform: PlatformAnthropic, Matched: true}, after,
+		"after Wokey refresh removes the native-Claude claim, the existing Anthropic route is the sole owner")
+}
+
+func TestNewGatewayServiceWiresCompositeModelOwnershipResolver(t *testing.T) {
+	groupID := int64(7)
+	repo := &compositeOwnershipAccountRepo{
+		accounts: []Account{{
+			ID:          1,
+			Platform:    PlatformDeepseek,
+			Credentials: map[string]any{"model_mapping": map[string]any{"reasoning-alias": "deepseek-v4-pro"}},
+		}},
+	}
+	resolver := NewCompositeRouteResolver(nil)
+	svc := NewGatewayService(
+		repo,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		resolver,
+		nil,
+		nil,
+	)
+	require.Same(t, resolver, svc.compositeResolver)
+
+	decision, err := resolver.Resolve(context.Background(), groupID, "reasoning-alias", CompositeRouteEndpointResponses)
+	require.NoError(t, err)
+	require.True(t, decision.Matched)
+	require.Equal(t, CompositeRouteSourceAccount, decision.Source)
+	require.Equal(t, PlatformDeepseek, decision.TargetPlatform)
+}
+
 func TestDetectModelPlatform(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -19,14 +211,27 @@ func TestDetectModelPlatform(t *testing.T) {
 		{name: "anthropic prefix", model: "anthropic/claude-opus-4-5", platform: PlatformAnthropic, ok: true},
 		{name: "gpt", model: "gpt-5.1", platform: PlatformOpenAI, ok: true},
 		{name: "o series", model: "o3-mini", platform: PlatformOpenAI, ok: true},
-		{name: "deepseek openai-compatible", model: "deepseek-v4-pro-0813", platform: PlatformOpenAI, ok: true},
-		{name: "glm openai-compatible", model: "glm-5.3-flash", platform: PlatformOpenAI, ok: true},
 		{name: "embedding", model: "text-embedding-3-large", platform: PlatformOpenAI, ok: true},
 		{name: "gemini", model: "gemini-3-pro", platform: PlatformGemini, ok: true},
 		{name: "gemini models prefix", model: "models/gemini-2.5-flash", platform: PlatformGemini, ok: true},
 		{name: "learnlm", model: "learnlm-2.0-flash-experimental", platform: PlatformGemini, ok: true},
 		{name: "grok", model: "grok-4", platform: PlatformGrok, ok: true},
 		{name: "xai prefix", model: "xai/grok-4", platform: PlatformGrok, ok: true},
+		{name: "kimi", model: "kimi-k2-thinking", platform: PlatformKimi, ok: true},
+		{name: "kimi code bare k3", model: "K3", platform: PlatformKimi, ok: true},
+		{name: "kimi code bare k3 256k", model: "k3-256k", platform: PlatformKimi, ok: true},
+		{name: "kimi code provider prefix", model: "kimi-code/k3", platform: PlatformKimi, ok: true},
+		{name: "moonshot prefix", model: "moonshot/moonshot-v1-32k", platform: PlatformKimi, ok: true},
+		{name: "zhipu", model: "glm-5.2", platform: PlatformZhipu, ok: true},
+		{name: "deepseek", model: "deepseek-v4-pro", platform: PlatformDeepseek, ok: true},
+		{name: "minimax", model: "MiniMax-M3", platform: PlatformMiniMax, ok: true},
+		{name: "minimax prefix", model: "minimax/MiniMax-M2.5", platform: PlatformMiniMax, ok: true},
+		{name: "abab legacy", model: "abab6.5-chat", platform: PlatformMiniMax, ok: true},
+		{name: "abab7 legacy", model: "abab7-chat-preview", platform: PlatformMiniMax, ok: true},
+		{name: "jev", model: "jev-latest", platform: PlatformTypeSafe, ok: true},
+		{name: "typesafe prefix", model: "typesafe/jev-latest", platform: PlatformTypeSafe, ok: true},
+		{name: "abab unrelated namespace", model: "abab-other", ok: false},
+		{name: "unknown k3 alias", model: "k3-preview", ok: false},
 		{name: "unknown", model: "llama-4-maverick", ok: false},
 	}
 
@@ -61,7 +266,14 @@ func TestCompositeGroupSchedulerHasAllCanonicalPlatformBuckets(t *testing.T) {
 		platforms = append(platforms, platform)
 	}
 	require.ElementsMatch(t,
-		[]string{PlatformAnthropic, PlatformGemini, PlatformOpenAI, PlatformAntigravity, PlatformGrok},
+		[]string{PlatformAnthropic, PlatformGemini, PlatformOpenAI, PlatformAntigravity, PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepseek, PlatformMiniMax, PlatformOpenCodeGo, PlatformTypeSafe},
 		platforms,
 	)
+}
+
+func TestCompositeConcretePlatformsIncludeCNProviders(t *testing.T) {
+	for _, platform := range []string{PlatformKimi, PlatformZhipu, PlatformDeepseek, PlatformMiniMax, PlatformOpenCodeGo, PlatformTypeSafe} {
+		require.True(t, isConcreteRequestPlatform(platform))
+		require.True(t, canCopyAccountsFromGroupPlatform(PlatformComposite, platform))
+	}
 }

@@ -197,7 +197,7 @@
     </div>
 
     <!-- Footer -->
-    <template v-if="!backendModeEnabled" #footer>
+    <template v-if="!backendModeEnabled && publicSettingsLoaded && registrationEnabled" #footer>
       <p class="text-gray-500 dark:text-dark-400">
         {{ t('auth.dontHaveAccount') }}
         <router-link
@@ -251,6 +251,7 @@ import type {
 } from '@/types'
 import { extractI18nErrorMessage } from '@/utils/apiError'
 import { clearAllAffiliateReferralCodes } from '@/utils/oauthAffiliate'
+import { completeLoginRedirect } from '@/router/veyraReturn'
 
 const { t } = useI18n()
 const LOGIN_AGREEMENT_STORAGE_KEY = 'sub2api_login_agreement_consent'
@@ -270,6 +271,7 @@ const showPassword = ref<boolean>(false)
 const publicSettingsLoaded = ref<boolean>(false)
 
 // Public settings
+const registrationEnabled = ref<boolean>(false)
 const turnstileEnabled = ref<boolean>(false)
 const turnstileSiteKey = ref<string>('')
 const tencentCaptchaEnabled = ref<boolean>(false)
@@ -323,19 +325,6 @@ const show2FAModal = ref<boolean>(false)
 const totpTempToken = ref<string>('')
 const totpUserEmailMasked = ref<string>('')
 const totpModalRef = ref<InstanceType<typeof TotpLoginModal> | null>(null)
-
-function resolveLoginRedirect(): string {
-  return (router.currentRoute.value.query.redirect as string) || '/dashboard'
-}
-
-async function applyLoginRedirect(redirectTo: string): Promise<void> {
-  if (redirectTo.startsWith('/_veyra/return') || redirectTo.startsWith('/veyra-launch')) {
-    const launchTarget = redirectTo.includes('target=alchemy-mobile') ? 'alchemy-mobile' : 'alchemy'
-    window.location.assign(`/veyra-launch?target=${launchTarget}`)
-    return
-  }
-  await router.push(redirectTo)
-}
 
 const formData = reactive({
   email: '',
@@ -394,6 +383,7 @@ onMounted(async () => {
 
   try {
     const settings = await getPublicSettings()
+    registrationEnabled.value = settings.registration_enabled === true
     turnstileEnabled.value = settings.turnstile_enabled
     turnstileSiteKey.value = settings.turnstile_site_key || ''
     tencentCaptchaEnabled.value = settings.tencent_captcha_enabled === true
@@ -613,8 +603,11 @@ async function handleLogin(): Promise<void> {
     clearAllAffiliateReferralCodes()
     appStore.showSuccess(t('auth.loginSuccess'))
 
-    // Redirect to dashboard or intended route
-    await applyLoginRedirect(resolveLoginRedirect())
+    await completeLoginRedirect(
+      router.currentRoute.value.query.redirect,
+      (path) => router.push(path),
+      (path) => window.location.assign(path)
+    )
   } catch (error: unknown) {
     errorMessage.value = extractI18nErrorMessage(error, t, 'auth.errors', t('auth.loginFailed'))
 
@@ -654,7 +647,11 @@ async function handlePasskeyLogin(): Promise<void> {
     await authStore.loginWithPasskey(proof)
     clearAllAffiliateReferralCodes()
     appStore.showSuccess(t('auth.loginSuccess'))
-    await applyLoginRedirect(resolveLoginRedirect())
+    await completeLoginRedirect(
+      router.currentRoute.value.query.redirect,
+      (path) => router.push(path),
+      (path) => window.location.assign(path)
+    )
   } catch (error: unknown) {
     const fallback = error instanceof DOMException && error.name === 'NotAllowedError'
       ? t('auth.passkeyCancelled')
@@ -721,8 +718,11 @@ async function handle2FAVerify(code: string): Promise<void> {
     clearAllAffiliateReferralCodes()
     appStore.showSuccess(t('auth.loginSuccess'))
 
-    // Redirect to dashboard or intended route
-    await applyLoginRedirect(resolveLoginRedirect())
+    await completeLoginRedirect(
+      router.currentRoute.value.query.redirect,
+      (path) => router.push(path),
+      (path) => window.location.assign(path)
+    )
   } catch (error: unknown) {
     const err = error as { message?: string; response?: { data?: { message?: string } } }
     const message = err.response?.data?.message || err.message || t('profile.totp.loginFailed')

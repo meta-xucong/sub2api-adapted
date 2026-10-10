@@ -290,6 +290,24 @@ func TestIsOpenAITransientProcessingError(t *testing.T) {
 	require.True(t, isOpenAITransientProcessingError(
 		http.StatusBadRequest,
 		"",
+		[]byte(`{"error":{"message":"Our servers are currently overloaded. Please try again later."}}`),
+	))
+
+	require.True(t, isOpenAITransientProcessingError(
+		http.StatusServiceUnavailable,
+		"Server is overloaded. Please try again later.",
+		nil,
+	))
+
+	require.True(t, isOpenAITransientProcessingError(
+		http.StatusBadGateway,
+		"",
+		[]byte(`{"error":{"message":"Our servers are currently overloaded. Please try again later."}}`),
+	))
+
+	require.True(t, isOpenAITransientProcessingError(
+		http.StatusBadRequest,
+		"",
 		[]byte(`{"error":{"message":"An error occurred while processing your request. You can retry your request, or contact us through our help center at help.openai.com if the error persists. Please include the request ID req_123 in your message."}}`),
 	))
 
@@ -309,40 +327,42 @@ func TestIsOpenAIContextWindowError(t *testing.T) {
 		"maximum context length exceeded",
 		nil,
 	))
+	require.True(t, isOpenAIContextWindowError(
+		"",
+		[]byte(`maximum context length exceeded`),
+	))
 	require.False(t, isOpenAIContextWindowError(
 		"context canceled",
 		nil,
 	))
+	require.False(t, isOpenAIContextWindowError(
+		"upstream unavailable",
+		[]byte(`{"error":{"message":"upstream unavailable","code":"upstream_error"},"echo":"context_length_exceeded maximum context length"}`),
+	))
+}
+
+func TestOpenAITransientAndCapacityClassificationIgnoresEchoedJSON(t *testing.T) {
+	body := []byte(`{"error":{"message":"upstream unavailable","code":"upstream_error"},"echo":"server is overloaded; selected model is at capacity"}`)
+
+	require.False(t, isOpenAITransientProcessingError(http.StatusBadRequest, "upstream unavailable", body))
+	require.False(t, isOpenAIRequestScopedCapacityShed("upstream unavailable", body))
+
+	plainText := []byte(`server is overloaded; please retry later`)
+	require.True(t, isOpenAITransientProcessingError(http.StatusServiceUnavailable, "", plainText))
+	require.True(t, isOpenAIRequestScopedCapacityShed("", plainText))
 }
 
 func TestShouldFailoverOpenAIUpstreamResponseContextWindow502(t *testing.T) {
 	svc := &OpenAIGatewayService{}
 	body := []byte(`{"error":{"message":"Your input exceeds the context window of this model. Please adjust your input and try again.","type":"upstream_error","code":null}}`)
 
-	require.False(t, svc.shouldFailoverOpenAIUpstreamResponse(http.StatusBadGateway, "", body))
-	require.True(t, svc.shouldFailoverOpenAIUpstreamResponse(http.StatusBadGateway, "temporary upstream outage", []byte(`{"error":{"message":"temporary upstream outage"}}`)))
-}
-
-func TestShouldFailoverOpenAIImagesResponse_UpstreamTextReply(t *testing.T) {
-	svc := &OpenAIGatewayService{}
-	body := []byte(`{"error":{"code":"upstream_text_reply","message":"requires a usable image target"}}`)
-
-	require.True(t, svc.shouldFailoverOpenAIImagesResponse(http.StatusBadRequest, "requires a usable image target", body))
-	require.False(t, svc.shouldFailoverOpenAIUpstreamResponse(http.StatusBadRequest, "requires a usable image target", body))
-}
-
-func TestShouldFailoverOpenAIImagesResponse_TextReplyIsNarrowAndStructured(t *testing.T) {
-	svc := &OpenAIGatewayService{}
-	marker := []byte(`{"error":{"code":"upstream_text_reply"}}`)
-
-	require.True(t, svc.shouldFailoverOpenAIImagesResponse(http.StatusBadRequest, "", marker))
-	require.True(t, svc.shouldFailoverOpenAIImagesResponse(http.StatusBadRequest, "", []byte(`plain upstream_text_reply`)))
-	require.False(t, svc.shouldFailoverOpenAIImagesResponse(http.StatusBadRequest, "", []byte(`{"error":{"message":"upstream_text_reply appeared in the prompt"}}`)))
-	require.False(t, svc.shouldFailoverOpenAIImagesResponse(http.StatusNotFound, "", marker))
-	require.True(t, svc.shouldFailoverOpenAIImagesResponse(http.StatusBadGateway, "temporary outage", []byte(`{"error":{"message":"temporary outage"}}`)))
-
-	require.False(t, isOpenAIImageUpstreamTextReply([]byte(`{"error":{"message":"upstream_text_reply appeared in the prompt"}}`)))
-	require.False(t, isOpenAIImageUpstreamTextReplyFailover(http.StatusInternalServerError, marker))
+	require.False(t, svc.shouldFailoverOpenAIUpstreamResponse(newOpenAIUpstreamErrorTestAccount(), http.StatusBadGateway, "", body))
+	require.True(t, svc.shouldFailoverOpenAIUpstreamResponse(newOpenAIUpstreamErrorTestAccount(), http.StatusBadGateway, "temporary upstream outage", []byte(`{"error":{"message":"temporary upstream outage"}}`)))
+	require.True(t, svc.shouldFailoverOpenAIUpstreamResponse(newOpenAIUpstreamErrorTestAccount(),
+		http.StatusBadGateway,
+		"temporary upstream outage",
+		[]byte(`{"error":{"message":"temporary upstream outage"},"echo":"context_length_exceeded"}`),
+	))
 }
 
 func TestOpenAIGatewayService_Forward_LogsInstructionsRequiredDetails(t *testing.T) {

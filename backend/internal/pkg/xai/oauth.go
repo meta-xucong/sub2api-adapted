@@ -27,8 +27,8 @@ const (
 	DefaultAuthorizeURL   = OAuthIssuer + "/oauth2/authorize"
 	DefaultTokenURL       = OAuthIssuer + "/oauth2/token"
 	DefaultBaseURL        = "https://api.x.ai/v1"
-	DefaultCLIBaseURL     = "https://cli-chat-proxy.grok.com/v1"
 	WokeyAPIBaseURL       = "https://api.wokey.ai/v1"
+	DefaultCLIBaseURL     = "https://cli-chat-proxy.grok.com/v1"
 	DefaultUSEast1BaseURL = "https://us-east-1.api.x.ai/v1"
 	DefaultUSWest2BaseURL = "https://us-west-2.api.x.ai/v1"
 	DefaultEUWest1BaseURL = "https://eu-west-1.api.x.ai/v1"
@@ -495,6 +495,14 @@ func IsOfficialBaseURL(raw string) bool {
 	return IsOfficialBaseURLHost(parsed.Hostname())
 }
 
+// IsWokeyAPIBaseURL matches only the provider's canonical HTTPS base URL.
+// It is intentionally separate from IsOfficialBaseURL: Wokey is an explicit
+// API-key/provider profile and must not become an OAuth-trusted xAI host.
+func IsWokeyAPIBaseURL(raw string) bool {
+	validated, err := ValidatedBaseURL(raw)
+	return err == nil && strings.EqualFold(validated, WokeyAPIBaseURL)
+}
+
 func AllowUnsafeURLOverrides() bool {
 	return envBool(EnvAllowUnsafeURLOverrides)
 }
@@ -683,10 +691,16 @@ func BuildVideosGenerationsURL(baseURL string) (string, error) {
 	return BuildVideosGenerationsURLWithValidator(baseURL, nil)
 }
 
-// BuildVideosURLWithValidator builds the OpenAI-compatible video task route
-// used by account-scoped relays that create jobs at /videos rather than xAI's
-// /videos/generations. Callers must opt in per account; this is deliberately
-// not a global fallback because the paths are not interchangeable.
+func BuildVideosGenerationsURLWithValidator(baseURL string, validator BaseURLValidator) (string, error) {
+	validatedBaseURL, err := validatedBaseURLWithValidator(baseURL, validator)
+	if err != nil {
+		return "", fmt.Errorf("invalid base url: %w", err)
+	}
+	return validatedBaseURL + "/videos/generations", nil
+}
+
+// BuildVideosURLWithValidator builds the provider-specific collection route
+// used by Wokey-compatible video transports.
 func BuildVideosURLWithValidator(baseURL string, validator BaseURLValidator) (string, error) {
 	validatedBaseURL, err := validatedBaseURLWithValidator(baseURL, validator)
 	if err != nil {
@@ -695,30 +709,16 @@ func BuildVideosURLWithValidator(baseURL string, validator BaseURLValidator) (st
 	return validatedBaseURL + "/videos", nil
 }
 
-// IsWokeyAPIBaseURL identifies Wokey's documented Grok-compatible root.
-// Wokey creates videos at /v1/videos, rather than xAI's /v1/videos/generations.
-func IsWokeyAPIBaseURL(baseURL string) bool {
-	validatedBaseURL, err := ValidatedBaseURL(baseURL)
-	return err == nil && strings.EqualFold(validatedBaseURL, WokeyAPIBaseURL)
-}
-
 func BuildWokeyVideosURL(baseURL string) (string, error) {
-	validatedBaseURL, err := ValidatedBaseURL(baseURL)
-	if err != nil {
-		return "", fmt.Errorf("invalid base url: %w", err)
-	}
-	if !strings.EqualFold(validatedBaseURL, WokeyAPIBaseURL) {
-		return "", fmt.Errorf("base url is not a Wokey API endpoint")
-	}
-	return validatedBaseURL + "/videos", nil
+	return BuildWokeyVideosURLWithValidator(baseURL, nil)
 }
 
-func BuildVideosGenerationsURLWithValidator(baseURL string, validator BaseURLValidator) (string, error) {
+func BuildWokeyVideosURLWithValidator(baseURL string, validator BaseURLValidator) (string, error) {
 	validatedBaseURL, err := validatedBaseURLWithValidator(baseURL, validator)
 	if err != nil {
 		return "", fmt.Errorf("invalid base url: %w", err)
 	}
-	return validatedBaseURL + "/videos/generations", nil
+	return validatedBaseURL + "/videos", nil
 }
 
 func BuildVideosEditsURL(baseURL string) (string, error) {
@@ -764,14 +764,6 @@ func BuildVideoURLWithValidator(baseURL, requestID string, validator BaseURLVali
 		return "", fmt.Errorf("invalid request id")
 	}
 	return validatedBaseURL + "/videos/" + url.PathEscape(requestID), nil
-}
-
-func BuildVideoContentURL(baseURL, requestID string) (string, error) {
-	videoURL, err := BuildVideoURL(baseURL, requestID)
-	if err != nil {
-		return "", err
-	}
-	return videoURL + "/content", nil
 }
 
 // TokenResponse represents xAI OAuth token responses.

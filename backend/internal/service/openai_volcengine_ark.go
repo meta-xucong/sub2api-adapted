@@ -1,216 +1,22 @@
 package service
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
-	"sort"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
-	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
 
-const openAIProviderVolcengineArk = "volcengine_ark"
-
-const defaultVolcengineArkImagesBaseURL = "https://ark.cn-beijing.volces.com/api/v3"
-const openAIUpstreamBaseURLOverrideContextKey = "openai_upstream_base_url_override"
+const (
+	openAIProviderVolcengineArk       = "volcengine_ark"
+	defaultVolcengineArkImagesBaseURL = "https://ark.cn-beijing.volces.com/api/v3"
+)
 
 func isVolcengineArkOpenAIAccount(account *Account) bool {
-	if account == nil || !account.IsOpenAIApiKey() {
-		return false
-	}
-	return strings.EqualFold(strings.TrimSpace(account.GetExtraString("provider")), openAIProviderVolcengineArk)
-}
-
-func sanitizeVolcengineArkResponsesRequest(account *Account, req *apicompat.ResponsesRequest) bool {
-	if !isVolcengineArkOpenAIAccount(account) || req == nil {
-		return false
-	}
-	changed := false
-	if req.Reasoning != nil {
-		req.Reasoning = nil
-		changed = true
-	}
-	if req.Text != nil {
-		req.Text = nil
-		changed = true
-	}
-	return changed
-}
-
-func configureVolcengineArkMessagesUpstream(c *gin.Context, account *Account, req *apicompat.ResponsesRequest) bool {
-	if !isVolcengineArkOpenAIAccount(account) || req == nil {
-		return false
-	}
-	if restored := volcengineArkMultimodalEndpointModel(account, req.Model); restored != "" {
-		if restored == req.Model {
-			return false
-		}
-		req.Model = restored
-		return true
-	}
-	return false
-}
-
-func summarizeVolcengineArkAnthropicRequest(req *apicompat.AnthropicRequest) map[string]any {
-	summary := map[string]any{}
-	if req == nil {
-		return summary
-	}
-	summary["messages"] = len(req.Messages)
-	summary["tools"] = len(req.Tools)
-	summary["stream"] = req.Stream
-	summary["max_tokens"] = req.MaxTokens
-	summary["has_thinking"] = req.Thinking != nil
-	summary["has_output_config"] = req.OutputConfig != nil
-	summary["has_temperature"] = req.Temperature != nil
-	summary["has_top_p"] = req.TopP != nil
-	if len(req.ToolChoice) > 0 {
-		summary["tool_choice_type"] = strings.TrimSpace(gjson.GetBytes(req.ToolChoice, "type").String())
-	}
-	summary["system_shape"] = summarizeAnthropicSystemShape(req.System)
-
-	roleCounts := map[string]int{}
-	blockCounts := map[string]int{}
-	imageMediaCounts := map[string]int{}
-	imageBytes := make([]int, 0, 4)
-	messageTextChars := make([]int, 0, len(req.Messages))
-	totalTextChars := 0
-	for _, msg := range req.Messages {
-		roleCounts[msg.Role]++
-		msgTextChars := 0
-		var blocks []apicompat.AnthropicContentBlock
-		if err := json.Unmarshal(msg.Content, &blocks); err == nil {
-			for _, block := range blocks {
-				blockCounts[block.Type]++
-				if block.Type == "text" {
-					textChars := len([]rune(block.Text))
-					msgTextChars += textChars
-					totalTextChars += textChars
-				}
-				if block.Type == "image" && block.Source != nil {
-					mediaType := strings.TrimSpace(block.Source.MediaType)
-					if mediaType == "" {
-						mediaType = "image/png"
-					}
-					imageMediaCounts[mediaType]++
-					if block.Source.Data != "" {
-						imageBytes = append(imageBytes, decodedBase64ApproxBytes(block.Source.Data))
-					}
-				}
-				if block.Type == "tool_result" && len(block.Content) > 0 {
-					var nested []apicompat.AnthropicContentBlock
-					if err := json.Unmarshal(block.Content, &nested); err == nil {
-						for _, nestedBlock := range nested {
-							blockCounts["tool_result."+nestedBlock.Type]++
-							if nestedBlock.Type == "text" {
-								textChars := len([]rune(nestedBlock.Text))
-								msgTextChars += textChars
-								totalTextChars += textChars
-							}
-							if nestedBlock.Type == "image" && nestedBlock.Source != nil {
-								mediaType := strings.TrimSpace(nestedBlock.Source.MediaType)
-								if mediaType == "" {
-									mediaType = "image/png"
-								}
-								imageMediaCounts[mediaType]++
-								if nestedBlock.Source.Data != "" {
-									imageBytes = append(imageBytes, decodedBase64ApproxBytes(nestedBlock.Source.Data))
-								}
-							}
-						}
-					}
-				}
-			}
-		} else {
-			var text string
-			if err := json.Unmarshal(msg.Content, &text); err == nil {
-				blockCounts["plain_text"]++
-				textChars := len([]rune(text))
-				msgTextChars += textChars
-				totalTextChars += textChars
-			} else {
-				blockCounts["unparsed"]++
-			}
-		}
-		messageTextChars = append(messageTextChars, msgTextChars)
-	}
-	summary["role_counts"] = roleCounts
-	summary["block_counts"] = blockCounts
-	summary["total_text_chars"] = totalTextChars
-	summary["message_text_chars"] = messageTextChars
-	summary["image_media_counts"] = imageMediaCounts
-	sort.Ints(imageBytes)
-	summary["image_count"] = len(imageBytes)
-	summary["image_decoded_bytes"] = imageBytes
-	return summary
-}
-
-func summarizeAnthropicSystemShape(raw json.RawMessage) string {
-	if len(raw) == 0 {
-		return "empty"
-	}
-	var text string
-	if err := json.Unmarshal(raw, &text); err == nil {
-		if strings.TrimSpace(text) == "" {
-			return "empty_string"
-		}
-		return "string"
-	}
-	var blocks []apicompat.AnthropicContentBlock
-	if err := json.Unmarshal(raw, &blocks); err == nil {
-		return fmt.Sprintf("blocks:%d", len(blocks))
-	}
-	return "unknown"
-}
-
-func decodedBase64ApproxBytes(value string) int {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return 0
-	}
-	padding := 0
-	if strings.HasSuffix(value, "==") {
-		padding = 2
-	} else if strings.HasSuffix(value, "=") {
-		padding = 1
-	}
-	return len(value)*3/4 - padding
-}
-
-func responsesRequestHasInputImage(req *apicompat.ResponsesRequest) bool {
-	if req == nil || len(req.Input) == 0 {
-		return false
-	}
-	var decoded any
-	if err := json.Unmarshal(req.Input, &decoded); err != nil {
-		return false
-	}
-	return jsonValueContainsInputImage(decoded)
-}
-
-func jsonValueContainsInputImage(value any) bool {
-	switch typed := value.(type) {
-	case map[string]any:
-		if strings.TrimSpace(firstNonEmptyString(typed["type"])) == "input_image" {
-			return true
-		}
-		for _, child := range typed {
-			if jsonValueContainsInputImage(child) {
-				return true
-			}
-		}
-	case []any:
-		for _, child := range typed {
-			if jsonValueContainsInputImage(child) {
-				return true
-			}
-		}
-	}
-	return false
+	return account != nil && account.IsOpenAIApiKey() && strings.EqualFold(strings.TrimSpace(account.GetExtraString("provider")), openAIProviderVolcengineArk)
 }
 
 func isVolcengineArkImageModel(model string) bool {
@@ -218,25 +24,11 @@ func isVolcengineArkImageModel(model string) bool {
 	return strings.HasPrefix(model, "doubao-seedream-") || strings.HasPrefix(model, "seedream-")
 }
 
-func volcengineArkMultimodalEndpointModel(account *Account, model string) string {
-	if !isVolcengineArkOpenAIAccount(account) {
-		return ""
+func validateOpenAIImagesModelForAccount(account *Account, model string) error {
+	if isVolcengineArkOpenAIAccount(account) && isVolcengineArkImageModel(model) {
+		return nil
 	}
-	model = strings.TrimSpace(model)
-	if model == "" {
-		return ""
-	}
-	for _, key := range []string{"openai_multimodal_model", "multimodal_model"} {
-		if value := strings.TrimSpace(account.GetExtraString(key)); value != "" {
-			return value
-		}
-	}
-	switch model {
-	case "doubao-seed-2.0-lite":
-		return "doubao-seed-2-0-lite-260428"
-	default:
-		return ""
-	}
+	return validateCompatibleImagesModel(model)
 }
 
 func volcengineArkImagesBaseURL(account *Account) string {
@@ -249,13 +41,6 @@ func volcengineArkImagesBaseURL(account *Account) string {
 		}
 	}
 	return defaultVolcengineArkImagesBaseURL
-}
-
-func validateOpenAIImagesModelForAccount(account *Account, model string) error {
-	if isVolcengineArkOpenAIAccount(account) && isVolcengineArkImageModel(model) {
-		return nil
-	}
-	return validateOpenAIImagesModel(model)
 }
 
 func sanitizeVolcengineArkImagesRequest(account *Account, body []byte, contentType string, parsed *OpenAIImagesRequest) ([]byte, string, error) {
@@ -271,19 +56,9 @@ func sanitizeVolcengineArkImagesRequest(account *Account, body []byte, contentTy
 	if len(body) == 0 || !gjson.ValidBytes(body) {
 		return body, contentType, nil
 	}
-
 	rewritten := body
 	var err error
-	for _, path := range []string{
-		"background",
-		"moderation",
-		"partial_images",
-		"quality",
-		"style",
-		"input_fidelity",
-		"output_compression",
-		"output_format",
-	} {
+	for _, path := range []string{"background", "moderation", "partial_images", "quality", "style", "input_fidelity", "output_compression", "output_format"} {
 		if gjson.GetBytes(rewritten, path).Exists() {
 			rewritten, err = sjson.DeleteBytes(rewritten, path)
 			if err != nil {
@@ -310,7 +85,6 @@ func adaptVolcengineArkImagesToGeneration(account *Account, parsed *OpenAIImages
 	if !parsed.IsEdits() && len(parsed.InputImageURLs) == 0 && len(parsed.Uploads) == 0 {
 		return nil, "", "", false, nil
 	}
-
 	images := make([]string, 0, len(parsed.InputImageURLs)+len(parsed.Uploads))
 	for _, imageURL := range parsed.InputImageURLs {
 		if trimmed := strings.TrimSpace(imageURL); trimmed != "" {
@@ -318,7 +92,7 @@ func adaptVolcengineArkImagesToGeneration(account *Account, parsed *OpenAIImages
 		}
 	}
 	for _, upload := range parsed.Uploads {
-		dataURL, err := openAIImageUploadToDataURL(upload)
+		dataURL, err := openAIAdaptedImageUploadToDataURL(upload)
 		if err != nil {
 			return nil, "", "", false, err
 		}
@@ -359,24 +133,56 @@ func openAIImagesUnsupportedVolcengineArkFailoverError() error {
 	}
 }
 
-func setOpenAIUpstreamBaseURLOverride(c *gin.Context, baseURL string) {
-	if c == nil || strings.TrimSpace(baseURL) == "" {
-		return
+func sanitizeVolcengineArkResponsesRequest(account *Account, req *apicompat.ResponsesRequest) bool {
+	if !isVolcengineArkOpenAIAccount(account) || req == nil {
+		return false
 	}
-	c.Set(openAIUpstreamBaseURLOverrideContextKey, strings.TrimSpace(baseURL))
+	changed := false
+	if req.Reasoning != nil {
+		req.Reasoning = nil
+		changed = true
+	}
+	if req.Text != nil {
+		req.Text = nil
+		changed = true
+	}
+	return changed
 }
 
-func openAIUpstreamBaseURLOverride(c *gin.Context) string {
-	if c == nil {
+func volcengineArkMultimodalEndpointModel(account *Account, model string) string {
+	if !isVolcengineArkOpenAIAccount(account) {
 		return ""
 	}
-	value, ok := c.Get(openAIUpstreamBaseURLOverrideContextKey)
-	if !ok {
+	model = strings.TrimSpace(model)
+	if model == "" {
 		return ""
 	}
-	baseURL, ok := value.(string)
-	if !ok {
-		return ""
+	for _, key := range []string{"openai_multimodal_model", "multimodal_model"} {
+		if value := strings.TrimSpace(account.GetExtraString(key)); value != "" {
+			return value
+		}
 	}
-	return strings.TrimSpace(baseURL)
+	if model == "doubao-seed-2.0-lite" {
+		return "doubao-seed-2-0-lite-260428"
+	}
+	return ""
+}
+
+func configureVolcengineArkMessagesUpstream(account *Account, req *apicompat.ResponsesRequest) bool {
+	if !isVolcengineArkOpenAIAccount(account) || req == nil {
+		return false
+	}
+	if restored := volcengineArkMultimodalEndpointModel(account, req.Model); restored != "" && restored != req.Model {
+		req.Model = restored
+		return true
+	}
+	return false
+}
+
+func applyVolcengineArkMessagesToResponses(account *Account, req *apicompat.ResponsesRequest) bool {
+	changed := sanitizeVolcengineArkResponsesRequest(account, req)
+	if configureVolcengineArkMessagesUpstream(account, req) {
+		changed = true
+	}
+	return changed
 }

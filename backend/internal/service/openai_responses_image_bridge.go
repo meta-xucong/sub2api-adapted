@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"time"
 
@@ -18,9 +19,88 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-// IsResponsesImageBridgeRequest is intentionally narrower than the general
-// image-intent classifier. A model name alone must never rewrite a normal
-// Responses request into an Images API request.
+const featureKeyResponsesImageMode = "responses_image_mode"
+
+const (
+	ResponsesImageModeNative    = "native"
+	ResponsesImageModeImagesAPI = "images_api"
+)
+
+// ResponsesImageMode declares which request protocol an OpenAI image lane
+// accepts. Unknown values deliberately keep native behavior.
+func (a *Account) ResponsesImageMode() string {
+	if mode, ok := a.responsesImageModeOverride(); ok {
+		return normalizeResponsesImageMode(mode)
+	}
+	if a.isAutomaticallyImagesAPIOnly() {
+		return ResponsesImageModeImagesAPI
+	}
+	return ResponsesImageModeNative
+}
+
+func (a *Account) responsesImageModeOverride() (string, bool) {
+	if a == nil || a.Platform != PlatformOpenAI || a.Extra == nil {
+		return "", false
+	}
+	if mode, ok := stringOverrideFromMap(a.Extra, featureKeyResponsesImageMode); ok {
+		return mode, true
+	}
+	openaiConfig, _ := a.Extra[PlatformOpenAI].(map[string]any)
+	if mode, ok := stringOverrideFromMap(openaiConfig, featureKeyResponsesImageMode); ok {
+		return mode, true
+	}
+	return "", false
+}
+
+// isAutomaticallyImagesAPIOnly identifies the ordinary API-key account shape
+// used for third-party image-only lines. AccountTypeUpstream is intentionally
+// excluded because ForwardImages does not support that account type on this
+// baseline.
+func (a *Account) isAutomaticallyImagesAPIOnly() bool {
+	if a == nil || a.Platform != PlatformOpenAI || a.Type != AccountTypeAPIKey {
+		return false
+	}
+	baseURL := strings.TrimSpace(a.GetCredential("base_url"))
+	if baseURL == "" {
+		baseURL = strings.TrimSpace(a.GetOpenAIBaseURL())
+	}
+	if baseURL == "" || isOfficialOpenAIBaseURL(baseURL) {
+		return false
+	}
+	mapping := a.GetModelMapping()
+	if len(mapping) == 0 {
+		return false
+	}
+	for requestedModel := range mapping {
+		if !isOpenAIImageGenerationModel(requestedModel) {
+			return false
+		}
+	}
+	return true
+}
+
+func isOfficialOpenAIBaseURL(baseURL string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
+	return host == "api.openai.com"
+}
+
+func normalizeResponsesImageMode(value string) string {
+	if strings.EqualFold(strings.TrimSpace(value), ResponsesImageModeImagesAPI) {
+		return ResponsesImageModeImagesAPI
+	}
+	return ResponsesImageModeNative
+}
+
+func (a *Account) UsesResponsesImageBridge() bool {
+	return a != nil && a.ResponsesImageMode() == ResponsesImageModeImagesAPI
+}
+
+// IsResponsesImageBridgeRequest is narrower than the general image-intent
+// classifier. A model name alone must never rewrite a normal Responses request.
 func IsResponsesImageBridgeRequest(body []byte) bool {
 	if len(body) == 0 || !gjson.ValidBytes(body) {
 		return false
@@ -39,8 +119,8 @@ func IsResponsesImageBridgeRequest(body []byte) bool {
 
 // BuildOpenAIResponsesImageBridgeRequest translates one explicit Responses
 // image tool request into the JSON form accepted by /v1/images/generations or
-// /v1/images/edits. It returns the parsed image request so routing and billing
-// use the same capability classification as the public Images endpoint.
+// /v1/images/edits. The returned parsed request is shared with normal Images
+// routing and billing.
 func BuildOpenAIResponsesImageBridgeRequest(body []byte) ([]byte, *OpenAIImagesRequest, error) {
 	if !IsResponsesImageBridgeRequest(body) {
 		return nil, nil, fmt.Errorf("Responses image_generation tool is required")
@@ -119,7 +199,7 @@ func BuildOpenAIResponsesImageBridgeRequest(body []byte) ([]byte, *OpenAIImagesR
 		return nil, nil, err
 	}
 	applyOpenAIImagesDefaults(parsed)
-	if err := validateOpenAIImagesRequestModel(parsed.Model); err != nil {
+	if err := validateOpenAIImagesModel(parsed.Model); err != nil {
 		return nil, nil, err
 	}
 	parsed.SizeTier = normalizeOpenAIImageSizeTier(parsed.Size)
@@ -186,19 +266,22 @@ func appendResponsesImageText(prompt *strings.Builder, value string) {
 	prompt.WriteString(value)
 }
 
-// ForwardResponsesImageBridge executes exactly one Images API attempt. The
-// public Responses context is only written after the image service has
-// returned a complete result, so a failover never emits a partial Responses
-// stream or duplicates a top-level request.
+// ForwardResponsesImageBridge executes one Images API attempt and writes the
+// public Responses response only after a complete image result is available.
+// This keeps an empty/invalid Images response failover-safe.
 func (s *OpenAIGatewayService) ForwardResponsesImageBridge(
 	ctx context.Context,
 	c *gin.Context,
 	account *Account,
 	body []byte,
+	preserveStreaming ...bool,
 ) (*OpenAIForwardResult, error) {
 	imageBody, parsed, err := BuildOpenAIResponsesImageBridgeRequest(body)
 	if err != nil {
 		return nil, err
+	}
+	if c == nil || c.Request == nil {
+		return nil, fmt.Errorf("image bridge request context is required")
 	}
 	if account == nil {
 		return nil, fmt.Errorf("image bridge account is required")
@@ -221,24 +304,36 @@ func (s *OpenAIGatewayService) ForwardResponsesImageBridge(
 		bridgeContext.Set(key, value)
 	}
 
-	// The Responses model belongs to the text request (for example gpt-5.5).
-	// Images forwarding must use the explicit image tool model and account-level
-	// mapping; passing the Responses channel mapping here would overwrite it.
 	result, err := s.ForwardImages(ctx, bridgeContext, account, imageBody, parsed, "")
 	if err != nil {
 		return result, err
 	}
 	imageResponse := bytes.TrimSpace(recorder.Body.Bytes())
 	if len(imageResponse) == 0 || !gjson.ValidBytes(imageResponse) {
-		return nil, &UpstreamFailoverError{StatusCode: http.StatusBadGateway, ResponseBody: []byte(`{"error":{"message":"image upstream returned an invalid response"}}`)}
+		return nil, newResponsesImageBridgeFailoverError("image upstream returned an invalid response")
 	}
-	if err := writeResponsesImageBridgeResponse(c, body, imageResponse); err != nil {
-		return nil, err
+	preserve := true
+	if len(preserveStreaming) > 0 {
+		preserve = preserveStreaming[0]
+	}
+	if err := writeResponsesImageBridgeResponse(c, body, imageResponse, preserve); err != nil {
+		// Preserve upstream usage metadata when the client disconnects during
+		// response writing; the handler records partial results on this path.
+		return result, err
 	}
 	return result, nil
 }
 
-func writeResponsesImageBridgeResponse(c *gin.Context, requestBody, imageBody []byte) error {
+func newResponsesImageBridgeFailoverError(message string) *UpstreamFailoverError {
+	return &UpstreamFailoverError{
+		StatusCode:       http.StatusBadGateway,
+		ClientStatusCode: http.StatusBadGateway,
+		ClientMessage:    message,
+		ResponseBody:     []byte(fmt.Sprintf(`{"error":{"type":"upstream_error","code":"image_generation_unavailable","message":%q}}`, message)),
+	}
+}
+
+func writeResponsesImageBridgeResponse(c *gin.Context, requestBody, imageBody []byte, preserveStreaming ...bool) error {
 	var imageResponse struct {
 		Created int64 `json:"created"`
 		Data    []struct {
@@ -248,10 +343,10 @@ func writeResponsesImageBridgeResponse(c *gin.Context, requestBody, imageBody []
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(imageBody, &imageResponse); err != nil {
-		return fmt.Errorf("parse Images API response: %w", err)
+		return newResponsesImageBridgeFailoverError("parse Images API response failed")
 	}
 	if len(imageResponse.Data) == 0 {
-		return &UpstreamFailoverError{StatusCode: http.StatusBadGateway, ResponseBody: []byte(`{"error":{"message":"image upstream returned no image"}}`)}
+		return newResponsesImageBridgeFailoverError("image upstream returned no image")
 	}
 	model := strings.TrimSpace(gjson.GetBytes(requestBody, "model").String())
 	if model == "" {
@@ -267,6 +362,9 @@ func writeResponsesImageBridgeResponse(c *gin.Context, requestBody, imageBody []
 		result := strings.TrimSpace(image.B64JSON)
 		if result == "" {
 			result = strings.TrimSpace(image.URL)
+		}
+		if result == "" {
+			return newResponsesImageBridgeFailoverError("image upstream returned an empty image result")
 		}
 		item := map[string]any{
 			"type":           "image_generation_call",
@@ -291,11 +389,27 @@ func writeResponsesImageBridgeResponse(c *gin.Context, requestBody, imageBody []
 		"created_at": created,
 		"tool_usage": map[string]any{"image_gen": map[string]any{"images": len(output)}},
 	}
-	if gjson.GetBytes(requestBody, "stream").Bool() {
+	stream := gjson.GetBytes(requestBody, "stream").Bool()
+	if len(preserveStreaming) > 0 && !preserveStreaming[0] {
+		stream = false
+	}
+	if stream {
 		return writeResponsesImageBridgeStream(c, responseID, created, output, completed)
 	}
 	c.Header("Content-Type", "application/json")
-	c.JSON(http.StatusOK, completed)
+	payload, err := json.Marshal(completed)
+	if err != nil {
+		return err
+	}
+	payload = append(payload, '\n')
+	c.Status(http.StatusOK)
+	written, err := c.Writer.Write(payload)
+	if err != nil {
+		return err
+	}
+	if written != len(payload) {
+		return io.ErrShortWrite
+	}
 	return nil
 }
 
@@ -309,43 +423,63 @@ func responsesImageToolField(body []byte, field string) string {
 }
 
 func writeResponsesImageBridgeStream(c *gin.Context, responseID string, created int64, output []map[string]any, completed map[string]any) error {
-	c.Header("Content-Type", "text/event-stream")
-	c.Header("Cache-Control", "no-cache")
-	c.Status(http.StatusOK)
 	flusher, ok := c.Writer.(http.Flusher)
 	if !ok {
 		return fmt.Errorf("Responses image bridge requires a streaming response writer")
 	}
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Status(http.StatusOK)
 	writeEvent := func(event map[string]any) error {
 		payload, err := json.Marshal(event)
 		if err != nil {
 			return err
 		}
-		if _, err := c.Writer.Write(append(append([]byte("data: "), payload...), []byte("\n\n")...)); err != nil {
+		frame := append(append([]byte("data: "), payload...), []byte("\n\n")...)
+		n, err := c.Writer.Write(frame)
+		if err != nil {
 			return err
+		}
+		if n != len(frame) {
+			return io.ErrShortWrite
 		}
 		flusher.Flush()
 		return nil
 	}
-	if err := writeEvent(map[string]any{
+	sequenceNumber := 0
+	writeSequencedEvent := func(event map[string]any) error {
+		event["sequence_number"] = sequenceNumber
+		sequenceNumber++
+		return writeEvent(event)
+	}
+	if err := writeSequencedEvent(map[string]any{
 		"type":     "response.created",
 		"response": map[string]any{"id": responseID, "object": "response", "status": "in_progress", "created_at": created, "output": []any{}},
 	}); err != nil {
 		return err
 	}
-	for index, item := range output {
-		if err := writeEvent(map[string]any{"type": "response.output_item.added", "output_index": index, "item": item}); err != nil {
-			return err
-		}
-		if err := writeEvent(map[string]any{"type": "response.output_item.done", "output_index": index, "item": item}); err != nil {
-			return err
-		}
-	}
-	completed["status"] = "completed"
-	if err := writeEvent(map[string]any{"type": "response.completed", "response": completed}); err != nil {
+	if err := writeSequencedEvent(map[string]any{
+		"type":     "response.in_progress",
+		"response": map[string]any{"id": responseID, "object": "response", "status": "in_progress", "created_at": created, "output": []any{}},
+	}); err != nil {
 		return err
 	}
-	_, err := io.WriteString(c.Writer, "data: [DONE]\n\n")
+	for index, item := range output {
+		if err := writeSequencedEvent(map[string]any{"type": "response.output_item.added", "output_index": index, "item": item}); err != nil {
+			return err
+		}
+		if err := writeSequencedEvent(map[string]any{"type": "response.output_item.done", "output_index": index, "item": item}); err != nil {
+			return err
+		}
+	}
+	completedEvent := map[string]any{"type": "response.completed", "response": completed}
+	if err := writeSequencedEvent(completedEvent); err != nil {
+		return err
+	}
+	n, err := io.WriteString(c.Writer, "data: [DONE]\n\n")
+	if err == nil && n != len("data: [DONE]\n\n") {
+		err = io.ErrShortWrite
+	}
 	if err == nil {
 		flusher.Flush()
 	}

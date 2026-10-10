@@ -117,24 +117,17 @@ func buildGrokMediaURL(account *Account, cfg *config.Config, endpoint GrokMediaE
 		return "", err
 	}
 	baseURL := account.GetGrokMediaBaseURL()
-	if account.GrokVideoTransport() == GrokVideoTransportKIEJobs {
-		return buildKIEJobsMediaURL(baseURL, validator, endpoint, requestID)
-	}
 	switch endpoint {
 	case GrokMediaEndpointImagesGenerations:
 		return xai.BuildImagesGenerationsURLWithValidator(baseURL, validator)
 	case GrokMediaEndpointImagesEdits:
 		return xai.BuildImagesEditsURLWithValidator(baseURL, validator)
 	case GrokMediaEndpointVideosGenerations:
-		if account.UsesGrokVideosCreatePath() {
-			return xai.BuildVideosURLWithValidator(baseURL, validator)
+		if account.UsesKIEJobsVideoAPI() {
+			return buildKIEJobsMediaURL(baseURL, endpoint, requestID, validator)
 		}
-		if xai.IsWokeyAPIBaseURL(baseURL) {
-			validated, err := validator(baseURL)
-			if err != nil {
-				return "", err
-			}
-			return xai.BuildWokeyVideosURL(validated)
+		if account.GrokVideoTransport() == GrokVideoTransportWokeyMultipart || account.UsesGrokVideosCreatePath() {
+			return xai.BuildVideosURLWithValidator(baseURL, validator)
 		}
 		return xai.BuildVideosGenerationsURLWithValidator(baseURL, validator)
 	case GrokMediaEndpointVideosEdits:
@@ -142,8 +135,14 @@ func buildGrokMediaURL(account *Account, cfg *config.Config, endpoint GrokMediaE
 	case GrokMediaEndpointVideosExtensions:
 		return xai.BuildVideosExtensionsURLWithValidator(baseURL, validator)
 	case GrokMediaEndpointVideoStatus:
+		if account.UsesKIEJobsVideoAPI() {
+			return buildKIEJobsMediaURL(baseURL, endpoint, requestID, validator)
+		}
 		return xai.BuildVideoURLWithValidator(baseURL, requestID, validator)
 	case GrokMediaEndpointVideoContent:
+		if account.UsesKIEJobsVideoAPI() {
+			return buildKIEJobsMediaURL(baseURL, endpoint, requestID, validator)
+		}
 		videoURL, err := xai.BuildVideoURLWithValidator(baseURL, requestID, validator)
 		if err != nil {
 			return "", err
@@ -154,14 +153,14 @@ func buildGrokMediaURL(account *Account, cfg *config.Config, endpoint GrokMediaE
 	}
 }
 
-func buildKIEJobsMediaURL(baseURL string, validator xai.BaseURLValidator, endpoint GrokMediaEndpoint, requestID string) (string, error) {
+func buildKIEJobsMediaURL(baseURL string, endpoint GrokMediaEndpoint, requestID string, validator xai.BaseURLValidator) (string, error) {
 	validated, err := validator(baseURL)
 	if err != nil {
 		return "", err
 	}
 	parsed, err := url.Parse(validated)
-	if err != nil {
-		return "", fmt.Errorf("parse KIE base URL: %w", err)
+	if err != nil || parsed == nil || parsed.Host == "" {
+		return "", fmt.Errorf("invalid KIE jobs base URL")
 	}
 	parsed.RawQuery = ""
 	parsed.Fragment = ""
@@ -170,17 +169,20 @@ func buildKIEJobsMediaURL(baseURL string, validator xai.BaseURLValidator, endpoi
 	case GrokMediaEndpointVideosGenerations:
 		parsed.Path = basePath + "/api/v1/jobs/createTask"
 	case GrokMediaEndpointVideoStatus:
-		if strings.TrimSpace(requestID) == "" {
-			return "", fmt.Errorf("KIE task ID is required")
+		requestID = strings.TrimSpace(requestID)
+		if requestID == "" || requestID == "." || requestID == ".." || strings.ContainsAny(requestID, "\x00\r\n") {
+			return "", fmt.Errorf("request id is required")
 		}
+		values := url.Values{}
+		values.Set("taskId", requestID)
 		parsed.Path = basePath + "/api/v1/jobs/recordInfo"
-		query := url.Values{}
-		query.Set("taskId", requestID)
-		parsed.RawQuery = query.Encode()
+		parsed.RawQuery = values.Encode()
+	case GrokMediaEndpointVideoContent:
+		return "", fmt.Errorf("KIE jobs content is returned from the signed result URL")
 	default:
-		return "", fmt.Errorf("KIE jobs transport does not support grok media endpoint: %s", endpoint)
+		return "", fmt.Errorf("unsupported KIE jobs endpoint: %s", endpoint)
 	}
-	return parsed.String(), nil
+	return strings.TrimRight(parsed.String(), "/"), nil
 }
 
 // buildGrokVoiceURL returns the official xAI Voice API endpoint.

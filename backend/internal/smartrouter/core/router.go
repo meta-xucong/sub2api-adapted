@@ -12,24 +12,9 @@ import (
 func Order(req RouteRequest, lanes []LaneSnapshot, policy Policy) RoutePlan {
 	policy = policy.Normalize()
 	policy = applyRequestPolicyHints(req, policy)
-	plan := RoutePlan{
-		AttemptBudget: policy.AttemptBudget(req.Capability),
-		SkipReasons:   make(map[string]string),
-	}
+	plan := RoutePlan{SkipReasons: make(map[string]string)}
 	if !policy.Enabled {
 		return plan
-	}
-	if plan.AttemptBudget > 0 && req.AttemptNumber >= plan.AttemptBudget {
-		return plan
-	}
-	if req.RemainingBudgetSeconds > 0 {
-		minimumAttempt := math.Max(req.MinimumAttemptSeconds, 0)
-		reserve := math.Max(req.FinalizationReserveSeconds, 0)
-		if req.RemainingBudgetSeconds <= minimumAttempt+reserve {
-			plan.BudgetBlocked = true
-			plan.SkipReasons["__budget__"] = "insufficient_remaining_budget"
-			return plan
-		}
 	}
 
 	nowUnix := req.NowUnix
@@ -71,7 +56,7 @@ func Order(req RouteRequest, lanes []LaneSnapshot, policy Policy) RoutePlan {
 			plan.SkipReasons[lane.LaneID] = "model_unavailable_until_calibration"
 			continue
 		}
-		// Health cooldown is normally a soft penalty. The gpt-image-2 admission
+		// Health cooldown is normally a soft penalty. The GPT image model admission
 		// guard below skips cooling lanes only when a healthy same-capability
 		// alternative exists; otherwise they remain last-resort candidates.
 		if lane.MaxConcurrency > 0 && lane.CurrentConcurrency >= lane.MaxConcurrency {
@@ -87,13 +72,13 @@ func Order(req RouteRequest, lanes []LaneSnapshot, policy Policy) RoutePlan {
 	if len(filtered) == 0 {
 		return plan
 	}
-	// gpt-image-2 is intermittently unavailable on individual upstream
-	// capability lanes. When at least one non-cooling lane exists, keep new
-	// requests off cooling lanes; if the whole pool is cooling, retain every
-	// lane as a last-resort candidate. This is deliberately model-scoped so
+	// gpt-image-2 and gpt-image-2.5 can be intermittently unavailable on
+	// individual upstream capability lanes. When at least one non-cooling lane
+	// exists, keep new requests off cooling lanes; if the whole pool is cooling,
+	// retain every lane as a last-resort candidate. This remains model-scoped so
 	// other image models keep their historical soft-fallback behavior.
-	if shouldPreferHealthyGPTImage2(req) {
-		filtered = filterCoolingGPTImage2Lanes(filtered, nowUnix, plan.SkipReasons)
+	if shouldPreferHealthyGPTImageModel(req) {
+		filtered = filterCoolingGPTImageLanes(filtered, nowUnix, plan.SkipReasons)
 	}
 	// Explicit size-specialized lanes get first use for their matching tier.
 	// Once all of them are unavailable, generic lanes become the fallback.
@@ -167,12 +152,6 @@ func Order(req RouteRequest, lanes []LaneSnapshot, policy Policy) RoutePlan {
 	})
 
 	topK := policy.TopK
-	// Compact requests must not silently stop at the generic TopK. Their
-	// default budget is dynamic (0), so expose every eligible candidate to the
-	// scheduler; the handler excludes each failed lane before the next pass.
-	if req.Capability == CapabilityResponsesCompact && plan.AttemptBudget == 0 {
-		topK = len(candidates)
-	}
 	if topK > len(candidates) {
 		topK = len(candidates)
 	}
@@ -206,20 +185,9 @@ func Order(req RouteRequest, lanes []LaneSnapshot, policy Policy) RoutePlan {
 	if !imageResilience || !policy.ImageHalfOpenEnabled || len(probeLanes) == 0 {
 		ordered = weightedOrder(orderedCandidates, req)
 	}
-	if plan.AttemptBudget > 0 && !imageResilience {
-		remaining := plan.AttemptBudget - req.AttemptNumber
-		if remaining < len(ordered) {
-			ordered = ordered[:maxInt(remaining, 0)]
-		}
-	}
-
 	plan.Candidates = candidates
 	plan.OrderedLaneIDs = make([]string, 0, len(ordered))
 	seenSourceGroups := make(map[string]int)
-	remainingAttempts := 0
-	if imageResilience && plan.AttemptBudget > 0 {
-		remainingAttempts = plan.AttemptBudget - req.AttemptNumber
-	}
 	for _, candidate := range ordered {
 		maxSameSourceAttempts := policy.SameSourceGroupAttempts
 		if imageResilience && policy.ImageSameSourceAttempts > 0 {
@@ -233,21 +201,19 @@ func Order(req RouteRequest, lanes []LaneSnapshot, policy Policy) RoutePlan {
 			seenSourceGroups[candidate.SourceGroup] = count + 1
 		}
 		plan.OrderedLaneIDs = append(plan.OrderedLaneIDs, candidate.LaneID)
-		if remainingAttempts > 0 && len(plan.OrderedLaneIDs) >= remainingAttempts {
-			break
-		}
 	}
 	return plan
 }
 
-func shouldPreferHealthyGPTImage2(req RouteRequest) bool {
+func shouldPreferHealthyGPTImageModel(req RouteRequest) bool {
 	if !isImageCapability(req.Capability) {
 		return false
 	}
-	return strings.EqualFold(strings.TrimSpace(req.Model), "gpt-image-2")
+	model := strings.TrimSpace(req.Model)
+	return strings.EqualFold(model, "gpt-image-2") || strings.EqualFold(model, "gpt-image-2.5")
 }
 
-func filterCoolingGPTImage2Lanes(lanes []LaneSnapshot, nowUnix int64, skipReasons map[string]string) []LaneSnapshot {
+func filterCoolingGPTImageLanes(lanes []LaneSnapshot, nowUnix int64, skipReasons map[string]string) []LaneSnapshot {
 	if len(lanes) <= 1 {
 		return lanes
 	}
@@ -265,7 +231,7 @@ func filterCoolingGPTImage2Lanes(lanes []LaneSnapshot, nowUnix int64, skipReason
 	}
 	if skipReasons != nil {
 		for _, lane := range cooling {
-			skipReasons[lane.LaneID] = "gpt_image2_health_cooldown"
+			skipReasons[lane.LaneID] = "gpt_image_health_cooldown"
 		}
 	}
 	return healthy

@@ -3,26 +3,19 @@ package service
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"mime"
 	"mime/multipart"
 	"net/http"
-	"net/textproto"
 	"net/url"
-	"path"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
-	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -41,41 +34,20 @@ const (
 
 	// Official xAI Imagine image-edit limit.
 	grokMediaMaxEditSourceImages = 3
-
-	// Wokey's working image-to-video contract is multipart image[]. Keep the
-	// gateway-side fetch bounded because the source URL is supplied by a client.
-	wokeyVideoReferenceImageMaxBytes = 8 << 20
-	wokeyVideoReferenceImageMaxCount = 4
-
-	// Wokey documents multimodal_reference for Grok Imagine Video 1.5 with up
-	// to seven images. This is deliberately separate from the older I2V limit.
-	wokeyVideoMultimodalReferenceMaxCount = 7
-
-	// xAI documents a maximum of seven independent images for reference-to-video.
-	// This validates the public request shape only; it does not certify an
-	// account-specific upstream adapter.
-	grokMediaMaxVideoReferenceImages = 7
 )
-
-type wokeyVideoReferenceImage struct {
-	Data        []byte
-	ContentType string
-	FileName    string
-}
-
-// Kept injectable for unit tests; production always uses the SSRF-protected
-// downloader below.
-var wokeyVideoReferenceImageDownloader = downloadWokeyVideoReferenceImage
 
 func (e GrokMediaEndpoint) RequiresRequestBody() bool {
 	return !e.IsVideoLookupRequest()
 }
 
 func (e GrokMediaEndpoint) IsVideoLookupRequest() bool {
-	return e == GrokMediaEndpointVideoStatus || e == GrokMediaEndpointVideoContent
+	return e == GrokMediaEndpointVideoStatus || e == GrokMediaEndpointVideoContent || e == SeedanceEndpointStatus || e == SeedanceEndpointDelete
 }
 
 func (e GrokMediaEndpoint) IsGenerationRequest() bool {
+	if e == SeedanceEndpointCreate {
+		return true
+	}
 	switch e {
 	case GrokMediaEndpointImagesGenerations, GrokMediaEndpointImagesEdits, GrokMediaEndpointVideosGenerations, GrokMediaEndpointVideosEdits, GrokMediaEndpointVideosExtensions:
 		return true
@@ -87,10 +59,11 @@ func (e GrokMediaEndpoint) IsGenerationRequest() bool {
 type GrokMediaRequestInfo struct {
 	Model              string
 	Prompt             string
-	AspectRatio        string
 	N                  int
 	Size               string
 	SizeTier           string
+	AspectRatio        string
+	ImageResolution    string
 	Resolution         string
 	DurationSeconds    int
 	InputImageURLs     []string
@@ -106,13 +79,8 @@ func (r GrokMediaRequestInfo) ModerationBody() []byte {
 		payload["prompt"] = prompt
 	}
 
-	images := make([]map[string]string, 0, len(r.InputImageURLs)+len(r.ReferenceImageURLs)+len(r.Uploads)+1)
+	images := make([]map[string]string, 0, len(r.InputImageURLs)+len(r.Uploads)+1)
 	for _, imageURL := range r.InputImageURLs {
-		if imageURL = strings.TrimSpace(imageURL); imageURL != "" {
-			images = append(images, map[string]string{"image_url": imageURL})
-		}
-	}
-	for _, imageURL := range r.ReferenceImageURLs {
 		if imageURL = strings.TrimSpace(imageURL); imageURL != "" {
 			images = append(images, map[string]string{"image_url": imageURL})
 		}
@@ -163,9 +131,10 @@ func ParseGrokMediaRequest(contentType string, body []byte) GrokMediaRequestInfo
 	}
 	info.Model = strings.TrimSpace(info.Model)
 	info.Prompt = strings.TrimSpace(info.Prompt)
-	info.AspectRatio = strings.TrimSpace(info.AspectRatio)
 	info.Size = strings.TrimSpace(info.Size)
 	info.SizeTier = NormalizeImageBillingTierOrDefault(info.Size)
+	info.AspectRatio = strings.TrimSpace(info.AspectRatio)
+	info.ImageResolution = grokImagineImageResolution(info.ImageResolution)
 	info.Resolution = NormalizeVideoBillingResolutionOrDefault(info.Resolution)
 	info.DurationSeconds = NormalizeVideoBillingDurationSecondsOrDefault(info.DurationSeconds)
 	if info.N <= 0 {
@@ -180,19 +149,11 @@ func parseGrokMediaJSONRequest(body []byte, info *GrokMediaRequestInfo) {
 	}
 	info.Model = strings.TrimSpace(gjson.GetBytes(body, "model").String())
 	info.Prompt = strings.TrimSpace(gjson.GetBytes(body, "prompt").String())
-	info.AspectRatio = strings.TrimSpace(gjson.GetBytes(body, "aspect_ratio").String())
 	info.Size = strings.TrimSpace(gjson.GetBytes(body, "size").String())
-	info.Resolution = strings.TrimSpace(gjson.GetBytes(body, "resolution").String())
-	if info.Resolution == "" {
-		info.Resolution = strings.TrimSpace(gjson.GetBytes(body, "video_resolution").String())
-	}
+	info.AspectRatio = strings.TrimSpace(gjson.GetBytes(body, "aspect_ratio").String())
+	assignGrokMediaResolution(strings.TrimSpace(gjson.GetBytes(body, "resolution").String()), info)
 	if duration := gjson.GetBytes(body, "duration"); duration.Exists() && duration.Type == gjson.Number {
 		info.DurationSeconds = int(duration.Int())
-	}
-	if info.DurationSeconds == 0 {
-		if duration := gjson.GetBytes(body, "duration_seconds"); duration.Exists() && duration.Type == gjson.Number {
-			info.DurationSeconds = int(duration.Int())
-		}
 	}
 	if n := gjson.GetBytes(body, "n"); n.Exists() && n.Type == gjson.Number {
 		info.N = int(n.Int())
@@ -216,89 +177,26 @@ func parseGrokMediaJSONRequest(body []byte, info *GrokMediaRequestInfo) {
 	}
 	appendJSONImageURLs(gjson.GetBytes(body, "image"))
 	appendJSONImageURLs(gjson.GetBytes(body, "images"))
-	for _, item := range gjson.GetBytes(body, "reference_images").Array() {
-		if imageURL := extractGrokMediaImageURL(item); imageURL != "" {
+	appendReferenceImageURLs := func(value gjson.Result) {
+		if !value.Exists() {
+			return
+		}
+		if value.IsArray() {
+			for _, item := range value.Array() {
+				if imageURL := extractGrokMediaImageURL(item); imageURL != "" {
+					info.ReferenceImageURLs = append(info.ReferenceImageURLs, imageURL)
+					info.InputImageURLs = append(info.InputImageURLs, imageURL)
+				}
+			}
+			return
+		}
+		if imageURL := extractGrokMediaImageURL(value); imageURL != "" {
 			info.ReferenceImageURLs = append(info.ReferenceImageURLs, imageURL)
+			info.InputImageURLs = append(info.InputImageURLs, imageURL)
 		}
 	}
+	appendReferenceImageURLs(gjson.GetBytes(body, "reference_images"))
 	info.MaskImageURL = extractGrokMediaImageURL(gjson.GetBytes(body, "mask"))
-}
-
-// GrokVideoInputValidationError is a client-visible request error. It is kept
-// distinct from upstream failures so a rejected R2V request never triggers a
-// route failover or marks an account unhealthy.
-type GrokVideoInputValidationError struct {
-	Message string
-}
-
-func (e *GrokVideoInputValidationError) Error() string {
-	if e == nil {
-		return ""
-	}
-	return e.Message
-}
-
-// ValidateGrokVideoGenerationRequest validates the public R2V JSON structure
-// before account selection. Account-specific URL scheme and SSRF rules belong
-// to the selected adapter; existing multipart I2V requests do not carry the
-// reference_images field and remain on their current path.
-func ValidateGrokVideoGenerationRequest(contentType string, body []byte) error {
-	if !gjson.ValidBytes(body) {
-		return nil
-	}
-	references := gjson.GetBytes(body, "reference_images")
-	if !references.Exists() {
-		return nil
-	}
-	mediaType, _, err := mime.ParseMediaType(strings.TrimSpace(contentType))
-	if err != nil || !strings.EqualFold(mediaType, "application/json") {
-		return &GrokVideoInputValidationError{Message: "reference_to_video validation: reference_images requires application/json"}
-	}
-	if gjson.GetBytes(body, "image").Exists() || gjson.GetBytes(body, "images").Exists() {
-		return &GrokVideoInputValidationError{Message: "reference_to_video validation: image/images and reference_images are mutually exclusive"}
-	}
-	if !references.IsArray() || len(references.Array()) == 0 {
-		return &GrokVideoInputValidationError{Message: "reference_to_video validation: reference_images must be a non-empty JSON array"}
-	}
-	items := references.Array()
-	if len(items) > grokMediaMaxVideoReferenceImages {
-		return &GrokVideoInputValidationError{Message: fmt.Sprintf("reference_to_video validation: reference_images accepts at most %d images", grokMediaMaxVideoReferenceImages)}
-	}
-	for index, item := range items {
-		if !item.IsObject() {
-			return &GrokVideoInputValidationError{Message: fmt.Sprintf("reference_to_video validation: reference_images[%d] must be an object with a url", index)}
-		}
-		rawURL := strings.TrimSpace(item.Get("url").String())
-		if rawURL == "" {
-			return &GrokVideoInputValidationError{Message: fmt.Sprintf("reference_to_video validation: reference_images[%d].url is required", index)}
-		}
-	}
-	return nil
-}
-
-func validateWokeyVideoReferenceURLs(referenceURLs []string) error {
-	for index, rawURL := range referenceURLs {
-		rawURL = strings.TrimSpace(rawURL)
-		if strings.HasPrefix(strings.ToLower(rawURL), "data:") {
-			return &GrokVideoInputValidationError{Message: fmt.Sprintf("reference_to_video validation: reference_images[%d].url must be HTTPS; the Aiself Wokey route does not accept Data URLs", index)}
-		}
-		rawParsed, parseErr := url.Parse(rawURL)
-		if parseErr != nil || !strings.EqualFold(rawParsed.Scheme, "https") || strings.TrimSpace(rawParsed.Hostname()) == "" {
-			return &GrokVideoInputValidationError{Message: fmt.Sprintf("reference_to_video validation: reference_images[%d].url must be a public HTTPS URL", index)}
-		}
-		if urlvalidator.ValidateResolvedIP(rawParsed.Hostname()) != nil {
-			return &GrokVideoInputValidationError{Message: fmt.Sprintf("reference_to_video validation: reference_images[%d].url host is not allowed", index)}
-		}
-		normalized, validateErr := urlvalidator.ValidateHTTPSURL(rawURL, urlvalidator.ValidationOptions{AllowPrivate: false})
-		if validateErr != nil {
-			return &GrokVideoInputValidationError{Message: fmt.Sprintf("reference_to_video validation: reference_images[%d].url must be a public HTTPS URL", index)}
-		}
-		parsed, parseErr := url.Parse(normalized)
-		if parseErr != nil || urlvalidator.ValidateResolvedIP(parsed.Hostname()) != nil {
-			return &GrokVideoInputValidationError{Message: fmt.Sprintf("reference_to_video validation: reference_images[%d].url host is not allowed", index)}
-		}
-	}
-	return nil
 }
 
 func extractGrokMediaImageURL(value gjson.Result) string {
@@ -382,19 +280,13 @@ func parseGrokMediaMultipartRequest(contentType string, body []byte, info *GrokM
 			info.Model = value
 		case "prompt":
 			info.Prompt = value
-		case "aspect_ratio":
-			info.AspectRatio = value
 		case "size":
 			info.Size = value
+		case "aspect_ratio":
+			info.AspectRatio = value
 		case "resolution":
-			info.Resolution = value
-		case "video_resolution":
-			info.Resolution = value
+			assignGrokMediaResolution(value, info)
 		case "duration":
-			if duration, err := strconv.Atoi(value); err == nil {
-				info.DurationSeconds = duration
-			}
-		case "duration_seconds":
 			if duration, err := strconv.Atoi(value); err == nil {
 				info.DurationSeconds = duration
 			}
@@ -462,21 +354,83 @@ func (s *OpenAIGatewayService) ResolveGrokMediaVideoRequestAccount(
 	return s.cache.GetSessionAccountID(ctx, derefGroupID(groupID), cacheKey)
 }
 
+// SelectGrokMediaVideoRequestAccount only admits the already authenticated
+// task owner. Generic sticky fallback can query another account and overwrite
+// the ownership key; video lookups must neither escape nor refresh that key.
+func (s *OpenAIGatewayService) SelectGrokMediaVideoRequestAccount(
+	ctx context.Context, groupID *int64, sessionHash string, accountID int64, requestedModel string,
+) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
+	return s.SelectMediaVideoRequestAccount(ctx, groupID, sessionHash, accountID, requestedModel, PlatformGrok)
+}
+
+func (s *OpenAIGatewayService) SelectMediaVideoRequestAccount(
+	ctx context.Context, groupID *int64, sessionHash string, accountID int64, requestedModel, platform string,
+) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
+	decision := OpenAIAccountScheduleDecision{Layer: openAIAccountScheduleLayerSessionSticky}
+	if accountID <= 0 || strings.TrimSpace(sessionHash) == "" {
+		return nil, decision, ErrNoAvailableAccounts
+	}
+	ctx = s.withOpenAIGroupPrivacyRequirement(WithOpenAIProfitControlSuppressed(ctx), groupID)
+	scheduler := &defaultOpenAIAccountScheduler{service: s}
+	selection, _, err := scheduler.selectBySessionHash(ctx, OpenAIAccountScheduleRequest{
+		GroupID: groupID, Platform: platform, SessionHash: sessionHash,
+		StickyAccountID: accountID, PreserveStickyBinding: true, DisableStickyEscape: true,
+		RequestedModel: requestedModel, RequiredTransport: OpenAIUpstreamTransportHTTPSSE,
+		RequirePrivacySet: s.openAIGroupRequiresPrivacySet(ctx, groupID),
+	})
+	if err != nil {
+		return nil, decision, err
+	}
+	if selection == nil || selection.Account == nil {
+		return nil, decision, ErrNoAvailableAccounts
+	}
+	decision.StickySessionHit = true
+	decision.SelectedAccountID = selection.Account.ID
+	decision.SelectedAccountType = selection.Account.Type
+	return selection, decision, nil
+}
+
 // GrokVideoPendingBilling is the create-time snapshot used when status polling
 // first observes a completed video URL. Status may omit model/duration; we fall
 // back to this snapshot, then defaults.
 type GrokVideoPendingBilling struct {
-	Model                string `json:"model"`
-	BillingModel         string `json:"billing_model,omitempty"`
-	UpstreamModel        string `json:"upstream_model,omitempty"`
-	VideoResolution      string `json:"video_resolution,omitempty"`
-	VideoDurationSeconds int    `json:"video_duration_seconds,omitempty"`
-	OriginalModel        string `json:"original_model,omitempty"`
+	Model                string                              `json:"model"`
+	BillingModel         string                              `json:"billing_model,omitempty"`
+	UpstreamModel        string                              `json:"upstream_model,omitempty"`
+	VideoResolution      string                              `json:"video_resolution,omitempty"`
+	VideoDurationSeconds int                                 `json:"video_duration_seconds,omitempty"`
+	OriginalModel        string                              `json:"original_model,omitempty"`
+	RoutePricingDecision *UnifiedGatewayRoutePricingDecision `json:"route_pricing_decision,omitempty"`
 	// CreatedAt is when the gateway accepted the async create (RFC3339Nano UTC).
 	// duration_ms for deferred billing is measured from this instant until the
 	// first official done+video.url observation (status poll or content download),
 	// not the latency of that single discovery request alone.
 	CreatedAt string `json:"created_at,omitempty"`
+}
+
+func (s *OpenAIGatewayService) EstimateUnifiedGatewayCompletedVideoPrice(ctx context.Context, apiKey *APIKey, accountID int64, result *OpenAIForwardResult, decision UnifiedGatewayRoutePricingDecision) (float64, bool) {
+	if s == nil || apiKey == nil || apiKey.GroupID == nil || result == nil || accountID <= 0 {
+		return 0, false
+	}
+	base := 1.0
+	if s.cfg != nil {
+		base = s.cfg.Default.RateMultiplier
+	}
+	if apiKey.Group != nil && apiKey.User != nil {
+		base = s.ResolveUserGroupRateMultiplier(ctx, apiKey.User.ID, *apiKey.GroupID, apiKey.Group.RateMultiplier)
+	}
+	decision.Allowed = true
+	ctx = WithUnifiedGatewayRoutePricingDecision(ctx, decision)
+	billingModel := strings.TrimSpace(result.BillingModel)
+	if billingModel == "" {
+		billingModel = forwardResultBillingModel(result.Model, result.UpstreamModel)
+	}
+	videoMultiplier := resolveVideoRateMultiplier(apiKey, base)
+	cost := ApplyUnifiedGatewayRoutePricing(ctx, apiKey, accountID, billingModel, result.ImageSize, result.ImageQuality, result.ImageSizeBreakdown, result.ImageCount, result.VideoCount, result.VideoResolution, result.VideoDurationSeconds, nil, resolveImageRateMultiplier(apiKey, base), videoMultiplier)
+	if cost == nil || !finiteNonNegative(cost.ActualCost) {
+		return 0, false
+	}
+	return cost.ActualCost, true
 }
 
 // GrokVideoPendingCreatedAtNow formats a create-accept timestamp for pending billing.
@@ -657,36 +611,6 @@ func IsGrokVideoStatusBillable(statusBody []byte) bool {
 	return strings.TrimSpace(gjson.GetBytes(statusBody, "video.url").String()) != ""
 }
 
-// normalizeWokeyVideoStatusForBilling projects Wokey's documented
-// OpenAI-compatible completion shape onto the official Grok billing shape.
-// Wokey returns status=completed and video_url, while the xAI response used by
-// the common billing path is status=done and video.url.  This is deliberately
-// account-scoped and only returns a changed body when both Wokey completion
-// fields are present; unknown or incomplete responses remain non-billable.
-func normalizeWokeyVideoStatusForBilling(statusBody []byte) []byte {
-	if len(statusBody) == 0 || !gjson.ValidBytes(statusBody) {
-		return statusBody
-	}
-	status := strings.TrimSpace(gjson.GetBytes(statusBody, "status").String())
-	videoURL := strings.TrimSpace(gjson.GetBytes(statusBody, "video_url").String())
-	if !strings.EqualFold(status, "completed") || videoURL == "" {
-		return statusBody
-	}
-	out := statusBody
-	var err error
-	out, err = sjson.SetBytes(out, "status", "done")
-	if err != nil {
-		return statusBody
-	}
-	if strings.TrimSpace(gjson.GetBytes(out, "video.url").String()) == "" {
-		out, err = sjson.SetBytes(out, "video.url", videoURL)
-		if err != nil {
-			return statusBody
-		}
-	}
-	return out
-}
-
 func isOfficialGrokVideoStatusDone(statusBody []byte) bool {
 	// Official enum: pending | done | expired | failed.
 	return strings.EqualFold(strings.TrimSpace(gjson.GetBytes(statusBody, "status").String()), "done")
@@ -785,6 +709,11 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 	if err != nil {
 		return nil, err
 	}
+	if shouldValidateGrokVideoGenerationRequest(account, endpoint) {
+		if err := ValidateGrokVideoGenerationRequest(contentType, body); err != nil {
+			return nil, err
+		}
+	}
 	if endpoint == GrokMediaEndpointVideoContent {
 		return s.forwardGrokMediaVideoContent(ctx, c, account, token, requestID, startTime)
 	}
@@ -797,16 +726,15 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 	if err != nil {
 		return nil, err
 	}
-	if endpoint == GrokMediaEndpointVideosGenerations {
-		if err := ValidateGrokVideoGenerationRequest(contentType, body); err != nil {
-			return nil, err
-		}
-	}
+	billingRequestBody := body
 	body, contentType, err = normalizeGrokMediaForwardBodyForAccount(account, endpoint, body, contentType)
 	if err != nil {
 		return nil, err
 	}
 	requestInfo := ParseGrokMediaRequest(contentType, body)
+	if isWokeyVideoGeneration(account, endpoint) {
+		requestInfo.Resolution = wokeyVideoBillingResolution(billingRequestBody, requestInfo.Resolution)
+	}
 	upstreamModel := requestInfo.Model
 	if endpoint.RequiresRequestBody() && gjson.ValidBytes(body) {
 		if mappedModel := strings.TrimSpace(account.GetMappedModel(requestInfo.Model)); mappedModel != "" {
@@ -821,10 +749,7 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 	}
 	if account.UsesKIEJobsVideoAPI() && endpoint == GrokMediaEndpointVideosGenerations {
 		imageURLs := append([]string{}, requestInfo.InputImageURLs...)
-		imageURLs = append(imageURLs, requestInfo.ReferenceImageURLs...)
-		probeSummary, err := validateKIEJobsVideoImageURLsWithSummary(ctx, imageURLs)
-		SetOpsKIEImageProbe(c, probeSummary)
-		if err != nil {
+		if err := validateKIEJobsVideoImageURLs(ctx, imageURLs); err != nil {
 			return nil, err
 		}
 		body, contentType, err = prepareKIEJobsVideoCreateBody(requestInfo, upstreamModel)
@@ -837,16 +762,9 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 		}
 	}
 	if isWokeyVideoGeneration(account, endpoint) {
-		prepCtx, prepCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-		body, contentType, err = prepareWokeyVideoImageMultipartBody(
-			prepCtx,
-			body,
-			contentType,
-			requestInfo,
-		)
-		prepCancel()
+		body, contentType, err = prepareWokeyVideoImageMultipartBody(ctx, body, contentType, requestInfo)
 		if err != nil {
-			return nil, fmt.Errorf("prepare Wokey image-to-video input: %w", err)
+			return nil, err
 		}
 	}
 	body, contentType, err = sanitizeGrokMediaForwardBody(endpoint, body, contentType)
@@ -897,13 +815,13 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 		return s.handleGrokMediaErrorResponse(ctx, resp, c, account, requestIDHeader, requestModel)
 	}
 
-	s.updateGrokUsageFromResponse(ctx, account, resp.Header, resp.StatusCode)
+	s.updateGrokUsageFromResponse(withGrokTeamRateLimitModel(ctx, requestModel), account, resp.Header, resp.StatusCode)
 	respBody, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
 	if err != nil {
 		return nil, err
 	}
+	rawResponseBody := respBody
 	if account.UsesKIEJobsVideoAPI() {
-		rawResponseBody := respBody
 		switch endpoint {
 		case GrokMediaEndpointVideosGenerations:
 			respBody, err = normalizeKIEJobsVideoCreateResponse(respBody, requestInfo.Model)
@@ -911,30 +829,7 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 			respBody, err = normalizeKIEJobsVideoStatusResponse(respBody, requestID)
 		}
 		if err != nil {
-			if account.UsesKIEJobsVideoAPI() {
-				providerErrorCode := kieJobsErrorCode(rawResponseBody)
-				providerErrorMessage := sanitizeUpstreamErrorMessage(kieJobsErrorMessage(rawResponseBody))
-				if providerErrorMessage == "" {
-					providerErrorMessage = "KIE task creation response was invalid"
-				}
-				var kieProbe *KIEImageProbeSummary
-				if summary, ok := GetOpsKIEImageProbe(c); ok {
-					kieProbe = &summary
-				}
-				kieErrorSummary := KIEJobsUpstreamErrorSummary(rawResponseBody)
-				SetOpsUpstreamError(c, http.StatusBadGateway, providerErrorMessage, kieErrorSummary)
-				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
-					Platform:           account.Platform,
-					AccountID:          account.ID,
-					AccountName:        account.Name,
-					UpstreamStatusCode: http.StatusBadGateway,
-					Kind:               "response_invalid",
-					Message:            providerErrorMessage,
-					Detail:             kieErrorSummary,
-					ProviderErrorCode:  providerErrorCode,
-					KIEImageProbe:      kieProbe,
-				})
-			}
+			setOpsUpstreamError(c, http.StatusBadGateway, "KIE video response could not be normalized", KIEJobsUpstreamErrorSummary(rawResponseBody))
 			return nil, &UpstreamFailoverError{
 				StatusCode:      http.StatusBadGateway,
 				ResponseBody:    rawResponseBody,
@@ -981,6 +876,7 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 	}
 	return &OpenAIForwardResult{
 		RequestID:            requestIDHeader,
+		UpstreamHeaders:      resp.Header,
 		ResponseID:           usage.ResponseID,
 		Usage:                usage.Usage,
 		Model:                resultModel,
@@ -996,6 +892,13 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 		VideoResolution:      usage.VideoResolution,
 		VideoDurationSeconds: usage.VideoDurationSeconds,
 	}, nil
+}
+
+func shouldValidateGrokVideoGenerationRequest(account *Account, endpoint GrokMediaEndpoint) bool {
+	if endpoint != GrokMediaEndpointVideosGenerations || account == nil {
+		return false
+	}
+	return account.UsesWokeyVideoMultipart() || account.UsesKIEJobsVideoAPI()
 }
 
 func (s *OpenAIGatewayService) forwardGrokMediaVideoContent(
@@ -1055,10 +958,12 @@ func (s *OpenAIGatewayService) forwardGrokMediaVideoContent(
 	}
 
 	if account.UsesKIEJobsVideoAPI() {
+		rawStatusBody := statusBody
 		statusBody, err = normalizeKIEJobsVideoStatusResponse(statusBody, requestID)
 		if err != nil {
+			setOpsUpstreamError(c, http.StatusBadGateway, "KIE video status could not be normalized", KIEJobsUpstreamErrorSummary(rawStatusBody))
 			SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
-			return nil, err
+			return nil, &UpstreamFailoverError{StatusCode: http.StatusBadGateway, ResponseBody: rawStatusBody, ResponseHeaders: statusResp.Header.Clone()}
 		}
 	}
 	billingStatusBody := statusBody
@@ -1079,8 +984,14 @@ func (s *OpenAIGatewayService) forwardGrokMediaVideoContent(
 		}
 	}
 
+	contentRequestContext := WithHTTPUpstreamRedirectsDisabled(upstreamCtx)
+	if account.UsesKIEJobsVideoAPI() && signedContent {
+		// KIE supplies this URL inside an upstream response. Enforce the target's
+		// public-host policy across DNS resolution and every redirect hop.
+		contentRequestContext = WithHTTPUpstreamPublicHostsOnly(contentRequestContext)
+	}
 	contentReq, err := http.NewRequestWithContext(
-		WithHTTPUpstreamRedirectsDisabled(upstreamCtx),
+		contentRequestContext,
 		http.MethodGet,
 		contentURL,
 		nil,
@@ -1117,7 +1028,7 @@ func (s *OpenAIGatewayService) forwardGrokMediaVideoContent(
 		return s.handleGrokMediaErrorResponse(ctx, contentResp, c, account, contentRequestID, "")
 	}
 
-	s.updateGrokUsageFromResponse(ctx, account, contentResp.Header, contentResp.StatusCode)
+	s.updateGrokUsageFromResponse(withGrokTeamRateLimitModel(ctx, ""), account, contentResp.Header, contentResp.StatusCode)
 	if err := writeGrokMediaContentResponse(c, contentResp); err != nil {
 		return nil, err
 	}
@@ -1126,6 +1037,7 @@ func (s *OpenAIGatewayService) forwardGrokMediaVideoContent(
 	// (same path as status polling). Pending snapshot is merged in the handler.
 	result := &OpenAIForwardResult{
 		RequestID:       contentRequestID,
+		UpstreamHeaders: contentResp.Header,
 		ResponseHeaders: contentResp.Header.Clone(),
 		Duration:        time.Since(startTime),
 	}
@@ -1162,13 +1074,6 @@ func grokMediaSignedVideoContentURL(body []byte, requestID string) (string, erro
 	return parsed.String(), nil
 }
 
-func grokMediaSignedVideoContentURLForAccount(account *Account, body []byte, requestID string) (string, error) {
-	if account != nil && account.UsesKIEJobsVideoAPI() {
-		return kieJobsSignedVideoContentURL(body)
-	}
-	return grokMediaSignedVideoContentURL(body, requestID)
-}
-
 func isGrokCLIProxyTarget(rawURL string) bool {
 	parsed, err := url.Parse(strings.TrimSpace(rawURL))
 	return err == nil && strings.EqualFold(parsed.Hostname(), "cli-chat-proxy.grok.com")
@@ -1200,6 +1105,12 @@ func prepareGrokMediaForwardBody(endpoint GrokMediaEndpoint, body []byte, conten
 	}
 	if info.Size != "" {
 		payload["size"] = info.Size
+	}
+	if info.ImageResolution != "" {
+		payload["resolution"] = info.ImageResolution
+	}
+	if info.AspectRatio != "" {
+		payload["aspect_ratio"] = info.AspectRatio
 	}
 
 	images := make([]map[string]string, 0, len(info.InputImageURLs)+len(info.Uploads))
@@ -1319,331 +1230,6 @@ func normalizeGrokMediaForwardBody(endpoint GrokMediaEndpoint, body []byte, cont
 	return out, contentType, nil
 }
 
-func normalizeGrokMediaForwardBodyForAccount(account *Account, endpoint GrokMediaEndpoint, body []byte, contentType string) ([]byte, string, error) {
-	if isWokeyVideoGeneration(account, endpoint) {
-		return normalizeWokeyVideoForwardBody(body, contentType, ParseGrokMediaRequest(contentType, body))
-	}
-	return normalizeGrokMediaForwardBody(endpoint, body, contentType)
-}
-
-func isWokeyVideoGeneration(account *Account, endpoint GrokMediaEndpoint) bool {
-	return account != nil && endpoint == GrokMediaEndpointVideosGenerations && account.UsesWokeyVideoMultipart()
-}
-
-// Wokey accepts the standard Grok request shape after this narrow field translation.
-func normalizeWokeyVideoForwardBody(body []byte, contentType string, info GrokMediaRequestInfo) ([]byte, string, error) {
-	if !gjson.ValidBytes(body) {
-		return body, contentType, nil
-	}
-	out := body
-	if info.HasReferenceImages() {
-		// Keep the existing Wokey contract for data URLs, but leave HTTPS
-		// validation to the downloader that owns the actual outbound request.
-		for index, rawURL := range info.ReferenceImageURLs {
-			if strings.HasPrefix(strings.ToLower(strings.TrimSpace(rawURL)), "data:") {
-				return nil, "", &GrokVideoInputValidationError{Message: fmt.Sprintf("reference_to_video validation: reference_images[%d].url must be HTTPS; the Aiself Wokey route does not accept Data URLs", index)}
-			}
-		}
-		if mode := strings.TrimSpace(gjson.GetBytes(out, "mode").String()); mode != "" && mode != "multimodal_reference" {
-			return nil, "", &GrokVideoInputValidationError{Message: "reference_to_video validation: Wokey requires mode=multimodal_reference"}
-		}
-		var err error
-		out, err = sjson.SetBytes(out, "mode", "multimodal_reference")
-		if err != nil {
-			return nil, "", fmt.Errorf("set Wokey reference-to-video mode: %w", err)
-		}
-	}
-	if !gjson.GetBytes(out, "video_resolution").Exists() {
-		if resolution := strings.TrimSpace(gjson.GetBytes(out, "resolution").String()); resolution != "" {
-			var err error
-			out, err = sjson.SetBytes(out, "video_resolution", resolution)
-			if err != nil {
-				return nil, "", fmt.Errorf("rewrite Wokey video resolution: %w", err)
-			}
-		}
-	}
-	if gjson.GetBytes(out, "resolution").Exists() {
-		var err error
-		out, err = sjson.DeleteBytes(out, "resolution")
-		if err != nil {
-			return nil, "", fmt.Errorf("remove Grok video resolution: %w", err)
-		}
-	}
-	if !gjson.GetBytes(out, "mode").Exists() {
-		mode := "text_to_video"
-		if info.HasInputImage() {
-			mode = "image_to_video"
-		}
-		var err error
-		out, err = sjson.SetBytes(out, "mode", mode)
-		if err != nil {
-			return nil, "", fmt.Errorf("set Wokey video mode: %w", err)
-		}
-	}
-	if !gjson.GetBytes(out, "ratio").Exists() {
-		var err error
-		out, err = sjson.SetBytes(out, "ratio", "16:9")
-		if err != nil {
-			return nil, "", fmt.Errorf("set Wokey video ratio: %w", err)
-		}
-	}
-	return out, contentType, nil
-}
-
-// prepareWokeyVideoImageMultipartBody bridges public JSON image URLs to Wokey's
-// multipart image[] file parts. R2V references remain separate from I2V until
-// this point, then each reference becomes one ordered multipart file part.
-func prepareWokeyVideoImageMultipartBody(
-	ctx context.Context,
-	body []byte,
-	contentType string,
-	info GrokMediaRequestInfo,
-) ([]byte, string, error) {
-	if !gjson.ValidBytes(body) {
-		return body, contentType, nil
-	}
-	imageURLs := info.InputImageURLs
-	maxImages := wokeyVideoReferenceImageMaxCount
-	mode := "image_to_video"
-	if info.HasReferenceImages() {
-		imageURLs = info.ReferenceImageURLs
-		maxImages = wokeyVideoMultimodalReferenceMaxCount
-		mode = "multimodal_reference"
-	}
-	if len(imageURLs) == 0 {
-		return body, contentType, nil
-	}
-	if len(imageURLs) > maxImages {
-		return nil, "", fmt.Errorf("Wokey %s accepts at most %d images", mode, maxImages)
-	}
-
-	images := make([]wokeyVideoReferenceImage, 0, len(imageURLs))
-	for _, rawURL := range imageURLs {
-		image, err := wokeyVideoReferenceImageDownloader(ctx, rawURL)
-		if err != nil {
-			return nil, "", err
-		}
-		images = append(images, image)
-	}
-	return buildWokeyVideoMultipartBody(body, images)
-}
-
-func buildWokeyVideoMultipartBody(body []byte, images []wokeyVideoReferenceImage) ([]byte, string, error) {
-	if len(images) == 0 {
-		return body, "application/json", nil
-	}
-	fields := map[string]json.RawMessage{}
-	if err := json.Unmarshal(body, &fields); err != nil {
-		return nil, "", fmt.Errorf("decode Wokey video request: %w", err)
-	}
-
-	var buffer bytes.Buffer
-	writer := multipart.NewWriter(&buffer)
-	keys := make([]string, 0, len(fields))
-	for key := range fields {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	for _, key := range keys {
-		if isWokeyVideoImageField(key) {
-			continue
-		}
-		value := fields[key]
-		var scalar string
-		switch {
-		case len(value) > 0 && value[0] == '"':
-			if err := json.Unmarshal(value, &scalar); err != nil {
-				return nil, "", fmt.Errorf("decode Wokey video field %s: %w", key, err)
-			}
-		case len(value) > 0 && (value[0] == '-' || value[0] >= '0' && value[0] <= '9' || value[0] == 't' || value[0] == 'f'):
-			scalar = string(value)
-		default:
-			continue
-		}
-		if err := writer.WriteField(key, scalar); err != nil {
-			return nil, "", fmt.Errorf("write Wokey video field %s: %w", key, err)
-		}
-	}
-
-	for _, image := range images {
-		if len(image.Data) == 0 {
-			return nil, "", errors.New("Wokey reference image is empty")
-		}
-		filename := safeWokeyVideoFileName(image.FileName, image.ContentType)
-		header := make(textproto.MIMEHeader)
-		header.Set("Content-Disposition", fmt.Sprintf(`form-data; name=%q; filename=%q`, "image[]", filename))
-		header.Set("Content-Type", image.ContentType)
-		part, err := writer.CreatePart(header)
-		if err != nil {
-			return nil, "", fmt.Errorf("create Wokey image part: %w", err)
-		}
-		if _, err := part.Write(image.Data); err != nil {
-			return nil, "", fmt.Errorf("write Wokey image part: %w", err)
-		}
-	}
-	if err := writer.Close(); err != nil {
-		return nil, "", fmt.Errorf("close Wokey multipart body: %w", err)
-	}
-	return buffer.Bytes(), writer.FormDataContentType(), nil
-}
-
-func isWokeyVideoImageField(key string) bool {
-	switch strings.TrimSpace(key) {
-	case "image", "images", "reference_images", "mask", "image_url", "mask_image_url":
-		return true
-	default:
-		return false
-	}
-}
-
-func downloadWokeyVideoReferenceImage(ctx context.Context, rawURL string) (wokeyVideoReferenceImage, error) {
-	rawURL = strings.TrimSpace(rawURL)
-	if strings.HasPrefix(strings.ToLower(rawURL), "data:") {
-		return decodeWokeyVideoDataURL(rawURL)
-	}
-	normalized, err := urlvalidator.ValidateHTTPSURL(rawURL, urlvalidator.ValidationOptions{AllowPrivate: false})
-	if err != nil {
-		return wokeyVideoReferenceImage{}, fmt.Errorf("reference image URL rejected: %w", err)
-	}
-	parsed, err := url.Parse(normalized)
-	if err != nil {
-		return wokeyVideoReferenceImage{}, fmt.Errorf("parse reference image URL: %w", err)
-	}
-	if err := urlvalidator.ValidateResolvedIP(parsed.Hostname()); err != nil {
-		return wokeyVideoReferenceImage{}, fmt.Errorf("reference image host rejected: %w", err)
-	}
-
-	client, err := httpclient.GetClient(httpclient.Options{
-		Timeout:               30 * time.Second,
-		ResponseHeaderTimeout: 10 * time.Second,
-		ValidateResolvedIP:    true,
-		AllowPrivateHosts:     false,
-		MaxConnsPerHost:       2,
-	})
-	if err != nil {
-		return wokeyVideoReferenceImage{}, fmt.Errorf("build reference image client: %w", err)
-	}
-	clientCopy := *client
-	clientCopy.CheckRedirect = func(req *http.Request, _ []*http.Request) error {
-		redirectURL, redirectErr := urlvalidator.ValidateHTTPSURL(req.URL.String(), urlvalidator.ValidationOptions{AllowPrivate: false})
-		if redirectErr != nil {
-			return redirectErr
-		}
-		redirectParsed, parseErr := url.Parse(redirectURL)
-		if parseErr != nil {
-			return parseErr
-		}
-		return urlvalidator.ValidateResolvedIP(redirectParsed.Hostname())
-	}
-
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, normalized, nil)
-	if err != nil {
-		return wokeyVideoReferenceImage{}, fmt.Errorf("build reference image request: %w", err)
-	}
-	request.Header.Set("Accept", "image/avif,image/webp,image/png,image/jpeg,image/*;q=0.8")
-	response, err := clientCopy.Do(request)
-	if err != nil {
-		return wokeyVideoReferenceImage{}, fmt.Errorf("download reference image: %w", err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return wokeyVideoReferenceImage{}, fmt.Errorf("download reference image: HTTP %d", response.StatusCode)
-	}
-	if response.ContentLength > wokeyVideoReferenceImageMaxBytes {
-		return wokeyVideoReferenceImage{}, fmt.Errorf("reference image exceeds %d bytes", wokeyVideoReferenceImageMaxBytes)
-	}
-	data, err := io.ReadAll(io.LimitReader(response.Body, wokeyVideoReferenceImageMaxBytes+1))
-	if err != nil {
-		return wokeyVideoReferenceImage{}, fmt.Errorf("read reference image: %w", err)
-	}
-	if len(data) == 0 || len(data) > wokeyVideoReferenceImageMaxBytes {
-		return wokeyVideoReferenceImage{}, fmt.Errorf("reference image exceeds %d bytes", wokeyVideoReferenceImageMaxBytes)
-	}
-	contentType := firstWokeyImageContentType(response.Header.Get("Content-Type"), data)
-	if contentType == "" {
-		return wokeyVideoReferenceImage{}, errors.New("reference image is not a supported image")
-	}
-	return wokeyVideoReferenceImage{
-		Data:        data,
-		ContentType: contentType,
-		FileName:    safeWokeyVideoFileName(path.Base(parsed.Path), contentType),
-	}, nil
-}
-
-func decodeWokeyVideoDataURL(rawURL string) (wokeyVideoReferenceImage, error) {
-	meta, encoded, ok := strings.Cut(rawURL, ",")
-	if !ok {
-		return wokeyVideoReferenceImage{}, errors.New("invalid reference image data URL")
-	}
-	mediaType := strings.TrimPrefix(strings.TrimSpace(strings.SplitN(meta, ";", 2)[0]), "data:")
-	var data []byte
-	var err error
-	if strings.Contains(strings.ToLower(meta), ";base64") {
-		data, err = base64.StdEncoding.DecodeString(strings.TrimSpace(encoded))
-	} else {
-		decoded, decodeErr := url.PathUnescape(encoded)
-		err = decodeErr
-		data = []byte(decoded)
-	}
-	if err != nil {
-		return wokeyVideoReferenceImage{}, fmt.Errorf("decode reference image data URL: %w", err)
-	}
-	contentType := firstWokeyImageContentType(mediaType, data)
-	if contentType == "" {
-		return wokeyVideoReferenceImage{}, errors.New("reference image data URL is not a supported image")
-	}
-	if len(data) == 0 || len(data) > wokeyVideoReferenceImageMaxBytes {
-		return wokeyVideoReferenceImage{}, fmt.Errorf("reference image exceeds %d bytes", wokeyVideoReferenceImageMaxBytes)
-	}
-	return wokeyVideoReferenceImage{Data: data, ContentType: contentType, FileName: safeWokeyVideoFileName("reference", contentType)}, nil
-}
-
-func firstWokeyImageContentType(declared string, data []byte) string {
-	declared = strings.ToLower(strings.TrimSpace(strings.SplitN(declared, ";", 2)[0]))
-	detected := strings.ToLower(strings.TrimSpace(strings.SplitN(http.DetectContentType(data), ";", 2)[0]))
-	allowed := func(value string) bool {
-		switch value {
-		case "image/png", "image/jpeg", "image/webp", "image/gif":
-			return true
-		default:
-			return false
-		}
-	}
-	if allowed(detected) {
-		return detected
-	}
-	if allowed(declared) {
-		return declared
-	}
-	return ""
-}
-
-func safeWokeyVideoFileName(name, contentType string) string {
-	name = path.Base(strings.TrimSpace(name))
-	name = strings.Map(func(r rune) rune {
-		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '-' || r == '_' {
-			return r
-		}
-		return '_'
-	}, name)
-	if name == "" || name == "." || name == "_" {
-		name = "reference"
-	}
-	if !strings.Contains(name, ".") {
-		ext := ".png"
-		switch strings.ToLower(contentType) {
-		case "image/jpeg":
-			ext = ".jpg"
-		case "image/webp":
-			ext = ".webp"
-		case "image/gif":
-			ext = ".gif"
-		}
-		name += ext
-	}
-	return name
-}
-
 func canonicalizeGrokMediaImageURLFields(body []byte, fields ...string) ([]byte, error) {
 	out := body
 	for _, field := range fields {
@@ -1698,10 +1284,7 @@ func sanitizeGrokMediaForwardBody(endpoint GrokMediaEndpoint, body []byte, conte
 	}
 	switch endpoint {
 	case GrokMediaEndpointImagesGenerations, GrokMediaEndpointImagesEdits:
-		if !gjson.GetBytes(body, "size").Exists() {
-			return body, contentType, nil
-		}
-		out, err := sjson.DeleteBytes(body, "size")
+		out, err := applyGrokImagineImageGeometry(body)
 		if err != nil {
 			return nil, "", fmt.Errorf("sanitize grok media size: %w", err)
 		}
@@ -1713,10 +1296,6 @@ func sanitizeGrokMediaForwardBody(endpoint GrokMediaEndpoint, body []byte, conte
 
 func (r GrokMediaRequestInfo) HasInputImage() bool {
 	return len(r.InputImageURLs) > 0 || len(r.Uploads) > 0
-}
-
-func (r GrokMediaRequestInfo) HasReferenceImages() bool {
-	return len(r.ReferenceImageURLs) > 0
 }
 
 // NormalizeGrokMediaModelForEndpoint resolves the built-in upstream model alias
@@ -1809,17 +1388,6 @@ func (s *OpenAIGatewayService) handleGrokMediaErrorResponse(
 	// otherwise a Grok 429 can remain schedulable.
 	s.handleGrokAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, body)
 	upstreamMsg := sanitizeUpstreamErrorMessage(strings.TrimSpace(extractUpstreamErrorMessage(body)))
-	providerErrorCode := ""
-	var kieProbe *KIEImageProbeSummary
-	if account != nil && account.UsesKIEJobsVideoAPI() {
-		if kieMessage := strings.TrimSpace(kieJobsErrorMessage(body)); kieMessage != "" {
-			upstreamMsg = sanitizeUpstreamErrorMessage(kieMessage)
-		}
-		providerErrorCode = kieJobsErrorCode(body)
-		if summary, ok := GetOpsKIEImageProbe(c); ok {
-			kieProbe = &summary
-		}
-	}
 	if upstreamMsg == "" {
 		upstreamMsg = fmt.Sprintf("xAI upstream returned status %d", resp.StatusCode)
 	}
@@ -1832,13 +1400,12 @@ func (s *OpenAIGatewayService) handleGrokMediaErrorResponse(
 		}
 		upstreamDetail = truncateString(string(body), maxBytes)
 	}
-	if account != nil && account.UsesKIEJobsVideoAPI() {
-		upstreamDetail = KIEJobsUpstreamErrorSummary(body)
-	}
 	setOpsUpstreamError(c, resp.StatusCode, upstreamMsg, upstreamDetail)
 	if isGrokContentPolicyRejection(resp.StatusCode, body) {
 		clientMsg := grokContentPolicyClientMessage(body)
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			ProxyID:            opsUpstreamProxyID(account),
+			ProxyName:          opsUpstreamProxyName(account),
 			Platform:           account.Platform,
 			AccountID:          account.ID,
 			AccountName:        account.Name,
@@ -1847,8 +1414,6 @@ func (s *OpenAIGatewayService) handleGrokMediaErrorResponse(
 			Kind:               "http_error",
 			Message:            clientMsg,
 			Detail:             upstreamDetail,
-			ProviderErrorCode:  providerErrorCode,
-			KIEImageProbe:      kieProbe,
 		})
 		MarkResponseCommitted(c)
 		writeGrokMediaErrorResponse(c, http.StatusForbidden, "invalid_request_error", clientMsg)
@@ -1871,6 +1436,8 @@ func (s *OpenAIGatewayService) handleGrokMediaErrorResponse(
 
 	if !account.ShouldHandleErrorCode(resp.StatusCode) {
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			ProxyID:            opsUpstreamProxyID(account),
+			ProxyName:          opsUpstreamProxyName(account),
 			Platform:           account.Platform,
 			AccountID:          account.ID,
 			AccountName:        account.Name,
@@ -1879,8 +1446,6 @@ func (s *OpenAIGatewayService) handleGrokMediaErrorResponse(
 			Kind:               "http_error",
 			Message:            upstreamMsg,
 			Detail:             upstreamDetail,
-			ProviderErrorCode:  providerErrorCode,
-			KIEImageProbe:      kieProbe,
 		})
 		MarkResponseCommitted(c)
 		writeGrokMediaErrorResponse(c, http.StatusInternalServerError, "upstream_error", "Upstream gateway error")
@@ -1892,6 +1457,8 @@ func (s *OpenAIGatewayService) handleGrokMediaErrorResponse(
 		kind = "failover"
 	}
 	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+		ProxyID:            opsUpstreamProxyID(account),
+		ProxyName:          opsUpstreamProxyName(account),
 		Platform:           account.Platform,
 		AccountID:          account.ID,
 		AccountName:        account.Name,
@@ -1900,15 +1467,18 @@ func (s *OpenAIGatewayService) handleGrokMediaErrorResponse(
 		Kind:               kind,
 		Message:            upstreamMsg,
 		Detail:             upstreamDetail,
-		ProviderErrorCode:  providerErrorCode,
-		KIEImageProbe:      kieProbe,
 	})
 	if kind == "failover" {
+		retryable, retryDelay, retryDeadline, retryMax := grokSameAccountRetryMetadata(account, resp.StatusCode, body)
 		return nil, &UpstreamFailoverError{
-			StatusCode:             resp.StatusCode,
-			ResponseBody:           body,
-			ResponseHeaders:        resp.Header.Clone(),
-			RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
+			StatusCode:               resp.StatusCode,
+			ResponseBody:             body,
+			ResponseHeaders:          resp.Header.Clone(),
+			RetryableOnSameAccount:   retryable,
+			RequestScopedTransient:   retryable && resp.StatusCode == http.StatusTooManyRequests,
+			SameAccountRetryDelay:    retryDelay,
+			SameAccountRetryDeadline: retryDeadline,
+			SameAccountRetryMax:      retryMax,
 		}
 	}
 

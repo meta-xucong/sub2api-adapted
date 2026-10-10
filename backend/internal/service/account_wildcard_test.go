@@ -231,6 +231,82 @@ func TestAccountIsModelSupported(t *testing.T) {
 			requestedModel: "gemini-3-flash",
 			expected:       false,
 		},
+
+		// DeepSeek 空映射：官方模型白名单（不再是「允许所有」）
+		{
+			name:           "deepseek empty mapping allows official flash",
+			platform:       PlatformDeepseek,
+			credentials:    map[string]any{},
+			requestedModel: "deepseek-flash",
+			expected:       true,
+		},
+		{
+			name:           "deepseek empty mapping normalizes claude code long context suffix",
+			platform:       PlatformDeepseek,
+			credentials:    map[string]any{},
+			requestedModel: "deepseek-flash[1m]",
+			expected:       true,
+		},
+		{
+			name:           "deepseek empty mapping matches case-insensitively",
+			platform:       PlatformDeepseek,
+			credentials:    map[string]any{},
+			requestedModel: "deepseek-FLASH",
+			expected:       true,
+		},
+		{
+			name:           "deepseek empty mapping allows versioned pro name",
+			platform:       PlatformDeepseek,
+			credentials:    map[string]any{},
+			requestedModel: "deepseek-v4-pro-0813",
+			expected:       true,
+		},
+		{
+			name:           "deepseek empty mapping rejects retired chat model",
+			platform:       PlatformDeepseek,
+			credentials:    map[string]any{},
+			requestedModel: "deepseek-chat",
+			expected:       false,
+		},
+		{
+			name:           "deepseek empty mapping rejects foreign claude model",
+			platform:       PlatformDeepseek,
+			credentials:    map[string]any{},
+			requestedModel: "claude-sonnet-4-6",
+			expected:       false,
+		},
+		{
+			name:           "deepseek empty mapping rejects unknown gpt model",
+			platform:       PlatformDeepseek,
+			credentials:    map[string]any{},
+			requestedModel: "gpt-future-model",
+			expected:       false,
+		},
+		{
+			name:           "deepseek empty mapping rejects typo",
+			platform:       PlatformDeepseek,
+			credentials:    map[string]any{},
+			requestedModel: "deepseek-flas",
+			expected:       false,
+		},
+		{
+			name:     "deepseek explicit mapping wins over whitelist",
+			platform: PlatformDeepseek,
+			credentials: map[string]any{
+				"model_mapping": map[string]any{
+					"foo-bar": "deepseek-flash",
+				},
+			},
+			requestedModel: "foo-bar",
+			expected:       true,
+		},
+		{
+			name:           "non deepseek empty mapping still allows all",
+			platform:       PlatformAnthropic,
+			credentials:    map[string]any{},
+			requestedModel: "any-model",
+			expected:       true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -328,42 +404,6 @@ func TestAccountGetMappedModel(t *testing.T) {
 			},
 			requestedModel: "claude-sonnet-4-5",
 			expected:       "claude-sonnet-4-5",
-		},
-		{
-			name:     "synthetic codex review does not prefer gpt-5.6 over gpt-5.5",
-			platform: PlatformOpenAI,
-			credentials: map[string]any{
-				"model_mapping": map[string]any{
-					"codex-auto-review": "gpt-5.6-sol",
-					"gpt-5.5":           "gpt-5.5",
-				},
-			},
-			requestedModel: "codex-auto-review",
-			expected:       "gpt-5.5",
-		},
-		{
-			name:     "explicit gpt-5.6 model remains unchanged",
-			platform: PlatformOpenAI,
-			credentials: map[string]any{
-				"model_mapping": map[string]any{
-					"gpt-5.6-luna": "gpt-5.6-luna",
-					"gpt-5.5":      "gpt-5.5",
-				},
-			},
-			requestedModel: "gpt-5.6-luna",
-			expected:       "gpt-5.6-luna",
-		},
-		{
-			name:     "synthetic codex review keeps explicit fallback target",
-			platform: PlatformOpenAI,
-			credentials: map[string]any{
-				"model_mapping": map[string]any{
-					"codex-auto-review": "gpt-5.6-terra",
-					"gpt-5.5":           "provider-gpt-5.5",
-				},
-			},
-			requestedModel: "codex-auto-review",
-			expected:       "provider-gpt-5.5",
 		},
 	}
 
@@ -570,6 +610,52 @@ func TestAccountGetModelMapping_AntigravityEnsuresGeminiDefaultPassthroughs(t *t
 	}
 	if mapping["gemini-3.1-pro-low"] != "gemini-3.1-pro-low" {
 		t.Fatalf("expected gemini-3.1-pro-low passthrough to be auto-filled, got: %q", mapping["gemini-3.1-pro-low"])
+	}
+}
+
+func TestAccountGetModelMapping_GoogleOneUsesConservativeDefaults(t *testing.T) {
+	account := &Account{
+		Platform: PlatformGemini,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"oauth_type": "google_one",
+		},
+	}
+
+	mapping := account.GetModelMapping()
+	for _, model := range []string{"gemini-2.0-flash", "gemini-2.5-flash", "gemini-2.5-pro"} {
+		if mapping[model] != model {
+			t.Fatalf("expected Google One model %q to map to itself, got %q", model, mapping[model])
+		}
+	}
+	for _, model := range []string{"gemini-2.5-flash-image", "gemini-3.1-flash-image", "gemini-3.5-flash"} {
+		if _, ok := mapping[model]; ok {
+			t.Fatalf("did not expect unsupported Google One model %q", model)
+		}
+	}
+	if account.IsModelSupported("gemini-3.5-flash") {
+		t.Fatal("Google One defaults must not treat unsupported models as eligible")
+	}
+}
+
+func TestAccountGetModelMapping_GoogleOnePreservesExplicitMapping(t *testing.T) {
+	account := &Account{
+		Platform: PlatformGemini,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"oauth_type": "google_one",
+			"model_mapping": map[string]any{
+				"custom-model": "gemini-2.5-flash",
+			},
+		},
+	}
+
+	mapping := account.GetModelMapping()
+	if mapping["custom-model"] != "gemini-2.5-flash" {
+		t.Fatalf("expected explicit Google One mapping to be preserved, got %v", mapping)
+	}
+	if _, ok := mapping["gemini-2.5-flash"]; ok {
+		t.Fatalf("did not expect defaults to overwrite an explicit mapping: %v", mapping)
 	}
 }
 

@@ -7,6 +7,43 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 )
 
+type compositeOpenAIRoutingAccountIDsContextKey struct{}
+
+// WithCompositeOpenAIRoutingAccountIDs carries an existing group ModelRouting
+// preference into the native OpenAI account scheduler for a Composite request.
+func WithCompositeOpenAIRoutingAccountIDs(ctx context.Context, accountIDs []int64) context.Context {
+	if ctx == nil {
+		return nil
+	}
+	return context.WithValue(ctx, compositeOpenAIRoutingAccountIDsContextKey{}, append([]int64(nil), accountIDs...))
+}
+
+// CompositeOpenAIRoutingAccountIDsFromContext returns the copied ModelRouting
+// preference, if the current Composite request has one.
+func CompositeOpenAIRoutingAccountIDsFromContext(ctx context.Context) []int64 {
+	if ctx == nil {
+		return nil
+	}
+	accountIDs, _ := ctx.Value(compositeOpenAIRoutingAccountIDsContextKey{}).([]int64)
+	return append([]int64(nil), accountIDs...)
+}
+
+func compositeOpenAIRoutingAllowsAccount(ctx context.Context, accountID int64) bool {
+	if ctx == nil {
+		return true
+	}
+	accountIDs, _ := ctx.Value(compositeOpenAIRoutingAccountIDsContextKey{}).([]int64)
+	if len(accountIDs) == 0 {
+		return true
+	}
+	for _, id := range accountIDs {
+		if id == accountID {
+			return true
+		}
+	}
+	return false
+}
+
 // WithResolvedTargetPlatform stores the concrete provider chosen for a request
 // made through a composite group.
 func WithResolvedTargetPlatform(ctx context.Context, platform string) context.Context {
@@ -106,6 +143,16 @@ func DetectModelPlatform(model string) (string, bool) {
 			return PlatformGemini, true
 		case "xai", "x-ai", "grok":
 			return PlatformGrok, true
+		case "kimi", "moonshot":
+			return PlatformKimi, true
+		case "zhipu", "glm", "bigmodel":
+			return PlatformZhipu, true
+		case "deepseek":
+			return PlatformDeepseek, true
+		case "minimax":
+			return PlatformMiniMax, true
+		case "typesafe", "jev":
+			return PlatformTypeSafe, true
 		}
 		if rest != "" {
 			normalized = strings.TrimPrefix(rest, "models/")
@@ -119,12 +166,6 @@ func DetectModelPlatform(model string) (string, bool) {
 	case strings.HasPrefix(normalized, "gpt-"),
 		strings.HasPrefix(normalized, "chatgpt-"),
 		strings.HasPrefix(normalized, "codex-"),
-		// These providers expose the OpenAI Chat Completions contract in
-		// composite groups. Keep the detector aligned with the model-family
-		// mappings used by the OpenAI gateway so streaming requests can reach
-		// account selection instead of being rejected by the early guard.
-		strings.HasPrefix(normalized, "deepseek-"),
-		strings.HasPrefix(normalized, "glm-"),
 		strings.HasPrefix(normalized, "text-embedding-"),
 		strings.HasPrefix(normalized, "text-moderation-"),
 		strings.HasPrefix(normalized, "omni-moderation-"),
@@ -139,6 +180,22 @@ func DetectModelPlatform(model string) (string, bool) {
 		return PlatformGemini, true
 	case normalized == "grok" || strings.HasPrefix(normalized, "grok-"):
 		return PlatformGrok, true
+	case normalized == "k3",
+		normalized == "k3-256k",
+		strings.HasPrefix(normalized, "kimi-"),
+		strings.HasPrefix(normalized, "moonshot-"):
+		return PlatformKimi, true
+	case strings.HasPrefix(normalized, "glm-"):
+		return PlatformZhipu, true
+	case strings.HasPrefix(normalized, "deepseek-"):
+		return PlatformDeepseek, true
+	case strings.HasPrefix(normalized, "minimax-"),
+		strings.HasPrefix(normalized, "abab5"),
+		strings.HasPrefix(normalized, "abab6"),
+		strings.HasPrefix(normalized, "abab7"):
+		return PlatformMiniMax, true
+	case normalized == "jev-latest" || strings.HasPrefix(normalized, "jev-"):
+		return PlatformTypeSafe, true
 	default:
 		return "", false
 	}
@@ -185,7 +242,8 @@ func (s *GatewayService) resolveCompositeRouteDecision(ctx context.Context, grou
 
 func isConcreteRequestPlatform(platform string) bool {
 	switch platform {
-	case PlatformAnthropic, PlatformOpenAI, PlatformGemini, PlatformAntigravity, PlatformGrok:
+	case PlatformAnthropic, PlatformOpenAI, PlatformGemini, PlatformAntigravity, PlatformGrok,
+		PlatformKimi, PlatformZhipu, PlatformDeepseek, PlatformMiniMax, PlatformOpenCodeGo, PlatformTypeSafe:
 		return true
 	default:
 		return false

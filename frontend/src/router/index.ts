@@ -12,6 +12,7 @@ import { useNavigationLoadingState } from '@/composables/useNavigationLoading'
 import { useRoutePrefetch } from '@/composables/useRoutePrefetch'
 import { getSetupStatus } from '@/api/setup'
 import { resolveCompletedSetupRedirectPath } from './setupRedirect'
+import { resolveVeyraReturnPath } from './veyraReturn'
 import { resolveRouteDocumentTitle } from './title'
 
 /**
@@ -47,28 +48,6 @@ const routes: RouteRecordRaw[] = [
       requiresAuth: false,
       title: 'Login',
       titleKey: 'home.login'
-    }
-  },
-  {
-    path: '/veyra-launch',
-    name: 'VeyraLaunch',
-    component: () => import('@/views/auth/VeyraLaunchView.vue'),
-    meta: {
-      requiresAuth: false,
-      title: 'Opening Alchemy'
-    }
-  },
-  {
-    // The backend portal normally owns this path. Keep an SPA fallback so a
-    // stale cached shell can never turn an Alchemy login return into a 404.
-    path: '/_veyra/return',
-    redirect: (to) => ({
-      path: '/veyra-launch',
-      query: { target: to.query.target === 'alchemy-mobile' ? 'alchemy-mobile' : 'alchemy' }
-    }),
-    meta: {
-      requiresAuth: false,
-      title: 'Opening Alchemy'
     }
   },
   {
@@ -319,7 +298,8 @@ const routes: RouteRecordRaw[] = [
       requiresAdmin: false,
       title: 'My Subscriptions',
       titleKey: 'userSubscriptions.title',
-      descriptionKey: 'userSubscriptions.description'
+      descriptionKey: 'userSubscriptions.description',
+      requiresSubscription: true
     }
   },
   {
@@ -484,6 +464,30 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/admin/unified-gateway',
+    name: 'AdminUnifiedGateway',
+    component: () => import('@/views/admin/UnifiedGatewayView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Unified Gateway',
+      titleKey: 'admin.unifiedGateway.title',
+      descriptionKey: 'admin.unifiedGateway.description'
+    }
+  },
+  {
+    path: '/admin/unified-gateway/pricing',
+    name: 'AdminUnifiedGatewayPricing',
+    component: () => import('@/views/admin/UnifiedGatewayPricingView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Unified Gateway Route Pricing',
+      titleKey: 'admin.unifiedGateway.pricingTitle',
+      descriptionKey: 'admin.unifiedGateway.pricingDescription'
+    }
+  },
+  {
     path: '/admin/channels',
     redirect: '/admin/channels/pricing'
   },
@@ -544,6 +548,18 @@ const routes: RouteRecordRaw[] = [
       title: 'Account Management',
       titleKey: 'admin.accounts.title',
       descriptionKey: 'admin.accounts.description'
+    }
+  },
+  {
+    path: '/admin/plugins',
+    name: 'AdminPlugins',
+    component: () => import('@/views/admin/PluginsView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Plugin Management',
+      titleKey: 'admin.plugins.title',
+      descriptionKey: 'admin.plugins.description'
     }
   },
   {
@@ -829,11 +845,10 @@ router.beforeEach(async (to, _from, next) => {
   if (!requiresAuth) {
     // If already authenticated and trying to access login/register, redirect to appropriate dashboard
     if (authStore.isAuthenticated && (to.path === '/login' || to.path === '/register')) {
-      const redirect = typeof to.query.redirect === 'string' ? to.query.redirect : ''
-      if (to.path === '/login' && (redirect.startsWith('/_veyra/return') || redirect.startsWith('/veyra-launch'))) {
-        const launchTarget = redirect.includes('target=alchemy-mobile') ? 'alchemy-mobile' : 'alchemy'
-        window.location.assign(`/veyra-launch?target=${launchTarget}`)
-        next(false)
+      // Preserve the one-time portal return intent when a stale/revoked token
+      // sent the user back through login.
+      if (to.path === '/login' && resolveVeyraReturnPath(to.query.redirect)) {
+        next()
         return
       }
       // In backend mode, non-admin users should NOT be redirected away from login
@@ -924,7 +939,7 @@ router.beforeEach(async (to, _from, next) => {
   // 公共设置可能尚未加载（App.vue 的 onMounted 异步拉取晚于首次导航，且纯静态部署
   // 无 __APP_CONFIG__ 注入）。此时 cachedPublicSettings 为空会把 payment/risk_control
   // 误判为“未启用”而错误拦截，故这里先确保设置加载完成。
-  if ((to.meta.requiresPayment || to.meta.requiresRiskControl) && !appStore.publicSettingsLoaded) {
+  if ((to.meta.requiresPayment || to.meta.requiresRiskControl || to.meta.requiresSubscription) && !appStore.publicSettingsLoaded) {
     try {
       await appStore.fetchPublicSettings()
     } catch (error) {
@@ -952,10 +967,19 @@ router.beforeEach(async (to, _from, next) => {
     return
   }
 
+  // 订阅功能是 opt-out 开关：只有显式 false 才拦截「我的订阅」页直达。
+  if (
+    to.meta.requiresSubscription &&
+    appStore.publicSettingsLoaded &&
+    appStore.cachedPublicSettings?.subscription_enabled === false
+  ) {
+    next(authStore.isAdmin ? '/admin/dashboard' : '/dashboard')
+    return
+  }
+
   // 简易模式下限制访问某些页面
   if (authStore.isSimpleMode) {
     const restrictedPaths = [
-      '/admin/groups',
       '/admin/subscriptions',
       '/admin/redeem',
       '/subscriptions',

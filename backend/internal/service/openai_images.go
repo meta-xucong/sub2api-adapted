@@ -14,14 +14,13 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
-	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
-	smartrouter "github.com/Wei-Shaw/sub2api/internal/smartrouter/core"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
 	"github.com/imroc/req/v3"
@@ -36,21 +35,32 @@ const (
 	openAIImagesGenerationsURL = "https://api.openai.com/v1/images/generations"
 	openAIImagesEditsURL       = "https://api.openai.com/v1/images/edits"
 
-	openAIChatGPTStartURL          = "https://chatgpt.com/"
-	openAIChatGPTFilesURL          = "https://chatgpt.com/backend-api/files"
-	openAIImageBackendUserAgent    = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-	openAIImageMaxDownloadBytes    = 20 << 20 // 20MB per image download
-	openAIImageMaxUploadPartSize   = 20 << 20 // 20MB per multipart upload part
-	openAIImagesResponsesMainModel = "gpt-5.4-mini"
-	aiaiImagesPollInterval         = 5 * time.Second
-	aiaiImagesPollTimeout          = 3 * time.Minute
+	openAIChatGPTStartURL                  = "https://chatgpt.com/"
+	openAIChatGPTFilesURL                  = "https://chatgpt.com/backend-api/files"
+	openAIImageBackendUserAgent            = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+	openAIImageMaxDownloadBytes            = 20 << 20 // 20MB per image download
+	openAIImageMaxUploadPartSize           = 20 << 20 // 20MB per multipart upload part
+	openAIImagesResponsesMainModel         = "gpt-5.6-luna"
+	openAIImagesVerbatimPromptInstructions = "When invoking the image_generation tool, use the user's image prompt verbatim. Do not rewrite, expand, summarize, embellish, translate, normalize punctuation, or add or remove visual details or constraints. Preserve the original language, wording, capitalization, quotes, and punctuation exactly."
 )
+
+// openAIImagesResponsesMainModelValue selects the Responses driver independently
+// of the image_generation tool model. An environment override lets operators
+// recover from upstream model retirement without rebuilding the gateway.
+func openAIImagesResponsesMainModelValue() string {
+	if model := strings.TrimSpace(os.Getenv("SUB2API_IMAGES_MAIN_MODEL")); model != "" {
+		return model
+	}
+	return openAIImagesResponsesMainModel
+}
 
 type OpenAIImagesCapability string
 
 const (
 	OpenAIImagesCapabilityBasic  OpenAIImagesCapability = "images-basic"
 	OpenAIImagesCapabilityNative OpenAIImagesCapability = "images-native"
+	// Compatible provider models require the API-key Images passthrough path.
+	OpenAIImagesCapabilityAPIKey OpenAIImagesCapability = "images-apikey"
 )
 
 type OpenAIImagesUpload struct {
@@ -219,11 +229,21 @@ func (s *OpenAIGatewayService) ParseOpenAIImagesRequest(c *gin.Context, body []b
 	}
 
 	applyOpenAIImagesDefaults(req)
-	if err := validateOpenAIImagesRequestModel(req.Model); err != nil {
+	// Composite middleware preserves multipart bodies, including their public
+	// alias. Validate and forward the resolved model without altering uploads.
+	if platform, _ := ResolvedTargetPlatformFromContext(c.Request.Context()); platform == PlatformOpenAI {
+		if model, ok := ResolvedUpstreamModelFromContext(c.Request.Context()); ok {
+			req.Model = model
+		}
+	}
+	if err := validateCompatibleImagesModel(req.Model); err != nil && !isVolcengineArkImageModel(req.Model) {
 		return nil, err
 	}
 	req.SizeTier = normalizeOpenAIImageSizeTier(req.Size)
 	req.RequiredCapability = classifyOpenAIImagesCapability(req)
+	if isVolcengineArkImageModel(req.Model) {
+		req.RequiredCapability = OpenAIImagesCapabilityAPIKey
+	}
 	return req, nil
 }
 
@@ -486,15 +506,28 @@ func validateOpenAIImagesModel(model string) error {
 	return fmt.Errorf("images endpoint requires an image model, got %q", model)
 }
 
-func validateOpenAIImagesRequestModel(model string) error {
-	model = strings.TrimSpace(model)
-	if isOpenAIImageGenerationModel(model) || isVolcengineArkImageModel(model) {
+// Keep this separate from isOpenAIImageGenerationModel: that predicate also
+// drives native Responses tool conversion, pricing and rate-limit policy.
+func isGeminiCompatibleImageModel(model string) bool {
+	model = strings.ToLower(strings.TrimSpace(model))
+	return strings.HasPrefix(model, "gemini-") &&
+		(strings.HasSuffix(model, "-image") || strings.Contains(model, "-image-"))
+}
+
+func validateCompatibleImagesModel(model string) error {
+	if isGeminiCompatibleImageModel(model) {
 		return nil
 	}
-	if model == "" {
-		return fmt.Errorf("images endpoint requires an image model")
+	return validateOpenAIImagesModel(model)
+}
+
+// RequiredCapabilityForModel also applies the API-key-only fence when channel
+// mapping introduces a compatible provider model after request parsing.
+func (req *OpenAIImagesRequest) RequiredCapabilityForModel(model string) OpenAIImagesCapability {
+	if isGeminiCompatibleImageModel(model) || isVolcengineArkImageModel(model) {
+		return OpenAIImagesCapabilityAPIKey
 	}
-	return fmt.Errorf("images endpoint requires an image model, got %q", model)
+	return req.RequiredCapability
 }
 
 func normalizeOpenAIImagesEndpointPath(path string) string {
@@ -512,6 +545,9 @@ func normalizeOpenAIImagesEndpointPath(path string) string {
 func classifyOpenAIImagesCapability(req *OpenAIImagesRequest) OpenAIImagesCapability {
 	if req == nil {
 		return OpenAIImagesCapabilityNative
+	}
+	if isGeminiCompatibleImageModel(req.Model) {
+		return OpenAIImagesCapabilityAPIKey
 	}
 	if req.ExplicitModel || req.ExplicitSize {
 		return OpenAIImagesCapabilityNative
@@ -574,10 +610,17 @@ func (s *OpenAIGatewayService) ForwardImages(
 	if parsed == nil {
 		return nil, fmt.Errorf("parsed images request is required")
 	}
+	requestModel := strings.TrimSpace(parsed.Model)
+	if mapped := strings.TrimSpace(channelMappedModel); mapped != "" {
+		requestModel = mapped
+	}
+	if isVolcengineArkImageModel(requestModel) && !isVolcengineArkOpenAIAccount(account) {
+		return nil, validateOpenAIImagesModel(requestModel)
+	}
 	switch account.Type {
 	case AccountTypeAPIKey:
 		return s.forwardOpenAIImagesAPIKey(ctx, c, account, body, parsed, channelMappedModel)
-	case AccountTypeOAuth:
+	case AccountTypeOAuth, AccountTypeSetupToken:
 		return s.forwardOpenAIImagesOAuth(ctx, c, account, parsed, channelMappedModel)
 	default:
 		return nil, fmt.Errorf("unsupported account type: %s", account.Type)
@@ -604,6 +647,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 	if err := validateOpenAIImagesModelForAccount(account, upstreamModel); err != nil {
 		return nil, err
 	}
+	SetOpsUpstreamModel(c, upstreamModel)
 	logger.LegacyPrintf(
 		"service.openai_gateway",
 		"[OpenAI] Images request routing request_model=%s upstream_model=%s endpoint=%s account_type=%s",
@@ -638,18 +682,11 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 	if err != nil {
 		return nil, err
 	}
-	forwardBody, forwardContentType, err = sanitizeOpenAIImagesRequestForAccount(account, forwardBody, forwardContentType, upstreamParsed.Model)
-	if err != nil {
-		return nil, err
-	}
 	// 生图是长耗时、上游侧已产生实际成本的操作：客户端中途断开不应连带取消上游请求。
 	// detachStreamUpstreamContext 在非流式时原样返回请求 context，于是客户端一断开
 	// 就把已经在出图的上游调用打断成 context canceled，网关记 502、不扣费，而上游那边
 	// 图已经生成并计费。同一端点的 OAuth 分支 forwardOpenAIImagesOAuth 以及 Grok 媒体
 	// 路径本来就无条件脱钩，这里对齐；上游侧仍由 ResponseHeaderTimeout 兜底。
-	// Keep the request-wide image deadline while still detaching an early client
-	// cancellation.  The handler owns the total failover budget; stripping its
-	// deadline here would let one slow account consume that budget indefinitely.
 	upstreamCtx, releaseUpstreamCtx := detachOpenAIImageUpstreamContext(ctx)
 	defer releaseUpstreamCtx()
 
@@ -657,13 +694,9 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 	if err != nil {
 		return nil, err
 	}
-	imageCapability := smartrouter.CapabilityImageGeneration
-	if upstreamParsed.IsEdits() {
-		imageCapability = smartrouter.CapabilityImageEdit
-	}
-	imageUpstreamCtx, cancelImageUpstream := s.withOpenAIImageUpstreamTimeoutFor(upstreamCtx, account, imageCapability)
-	defer cancelImageUpstream()
-	upstreamReq, err := s.buildOpenAIImagesRequest(imageUpstreamCtx, c, account, forwardBody, forwardContentType, token, upstreamParsed.Endpoint)
+	attemptCtx, cancelAttempt := s.withOpenAIImageUpstreamTimeout(upstreamCtx)
+	defer cancelAttempt()
+	upstreamReq, err := s.buildOpenAIImagesRequest(attemptCtx, c, account, forwardBody, forwardContentType, token, upstreamParsed.Endpoint)
 	if err != nil {
 		return nil, err
 	}
@@ -673,15 +706,26 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 		proxyURL = account.Proxy.URL()
 	}
 	upstreamStart := time.Now()
-	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
-	statusCode := 0
-	if resp != nil {
-		statusCode = resp.StatusCode
-	}
+	resp, err := s.doOpenAIUpstream(upstreamReq, proxyURL, account)
 	SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
 	if err != nil {
-		s.observeSmartRouterImageAttempt(imageUpstreamCtx, account, imageCapability, time.Since(upstreamStart), statusCode, false, err)
-		return nil, s.handleOpenAIUpstreamTransportError(upstreamCtx, c, account, err, false)
+		if isOpenAIImageAttemptTimeout(err, attemptCtx, ctx) && OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c) <= 0 {
+			return nil, newOpenAIImageAttemptTimeoutFailover(nil)
+		}
+		safeErr := sanitizeUpstreamErrorMessage(err.Error())
+		setOpsUpstreamError(c, 0, safeErr, "")
+		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			ProxyID:            opsUpstreamProxyID(account),
+			ProxyName:          opsUpstreamProxyName(account),
+			Platform:           account.Platform,
+			AccountID:          account.ID,
+			AccountName:        account.Name,
+			UpstreamStatusCode: 0,
+			UpstreamURL:        safeUpstreamURL(upstreamReq.URL.String()),
+			Kind:               "request_error",
+			Message:            safeErr,
+		})
+		return nil, fmt.Errorf("upstream request failed: %s", safeErr)
 	}
 	if resp.StatusCode >= 400 {
 		respBody := s.readUpstreamErrorBody(resp)
@@ -690,9 +734,26 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
-		s.observeSmartRouterImageAttempt(imageUpstreamCtx, account, imageCapability, time.Since(upstreamStart), resp.StatusCode, false, nil)
-		if s.shouldFailoverOpenAIImagesResponse(resp.StatusCode, upstreamMsg, respBody) {
+		if isOpenAIImagesInsufficientBalance(respBody) {
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+				ProxyID:            opsUpstreamProxyID(account),
+				ProxyName:          opsUpstreamProxyName(account),
+				Platform:           account.Platform,
+				AccountID:          account.ID,
+				AccountName:        account.Name,
+				UpstreamStatusCode: resp.StatusCode,
+				UpstreamRequestID:  resp.Header.Get("x-request-id"),
+				UpstreamURL:        safeUpstreamURL(upstreamReq.URL.String()),
+				Kind:               "failover",
+				Message:            OpenAIImagesInsufficientBalanceMessage,
+			})
+			s.coolOpenAIImagesInsufficientBalance(upstreamCtx, account)
+			return nil, newOpenAIImagesInsufficientBalanceFailoverError(resp.StatusCode, resp.Header, respBody)
+		}
+		if s.shouldFailoverOpenAIImagesResponse(account, resp.StatusCode, upstreamMsg, respBody) {
+			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+				ProxyID:            opsUpstreamProxyID(account),
+				ProxyName:          opsUpstreamProxyName(account),
 				Platform:           account.Platform,
 				AccountID:          account.ID,
 				AccountName:        account.Name,
@@ -703,19 +764,21 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 				Message:            upstreamMsg,
 			})
 			shouldDisable := s.handleFailoverSideEffects(upstreamCtx, resp, account, respBody, upstreamModel)
-			return nil, &UpstreamFailoverError{
-				StatusCode:             resp.StatusCode,
-				ResponseBody:           respBody,
-				RetryableOnSameAccount: !isOpenAIImageUpstreamTextReplyFailover(resp.StatusCode, respBody) && !shouldDisable && account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
+			retryableOnSameAccount := !shouldDisable && account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode)
+			if account.IsOpenAIOAuthLike() && resp.StatusCode == http.StatusTooManyRequests {
+				return nil, s.newOpenAIAccountFailoverError(account, resp.StatusCode, resp.Header, respBody, upstreamMsg, shouldDisable, retryableOnSameAccount)
 			}
+			if isOpenAIHTTPUpstreamAccessStateError(resp.StatusCode, upstreamMsg, respBody) {
+				return nil, newOpenAIUpstreamFailoverError(resp.StatusCode, resp.Header, respBody, upstreamMsg, retryableOnSameAccount)
+			}
+			return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: respBody, RetryableOnSameAccount: retryableOnSameAccount}
 		}
 		return s.handleOpenAIImagesErrorResponse(upstreamCtx, resp, c, account, upstreamModel)
 	}
 	if aiaiAsync {
-		polledResp, pollErr := s.pollAIAIImagesAsyncResponse(imageUpstreamCtx, account, resp, token)
+		polledResp, pollErr := s.pollAIAIImagesAsyncResponse(upstreamCtx, ctx, c, account, resp, token)
 		_ = resp.Body.Close()
 		if pollErr != nil {
-			s.observeSmartRouterImageAttempt(imageUpstreamCtx, account, imageCapability, time.Since(upstreamStart), statusCode, false, pollErr)
 			return nil, pollErr
 		}
 		resp = polledResp
@@ -726,18 +789,15 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 	imageCount := parsed.N
 	var firstTokenMs *int
 	if parsed.Stream && isEventStreamResponse(resp.Header) {
-		writerSizeBeforeResponse := OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c)
-		streamUsage, streamCount, streamSizes, ttft, err := s.handleOpenAIImagesStreamingResponse(resp, c, startTime)
+		streamUsage, streamCount, streamSizes, ttft, err := s.handleOpenAIImagesStreamingResponse(resp, c, startTime, nil)
 		if err != nil {
-			responseWritten := OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c) != writerSizeBeforeResponse
-			if isOpenAIImageAttemptTimeout(err, imageUpstreamCtx, ctx) && !responseWritten {
-				s.observeSmartRouterImageAttempt(imageUpstreamCtx, account, imageCapability, time.Since(upstreamStart), resp.StatusCode, false, err)
+			if isOpenAIImageAttemptTimeout(err, attemptCtx, ctx) && OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c) <= 0 {
 				return nil, newOpenAIImageAttemptTimeoutFailover(resp)
 			}
-			s.observeSmartRouterImageAttempt(imageUpstreamCtx, account, imageCapability, time.Since(upstreamStart), resp.StatusCode, false, err)
 			if streamCount > 0 {
 				return &OpenAIForwardResult{
 					RequestID:        resp.Header.Get("x-request-id"),
+					UpstreamHeaders:  resp.Header,
 					Usage:            streamUsage,
 					Model:            requestModel,
 					UpstreamModel:    upstreamModel,
@@ -747,19 +807,20 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 					FirstTokenMs:     ttft,
 					ImageCount:       streamCount,
 					ImageSize:        parsed.SizeTier,
+					ImageQuality:     parsed.Quality,
 					ImageInputSize:   parsed.Size,
 					ImageOutputSizes: streamSizes,
 				}, err
 			}
 			return nil, err
 		}
-		s.observeSmartRouterImageAttempt(imageUpstreamCtx, account, imageCapability, time.Since(upstreamStart), resp.StatusCode, true, nil)
 		usage = streamUsage
 		imageCount = streamCount
 		imageOutputSizes := streamSizes
 		firstTokenMs = ttft
 		return &OpenAIForwardResult{
 			RequestID:        resp.Header.Get("x-request-id"),
+			UpstreamHeaders:  resp.Header,
 			Usage:            usage,
 			Model:            requestModel,
 			UpstreamModel:    upstreamModel,
@@ -769,26 +830,25 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 			FirstTokenMs:     firstTokenMs,
 			ImageCount:       imageCount,
 			ImageSize:        parsed.SizeTier,
+			ImageQuality:     parsed.Quality,
 			ImageInputSize:   parsed.Size,
 			ImageOutputSizes: imageOutputSizes,
 		}, nil
 	} else {
-		nonStreamUsage, nonStreamCount, nonStreamSizes, err := s.handleOpenAIImagesNonStreamingResponse(resp, c, parsed.ResponseFormat)
+		nonStreamUsage, nonStreamCount, nonStreamSizes, err := s.handleOpenAIImagesNonStreamingResponse(upstreamCtx, resp, c, account, parsed)
 		if err != nil {
-			if isOpenAIImageAttemptTimeout(err, imageUpstreamCtx, ctx) {
-				s.observeSmartRouterImageAttempt(imageUpstreamCtx, account, imageCapability, time.Since(upstreamStart), resp.StatusCode, false, err)
+			if isOpenAIImageAttemptTimeout(err, attemptCtx, ctx) && OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c) <= 0 {
 				return nil, newOpenAIImageAttemptTimeoutFailover(resp)
 			}
-			s.observeSmartRouterImageAttempt(imageUpstreamCtx, account, imageCapability, time.Since(upstreamStart), resp.StatusCode, false, err)
 			return nil, err
 		}
-		s.observeSmartRouterImageAttempt(imageUpstreamCtx, account, imageCapability, time.Since(upstreamStart), resp.StatusCode, true, nil)
 		usage = nonStreamUsage
 		if nonStreamCount > 0 {
 			imageCount = nonStreamCount
 		}
 		return &OpenAIForwardResult{
 			RequestID:        resp.Header.Get("x-request-id"),
+			UpstreamHeaders:  resp.Header,
 			Usage:            usage,
 			Model:            requestModel,
 			UpstreamModel:    upstreamModel,
@@ -798,6 +858,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 			FirstTokenMs:     firstTokenMs,
 			ImageCount:       imageCount,
 			ImageSize:        parsed.SizeTier,
+			ImageQuality:     parsed.Quality,
 			ImageInputSize:   parsed.Size,
 			ImageOutputSizes: nonStreamSizes,
 		}, nil
@@ -818,8 +879,8 @@ func (s *OpenAIGatewayService) buildOpenAIImagesRequest(
 		targetURL = openAIImagesEditsURL
 	}
 	baseURL := account.GetOpenAIBaseURL()
-	if overrideBaseURL := volcengineArkImagesBaseURL(account); overrideBaseURL != "" {
-		baseURL = overrideBaseURL
+	if arkBaseURL := volcengineArkImagesBaseURL(account); arkBaseURL != "" {
+		baseURL = arkBaseURL
 	}
 	if baseURL != "" {
 		validatedURL, err := s.validateUpstreamBaseURL(baseURL)
@@ -867,156 +928,6 @@ func buildOpenAIImagesURL(base string, endpoint string) string {
 	return buildOpenAIEndpointURL(base, endpoint)
 }
 
-func (s *OpenAIGatewayService) pollAIAIImagesAsyncResponse(ctx context.Context, account *Account, submitResp *http.Response, token string) (*http.Response, error) {
-	if submitResp == nil {
-		return nil, fmt.Errorf("aiai image async response missing")
-	}
-	body, err := io.ReadAll(submitResp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read AIAI image async response: %w", err)
-	}
-	if submitResp.StatusCode >= 400 {
-		return &http.Response{StatusCode: submitResp.StatusCode, Header: submitResp.Header.Clone(), Body: io.NopCloser(bytes.NewReader(body))}, nil
-	}
-	taskID := strings.TrimSpace(gjson.GetBytes(body, "task_id").String())
-	if taskID == "" {
-		return &http.Response{StatusCode: submitResp.StatusCode, Header: submitResp.Header.Clone(), Body: io.NopCloser(bytes.NewReader(body))}, nil
-	}
-	baseURL := strings.TrimRight(strings.TrimSpace(account.GetOpenAIBaseURL()), "/")
-	if baseURL == "" {
-		baseURL = "https://aiai.ac/api/v1"
-	}
-	pollURL := baseURL + "/images/" + url.PathEscape(taskID)
-	proxyURL := ""
-	if account.ProxyID != nil && account.Proxy != nil {
-		proxyURL = account.Proxy.URL()
-	}
-	deadline := time.Now().Add(aiaiImagesPollTimeout)
-	var lastBody []byte
-	for attempt := 0; ; attempt++ {
-		if attempt > 0 {
-			wait := aiaiImagesPollInterval
-			if remaining := time.Until(deadline); remaining < wait {
-				wait = remaining
-			}
-			if wait <= 0 {
-				break
-			}
-			timer := time.NewTimer(wait)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return nil, ctx.Err()
-			case <-timer.C:
-			}
-		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, pollURL, nil)
-		if err != nil {
-			return nil, err
-		}
-		req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
-		req.Header.Set("Authorization", "Bearer "+token)
-		resp, err := s.httpUpstream.Do(req, proxyURL, account.ID, account.Concurrency)
-		if err != nil {
-			return nil, fmt.Errorf("poll AIAI image task failed: %w", err)
-		}
-		lastBody, err = io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
-		if err != nil {
-			return nil, fmt.Errorf("read AIAI image task response: %w", err)
-		}
-		status := strings.ToLower(strings.TrimSpace(gjson.GetBytes(lastBody, "task_status").String()))
-		if status == "failed" || status == "error" {
-			return nil, &UpstreamFailoverError{StatusCode: http.StatusBadGateway, ResponseBody: lastBody}
-		}
-		if resp.StatusCode >= 400 {
-			return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: lastBody}
-		}
-		if status == "succeed" || status == "completed" {
-			return &http.Response{StatusCode: resp.StatusCode, Header: resp.Header.Clone(), Body: io.NopCloser(bytes.NewReader(lastBody))}, nil
-		}
-		if time.Now().After(deadline) {
-			break
-		}
-	}
-	if len(lastBody) == 0 {
-		lastBody = []byte(`{"error":{"message":"AIAI image task timed out","type":"server_error","code":"aiai_image_timeout"}}`)
-	}
-	return nil, &UpstreamFailoverError{StatusCode: http.StatusGatewayTimeout, ResponseBody: lastBody}
-}
-
-func isAIAIImageAccount(account *Account) bool {
-	return account != nil && account.IsOpenAIApiKey() && isAIAIImageBaseURL(account.GetOpenAIBaseURL())
-}
-
-func isAIAIImageBaseURL(baseURL string) bool {
-	trimmed := strings.ToLower(strings.TrimSpace(baseURL))
-	if trimmed == "" {
-		return false
-	}
-	host := trimmed
-	if parsed, err := url.Parse(trimmed); err == nil && parsed.Hostname() != "" {
-		host = strings.ToLower(parsed.Hostname())
-	}
-	host = strings.TrimPrefix(host, "www.")
-	return host == "aiai.ac" || host == "llmtoken.shop" || strings.HasSuffix(host, ".llmtoken.shop")
-}
-
-func adaptAIAIImagesEditToGeneration(account *Account, parsed *OpenAIImagesRequest) ([]byte, string, string, bool, bool, error) {
-	if !isAIAIImageAccount(account) || parsed == nil || (!parsed.IsEdits() && len(parsed.InputImageURLs) == 0 && len(parsed.Uploads) == 0 && strings.TrimSpace(parsed.MaskImageURL) == "" && parsed.MaskUpload == nil) {
-		return nil, "", "", false, false, nil
-	}
-	imageURLs := make([]string, 0, len(parsed.InputImageURLs)+len(parsed.Uploads))
-	for _, imageURL := range parsed.InputImageURLs {
-		if trimmed := strings.TrimSpace(imageURL); trimmed != "" {
-			imageURLs = append(imageURLs, trimmed)
-		}
-	}
-	for _, upload := range parsed.Uploads {
-		dataURL, err := openAIImageUploadToDataURL(upload)
-		if err != nil {
-			return nil, "", "", false, false, err
-		}
-		imageURLs = append(imageURLs, dataURL)
-	}
-	if len(imageURLs) == 0 {
-		return nil, "", "", false, false, nil
-	}
-	maskURL := strings.TrimSpace(parsed.MaskImageURL)
-	if parsed.MaskUpload != nil {
-		dataURL, err := openAIImageUploadToDataURL(*parsed.MaskUpload)
-		if err != nil {
-			return nil, "", "", false, false, err
-		}
-		maskURL = dataURL
-	}
-	payload := []byte(`{"model":"","prompt":"","image":[],"async":true}`)
-	payload, _ = sjson.SetBytes(payload, "model", strings.TrimSpace(parsed.Model))
-	payload, _ = sjson.SetBytes(payload, "prompt", strings.TrimSpace(parsed.Prompt))
-	payload, _ = sjson.SetRawBytes(payload, "image", []byte(`[]`))
-	for _, imageURL := range imageURLs {
-		payload, _ = sjson.SetBytes(payload, "image.-1", imageURL)
-	}
-	if maskURL != "" {
-		payload, _ = sjson.SetBytes(payload, "mask", maskURL)
-	}
-	if parsed.N > 0 {
-		payload, _ = sjson.SetBytes(payload, "n", parsed.N)
-	}
-	if size := strings.TrimSpace(parsed.Size); size != "" {
-		payload, _ = sjson.SetBytes(payload, "size", size)
-	}
-	if responseFormat := strings.TrimSpace(parsed.ResponseFormat); responseFormat != "" {
-		payload, _ = sjson.SetBytes(payload, "response_format", responseFormat)
-	} else {
-		payload, _ = sjson.SetBytes(payload, "response_format", "b64_json")
-	}
-	if outputFormat := strings.TrimSpace(parsed.OutputFormat); outputFormat != "" {
-		payload, _ = sjson.SetBytes(payload, "output_format", outputFormat)
-	}
-	return payload, "application/json", openAIImagesGenerationsEndpoint, true, true, nil
-}
-
 func rewriteOpenAIImagesModel(body []byte, contentType string, model string) ([]byte, string, error) {
 	model = strings.TrimSpace(model)
 	if model == "" {
@@ -1026,6 +937,9 @@ func rewriteOpenAIImagesModel(body []byte, contentType string, model string) ([]
 	if err == nil && strings.EqualFold(mediaType, "multipart/form-data") {
 		rewrittenBody, rewrittenType, rewriteErr := rewriteOpenAIImagesMultipartModel(body, contentType, model)
 		return rewrittenBody, rewrittenType, rewriteErr
+	}
+	if modelResult := gjson.GetBytes(body, "model"); modelResult.Type == gjson.String && modelResult.String() == model {
+		return body, contentType, nil
 	}
 	rewritten, err := sjson.SetBytes(body, "model", model)
 	if err != nil {
@@ -1093,89 +1007,6 @@ func rewriteOpenAIImagesMultipartModel(body []byte, contentType string, model st
 	return buffer.Bytes(), writer.FormDataContentType(), nil
 }
 
-// sanitizeOpenAIImagesRequestForAccount applies only the explicitly strict
-// native OpenAI Images contract. Compatible providers keep the historical
-// payload unchanged because many of them still accept response_format.
-func sanitizeOpenAIImagesRequestForAccount(account *Account, body []byte, contentType string, model string) ([]byte, string, error) {
-	if !usesStrictOpenAIImagesContract(account) || !strings.EqualFold(strings.TrimSpace(model), "gpt-image-2") || len(body) == 0 {
-		return body, contentType, nil
-	}
-	mediaType, _, err := mime.ParseMediaType(contentType)
-	if err == nil && strings.EqualFold(mediaType, "multipart/form-data") {
-		return stripOpenAIImagesMultipartField(body, contentType, "response_format")
-	}
-	if !gjson.ValidBytes(body) {
-		return body, contentType, nil
-	}
-	rewritten, err := sjson.DeleteBytes(body, "response_format")
-	if err != nil {
-		return nil, "", fmt.Errorf("sanitize image request: %w", err)
-	}
-	return rewritten, contentType, nil
-}
-
-func usesStrictOpenAIImagesContract(account *Account) bool {
-	if account == nil || !account.IsOpenAIApiKey() {
-		return false
-	}
-	profile := strings.ToLower(strings.TrimSpace(account.getExtraString("openai_images_transport_profile")))
-	switch profile {
-	case "strict", "strict_openai_images", "native", "native_openai_images":
-		return true
-	case "compat", "openai_compatible":
-		return false
-	}
-	// The official API is the only safe implicit strict default. Custom base
-	// URLs remain compatibility-first unless explicitly opted in above.
-	baseURL := strings.TrimSpace(account.GetCredential("base_url"))
-	if baseURL == "" {
-		return true
-	}
-	parsed, err := url.Parse(baseURL)
-	return err == nil && strings.EqualFold(parsed.Hostname(), "api.openai.com")
-}
-
-func stripOpenAIImagesMultipartField(body []byte, contentType string, fieldName string) ([]byte, string, error) {
-	_, params, err := mime.ParseMediaType(contentType)
-	if err != nil {
-		return nil, "", fmt.Errorf("parse multipart content-type: %w", err)
-	}
-	boundary := strings.TrimSpace(params["boundary"])
-	if boundary == "" {
-		return nil, "", fmt.Errorf("multipart boundary is required")
-	}
-	reader := multipart.NewReader(bytes.NewReader(body), boundary)
-	var buffer bytes.Buffer
-	writer := multipart.NewWriter(&buffer)
-	for {
-		part, err := reader.NextPart()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, "", fmt.Errorf("read multipart body: %w", err)
-		}
-		if strings.EqualFold(strings.TrimSpace(part.FormName()), fieldName) && part.FileName() == "" {
-			_ = part.Close()
-			continue
-		}
-		target, err := writer.CreatePart(cloneMultipartHeader(part.Header))
-		if err != nil {
-			_ = part.Close()
-			return nil, "", fmt.Errorf("create multipart part: %w", err)
-		}
-		if _, err := io.Copy(target, part); err != nil {
-			_ = part.Close()
-			return nil, "", fmt.Errorf("copy multipart part: %w", err)
-		}
-		_ = part.Close()
-	}
-	if err := writer.Close(); err != nil {
-		return nil, "", fmt.Errorf("finalize multipart body: %w", err)
-	}
-	return buffer.Bytes(), writer.FormDataContentType(), nil
-}
-
 func cloneMultipartHeader(src textproto.MIMEHeader) textproto.MIMEHeader {
 	dst := make(textproto.MIMEHeader, len(src))
 	for key, values := range src {
@@ -1186,20 +1017,18 @@ func cloneMultipartHeader(src textproto.MIMEHeader) textproto.MIMEHeader {
 	return dst
 }
 
-func (s *OpenAIGatewayService) handleOpenAIImagesNonStreamingResponse(resp *http.Response, c *gin.Context, responseFormat string) (OpenAIUsage, int, []string, error) {
+func (s *OpenAIGatewayService) handleOpenAIImagesNonStreamingResponse(
+	ctx context.Context,
+	resp *http.Response,
+	c *gin.Context,
+	account *Account,
+	parsed *OpenAIImagesRequest,
+) (OpenAIUsage, int, []string, error) {
 	body, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
 	if err != nil {
 		return OpenAIUsage{}, 0, nil, err
 	}
-	if shouldNormalizeOpenAIImagesResponseToBase64(responseFormat, body) {
-		normalizedBody, normalizeErr := s.normalizeOpenAIImagesResponseURLsToBase64(c.Request.Context(), c.Request.Header, body)
-		if normalizeErr != nil {
-			return OpenAIUsage{}, 0, nil, normalizeErr
-		}
-		if len(normalizedBody) > 0 {
-			body = normalizedBody
-		}
-	}
+	body = s.backfillOpenAIImagesB64JSON(ctx, account, parsed, body)
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	contentType := "application/json"
 	if s.cfg != nil && !s.cfg.Security.ResponseHeaders.Enabled {
@@ -1213,61 +1042,11 @@ func (s *OpenAIGatewayService) handleOpenAIImagesNonStreamingResponse(resp *http
 	return usage, extractOpenAIImageCountFromJSONBytes(body), collectOpenAIResponseImageOutputSizesFromJSONBytes(body), nil
 }
 
-func shouldNormalizeOpenAIImagesResponseToBase64(responseFormat string, body []byte) bool {
-	if strings.ToLower(strings.TrimSpace(responseFormat)) != "b64_json" || len(body) == 0 || !gjson.ValidBytes(body) {
-		return false
-	}
-	items := collectOpenAIImagePointers(body)
-	if len(items) == 0 {
-		return false
-	}
-	for _, item := range items {
-		if normalizeOpenAIImageBase64(item.B64JSON) == "" {
-			return true
-		}
-	}
-	return false
-}
-
-func (s *OpenAIGatewayService) normalizeOpenAIImagesResponseURLsToBase64(ctx context.Context, headers http.Header, body []byte) ([]byte, error) {
-	items := collectOpenAIImagePointers(body)
-	if len(items) == 0 {
-		return body, nil
-	}
-	client := req.C()
-	errorBodyReadLimit := openAIUpstreamErrorBodyReadLimitForConfig(s.cfg)
-	rewritten := body
-	for i, item := range items {
-		if normalizeOpenAIImageBase64(item.B64JSON) != "" {
-			continue
-		}
-		imageBytes, err := resolveOpenAIImageBytes(ctx, client, headers, "", item, errorBodyReadLimit)
-		if err != nil {
-			return nil, err
-		}
-		encoded := base64.StdEncoding.EncodeToString(imageBytes)
-		if item.JSONPath != "" {
-			rewritten, err = sjson.SetBytes(rewritten, item.JSONPath+".b64_json", encoded)
-			if err != nil {
-				return nil, err
-			}
-			rewritten, _ = sjson.DeleteBytes(rewritten, item.JSONPath+".url")
-			rewritten, _ = sjson.DeleteBytes(rewritten, item.JSONPath+".image_url")
-			rewritten, _ = sjson.DeleteBytes(rewritten, item.JSONPath+".download_url")
-			continue
-		}
-		rewritten, err = sjson.SetBytes(rewritten, fmt.Sprintf("data.%d.b64_json", i), encoded)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return rewritten, nil
-}
-
 func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
 	resp *http.Response,
 	c *gin.Context,
 	startTime time.Time,
+	direct *OpenAIImagesRequest,
 ) (OpenAIUsage, int, []string, *int, error) {
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
@@ -1293,13 +1072,81 @@ func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
 	seenSSEData := false
 	fallbackTooLarge := false
 	var sseData openAISSEDataAccumulator
+	var streamErr error
+	finish := func() error {
+		if direct == nil {
+			return nil
+		}
+		if streamErr != nil {
+			return streamErr
+		}
+		if !seenSSEData || imageCounter.Count() == 0 {
+			return newOpenAIUpstreamStreamReadError(ErrOpenAIUpstreamStreamTruncated)
+		}
+		return nil
+	}
 
 	processSSEData := func(dataBytes []byte) {
+		if streamErr != nil {
+			return
+		}
 		seenSSEData = true
 		fallbackBody.Reset()
 		fallbackBytes = 0
+		if direct != nil && strings.HasSuffix(gjson.GetBytes(dataBytes, "type").String(), ".completed") {
+			if size := detectOpenAIImageResultSize(gjson.GetBytes(dataBytes, "b64_json").String()); size != "" {
+				dataBytes, _ = sjson.SetBytes(dataBytes, "size", size)
+			}
+		}
 		mergeOpenAIUsage(&usage, dataBytes)
 		imageCounter.AddSSEData(dataBytes)
+		if direct == nil || string(dataBytes) == "[DONE]" {
+			return
+		}
+		if directUsage, ok := codexDirectImagesUsage(dataBytes); ok {
+			mergeOpenAIUsageNonZero(&usage, directUsage)
+		}
+		if observer := upstreamResponseModelObserverFromContext(c); observer != nil {
+			observer.Observe(gjson.GetBytes(dataBytes, "model").String(), strings.HasSuffix(gjson.GetBytes(dataBytes, "type").String(), ".completed"))
+		}
+		if upstreamErr := openAIImagesUpstreamErrorFromSSEPayload(dataBytes); upstreamErr != nil {
+			streamErr = upstreamErr
+			if IsOpenAIImagesRetryableUpstreamError(upstreamErr) && imageCounter.Count() == 0 {
+				return
+			}
+		}
+		if !gjson.ValidBytes(dataBytes) {
+			streamErr = newOpenAIUpstreamStreamReadError(fmt.Errorf("invalid image stream JSON"))
+			return
+		}
+		eventType := gjson.GetBytes(dataBytes, "type").String()
+		if direct != nil && strings.TrimSpace(direct.Model) != "" {
+			dataBytes, _ = sjson.SetBytes(dataBytes, "model", strings.TrimSpace(direct.Model))
+		}
+		// 原生编辑事件可能仍使用 image_generation 前缀；对外维持既有编辑事件名。
+		if strings.HasPrefix(eventType, "image_generation.") && direct.IsEdits() {
+			eventType = strings.Replace(eventType, "image_generation.", "image_edit.", 1)
+			dataBytes, _ = sjson.SetBytes(dataBytes, "type", eventType)
+		}
+		if direct.ResponseFormat == "url" {
+			b64 := gjson.GetBytes(dataBytes, "b64_json").String()
+			format := gjson.GetBytes(dataBytes, "output_format").String()
+			if format == "" {
+				format = direct.OutputFormat
+			}
+			dataBytes = codexDirectImageURL(dataBytes, "", format)
+			// 既有流式契约在 url 模式同时保留 b64_json。
+			if b64 != "" {
+				dataBytes, _ = sjson.SetBytes(dataBytes, "b64_json", b64)
+			}
+		}
+		if !clientDisconnected {
+			if err := s.writeOpenAIImagesStreamEvent(c, flusher, eventType, dataBytes); err != nil {
+				clientDisconnected = true
+			} else {
+				lastDownstreamWriteAt = time.Now()
+			}
+		}
 	}
 
 	flushSSEEvent := func() {
@@ -1314,7 +1161,7 @@ func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
 			ms := int(time.Since(startTime).Milliseconds())
 			firstTokenMs = &ms
 		}
-		if !clientDisconnected {
+		if !clientDisconnected && direct == nil {
 			if _, writeErr := c.Writer.Write(line); writeErr != nil {
 				clientDisconnected = true
 				logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Images stream client disconnected, continue draining upstream for billing")
@@ -1341,6 +1188,9 @@ func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
 	}
 
 	finalizeFallbackBody := func() {
+		if direct != nil {
+			return
+		}
 		if seenSSEData || fallbackBody.Len() == 0 {
 			return
 		}
@@ -1369,7 +1219,7 @@ func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
 		}
 		flushSSEEvent()
 		finalizeFallbackBody()
-		return usage, imageCounter.Count(), imageCounter.Sizes(), firstTokenMs, nil
+		return usage, imageCounter.Count(), imageCounter.Sizes(), firstTokenMs, finish()
 	}
 
 	type readEvent struct {
@@ -1436,7 +1286,7 @@ func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
 			if !ok {
 				flushSSEEvent()
 				finalizeFallbackBody()
-				return usage, imageCounter.Count(), imageCounter.Sizes(), firstTokenMs, nil
+				return usage, imageCounter.Count(), imageCounter.Sizes(), firstTokenMs, finish()
 			}
 			if ev.err != nil {
 				flushSSEEvent()
@@ -1539,7 +1389,6 @@ type openAIImagePointerInfo struct {
 	B64JSON     string
 	MimeType    string
 	Prompt      string
-	JSONPath    string
 }
 
 func collectOpenAIImagePointers(body []byte) []openAIImagePointerInfo {
@@ -1679,11 +1528,6 @@ func resolveOpenAIImageBytes(
 		return base64.StdEncoding.DecodeString(normalized)
 	}
 	if downloadURL := strings.TrimSpace(pointer.DownloadURL); downloadURL != "" {
-		// Some OpenAI-compatible upstreams put a data URI in `url` instead of
-		// `b64_json`. Decode it locally; it is not an HTTP download target.
-		if normalized := normalizeOpenAIImageBase64(downloadURL); normalized != "" {
-			return base64.StdEncoding.DecodeString(normalized)
-		}
 		return downloadOpenAIImageBytes(ctx, client, headers, downloadURL, errorBodyReadLimit)
 	}
 	if strings.TrimSpace(pointer.Pointer) == "" {
@@ -1726,11 +1570,11 @@ func collectOpenAIImageInlineAssets(body []byte, fallbackPrompt string) []openAI
 		return nil
 	}
 	var out []openAIImagePointerInfo
-	walkOpenAIImageInlineAssets(decoded, strings.TrimSpace(fallbackPrompt), nil, &out)
+	walkOpenAIImageInlineAssets(decoded, strings.TrimSpace(fallbackPrompt), &out)
 	return out
 }
 
-func walkOpenAIImageInlineAssets(node any, prompt string, path []string, out *[]openAIImagePointerInfo) {
+func walkOpenAIImageInlineAssets(node any, prompt string, out *[]openAIImagePointerInfo) {
 	switch value := node.(type) {
 	case map[string]any:
 		localPrompt := prompt
@@ -1746,33 +1590,22 @@ func walkOpenAIImageInlineAssets(node any, prompt string, path []string, out *[]
 			DownloadURL: firstNonEmptyString(value["download_url"], value["url"], value["image_url"]),
 			B64JSON:     firstNonEmptyString(value["b64_json"], value["base64"], value["image_base64"]),
 			MimeType:    firstNonEmptyString(value["mime_type"], value["mimeType"], value["content_type"]),
-			JSONPath:    strings.Join(path, "."),
 		}
 		switch {
 		case strings.HasPrefix(strings.TrimSpace(item.Pointer), "file-service://"),
 			strings.HasPrefix(strings.TrimSpace(item.Pointer), "sediment://"),
 			isLikelyOpenAIImageDownloadURL(item.DownloadURL),
-			isOpenAIImagesDataItemPath(item.JSONPath) && isHTTPURL(item.DownloadURL),
 			normalizeOpenAIImageBase64(item.B64JSON) != "":
 			*out = append(*out, item)
 		}
-		for key, child := range value {
-			walkOpenAIImageInlineAssets(child, localPrompt, append(path, key), out)
+		for _, child := range value {
+			walkOpenAIImageInlineAssets(child, localPrompt, out)
 		}
 	case []any:
-		for idx, child := range value {
-			walkOpenAIImageInlineAssets(child, prompt, append(path, strconv.Itoa(idx)), out)
+		for _, child := range value {
+			walkOpenAIImageInlineAssets(child, prompt, out)
 		}
 	}
-}
-
-func isOpenAIImagesDataItemPath(path string) bool {
-	parts := strings.Split(strings.TrimSpace(path), ".")
-	if len(parts) < 2 || parts[0] != "data" {
-		return false
-	}
-	_, err := strconv.Atoi(parts[1])
-	return err == nil
 }
 
 func firstNonEmptyString(values ...any) string {
@@ -1792,7 +1625,7 @@ func isLikelyOpenAIImageDownloadURL(raw string) bool {
 	if strings.HasPrefix(strings.ToLower(raw), "data:image/") {
 		return true
 	}
-	if !isHTTPURL(raw) {
+	if !strings.HasPrefix(strings.ToLower(raw), "http://") && !strings.HasPrefix(strings.ToLower(raw), "https://") {
 		return false
 	}
 	lower := strings.ToLower(raw)
@@ -1801,11 +1634,6 @@ func isLikelyOpenAIImageDownloadURL(raw string) bool {
 		strings.Contains(lower, ".jpg") ||
 		strings.Contains(lower, ".jpeg") ||
 		strings.Contains(lower, ".webp")
-}
-
-func isHTTPURL(raw string) bool {
-	raw = strings.ToLower(strings.TrimSpace(raw))
-	return strings.HasPrefix(raw, "http://") || strings.HasPrefix(raw, "https://")
 }
 
 func fetchOpenAIImageDownloadURL(

@@ -32,12 +32,11 @@ func prepareKIEJobsVideoCreateBody(info GrokMediaRequestInfo, upstreamModel stri
 		return nil, "", &GrokVideoInputValidationError{Message: "KIE video generation accepts public HTTPS image URLs, not uploaded image files"}
 	}
 	imageURLs := append([]string{}, info.InputImageURLs...)
-	imageURLs = append(imageURLs, info.ReferenceImageURLs...)
 	if len(imageURLs) > kieJobsVideoMaxExternalImages {
 		return nil, "", &GrokVideoInputValidationError{Message: fmt.Sprintf("KIE Grok video accepts at most %d reference images", kieJobsVideoMaxExternalImages)}
 	}
 	for index, imageURL := range imageURLs {
-		normalized, err := urlvalidator.ValidateHTTPSURL(imageURL, urlvalidator.ValidationOptions{AllowPrivate: false})
+		normalized, err := kieJobsVideoReferenceURLValidator(imageURL)
 		if err != nil {
 			return nil, "", &GrokVideoInputValidationError{Message: fmt.Sprintf("KIE reference image %d must be a public HTTPS URL", index)}
 		}

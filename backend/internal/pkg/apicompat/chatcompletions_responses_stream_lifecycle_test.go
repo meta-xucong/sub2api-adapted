@@ -179,90 +179,57 @@ func TestStream_ToolCallLifecycleComplete(t *testing.T) {
 	require.True(t, sawItemDone, "function_call output_item.done missing")
 }
 
-func TestStream_CompletedOutputReusesStreamItemIDAcrossChatModels(t *testing.T) {
-	for _, model := range []string{"glm-5.2", "deepseek-v4-pro", "gpt-5.6-sol"} {
-		t.Run(model, func(t *testing.T) {
-			state := NewChatCompletionsToResponsesStreamState(model)
-			var events []ResponsesStreamEvent
-			for _, payload := range []string{
-				// GLM-style chunks can carry id, name, and arguments together.
-				`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_glm","type":"function","function":{"name":"exec","arguments":"{\"cmd\":\"Get-Date\"}"}}]}}]}`,
-				`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
-			} {
-				var chunk ChatCompletionsChunk
-				require.NoError(t, json.Unmarshal([]byte(payload), &chunk))
-				events = append(events, ChatCompletionsChunkToResponsesEvents(&chunk, state)...)
-			}
-			events = append(events, FinalizeChatCompletionsResponsesStream(state)...)
-
-			var addedID, doneID, completedID string
-			for _, event := range events {
-				switch event.Type {
-				case "response.output_item.added":
-					if event.Item != nil && event.Item.Type == "function_call" {
-						addedID = event.Item.ID
-					}
-				case "response.output_item.done":
-					if event.Item != nil && event.Item.Type == "function_call" {
-						doneID = event.Item.ID
-					}
-				case "response.completed":
-					require.NotNil(t, event.Response)
-					for _, item := range event.Response.Output {
-						if item.Type == "function_call" && item.CallID == "call_glm" {
-							completedID = item.ID
-						}
-					}
-				}
-			}
-
-			require.NotEmpty(t, addedID)
-			require.Equal(t, addedID, doneID)
-			require.Equal(t, addedID, completedID)
-		})
-	}
-}
-
-func TestStream_CompletedOutputReusesStreamItemIDForSparseToolIndex(t *testing.T) {
-	state := NewChatCompletionsToResponsesStreamState("glm-5.2")
-	var events []ResponsesStreamEvent
-	for _, payload := range []string{
-		// Some Chat Completions providers use a non-zero/sparse tool-call index.
-		// The bridge must key terminal output by the actual upstream index, not
-		// by the number of calls currently stored in the state map.
-		`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":7,"id":"call_sparse","type":"function","function":{"name":"exec","arguments":"{\"cmd\":\"Get-Date\"}"}}]}}]}`,
+func TestStream_CompletedOutputReusesAddedItemIDs(t *testing.T) {
+	events := collectStreamEvents(t, []string{
+		`{"choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"plan"}}]}`,
+		`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_a","type":"function","function":{"name":"exec","arguments":"{\"cmd\":\"a\"}"}},{"index":1,"id":"call_b","type":"function","function":{"name":"lookup","arguments":"{\"q\":\"b\"}"}}]}}]}`,
 		`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
-	} {
-		var chunk ChatCompletionsChunk
-		require.NoError(t, json.Unmarshal([]byte(payload), &chunk))
-		events = append(events, ChatCompletionsChunkToResponsesEvents(&chunk, state)...)
-	}
-	events = append(events, FinalizeChatCompletionsResponsesStream(state)...)
+	})
 
-	var addedID, doneID, completedID string
-	for _, event := range events {
+	itemKey := func(item *ResponsesOutput) string {
+		require.NotNil(t, item)
+		if item.Type == "reasoning" {
+			return "reasoning"
+		}
+		return item.Type + ":" + item.CallID
+	}
+	addedIDs := make(map[string]string)
+	doneIDs := make(map[string]string)
+	completedIDs := make(map[string]string)
+	for index, event := range events {
+		if index > 0 {
+			require.Equal(t, events[index-1].SequenceNumber+1, event.SequenceNumber,
+				"Responses stream sequence numbers must be contiguous")
+		}
 		switch event.Type {
 		case "response.output_item.added":
-			if event.Item != nil && event.Item.Type == "function_call" {
-				addedID = event.Item.ID
-			}
+			addedIDs[itemKey(event.Item)] = event.Item.ID
 		case "response.output_item.done":
-			if event.Item != nil && event.Item.Type == "function_call" {
-				doneID = event.Item.ID
-			}
+			doneIDs[itemKey(event.Item)] = event.Item.ID
 		case "response.completed":
 			require.NotNil(t, event.Response)
-			for _, item := range event.Response.Output {
-				if item.Type == "function_call" && item.CallID == "call_sparse" {
-					completedID = item.ID
-				}
+			for i := range event.Response.Output {
+				item := &event.Response.Output[i]
+				completedIDs[itemKey(item)] = item.ID
 			}
 		}
 	}
 
-	require.NotEmpty(t, addedID)
-	require.Equal(t, addedID, doneID)
-	require.Equal(t, addedID, completedID)
+	require.Len(t, addedIDs, 3, "reasoning and both parallel tools must be announced")
+	require.Equal(t, addedIDs, doneIDs, "output_item.done must preserve each announced item ID")
+	require.Equal(t, addedIDs, completedIDs, "response.completed output must preserve each announced item ID")
+}
+
+func TestStream_LifecycleStartsCreatedThenInProgress(t *testing.T) {
+	events := collectStreamEvents(t, []string{
+		`{"choices":[{"index":0,"delta":{"role":"assistant","content":"hello"}}]}`,
+		`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+	})
+	require.GreaterOrEqual(t, len(events), 3)
+	require.Equal(t, "response.created", events[0].Type)
+	require.Equal(t, "response.in_progress", events[1].Type)
+	require.Equal(t, events[0].SequenceNumber+1, events[1].SequenceNumber)
+	require.Equal(t, events[0].Response.ID, events[1].Response.ID)
 }
 
 // TestStream_ToolCallArgumentsInFirstChunkNotDoubled guards the GLM/Zhipu shape
@@ -298,6 +265,78 @@ func TestStream_ToolCallArgumentsInFirstChunkNotDoubled(t *testing.T) {
 	require.True(t, sawItemDone, "function_call output_item.done missing")
 	// Accumulated deltas must equal the final arguments exactly (no duplication).
 	require.Equal(t, `{"cmd":"ls"}`, argsDelta.String())
+}
+
+func TestStream_InvalidToolArgumentsAreRejectedBeforeFinalize(t *testing.T) {
+	idx := 0
+	state := NewChatCompletionsToResponsesStreamState("deepseek-v4-flash")
+	chunk := &ChatCompletionsChunk{
+		Choices: []ChatChunkChoice{
+			{
+				Index: 0,
+				Delta: ChatDelta{
+					ToolCalls: []ChatToolCall{
+						{
+							Index: &idx,
+							ID:    "call_bad",
+							Type:  "function",
+							Function: ChatFunctionCall{
+								Name:      "exec_command",
+								Arguments: `{"cmd": "ssh root@HOST`,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	ChatCompletionsChunkToResponsesEvents(chunk, state)
+
+	err := state.ValidateToolCallArguments()
+	require.ErrorContains(t, err, "invalid JSON")
+}
+
+func TestStream_ValidToolCallAtOutputLimitKeepsIncompleteResponse(t *testing.T) {
+	idx := 0
+	state := NewChatCompletionsToResponsesStreamState("deepseek-v4-flash")
+	chunk := &ChatCompletionsChunk{
+		Choices: []ChatChunkChoice{
+			{
+				Index: 0,
+				Delta: ChatDelta{
+					ToolCalls: []ChatToolCall{
+						{
+							Index: &idx,
+							ID:    "call_at_limit",
+							Type:  "function",
+							Function: ChatFunctionCall{
+								Name:      "exec_command",
+								Arguments: `{}`,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	ChatCompletionsChunkToResponsesEvents(chunk, state)
+	state.FinishReason = "length"
+
+	require.NoError(t, state.ValidateToolCallArguments())
+	events := FinalizeChatCompletionsResponsesStream(state)
+	var sawArgsDone, sawIncomplete bool
+	for _, event := range events {
+		switch event.Type {
+		case "response.function_call_arguments.done":
+			sawArgsDone = true
+			require.Equal(t, `{}`, event.Arguments)
+		case "response.completed":
+			require.NotNil(t, event.Response)
+			sawIncomplete = event.Response.Status == "incomplete"
+		}
+	}
+	require.True(t, sawArgsDone)
+	require.True(t, sawIncomplete)
 }
 
 // TestStream_SSEWireComplete drives the full stream through SSE encoding and

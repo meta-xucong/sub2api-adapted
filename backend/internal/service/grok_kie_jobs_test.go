@@ -4,14 +4,31 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
 
+func useOfflineKIEVideoURLValidator(t *testing.T) {
+	t.Helper()
+	previous := kieJobsVideoReferenceURLValidator
+	t.Cleanup(func() { kieJobsVideoReferenceURLValidator = previous })
+	kieJobsVideoReferenceURLValidator = func(raw string) (string, error) {
+		parsed, err := url.Parse(strings.TrimSpace(raw))
+		if err != nil || parsed == nil || !strings.EqualFold(parsed.Scheme, "https") || parsed.Hostname() == "" {
+			return "", errors.New("invalid test URL")
+		}
+		return strings.TrimRight(parsed.String(), "/"), nil
+	}
+}
+
 func TestPrepareKIEJobsVideoCreateBody(t *testing.T) {
+	useOfflineKIEVideoURLValidator(t)
 	info := ParseGrokMediaRequest("application/json", []byte(`{
   "model":"grok-imagine-video-1.5",
   "prompt":"A slow camera push-in",
@@ -34,7 +51,21 @@ func TestPrepareKIEJobsVideoCreateBody(t *testing.T) {
 }`, string(body))
 }
 
+func TestPrepareKIEJobsVideoCreateBodyDoesNotDuplicateReferenceURLs(t *testing.T) {
+	useOfflineKIEVideoURLValidator(t)
+	body := []byte("{\"model\":\"grok-imagine-video-1.5\",\"prompt\":\"Motion\",\"image\":{\"url\":\"https://example.com/source.png\"},\"reference_images\":[{\"url\":\"https://example.com/reference.png\"}]}")
+	info := ParseGrokMediaRequest("application/json", body)
+
+	forwarded, _, err := prepareKIEJobsVideoCreateBody(info, "grok-imagine-video-1-5-preview")
+	require.NoError(t, err)
+	imageURLs := gjson.GetBytes(forwarded, "input.image_urls").Array()
+	require.Len(t, imageURLs, 2)
+	require.Equal(t, "https://example.com/source.png", imageURLs[0].String())
+	require.Equal(t, "https://example.com/reference.png", imageURLs[1].String())
+}
+
 func TestPrepareKIEJobsVideoCreateBodyRejectsUnsafeInputs(t *testing.T) {
+	useOfflineKIEVideoURLValidator(t)
 	t.Run("empty prompt", func(t *testing.T) {
 		info := ParseGrokMediaRequest("application/json", []byte(`{"model":"grok-imagine-video-1.5"}`))
 		_, _, err := prepareKIEJobsVideoCreateBody(info, "grok-imagine-video-1-5-preview")
@@ -152,6 +183,7 @@ func TestKIEJobsAccountEndpointSupport(t *testing.T) {
 }
 
 func TestValidateKIEJobsVideoImageURLs(t *testing.T) {
+	useOfflineKIEVideoURLValidator(t)
 	previous := kieJobsVideoImageURLProber
 	t.Cleanup(func() { kieJobsVideoImageURLProber = previous })
 
@@ -209,6 +241,7 @@ func TestValidateKIEJobsVideoImageURLs(t *testing.T) {
 }
 
 func TestKIEImageProbeSummaryAndErrorSummaryAreRedacted(t *testing.T) {
+	useOfflineKIEVideoURLValidator(t)
 	previous := kieJobsVideoImageURLProber
 	t.Cleanup(func() { kieJobsVideoImageURLProber = previous })
 	kieJobsVideoImageURLProber = func(context.Context, string) (kieJobsVideoImageURLProbe, error) {

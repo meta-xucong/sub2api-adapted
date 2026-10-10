@@ -1,22 +1,19 @@
 package middleware
 
 import (
-	"net"
 	"net/http"
 	"net/netip"
 	"path"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/service"
-
 	"github.com/gin-gonic/gin"
 )
 
 // OperatorTestGuard prevents local maintenance scripts from accidentally using
-// real customer API keys for gateway smoke tests. It is intentionally opt-in and
-// scoped to trusted local/script-like requests so normal downstream traffic is
-// unaffected.
+// customer API keys for gateway smoke tests. It is intentionally opt-in.
 func OperatorTestGuard(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if cfg == nil || !cfg.Gateway.OperatorTestGuard.Enabled {
@@ -119,51 +116,14 @@ func operatorGuardStringAllowed(value string, patterns []string) bool {
 }
 
 func operatorGuardClientMatches(c *gin.Context, trusted []string) bool {
-	if len(trusted) == 0 {
+	if c == nil || len(trusted) == 0 {
 		return false
 	}
-	for _, candidate := range operatorGuardClientCandidates(c) {
-		if operatorGuardIPAllowed(candidate, trusted) {
-			return true
-		}
-	}
-	return false
-}
-
-func operatorGuardClientCandidates(c *gin.Context) []string {
-	if c == nil || c.Request == nil {
-		return nil
-	}
-	values := []string{
-		c.ClientIP(),
-		c.GetHeader("X-Real-IP"),
-	}
-	if host, _, err := net.SplitHostPort(c.Request.RemoteAddr); err == nil {
-		values = append(values, host)
-	} else {
-		values = append(values, c.Request.RemoteAddr)
-	}
-	for _, part := range strings.Split(c.GetHeader("X-Forwarded-For"), ",") {
-		values = append(values, strings.TrimSpace(part))
-	}
-	out := make([]string, 0, len(values))
-	seen := make(map[string]struct{}, len(values))
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value == "" {
-			continue
-		}
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
-		out = append(out, value)
-	}
-	return out
+	return operatorGuardIPAllowed(ip.GetTrustedClientIP(c), trusted)
 }
 
 func operatorGuardIPAllowed(candidate string, trusted []string) bool {
-	ip, err := netip.ParseAddr(strings.TrimSpace(candidate))
+	addr, err := netip.ParseAddr(strings.TrimSpace(candidate))
 	if err != nil {
 		return false
 	}
@@ -173,13 +133,13 @@ func operatorGuardIPAllowed(candidate string, trusted []string) bool {
 			continue
 		}
 		if prefix, err := netip.ParsePrefix(raw); err == nil {
-			if prefix.Contains(ip) {
+			if prefix.Contains(addr) {
 				return true
 			}
 			continue
 		}
 		allowed, err := netip.ParseAddr(raw)
-		if err == nil && allowed == ip {
+		if err == nil && allowed == addr {
 			return true
 		}
 	}
