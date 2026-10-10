@@ -155,8 +155,8 @@ func TestParseWokeyCatalogAndBuildsTokenImageVideoCards(t *testing.T) {
 func TestWokeyTimeOfDayCatalogBuildsExactDualTierCards(t *testing.T) {
 	catalog := parseWokeyTimeOfDayFixture(t, wokeyTimeOfDayPricingFixture)
 	candidates, unsupported := buildWokeyPriceCards(catalog, decimal.RequireFromString("6.9"))
-	require.Empty(t, unsupported)
-	require.Len(t, candidates, 3)
+	require.Equal(t, "image_price_model_missing", unsupported["gpt-image-2.5"])
+	require.Equal(t, "video_price_model_missing", unsupported["grok-imagine-video-1.5"])
 
 	for model, want := range map[string]struct {
 		peakInput, peakOutput, peakCacheRead float64
@@ -167,6 +167,7 @@ func TestWokeyTimeOfDayCatalogBuildsExactDualTierCards(t *testing.T) {
 		"deepseek-v4-pro":   {4.554, 13.662, 0.1518, 3.6432, 10.9296, 0.12144},
 	} {
 		t.Run(model, func(t *testing.T) {
+			require.Empty(t, unsupported[model])
 			require.Len(t, candidates[model].Cards, 1, "both tiers belong in one route card")
 			card := candidates[model].Cards[0]
 			require.Nil(t, card.TokenBasePrice, "a time-of-day card must not flatten into the static price field")
@@ -911,9 +912,9 @@ func TestSyncWokeyPriceCatalogPublishesOnlySelectedAccountAndNeverReturnsCredent
 	require.NoError(t, err)
 	require.EqualValues(t, 2, state.Saved.Revision)
 	require.EqualValues(t, 2, state.ActiveRevision)
-	require.Equal(t, 17, state.Saved.WokeySync.Status.ManagedCardCount)
+	require.Equal(t, 16, state.Saved.WokeySync.Status.ManagedCardCount)
 	require.Equal(t, 1, state.Saved.WokeySync.Status.UnsupportedCount)
-	require.Len(t, state.Saved.Entries, 17)
+	require.Len(t, state.Saved.Entries, 16)
 	for _, entry := range state.Saved.Entries {
 		require.EqualValues(t, 42, entry.AccountID)
 		require.Equal(t, UnifiedGatewayWokeySource, entry.Source)
@@ -1403,15 +1404,15 @@ func TestWokeyCASConflictReReadsAndPreservesNewAdminSettings(t *testing.T) {
 		AccountID: 43, Model: "manual-preserve", Kind: UnifiedGatewayRoutePricingToken,
 		Multiplier: routePricingFloat(1),
 	})
-	var haiku *UnifiedGatewayRoutePricingEntry
+	var image *UnifiedGatewayRoutePricingEntry
 	for i := range state.Saved.Entries {
-		if state.Saved.Entries[i].AccountID == 42 && state.Saved.Entries[i].Model == "claude-haiku-5-5" {
-			haiku = &state.Saved.Entries[i]
+		if state.Saved.Entries[i].AccountID == 42 && state.Saved.Entries[i].Model == "gpt-image-2.5" && state.Saved.Entries[i].Kind == UnifiedGatewayRoutePricingImage {
+			image = &state.Saved.Entries[i]
 			break
 		}
 	}
-	require.NotNil(t, haiku)
-	require.InDelta(t, 1.104, *haiku.TokenBasePrice.InputPerMillion, 1e-12, "the retry recalculates managed prices at the new FX")
+	require.NotNil(t, image)
+	require.InDelta(t, 0.138, *image.UnitPrice, 1e-12, "the retry recalculates managed prices at the new FX")
 	var persisted UnifiedGatewayRoutePricingConfig
 	require.NoError(t, json.Unmarshal([]byte(baseRepo.raw), &persisted))
 	require.EqualValues(t, 3, persisted.Revision, "the persisted setting uses the retried revision")
