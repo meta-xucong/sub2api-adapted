@@ -30,6 +30,21 @@ func TestRedisTicketStoreSurvivesAnotherProcessAndConsumesOnce(t *testing.T) {
 	require.ErrorIs(t, err, ErrTicketUsed)
 }
 
+func TestRedisTicketStoreAllowedIntentsRejectsBeforeConsuming(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	store := NewRedisTicketStore(rdb, "veyra:test-ticket-allowed", time.Minute)
+
+	ticket, err := store.Create(context.Background(), 42, PortalIntentVideo, time.Minute)
+	require.NoError(t, err)
+	_, err = store.ConsumeAllowed(context.Background(), ticket.Token, []string{PortalIntentAlchemy}, "", time.Now().UTC())
+	require.ErrorIs(t, err, ErrTicketIntent)
+
+	consumed, err := store.ConsumeAllowed(context.Background(), ticket.Token, []string{PortalIntentAlchemy, PortalIntentVideo}, "", time.Now().UTC())
+	require.NoError(t, err)
+	require.Equal(t, PortalIntentVideo, consumed.Intent)
+}
+
 func TestRedisTicketStoreFailsClosedWithoutRedis(t *testing.T) {
 	store := NewRedisTicketStore(nil, "veyra:test-ticket", time.Minute)
 	_, err := store.Create(context.Background(), 42, "alchemy", time.Minute)

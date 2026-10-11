@@ -121,6 +121,7 @@ type VeyraConfig struct {
 	Enabled               bool   `mapstructure:"enabled"`
 	PortalEnabled         bool   `mapstructure:"portal_enabled"`
 	AlchemyBaseURL        string `mapstructure:"alchemy_base_url"`
+	VideoBaseURL          string `mapstructure:"video_base_url"`
 	InternalToken         string `mapstructure:"internal_token"`
 	LoginTicketTTLSeconds int    `mapstructure:"login_ticket_ttl_seconds"`
 }
@@ -2470,11 +2471,11 @@ func setDefaults() {
 	viper.SetDefault("idempotency.max_stored_response_len", 64*1024)
 	viper.SetDefault("idempotency.cleanup_interval_seconds", 60)
 	viper.SetDefault("idempotency.cleanup_batch_size", 500)
-
 	// Optional aiself/Veyra portal integration.
 	viper.SetDefault("veyra.enabled", false)
 	viper.SetDefault("veyra.portal_enabled", false)
 	viper.SetDefault("veyra.alchemy_base_url", "https://alchemy.aiself.vip")
+	viper.SetDefault("veyra.video_base_url", "https://video.aiself.vip")
 	viper.SetDefault("veyra.internal_token", "")
 	viper.SetDefault("veyra.login_ticket_ttl_seconds", 120)
 

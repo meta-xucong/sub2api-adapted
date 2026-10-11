@@ -9,6 +9,7 @@
     authenticated: false,
     user: null,
     alchemyBaseUrl: "",
+    videoBaseUrl: "",
   };
 
   function safeAlchemyBaseUrl(raw) {
@@ -29,12 +30,31 @@
     }
   }
 
+  function safeVideoBaseUrl(raw) {
+    try {
+      const url = new URL(String(raw || "").trim());
+      if (
+        url.protocol !== "https:" ||
+        url.hostname.toLowerCase() !== "video.aiself.vip" ||
+        url.username ||
+        url.password ||
+        url.search ||
+        url.hash ||
+        (url.port && url.port !== "443")
+      ) return "";
+      return "https://video.aiself.vip";
+    } catch {
+      return "";
+    }
+  }
+
   const routeTargets = {
     login: "/login",
     logout: "/",
     "sub2api-console": "/_veyra/return?target=sub2api-console",
     alchemy: "/_veyra/return?target=alchemy",
     "alchemy-mobile": "/_veyra/return?target=alchemy-mobile",
+    video: "/_veyra/return?target=video",
     home: "/_veyra/return?target=home",
   };
 
@@ -103,10 +123,13 @@
     try {
       const response = await fetch("/api/veyra/portal/config", { credentials: "same-origin" });
       const payload = await response.json().catch(() => ({}));
-      const baseUrl = payload?.data?.alchemy_base_url;
-      state.alchemyBaseUrl = response.ok ? safeAlchemyBaseUrl(baseUrl) : "";
+      const alchemyBaseUrl = payload?.data?.alchemy_base_url;
+      const videoBaseUrl = payload?.data?.video_base_url;
+      state.alchemyBaseUrl = response.ok ? safeAlchemyBaseUrl(alchemyBaseUrl) : "";
+      state.videoBaseUrl = response.ok ? safeVideoBaseUrl(videoBaseUrl) : "";
     } catch {
       state.alchemyBaseUrl = "";
+      state.videoBaseUrl = "";
     }
   }
 
@@ -160,7 +183,7 @@
     window.location.href = "/";
   }
 
-  async function issueAlchemyTicket(target) {
+  async function issuePortalTicket(intent, target = intent) {
     const token = readAuthToken();
     if (!token) {
       window.location.href = loginUrl(routeTargets[target] || routeTargets.alchemy);
@@ -173,7 +196,7 @@
         Authorization: `Bearer ${token}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ intent: "alchemy" }),
+      body: JSON.stringify({ intent }),
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
@@ -181,18 +204,66 @@
         window.location.href = loginUrl(routeTargets[target] || routeTargets.alchemy);
         return null;
       }
-      throw new Error(payload?.message || "无法创建 Alchemy 登录票据");
+      throw new Error(payload?.message || "无法创建登录票据");
     }
     return payload?.data?.ticket || "";
   }
 
   async function launchAlchemy({ mobile = false } = {}) {
     if (!state.alchemyBaseUrl) throw new Error("Alchemy 跳转地址不可用，请联系管理员");
-    const ticket = await issueAlchemyTicket(mobile ? "alchemy-mobile" : "alchemy");
+    const ticket = await issuePortalTicket("alchemy", mobile ? "alchemy-mobile" : "alchemy");
     if (!ticket) return;
     const destination = new URL(mobile ? "/h5" : "/go/v2", state.alchemyBaseUrl);
     destination.searchParams.set("ticket", ticket);
     window.location.href = destination.toString();
+  }
+
+  async function issueVideoTicket() {
+    const token = readAuthToken();
+    if (!token) {
+      window.location.href = loginUrl(routeTargets.video);
+      return null;
+    }
+    const response = await fetch("/api/veyra/login-ticket", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ intent: "video" }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      if (response.status === 401 || response.status === 403) {
+        window.location.href = loginUrl(routeTargets.video);
+        return null;
+      }
+      throw new Error(payload?.message || "无法创建 Video OS 登录票据");
+    }
+    return payload?.data?.ticket || "";
+  }
+
+  function submitVideoTicket(ticket) {
+    const destination = new URL("/auth/veyra/callback", state.videoBaseUrl);
+    const form = document.createElement("form");
+    form.method = "POST";
+    form.action = destination.toString();
+    form.hidden = true;
+    const input = document.createElement("input");
+    input.type = "hidden";
+    input.name = "ticket";
+    input.value = ticket;
+    form.appendChild(input);
+    document.body.appendChild(form);
+    form.submit();
+  }
+
+  async function launchVideo() {
+    if (!state.videoBaseUrl) throw new Error("Video OS 跳转地址不可用，请联系管理员");
+    const ticket = await issueVideoTicket();
+    if (!ticket) return;
+    submitVideoTicket(ticket);
   }
 
   async function handleRoute(route) {
@@ -216,6 +287,14 @@
       await launchAlchemy({ mobile: route === "alchemy-mobile" });
       return;
     }
+    if (route === "video") {
+      if (!state.authenticated) {
+        window.location.href = loginUrl(routeTargets.video);
+        return;
+      }
+      await launchVideo();
+      return;
+    }
     if (route === "home") {
       window.location.href = "/";
       return;
@@ -225,7 +304,7 @@
   function targetFromReturnUrl() {
     if (window.location.pathname !== "/_veyra/return") return "";
     const target = new URLSearchParams(window.location.search).get("target") || "home";
-    if (target === "home" || target === "alchemy" || target === "alchemy-mobile" || target === "sub2api-console") return target;
+    if (target === "home" || target === "video" || target === "alchemy" || target === "alchemy-mobile" || target === "sub2api-console") return target;
     return "home";
   }
 

@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
+	"strconv"
+	"strings"
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
@@ -52,6 +55,16 @@ type UsageStats struct {
 	TotalCost                float64 `json:"total_cost"`
 	TotalActualCost          float64 `json:"total_actual_cost"`
 	AverageDurationMs        float64 `json:"average_duration_ms"`
+}
+
+// VideoUsageFact is the narrow, read-only usage fact exposed to the Video OS
+// bridge. It is derived from the existing usage_logs row; it is not a second
+// ledger and it never mutates the user's balance.
+type VideoUsageFact struct {
+	UserID     int64
+	RequestID  string
+	Model      string
+	ActualCost string
 }
 
 // UsageService 使用统计服务
@@ -155,6 +168,45 @@ func (s *UsageService) GetByID(ctx context.Context, id int64) (*UsageLog, error)
 		return nil, fmt.Errorf("get usage log: %w", err)
 	}
 	return log, nil
+}
+
+// GetVideoUsage resolves one settled provider request for the owning user.
+// The exact request id is preferred. Grok's existing async billing path stores
+// the durable usage key with its established `grok-video:` prefix, so the
+// canonical source key is tried only when the raw provider id is absent.
+func (s *UsageService) GetVideoUsage(ctx context.Context, userID int64, requestID string) (VideoUsageFact, error) {
+	if userID <= 0 || strings.TrimSpace(requestID) == "" {
+		return VideoUsageFact{}, fmt.Errorf("video usage lookup input is invalid")
+	}
+	candidates := []string{strings.TrimSpace(requestID)}
+	if !strings.HasPrefix(candidates[0], "grok-video:") {
+		candidates = append(candidates, StableGrokVideoBillingRequestID(candidates[0]))
+	}
+	for _, candidate := range candidates {
+		logs, _, err := s.ListWithFilters(ctx, pagination.PaginationParams{Page: 1, PageSize: 2}, usagestats.UsageLogFilters{
+			UserID: userID, RequestID: candidate, ExactTotal: true,
+		})
+		if err != nil {
+			return VideoUsageFact{}, err
+		}
+		if len(logs) == 0 {
+			continue
+		}
+		if len(logs) != 1 {
+			return VideoUsageFact{}, fmt.Errorf("video usage request is not unique")
+		}
+		log := logs[0]
+		if log.UserID != userID || strings.TrimSpace(log.RequestID) != candidate || strings.TrimSpace(log.Model) == "" || math.IsNaN(log.ActualCost) || math.IsInf(log.ActualCost, 0) || log.ActualCost <= 0 {
+			return VideoUsageFact{}, fmt.Errorf("video usage row is invalid")
+		}
+		return VideoUsageFact{
+			UserID:     log.UserID,
+			RequestID:  log.RequestID,
+			Model:      log.Model,
+			ActualCost: strconv.FormatFloat(log.ActualCost, 'f', 8, 64),
+		}, nil
+	}
+	return VideoUsageFact{}, ErrUsageLogNotFound
 }
 
 // ListByUser 获取用户的使用日志列表
