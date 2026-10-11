@@ -69,6 +69,8 @@ func TestVideoPortalRetainsOriginalThreeCardLayout(t *testing.T) {
 		require.Less(t, alchemy, video, name+" Video OS remains third")
 		require.NotContains(t, page, "video-quick-link")
 		require.NotContains(t, page, "打开 Video OS")
+		require.Contains(t, page, `src="/_veyra/assets/showcase/aggregator-platform.jpg"`)
+		require.Contains(t, page, `src="/_veyra/assets/showcase/video-os.jpg"`)
 	}
 
 	styles, err := fs.ReadFile(subFS, "styles.css")
@@ -149,6 +151,19 @@ func TestPortalMiddlewareServesAssetsWhenEnabled(t *testing.T) {
 	require.Contains(t, rec.Header().Get("Content-Type"), "text/css")
 	require.Equal(t, "no-cache", rec.Header().Get("Cache-Control"))
 	require.Contains(t, rec.Body.String(), "--paper")
+
+	for _, asset := range []string{
+		"/_veyra/assets/showcase/aggregator-platform.jpg",
+		"/_veyra/assets/showcase/video-os.jpg",
+	} {
+		rec = httptest.NewRecorder()
+		req = httptest.NewRequest(http.MethodGet, asset, nil)
+		router.ServeHTTP(rec, req)
+
+		require.Equal(t, http.StatusOK, rec.Code, asset)
+		require.Contains(t, rec.Header().Get("Content-Type"), "image/jpeg", asset)
+		require.NotEmpty(t, rec.Body.Bytes(), asset)
+	}
 }
 
 func TestPortalMiddlewareDoesNotCaptureAPIRoutes(t *testing.T) {

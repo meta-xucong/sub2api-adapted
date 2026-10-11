@@ -8,7 +8,8 @@ Video OS 卡片已存在于桌面和移动页面源码，但桌面入口网格�
 
 ## 修复
 
-- 页面设计严格恢复到最早包含 Video OS 的历史版本 `c56179836c08058ef6cd9ea68a66f0d5809b40cf`：保留原来的介绍区、三张应用卡片顺序和两列桌面网格，Video OS 作为第三张卡片；不新增置顶 CTA，也不改造为三列布局。
+- 页面布局恢复到最早包含 Video OS 的历史版本 `c56179836c08058ef6cd9ea68a66f0d5809b40cf`：保留介绍区、三张应用卡片顺序和两列桌面网格，Video OS 作为第三张卡片；不新增置顶 CTA，也不改造为三列布局。
+- 补回后来历史设计中的聚合平台与 Video OS 配图（`f453965a1a` 的 artwork 状态）；Alchemy 配图继续保留，图片只作为卡片装饰，不改变原始卡片布局。
 - Video OS 卡片继续使用既有 `data-route="video"` 与 ticket 登录桥接。
 - 后端对所有 `/_veyra/` 静态资源设置 `Cache-Control: no-cache`。
 - 线上 Nginx 不再覆盖门户 JS/CSS 的缓存策略；由后端 `no-cache` 响应负责重新验证。不得对未指纹化的 `/_veyra/*.js|css` 使用固定 max-age。
