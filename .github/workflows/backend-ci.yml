@@ -82,6 +82,7 @@ jobs:
           version: v2.14.0
           args: --timeout=30m
           working-directory: backend
+          only-new-issues: true
 
   release-helpers:
     runs-on: ubuntu-latest
