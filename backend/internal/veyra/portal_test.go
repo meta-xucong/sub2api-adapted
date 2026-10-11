@@ -41,6 +41,7 @@ func TestPortalMiddlewareServesRootWhenEnabled(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Contains(t, rec.Header().Get("Content-Type"), "text/html")
+	require.Equal(t, "no-cache", rec.Header().Get("Cache-Control"))
 	require.Contains(t, rec.Body.String(), "Veyra Agent")
 	require.Contains(t, rec.Body.String(), "/_veyra/styles.css")
 	require.Contains(t, rec.Body.String(), "Video OS")
@@ -96,6 +97,7 @@ func TestPortalMiddlewareServesMobilePortalAtDirectoryRoot(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Contains(t, rec.Header().Get("Content-Type"), "text/html")
+	require.Equal(t, "no-cache", rec.Header().Get("Cache-Control"))
 	require.Contains(t, rec.Body.String(), "Veyra Agent")
 	require.Contains(t, rec.Body.String(), "/_veyra/app.js")
 }
