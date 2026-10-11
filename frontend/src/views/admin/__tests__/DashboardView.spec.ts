@@ -137,7 +137,7 @@ describe('admin DashboardView', () => {
     await flushPromises()
     const chart = wrapper.findComponent({ name: 'Line' })
     expect(chart.props('data').datasets[0].data).toEqual([5])
-    expect(chart.props('options').scales.y.ticks.callback(5)).toBe('$5.00')
+    expect(chart.props('options').scales.y.ticks.callback(5)).toBe('⭐️5.00')
     resolveTokens({ trend: [{ date: '2026-01-01', user_id: 1, username: 'tokens', email: '', requests: 1, tokens: 100, cost: 1, actual_cost: 1 }] })
     await flushPromises()
     expect(chart.props('data').datasets[0].data).toEqual([5])

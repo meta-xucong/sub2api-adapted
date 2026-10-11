@@ -60,7 +60,7 @@
     </div>
     <div class="card p-4 flex items-center gap-3">
       <div class="rounded-lg bg-green-100 p-2 dark:bg-green-900/30 text-green-600">
-        <Icon :name="costIcon" size="md" />
+          <Icon :name="costIcon" size="md" />
       </div>
       <div class="min-w-0 flex-1">
         <p class="text-xs font-medium text-gray-500">{{ t('usage.totalCost') }}</p>
@@ -104,8 +104,8 @@ const props = withDefaults(defineProps<{
 }>(), {
   showAccountCost: true,
   strikeStandardCost: false,
-  costSymbol: '$',
-  costIcon: 'dollar',
+  costSymbol: '⭐️',
+  costIcon: 'star',
 })
 
 const { t } = useI18n()

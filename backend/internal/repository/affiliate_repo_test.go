@@ -42,6 +42,15 @@ func TestAffiliateRebateRecordsQueryKeepsNonOrderAccruals(t *testing.T) {
 	require.NotContains(t, content, "AND ual.source_order_id IS NOT NULL")
 }
 
+func TestAffiliateRebateRecordsIncludePaymentCurrency(t *testing.T) {
+	source, err := os.ReadFile("affiliate_repo.go")
+	require.NoError(t, err)
+	content := string(source)
+
+	require.Contains(t, content, "COALESCE(NULLIF(po.provider_snapshot->>'currency', ''), 'CNY')")
+	require.Contains(t, content, "&item.Currency")
+}
+
 // TestAffiliateTransferRecordsQueryIncludesOfflineWithdrawals 锁定提取记录同时
 // 列出转入余额与线下提现两类额度流出。
 func TestAffiliateTransferRecordsQueryIncludesOfflineWithdrawals(t *testing.T) {

@@ -2,6 +2,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import AdminAffiliateRecordsTable from '../AdminAffiliateRecordsTable.vue'
+import { formatPaymentAmount } from '@/components/payment/currency'
 
 const { listInviteRecords, listRebateRecords, listTransferRecords, getUserOverview } = vi.hoisted(() => ({
   listInviteRecords: vi.fn(),
@@ -110,8 +111,37 @@ describe('AdminAffiliateRecordsTable', () => {
     expect(row.get('[data-test="cell-pay_amount"]').text()).toBe('-')
     expect(row.get('[data-test="cell-payment_type"]').text()).toBe('-')
     expect(row.get('[data-test="cell-order_status"]').text()).toBe('-')
-    expect(row.get('[data-test="cell-rebate_amount"]').text()).toBe('$2.00')
+    expect(row.get('[data-test="cell-rebate_amount"]').text()).toBe('⭐️2.00')
     expect(wrapper.find('[data-test="affiliate-withdraw-open"]').exists()).toBe(false)
+  })
+
+  it('renders rebate payment amounts with the recorded payment currency', async () => {
+    listRebateRecords.mockResolvedValue(page([
+      {
+        order_id: 17,
+        out_trade_no: 'order-17',
+        inviter_id: 1,
+        inviter_email: 'inviter@example.com',
+        inviter_username: 'inviter',
+        invitee_id: 2,
+        invitee_email: 'invitee@example.com',
+        invitee_username: 'invitee',
+        order_amount: 100,
+        pay_amount: 12.5,
+        currency: 'USD',
+        rebate_amount: 2,
+        payment_type: 'stripe',
+        order_status: 'COMPLETED',
+        created_at: '2026-09-17T08:00:00Z',
+      },
+    ]))
+
+    const wrapper = mountTable('rebates')
+    await flushPromises()
+
+    const text = wrapper.get('[data-test="row-0"] [data-test="cell-pay_amount"]').text()
+    expect(text).toBe(formatPaymentAmount(12.5, 'USD'))
+    expect(text).not.toContain('¥')
   })
 
   it('lists offline withdrawals next to balance transfers with their type', async () => {
@@ -151,7 +181,7 @@ describe('AdminAffiliateRecordsTable', () => {
 
     const withdrawRow = wrapper.get('[data-test="row-0"]')
     expect(withdrawRow.get('[data-test="cell-action"]').text()).toBe('admin.affiliates.outflowTypes.withdraw')
-    expect(withdrawRow.get('[data-test="cell-amount"]').text()).toBe('$12.50')
+    expect(withdrawRow.get('[data-test="cell-amount"]').text()).toBe('⭐️12.50')
 
     const transferRow = wrapper.get('[data-test="row-1"]')
     expect(transferRow.get('[data-test="cell-action"]').text()).toBe('admin.affiliates.outflowTypes.transfer')

@@ -37,6 +37,20 @@ export interface AccountBillingBreakdownResponse {
   accounts: AccountBillingBreakdownRow[]
 }
 
+export interface UnifiedGatewayUserBillingBreakdownRow {
+  user_id: number
+  username: string
+  email: string
+  account_id: number
+  billing_type: number
+  actual_cost: number
+  account_cost: number
+}
+
+export interface UnifiedGatewayUserBillingBreakdownResponse {
+  rows: UnifiedGatewayUserBillingBreakdownRow[]
+}
+
 export interface SimpleUser {
   id: number
   email: string
@@ -162,6 +176,18 @@ export async function getAccountBillingBreakdown(params: {
 }): Promise<AccountBillingBreakdownResponse> {
   const { data } = await apiClient.get<AccountBillingBreakdownResponse>('/admin/usage/stats', {
     params: { ...params, account_billing_breakdown: true }
+  })
+  return data
+}
+
+/** Read billing rows for all users in the server-configured unified gateway group. */
+export async function getUnifiedGatewayUserBillingBreakdown(params: {
+  start_date: string
+  end_date: string
+  timezone?: string
+}): Promise<UnifiedGatewayUserBillingBreakdownResponse> {
+  const { data } = await apiClient.get<UnifiedGatewayUserBillingBreakdownResponse>('/admin/usage/stats', {
+    params: { ...params, gateway_user_billing_breakdown: true }
   })
   return data
 }

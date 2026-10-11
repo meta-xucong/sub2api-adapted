@@ -191,9 +191,6 @@
                 <svg v-else-if="ring.iconType === 'star'" class="w-5 h-5 text-gray-400 dark:text-dark-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <polygon points="12 2 15 9 22 9.5 17 14.5 18.5 22 12 18 5.5 22 7 14.5 2 9.5 9 9 12 2" />
                 </svg>
-                <svg v-else class="w-5 h-5 text-gray-400 dark:text-dark-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
-                </svg>
               </div>
               <div class="flex justify-center">
                 <div class="relative">
@@ -548,7 +545,7 @@ interface RingItem {
   pct: number
   amount: string
   isBalance?: boolean
-  iconType: 'clock' | 'calendar' | 'dollar' | 'star'
+  iconType: 'clock' | 'calendar' | 'star'
   resetAt?: string | null
 }
 
@@ -689,7 +686,7 @@ const detailRows = computed<DetailRow[]>(() => {
   const rows: DetailRow[] = []
   const ICON_SHIELD = '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>'
   const ICON_CALENDAR = '<rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>'
-  const ICON_DOLLAR = '<line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>'
+  const ICON_STAR = '<polygon points="12 2 15 8.5 22 9.3 17 14.1 18.2 21 12 17.5 5.8 21 7 14.1 2 9.3 9 8.5 12 2"/>'
   const ICON_CHECK = '<polyline points="20 6 9 17 4 12"/>'
 
   if (data.mode === 'quota_limited') {
@@ -723,7 +720,7 @@ const detailRows = computed<DetailRow[]>(() => {
           valueStr += ` (⟳ ${resetStr})`
         }
         rows.push({
-          iconBg: 'bg-primary-500/10', iconColor: 'text-primary-500', iconSvg: ICON_DOLLAR,
+          iconBg: 'bg-primary-500/10', iconColor: 'text-primary-500', iconSvg: ICON_STAR,
           label: `${t('keyUsage.usedQuota')} (${windowMap[rl.window] || rl.window})`,
           value: valueStr,
           valueClass: getUsageColor(pct),
@@ -743,21 +740,21 @@ const detailRows = computed<DetailRow[]>(() => {
       if (sub.daily_limit_usd > 0) {
         const pct = (sub.daily_usage_usd / sub.daily_limit_usd) * 100
         rows.push({
-          iconBg: 'bg-primary-500/10', iconColor: 'text-primary-500', iconSvg: ICON_DOLLAR,
+          iconBg: 'bg-primary-500/10', iconColor: 'text-primary-500', iconSvg: ICON_STAR,
           label: `${t('keyUsage.usedQuota')} (${locale.value === 'zh' ? '日' : 'D'})`, value: `${formatPoints(sub.daily_usage_usd)} / ${formatPoints(sub.daily_limit_usd)}`, valueClass: getUsageColor(pct),
         })
       }
       if (sub.weekly_limit_usd > 0) {
         const pct = (sub.weekly_usage_usd / sub.weekly_limit_usd) * 100
         rows.push({
-          iconBg: 'bg-indigo-500/10', iconColor: 'text-indigo-500', iconSvg: ICON_DOLLAR,
+          iconBg: 'bg-indigo-500/10', iconColor: 'text-indigo-500', iconSvg: ICON_STAR,
           label: `${t('keyUsage.usedQuota')} (${locale.value === 'zh' ? '周' : 'W'})`, value: `${formatPoints(sub.weekly_usage_usd)} / ${formatPoints(sub.weekly_limit_usd)}`, valueClass: getUsageColor(pct),
         })
       }
       if (sub.monthly_limit_usd > 0) {
         const pct = (sub.monthly_usage_usd / sub.monthly_limit_usd) * 100
         rows.push({
-          iconBg: 'bg-emerald-500/10', iconColor: 'text-emerald-500', iconSvg: ICON_DOLLAR,
+          iconBg: 'bg-emerald-500/10', iconColor: 'text-emerald-500', iconSvg: ICON_STAR,
           label: `${t('keyUsage.usedQuota')} (${locale.value === 'zh' ? '月' : 'M'})`, value: `${formatPoints(sub.monthly_usage_usd)} / ${formatPoints(sub.monthly_limit_usd)}`, valueClass: getUsageColor(pct),
         })
       }

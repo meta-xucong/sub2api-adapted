@@ -53,7 +53,7 @@
 
       <template #cell-pay_amount="{ value, row }">
         <div class="text-sm">
-          <span class="font-medium text-gray-900 dark:text-white">{{ paymentAmountSymbol(row) }}{{ value.toFixed(2) }}</span>
+        <span class="font-medium text-gray-900 dark:text-white">{{ paymentAmountSymbol(row) }} {{ value.toFixed(2) }}</span>
           <span v-if="row.fee_rate > 0" class="ml-1 text-xs text-gray-400" :title="t('payment.orders.fee') + ': ' + row.fee_rate + '%'">
             ({{ row.fee_rate }}%)
           </span>
@@ -118,7 +118,7 @@
             @click="emit('refund', row)"
             class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/20 dark:hover:text-red-400"
           >
-            <Icon name="dollar" size="sm" />
+            <Icon name="creditCard" size="sm" />
             <span class="text-xs">{{ t('payment.admin.refund') }}</span>
           </button>
         </div>
@@ -146,7 +146,7 @@ import Pagination from '@/components/common/Pagination.vue'
 import Select from '@/components/common/Select.vue'
 import Icon from '@/components/icons/Icon.vue'
 import { statusBadgeClass, canRefund, formatOrderDateTime } from '@/components/payment/orderUtils'
-import { currencySymbol } from '@/components/payment/currency'
+import { currencySymbol, LOCAL_POINTS_SYMBOL } from '@/components/payment/currency'
 
 const { t } = useI18n()
 
@@ -171,7 +171,7 @@ const emit = defineEmits<{
 
 const searchQuery = ref('')
 const filters = reactive({ status: '', payment_type: '', order_type: '' })
-const creditedAmountSymbol = currencySymbol('USD')
+const creditedAmountSymbol = LOCAL_POINTS_SYMBOL
 
 function paymentAmountSymbol(order: PaymentOrder): string {
   return currencySymbol(order.currency)

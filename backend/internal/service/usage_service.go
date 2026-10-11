@@ -62,6 +62,18 @@ type AccountBillingBreakdown struct {
 	AccountCost float64 `json:"account_cost"`
 }
 
+// UnifiedGatewayUserBillingBreakdown is a read-only user/account billing row
+// scoped to the configured unified gateway group.
+type UnifiedGatewayUserBillingBreakdown struct {
+	UserID      int64   `json:"user_id"`
+	Username    string  `json:"username"`
+	Email       string  `json:"email"`
+	AccountID   int64   `json:"account_id"`
+	BillingType int8    `json:"billing_type"`
+	ActualCost  float64 `json:"actual_cost"`
+	AccountCost float64 `json:"account_cost"`
+}
+
 // UsageService 使用统计服务
 type UsageService struct {
 	usageRepo            UsageLogRepository
@@ -475,6 +487,16 @@ func (s *UsageService) GetAPIKeyAccountBillingBreakdown(ctx context.Context, api
 	rows, err := s.usageRepo.GetAPIKeyAccountBillingBreakdown(ctx, apiKeyID, startTime, endTime)
 	if err != nil {
 		return nil, fmt.Errorf("get API key account billing breakdown: %w", err)
+	}
+	return rows, nil
+}
+
+// GetUnifiedGatewayUserBillingBreakdown returns existing usage amounts grouped
+// by user, account, and billing type for one configured gateway group.
+func (s *UsageService) GetUnifiedGatewayUserBillingBreakdown(ctx context.Context, groupID int64, startTime, endTime time.Time) ([]UnifiedGatewayUserBillingBreakdown, error) {
+	rows, err := s.usageRepo.GetUnifiedGatewayUserBillingBreakdown(ctx, groupID, startTime, endTime)
+	if err != nil {
+		return nil, fmt.Errorf("get unified gateway user billing breakdown: %w", err)
 	}
 	return rows, nil
 }

@@ -78,13 +78,18 @@ describe("SubscriptionPlanCard", () => {
     expect(mountPlanCard("openai", { validity_days: 30, validity_unit: "day" }).text()).toContain("/ 30payment.days");
   });
 
-  it("uses the configured currency symbol while preserving USD for legacy plans", () => {
-    const cnyPlan = mountPlanCard("openai", { currency: "CNY", original_price: 20 }).text();
+  it("uses ISO currency codes for external payment amounts", () => {
+    const cnyPlan = mountPlanCard("openai", { currency: "CNY", original_price: 20 });
+    const usdPlan = mountPlanCard("openai", { currency: "USD" });
+    const legacyPlan = mountPlanCard("openai", { currency: "" });
 
-    expect(cnyPlan).toContain("¥10CNY");
-    expect(cnyPlan).toContain("¥20CNY");
-    expect(mountPlanCard("openai", { currency: "USD" }).text()).toContain("$10USD");
-    expect(mountPlanCard("openai", { currency: "" }).text()).toContain("$10");
+    expect(cnyPlan.findAll("span").some((node) => node.text() === "CNY")).toBe(true);
+    expect(cnyPlan.findAll("span").some((node) => node.text() === "10")).toBe(true);
+    expect(cnyPlan.find(".line-through").text()).toContain("CNY");
+    expect(usdPlan.findAll("span").some((node) => node.text() === "USD")).toBe(true);
+    expect(usdPlan.findAll("span").some((node) => node.text() === "10")).toBe(true);
+    expect(legacyPlan.findAll("span").some((node) => node.text() === "USD")).toBe(true);
+    expect(legacyPlan.findAll("span").some((node) => node.text() === "10")).toBe(true);
   });
 
   it.each([

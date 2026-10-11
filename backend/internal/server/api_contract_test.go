@@ -2867,6 +2867,10 @@ func (r *stubUsageLogRepo) GetAPIKeyAccountBillingBreakdown(ctx context.Context,
 	return nil, errors.New("not implemented")
 }
 
+func (r *stubUsageLogRepo) GetUnifiedGatewayUserBillingBreakdown(ctx context.Context, groupID int64, startTime, endTime time.Time) ([]service.UnifiedGatewayUserBillingBreakdown, error) {
+	return nil, errors.New("not implemented")
+}
+
 func (r *stubUsageLogRepo) GetAllGroupUsageSummary(ctx context.Context, todayStart time.Time) ([]usagestats.GroupUsageSummary, error) {
 	return nil, errors.New("not implemented")
 }

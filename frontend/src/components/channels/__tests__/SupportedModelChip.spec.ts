@@ -45,22 +45,22 @@ describe('SupportedModelChip', () => {
         const tooltip = document.body.querySelector('[role="tooltip"]')
         expect(tooltip?.textContent).toContain(`${pricingKeyPrefix}.billingModeVideo`)
         expect(tooltip?.textContent).toContain(`${pricingKeyPrefix}.videoPrice`)
-        expect(tooltip?.textContent).toContain(`$0.05 ${pricingKeyPrefix}.unitPerSecond`)
+        expect(tooltip?.textContent).toContain(`⭐️0.05 ${pricingKeyPrefix}.unitPerSecond`)
         expect(tooltip?.textContent).toContain('480p')
-        expect(tooltip?.textContent).toContain(`$0 ${pricingKeyPrefix}.unitPerSecond`)
+        expect(tooltip?.textContent).toContain(`⭐️0 ${pricingKeyPrefix}.unitPerSecond`)
         expect(tooltip?.textContent).toContain('720p')
-        expect(tooltip?.textContent).toContain(`$0.12 ${pricingKeyPrefix}.unitPerSecond`)
+        expect(tooltip?.textContent).toContain(`⭐️0.12 ${pricingKeyPrefix}.unitPerSecond`)
         const model = wrapper.props('model')
         await wrapper.setProps({
           model: { ...model, pricing: { ...model.pricing!, per_request_price: null } }
         })
         expect(tooltip?.textContent).not.toContain(`${pricingKeyPrefix}.videoPrice`)
-        expect(tooltip?.textContent).toContain(`$0.12 ${pricingKeyPrefix}.unitPerSecond`)
+        expect(tooltip?.textContent).toContain(`⭐️0.12 ${pricingKeyPrefix}.unitPerSecond`)
         await wrapper.setProps({
           model: { ...model, pricing: { ...model.pricing!, per_request_price: 0 } }
         })
         expect(tooltip?.textContent).toContain(`${pricingKeyPrefix}.videoPrice`)
-        expect(wrapper.findComponent({ name: 'PricingRow' }).text()).toContain(`$0 ${pricingKeyPrefix}.unitPerSecond`)
+        expect(wrapper.findComponent({ name: 'PricingRow' }).text()).toContain(`⭐️0 ${pricingKeyPrefix}.unitPerSecond`)
       } finally {
         wrapper.unmount()
       }
@@ -103,7 +103,7 @@ describe('SupportedModelChip', () => {
     await wrapper.find('[tabindex="0"]').trigger('mouseenter')
     await nextTick()
 
-    expect(document.body.textContent).toContain('$20 / $75')
+    expect(document.body.textContent).toContain('⭐️20 / ⭐️75')
     wrapper.unmount()
   })
 })

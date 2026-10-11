@@ -97,7 +97,7 @@ describe('AffiliateOfflineWithdrawDialog', () => {
 
     expect(lookupUsers).toHaveBeenCalledWith('inviter')
     expect(getUserOverview).toHaveBeenCalledWith(42)
-    expect(wrapper.get('[data-test="withdraw-available-quota"]').text()).toBe('$12.34567891')
+    expect(wrapper.get('[data-test="withdraw-available-quota"]').text()).toBe('⭐️12.34567891')
 
     await wrapper.get('[data-test="withdraw-fill-all"]').trigger('click')
     expect((wrapper.get('[data-test="withdraw-amount"]').element as HTMLInputElement).value).toBe('12.34567891')
@@ -108,7 +108,7 @@ describe('AffiliateOfflineWithdrawDialog', () => {
 
     expect(withdrawUserQuota).toHaveBeenCalledWith(42, { amount: 12.34567891 }, expect.stringMatching(/^affiliate-withdraw-/))
     expect(showSuccess).toHaveBeenCalledWith(
-      'admin.affiliates.withdraw.success {"amount":"$12.34567891","remaining":"$0.00"}',
+      'admin.affiliates.withdraw.success {"amount":"⭐️12.34567891","remaining":"⭐️0.00"}',
     )
     expect(wrapper.emitted('success')?.[0]?.[0]).toMatchObject({ ledger_id: 9 })
   })
@@ -139,7 +139,7 @@ describe('AffiliateOfflineWithdrawDialog', () => {
 
     expect(showError).not.toHaveBeenCalled()
     expect(wrapper.get('[data-test="withdraw-selected-user"]').text()).toContain('fresh@example.com')
-    expect(wrapper.get('[data-test="withdraw-available-quota"]').text()).toBe('$0.00')
+    expect(wrapper.get('[data-test="withdraw-available-quota"]').text()).toBe('⭐️0.00')
     expect(wrapper.get('[data-test="withdraw-fill-all"]').attributes('disabled')).toBeDefined()
 
     await wrapper.get('[data-test="withdraw-amount"]').setValue('1')
@@ -177,7 +177,7 @@ describe('AffiliateOfflineWithdrawDialog', () => {
     await flushPromises()
 
     expect(showError).toHaveBeenCalledTimes(1)
-    expect(wrapper.get('[data-test="withdraw-available-quota"]').text()).toBe('$0.00')
+    expect(wrapper.get('[data-test="withdraw-available-quota"]').text()).toBe('⭐️0.00')
     expect(wrapper.get('[data-test="withdraw-uncertain-hint"]').text()).toBe('admin.affiliates.withdraw.uncertainHint')
     expect(wrapper.get('[data-test="withdraw-amount"]').attributes('disabled')).toBeDefined()
     expect(wrapper.get('[data-test="withdraw-fill-all"]').attributes('disabled')).toBeDefined()
@@ -194,7 +194,7 @@ describe('AffiliateOfflineWithdrawDialog', () => {
     expect(firstCall).toEqual([42, { amount: 10 }, expect.stringMatching(/^affiliate-withdraw-/)])
     expect(retryCall).toEqual(firstCall)
     expect(showSuccess).toHaveBeenCalledWith(
-      'admin.affiliates.withdraw.replayed {"amount":"$10.00","remaining":"$0.00"}',
+      'admin.affiliates.withdraw.replayed {"amount":"⭐️10.00","remaining":"⭐️0.00"}',
     )
     expect(wrapper.emitted('success')).toHaveLength(1)
   })
@@ -220,6 +220,6 @@ describe('AffiliateOfflineWithdrawDialog', () => {
     const [rejectedCall, nextCall] = withdrawUserQuota.mock.calls
     expect(nextCall[1]).toEqual({ amount: 5 })
     expect(nextCall[2]).not.toBe(rejectedCall[2])
-    expect(showSuccess).toHaveBeenCalledWith('admin.affiliates.withdraw.success {"amount":"$5.00","remaining":"$5.00"}')
+    expect(showSuccess).toHaveBeenCalledWith('admin.affiliates.withdraw.success {"amount":"⭐️5.00","remaining":"⭐️5.00"}')
   })
 })

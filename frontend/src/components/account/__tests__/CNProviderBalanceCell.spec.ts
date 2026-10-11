@@ -52,6 +52,17 @@ describe('CNProviderBalanceCell', () => {
     expect(queryBalance).toHaveBeenCalledWith(account.id)
   })
 
+  it('labels an upstream USD balance with its currency code', () => {
+    const usdAccount = {
+      ...account,
+      extra: { kimi_balance: 12.5, kimi_balance_currency: '$' }
+    } as Account
+    const wrapper = mount(CNProviderBalanceCell, { props: { account: usdAccount } })
+
+    expect(wrapper.get('[data-test="cn-provider-balance-value"]').text()).toContain('USD 12.50')
+    expect(wrapper.text()).not.toContain('$12.50')
+  })
+
   it('shows the low-balance badge from the snapshot marker', () => {
     const lowAccount = {
       ...account,

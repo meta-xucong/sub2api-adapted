@@ -60,11 +60,11 @@ describe('recharge bonus hints on quick amounts', () => {
     const second = wrapper.get('[data-testid="quick-amount-500"]')
 
     expect(below.find('[data-testid="quick-amount-bonus-badge"]').exists()).toBe(false)
-    expect(below.get('[data-testid="quick-amount-credited"]').text()).toContain('$50.00')
+    expect(below.get('[data-testid="quick-amount-credited"]').text()).toContain('⭐️50.00')
     expect(first.get('[data-testid="quick-amount-bonus-badge"]').text()).toBe('+20%')
-    expect(first.get('[data-testid="quick-amount-credited"]').text()).toContain('$120.00')
+    expect(first.get('[data-testid="quick-amount-credited"]').text()).toContain('⭐️120.00')
     expect(second.get('[data-testid="quick-amount-bonus-badge"]').text()).toBe('+30%')
-    expect(second.get('[data-testid="quick-amount-credited"]').text()).toContain('$650.00')
+    expect(second.get('[data-testid="quick-amount-credited"]').text()).toContain('⭐️650.00')
   })
 
   it('bonus mode: matches tiers by the entered amount but credits by the multiplier', () => {
@@ -74,7 +74,7 @@ describe('recharge bonus hints on quick amounts', () => {
     const button = wrapper.get('[data-testid="quick-amount-1000"]')
     expect(button.get('[data-testid="quick-amount-bonus-badge"]').text()).toBe('+30%')
     // 1000 × 0.14 = 140 base, +30% = 182
-    expect(button.get('[data-testid="quick-amount-credited"]').text()).toContain('$182.00')
+    expect(button.get('[data-testid="quick-amount-credited"]').text()).toContain('⭐️182.00')
   })
 
   it('discount mode: tag reads N% OFF and the second line shows the discounted payment', () => {

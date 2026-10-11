@@ -23,7 +23,7 @@
               <span>{{ t('payment.orders.cancel') }}</span>
             </button>
             <button v-if="canRequestRefund(row)" @click="openRefundDialog(row)" class="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-purple-600 hover:bg-purple-50 dark:text-purple-400 dark:hover:bg-purple-900/20">
-              <Icon name="dollar" size="sm" />
+              <Icon name="star" size="sm" />
               <span>{{ t('payment.orders.requestRefund') }}</span>
             </button>
           </div>
@@ -62,7 +62,7 @@
           </div>
           <div class="mt-2 flex justify-between text-sm">
             <span class="text-gray-500 dark:text-gray-400">{{ t('payment.orders.amount') }}</span>
-            <span class="text-gray-900 dark:text-white">${{ refundTarget.amount.toFixed(2) }}</span>
+            <span class="text-gray-900 dark:text-white">⭐️{{ refundTarget.amount.toFixed(2) }}</span>
           </div>
         </div>
         <div>

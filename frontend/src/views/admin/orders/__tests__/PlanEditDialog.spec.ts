@@ -139,6 +139,23 @@ function mountDialog({
 }
 
 describe('PlanEditDialog', () => {
+  it('labels group USD limits as USD text without a dollar glyph', async () => {
+    const wrapper = mountDialog({
+      groups: [groupFixture({
+        id: 10,
+        daily_limit_usd: 12,
+        weekly_limit_usd: 34,
+        monthly_limit_usd: 56,
+      })],
+    })
+    await wrapper.get('select').setValue('10')
+
+    expect(wrapper.text()).toContain('USD 12')
+    expect(wrapper.text()).toContain('USD 34')
+    expect(wrapper.text()).toContain('USD 56')
+    expect(wrapper.text()).not.toContain('$')
+  })
+
   it('shows CNY channel charge using the configured subscription rate and fee', async () => {
     const wrapper = mountDialog({
       paymentConfig: {
@@ -150,9 +167,9 @@ describe('PlanEditDialog', () => {
     await wrapper.find('input[type="number"]').setValue('9.99')
 
     expect(wrapper.text()).toContain('preview')
-    expect(wrapper.text()).toContain('¥71.43')
+    expect(wrapper.text().replace(/\u00a0/g, ' ')).toContain('CNY 71.43')
     expect(wrapper.text()).toContain('fee 2.5')
-    expect(wrapper.text()).toContain('¥73.22')
+    expect(wrapper.text().replace(/\u00a0/g, ' ')).toContain('CNY 73.22')
   })
 
   it('hides the preview when the subscription rate is not configured', async () => {
@@ -166,7 +183,7 @@ describe('PlanEditDialog', () => {
     await wrapper.find('input[type="number"]').setValue('9.99')
 
     expect(wrapper.text()).not.toContain('preview')
-    expect(wrapper.text()).not.toContain('¥71.43')
+    expect(wrapper.text().replace(/\u00a0/g, ' ')).not.toContain('CNY 71.43')
   })
 
   it('allows composite subscription groups for payment plans', () => {

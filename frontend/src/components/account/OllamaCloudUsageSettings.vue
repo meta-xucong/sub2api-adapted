@@ -40,7 +40,7 @@
           <span class="text-gray-500 dark:text-gray-400">{{ t('admin.accounts.ollamaCloud.sevenDay') }}</span>
           <span class="break-words text-gray-900 dark:text-white">{{ windowSummary(snapshot.data?.seven_day) }}</span>
           <span class="text-gray-500 dark:text-gray-400">{{ t('admin.accounts.ollamaCloud.balance') }}</span>
-          <span class="break-words text-gray-900 dark:text-white">{{ snapshot.data?.balance || '-' }}</span>
+          <span class="break-words text-gray-900 dark:text-white">{{ formatProviderBalance(snapshot.data?.balance) }}</span>
           <span class="text-gray-500 dark:text-gray-400">{{ t('admin.accounts.ollamaCloud.models') }}</span>
           <span class="break-words text-gray-900 dark:text-white">{{ modelSummary }}</span>
           <span class="text-gray-500 dark:text-gray-400">{{ t('admin.accounts.ollamaCloud.status') }}</span>
@@ -173,6 +173,10 @@ const modelSummary = computed(() => snapshot.value?.data?.models?.map(model => {
 const formatPercent = (value?: number) => typeof value === 'number' && Number.isFinite(value)
   ? `${value.toFixed(value % 1 ? 1 : 0)}%`
   : '-'
+const formatProviderBalance = (value?: string) => {
+  if (!value) return '-'
+  return value.replace(/^\$\s*/, 'USD ')
+}
 const formatDate = (value?: string) => {
   if (!value) return '-'
   const date = new Date(value)

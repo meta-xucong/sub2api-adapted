@@ -144,7 +144,8 @@ describe('OllamaCloudUsageSettings', () => {
 
     const details = wrapper.get('[data-testid="ollama-cloud-usage-details"]')
     expect(details.text()).toContain('max')
-    expect(details.text()).toContain('$0')
+    expect(details.text()).toContain('USD 0')
+    expect(details.text()).not.toContain('$0')
     expect(details.text()).toContain('5h gpt-oss:120b-cloud: 2')
     expect(details.text()).toContain('7d gpt-oss:120b-cloud: 12')
     expect(details.text()).toContain('admin.accounts.ollamaCloud.ok')

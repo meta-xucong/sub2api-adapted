@@ -12,20 +12,21 @@
             <span>{{ t('admin.unifiedGateway.pricingGroup') }}:</span>
             <strong class="ml-1">{{ groupName || `#${form.target_group_id || '—'}` }}</strong>
           </div>
-          <div class="flex flex-wrap items-center gap-3 text-sm">
-            <span>{{ t('admin.unifiedGateway.pricingSavedRevision', { revision: state?.saved.revision ?? 0 }) }}</span>
-            <span>{{ t('admin.unifiedGateway.pricingActiveRevision', { revision: state?.active_revision ?? 0 }) }}</span>
-            <span v-if="state?.restart_needed" class="rounded bg-amber-100 px-2 py-1 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200">
-              {{ t('admin.unifiedGateway.pricingRestartRequired') }}
-            </span>
-          </div>
+          <span v-if="state?.restart_needed" class="rounded bg-amber-100 px-2 py-1 text-sm text-amber-800 dark:bg-amber-900/40 dark:text-amber-200">
+            {{ t('admin.unifiedGateway.pricingRestartRequired') }}
+          </span>
         </div>
         <p class="text-sm text-gray-500">{{ t('admin.unifiedGateway.pricingFallback') }}</p>
         <p v-if="error" role="alert" class="text-sm text-red-600">{{ error }}</p>
         <p v-if="success" role="status" class="text-sm text-green-700">{{ success }}</p>
       </section>
 
-      <section v-if="state" class="card space-y-4 p-5" data-testid="wokey-price-sync">
+      <details v-if="state" class="card" data-testid="wokey-price-sync">
+        <summary class="flex cursor-pointer flex-wrap items-center justify-between gap-3 p-5">
+          <span class="font-semibold">{{ t('admin.unifiedGateway.wokeySyncTitle') }}</span>
+          <span class="text-xs text-gray-500">{{ t(state.saved.wokey_sync?.enabled ? 'admin.unifiedGateway.wokeySyncSummaryEnabled' : 'admin.unifiedGateway.wokeySyncSummaryDisabled') }}</span>
+        </summary>
+        <div class="space-y-4 p-5 pt-0">
         <div class="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h2 class="text-lg font-semibold">{{ t('admin.unifiedGateway.wokeySyncTitle') }}</h2>
@@ -88,9 +89,12 @@
             <p v-else class="text-xs text-gray-500" data-testid="wokey-dynamic-manualize-note">{{ t('admin.unifiedGateway.wokeySyncDynamicManualizeDisabled') }}</p>
           </div>
         </div>
-      </section>
+        </div>
+      </details>
 
-      <section class="card space-y-4 p-5" data-testid="route-pricing-video-per-second">
+      <details class="card" data-testid="route-pricing-video-per-second">
+        <summary class="cursor-pointer p-5 font-medium">{{ t('admin.unifiedGateway.pricingVideoPerSecondTitle') }}</summary>
+        <div class="space-y-4 p-5 pt-0">
         <div>
           <h2 class="text-lg font-semibold">{{ t('admin.unifiedGateway.pricingVideoPerSecondTitle') }}</h2>
           <p class="mt-1 text-sm text-gray-500">{{ t('admin.unifiedGateway.pricingVideoPerSecondDescription') }}</p>
@@ -128,7 +132,8 @@
             {{ t('admin.unifiedGateway.pricingVideoPerSecondGenerate') }}
           </button>
         </div>
-      </section>
+        </div>
+      </details>
 
       <section class="card overflow-hidden">
         <p v-if="loading" class="p-5 text-sm text-gray-500">{{ t('admin.unifiedGateway.pricingLoading') }}</p>
@@ -173,7 +178,14 @@
           <div v-else-if="!filteredEntries.length" class="rounded border border-dashed border-gray-300 p-6 text-center text-sm text-gray-500 dark:border-gray-700">
             {{ t('admin.unifiedGateway.pricingSearchNoResults') }}
           </div>
-          <div v-for="({ entry, index }) in filteredEntries" :key="index" data-testid="route-pricing-row" class="rounded-lg border border-gray-200 p-4 dark:border-gray-700">
+          <div v-for="group in groupedEntries" :key="group.key">
+            <details class="rounded-lg border border-gray-200 dark:border-gray-700" data-testid="route-pricing-provider-card">
+              <summary class="flex cursor-pointer items-center justify-between gap-3 px-4 py-3 font-medium">
+                <span>{{ group.label }}</span>
+                <span class="text-xs font-normal text-gray-500">{{ t('admin.unifiedGateway.pricingProviderCardCount', { count: group.entries.length }) }}</span>
+              </summary>
+              <div class="space-y-3 p-4 pt-0">
+          <div v-for="({ entry, index }) in group.entries" :key="index" data-testid="route-pricing-row" class="rounded-lg border border-gray-200 p-4 dark:border-gray-700">
             <div class="grid grid-cols-1 gap-3 md:grid-cols-12">
               <label class="md:col-span-3">
                 <span class="mb-1 block text-xs text-gray-500">{{ t('admin.unifiedGateway.pricingAccount') }}</span>
@@ -354,6 +366,9 @@
               </div>
             </div>
           </div>
+              </div>
+            </details>
+          </div>
           <div class="flex justify-end">
             <button class="btn btn-primary" type="button" data-testid="save-route-pricing" :disabled="saving || loading || !form.target_group_id" @click="save">
               {{ saving ? t('admin.unifiedGateway.pricingSaving') : t('admin.unifiedGateway.pricingSave') }}
@@ -424,9 +439,23 @@ const filteredEntries = computed(() => {
   return form.entries.flatMap((entry, index) => {
     const account = state.value?.accounts.find((candidate) => candidate.id === entry.account_id)
     const kindKey = `admin.unifiedGateway.pricing${entry.kind[0].toUpperCase()}${entry.kind.slice(1)}`
-    const searchText = [account?.name || '', entry.account_id, entry.model, t(kindKey)].join(' ').toLocaleLowerCase()
+    const searchText = [account?.name || '', account?.provider_label || '', entry.account_id, entry.model, t(kindKey)].join(' ').toLocaleLowerCase()
     return !query || searchText.includes(query) ? [{ entry, index }] : []
   })
+})
+const groupedEntries = computed(() => {
+  const groups = new Map<string, { key: string; label: string; entries: Array<{ entry: RoutePricingFormEntry; index: number }> }>()
+  for (const row of filteredEntries.value) {
+    const account = state.value?.accounts.find((candidate) => candidate.id === row.entry.account_id)
+    const key = account?.provider_key || (row.entry.account_id > 0 ? `account:${row.entry.account_id}` : 'unassigned')
+    const label = account?.provider_label || (row.entry.account_id > 0
+      ? `${t('admin.unifiedGateway.pricingUnavailableAccount')} (#${row.entry.account_id})`
+      : t('admin.unifiedGateway.pricingUnassignedProvider'))
+    const group = groups.get(key) || { key, label, entries: [] }
+    group.entries.push(row)
+    groups.set(key, group)
+  }
+  return [...groups.values()].sort((a, b) => a.label.localeCompare(b.label))
 })
 
 function configuredSource(entry: RoutePricingFormEntry): string {

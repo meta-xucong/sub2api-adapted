@@ -24,6 +24,9 @@ type adminUsageRepoCapture struct {
 	billingBreakdownStartTime time.Time
 	billingBreakdownEndTime   time.Time
 	billingBreakdownRows      []service.AccountBillingBreakdown
+	gatewayBillingGroupID     int64
+	gatewayBillingStartTime   time.Time
+	gatewayBillingEndTime     time.Time
 }
 
 func (s *adminUsageRepoCapture) ListWithFilters(ctx context.Context, params pagination.PaginationParams, filters usagestats.UsageLogFilters) ([]service.UsageLog, *pagination.PaginationResult, error) {
@@ -52,10 +55,29 @@ func (s *adminUsageRepoCapture) GetAPIKeyAccountBillingBreakdown(ctx context.Con
 	}, nil
 }
 
+func (s *adminUsageRepoCapture) GetUnifiedGatewayUserBillingBreakdown(ctx context.Context, groupID int64, startTime, endTime time.Time) ([]service.UnifiedGatewayUserBillingBreakdown, error) {
+	s.gatewayBillingGroupID = groupID
+	s.gatewayBillingStartTime = startTime
+	s.gatewayBillingEndTime = endTime
+	return []service.UnifiedGatewayUserBillingBreakdown{{
+		UserID: 4, Username: "alice", Email: "alice@example.com", AccountID: 99,
+		BillingType: service.BillingTypeBalance, ActualCost: 1.25, AccountCost: 0.8,
+	}}, nil
+}
+
+type gatewayRoutePricingStateStub struct {
+	state *service.UnifiedGatewayRoutePricingAdminState
+	err   error
+}
+
+func (s gatewayRoutePricingStateStub) GetUnifiedGatewayRoutePricingAdminState(context.Context) (*service.UnifiedGatewayRoutePricingAdminState, error) {
+	return s.state, s.err
+}
+
 func newAdminUsageRequestTypeTestRouter(repo *adminUsageRepoCapture) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	usageSvc := service.NewUsageService(repo, nil, nil, nil)
-	handler := NewUsageHandler(usageSvc, nil, nil, nil)
+	handler := NewUsageHandler(usageSvc, nil, nil, nil, nil)
 	router := gin.New()
 	router.GET("/admin/usage", handler.List)
 	router.GET("/admin/usage/stats", handler.Stats)
@@ -83,6 +105,52 @@ func TestAdminUsageAccountBillingBreakdownUsesSingleKeyAndExplicitDateRange(t *t
 	require.Contains(t, rec.Body.String(), "\"actual_cost\":1.25")
 	require.Contains(t, rec.Body.String(), "\"account_cost\":0.8")
 	require.Zero(t, repo.statsCalls, "the grouped request must not fall through to the generic stats path")
+}
+
+func TestAdminUsageGatewayUserBillingBreakdownUsesConfiguredGroupAndDates(t *testing.T) {
+	repo := &adminUsageRepoCapture{}
+	usageSvc := service.NewUsageService(repo, nil, nil, nil)
+	state := &service.UnifiedGatewayRoutePricingAdminState{
+		Saved:  service.UnifiedGatewayRoutePricingConfig{TargetGroupID: 33},
+		Groups: []service.UnifiedGatewayRoutePricingGroupOption{{ID: 33, Name: "unified-api-internal"}},
+	}
+	handler := NewUsageHandler(usageSvc, nil, nil, gatewayRoutePricingStateStub{state: state}, nil)
+	router := gin.New()
+	router.GET("/admin/usage/stats", handler.Stats)
+	req := httptest.NewRequest(http.MethodGet, "/admin/usage/stats?gateway_user_billing_breakdown=true&start_date=2026-10-01&end_date=2026-10-06&timezone=Asia%2FShanghai", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.EqualValues(t, 33, repo.gatewayBillingGroupID)
+	require.Equal(t, time.Date(2026, 9, 30, 16, 0, 0, 0, time.UTC), repo.gatewayBillingStartTime.UTC())
+	require.Equal(t, time.Date(2026, 10, 6, 16, 0, 0, 0, time.UTC), repo.gatewayBillingEndTime.UTC())
+	require.Contains(t, rec.Body.String(), `"username":"alice"`)
+	require.Contains(t, rec.Body.String(), `"email":"alice@example.com"`)
+	require.NotContains(t, rec.Body.String(), "api_key")
+	require.Zero(t, repo.statsCalls)
+}
+
+func TestAdminUsageGatewayUserBillingBreakdownRejectsClientGroupAndRequiresActiveConfiguredGroup(t *testing.T) {
+	for _, target := range []string{
+		"/admin/usage/stats?gateway_user_billing_breakdown=true&start_date=2026-10-01&end_date=2026-10-06&group_id=99",
+		"/admin/usage/stats?gateway_user_billing_breakdown=true&start_date=2026-10-01",
+		"/admin/usage/stats?gateway_user_billing_breakdown=true&start_date=2026-10-01&end_date=2026-10-06",
+	} {
+		repo := &adminUsageRepoCapture{}
+		usageSvc := service.NewUsageService(repo, nil, nil, nil)
+		state := &service.UnifiedGatewayRoutePricingAdminState{
+			Saved:  service.UnifiedGatewayRoutePricingConfig{TargetGroupID: 33},
+			Groups: []service.UnifiedGatewayRoutePricingGroupOption{{ID: 34, Name: "other"}},
+		}
+		handler := NewUsageHandler(usageSvc, nil, nil, gatewayRoutePricingStateStub{state: state}, nil)
+		router := gin.New()
+		router.GET("/admin/usage/stats", handler.Stats)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
+		require.Equal(t, http.StatusBadRequest, rec.Code, target)
+		require.Zero(t, repo.gatewayBillingGroupID, target)
+	}
 }
 
 func TestAdminUsageStatsWithoutBreakdownUsesExistingStatsPath(t *testing.T) {

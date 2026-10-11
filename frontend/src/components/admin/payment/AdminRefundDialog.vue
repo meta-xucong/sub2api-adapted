@@ -39,7 +39,7 @@
         </div>
         <div class="mt-1 flex justify-between text-sm">
           <span class="text-gray-500 dark:text-gray-400">{{ t('payment.orders.payAmount') }}</span>
-          <span class="font-medium text-gray-900 dark:text-white">{{ paymentAmountSymbol }}{{ order?.pay_amount?.toFixed(2) }}</span>
+          <span class="font-medium text-gray-900 dark:text-white">{{ paymentAmountSymbol }} {{ order?.pay_amount?.toFixed(2) }}</span>
         </div>
         <div v-if="actuallyRefunded > 0" class="mt-1 flex justify-between text-sm">
           <span class="text-gray-500 dark:text-gray-400">{{ t('payment.admin.alreadyRefunded') }}</span>
@@ -169,7 +169,7 @@ import { useI18n } from 'vue-i18n'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import type { PaymentOrder } from '@/types/payment'
 import { formatOrderDateTime } from '@/components/payment/orderUtils'
-import { currencySymbol } from '@/components/payment/currency'
+import { currencySymbol, LOCAL_POINTS_SYMBOL } from '@/components/payment/currency'
 
 const { t } = useI18n()
 
@@ -187,7 +187,7 @@ const emit = defineEmits<{
   (e: 'cancel'): void
 }>()
 
-const creditedAmountSymbol = currencySymbol('USD')
+const creditedAmountSymbol = LOCAL_POINTS_SYMBOL
 
 const paymentAmountSymbol = computed(() => currencySymbol(props.order?.currency))
 

@@ -3,7 +3,7 @@ import type { SubscriptionPlan } from '@/types/payment'
 type TranslateFn = (key: string) => string
 
 /**
- * 用户侧套餐有效期后缀（"$9.9 / 月"、"$9.9 / 30天"）。
+ * 用户侧套餐有效期后缀（货币前缀 + 价格 + 有效期）。
  *
  * 管理端表单保存的单位是复数（days/weeks/months），而数据库默认值与部分
  * 历史数据是单数（day）。后端计费 psComputeValidityDays 对 week/weeks、

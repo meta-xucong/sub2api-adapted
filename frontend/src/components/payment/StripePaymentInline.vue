@@ -27,7 +27,7 @@
               </div>
               <div class="flex justify-between">
                 <span class="text-gray-500 dark:text-gray-400">{{ t('payment.orders.payAmount') }}</span>
-                <span class="font-medium text-gray-900 dark:text-white">{{ paymentAmountSymbol }}{{ payAmount.toFixed(2) }}</span>
+                <span class="font-medium text-gray-900 dark:text-white">{{ paymentAmountSymbol }} {{ payAmount.toFixed(2) }}</span>
               </div>
             </div>
           </div>
@@ -40,7 +40,7 @@
       <div class="card overflow-hidden">
         <div class="bg-gradient-to-br from-[#635bff] to-[#4f46e5] px-6 py-5 text-center">
           <p class="text-sm font-medium text-indigo-200">{{ t('payment.actualPay') }}</p>
-          <p class="mt-1 text-3xl font-bold text-white">{{ paymentAmountSymbol }}{{ payAmount.toFixed(2) }}</p>
+          <p class="mt-1 text-3xl font-bold text-white">{{ paymentAmountSymbol }} {{ payAmount.toFixed(2) }}</p>
         </div>
       </div>
       <!-- Stripe Payment Element -->
@@ -71,7 +71,7 @@ import { extractI18nErrorMessage } from '@/utils/apiError'
 import { paymentAPI } from '@/api/payment'
 import { useAppStore } from '@/stores'
 import { getPaymentPopupFeatures } from '@/components/payment/providerConfig'
-import { currencySymbol } from '@/components/payment/currency'
+import { currencySymbol, LOCAL_POINTS_SYMBOL, normalizePaymentCurrency } from '@/components/payment/currency'
 import type { Stripe, StripeElements } from '@stripe/stripe-js'
 import Icon from '@/components/icons/Icon.vue'
 
@@ -103,7 +103,7 @@ const cancelling = ref(false)
 const success = ref(false)
 const ready = ref(false)
 const selectedType = ref('')
-const creditedAmountSymbol = currencySymbol('USD')
+const creditedAmountSymbol = LOCAL_POINTS_SYMBOL
 const paymentAmountSymbol = computed(() => currencySymbol(props.currency))
 
 let stripeInstance: Stripe | null = null
@@ -153,6 +153,7 @@ async function handlePay() {
         order_id: String(props.orderId),
         method: selectedType.value,
         amount: String(props.payAmount),
+        currency: normalizePaymentCurrency(props.currency),
       },
     }).href
     const popup = window.open(popupUrl, 'paymentPopup', getPaymentPopupFeatures())

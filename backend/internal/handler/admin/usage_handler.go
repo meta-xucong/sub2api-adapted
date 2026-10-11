@@ -21,10 +21,15 @@ import (
 
 // UsageHandler handles admin usage-related requests
 type UsageHandler struct {
-	usageService   *service.UsageService
-	apiKeyService  *service.APIKeyService
-	adminService   service.AdminService
-	cleanupService *service.UsageCleanupService
+	usageService             *service.UsageService
+	apiKeyService            *service.APIKeyService
+	adminService             service.AdminService
+	routePricingStateService unifiedGatewayRoutePricingStateReader
+	cleanupService           *service.UsageCleanupService
+}
+
+type unifiedGatewayRoutePricingStateReader interface {
+	GetUnifiedGatewayRoutePricingAdminState(context.Context) (*service.UnifiedGatewayRoutePricingAdminState, error)
 }
 
 // NewUsageHandler creates a new admin usage handler
@@ -32,13 +37,15 @@ func NewUsageHandler(
 	usageService *service.UsageService,
 	apiKeyService *service.APIKeyService,
 	adminService service.AdminService,
+	routePricingStateService unifiedGatewayRoutePricingStateReader,
 	cleanupService *service.UsageCleanupService,
 ) *UsageHandler {
 	return &UsageHandler{
-		usageService:   usageService,
-		apiKeyService:  apiKeyService,
-		adminService:   adminService,
-		cleanupService: cleanupService,
+		usageService:             usageService,
+		apiKeyService:            apiKeyService,
+		adminService:             adminService,
+		routePricingStateService: routePricingStateService,
+		cleanupService:           cleanupService,
 	}
 }
 
@@ -232,17 +239,30 @@ func (h *UsageHandler) Stats(c *gin.Context) {
 		}
 		accountBillingBreakdown = parsed
 	}
-	if accountBillingBreakdown {
-		allowedParams := map[string]struct{}{
-			"account_billing_breakdown": {},
-			"api_key_id":                {},
-			"start_date":                {},
-			"end_date":                  {},
-			"timezone":                  {},
+	gatewayUserBillingBreakdown := false
+	if raw := strings.TrimSpace(c.Query("gateway_user_billing_breakdown")); raw != "" {
+		parsed, err := strconv.ParseBool(raw)
+		if err != nil {
+			response.BadRequest(c, "Invalid gateway_user_billing_breakdown value, use true or false")
+			return
+		}
+		gatewayUserBillingBreakdown = parsed
+	}
+	if accountBillingBreakdown && gatewayUserBillingBreakdown {
+		response.BadRequest(c, "usage breakdown modes cannot be combined")
+		return
+	}
+	if accountBillingBreakdown || gatewayUserBillingBreakdown {
+		allowedParams := map[string]struct{}{"start_date": {}, "end_date": {}, "timezone": {}}
+		if accountBillingBreakdown {
+			allowedParams["account_billing_breakdown"] = struct{}{}
+			allowedParams["api_key_id"] = struct{}{}
+		} else {
+			allowedParams["gateway_user_billing_breakdown"] = struct{}{}
 		}
 		for name := range c.Request.URL.Query() {
 			if _, allowed := allowedParams[name]; !allowed {
-				response.BadRequest(c, "account_billing_breakdown supports only api_key_id and date range filters")
+				response.BadRequest(c, "usage breakdown supports only its required selector and date range filters")
 				return
 			}
 		}
@@ -387,6 +407,50 @@ func (h *UsageHandler) Stats(c *gin.Context) {
 			return
 		}
 		response.Success(c, gin.H{"accounts": accounts})
+		return
+	}
+	if gatewayUserBillingBreakdown {
+		if startDateStr == "" || endDateStr == "" {
+			response.BadRequest(c, "gateway_user_billing_breakdown requires start_date and end_date")
+			return
+		}
+		if !startTime.Before(endTime) {
+			response.BadRequest(c, "start_date must not be after end_date")
+			return
+		}
+		if h.routePricingStateService == nil {
+			response.InternalError(c, "unified gateway settings are unavailable")
+			return
+		}
+		state, err := h.routePricingStateService.GetUnifiedGatewayRoutePricingAdminState(c.Request.Context())
+		if err != nil {
+			response.ErrorFrom(c, err)
+			return
+		}
+		groupID := int64(0)
+		if state != nil {
+			groupID = state.Saved.TargetGroupID
+			activeGroupFound := false
+			for _, group := range state.Groups {
+				if group.ID == groupID {
+					activeGroupFound = true
+					break
+				}
+			}
+			if !activeGroupFound {
+				groupID = 0
+			}
+		}
+		if groupID <= 0 {
+			response.BadRequest(c, "unified gateway target group is not configured as an active Composite group")
+			return
+		}
+		rows, err := h.usageService.GetUnifiedGatewayUserBillingBreakdown(c.Request.Context(), groupID, startTime, endTime)
+		if err != nil {
+			response.ErrorFrom(c, err)
+			return
+		}
+		response.Success(c, gin.H{"rows": rows})
 		return
 	}
 

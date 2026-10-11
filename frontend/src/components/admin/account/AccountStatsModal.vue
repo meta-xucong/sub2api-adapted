@@ -53,17 +53,17 @@
                 t('admin.accounts.stats.totalCost')
               }}</span>
               <div class="rounded-lg bg-emerald-100 p-1.5 dark:bg-emerald-900/30">
-                <Icon name="dollar" size="sm" class="text-emerald-600 dark:text-emerald-400" />
+                <Icon name="star" size="sm" class="text-emerald-600 dark:text-emerald-400" />
               </div>
             </div>
             <p class="text-2xl font-bold text-gray-900 dark:text-white">
-              ${{ formatCost(stats.summary.total_cost) }}
+              ⭐️{{ formatCost(stats.summary.total_cost) }}
             </p>
             <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
               {{ t('admin.accounts.stats.accumulatedCost') }}
               <span class="text-gray-400 dark:text-gray-500">
-                ({{ t('usage.userBilled') }}: ${{ formatCost(stats.summary.total_user_cost) }} ·
-                {{ t('admin.accounts.stats.standardCost') }}: ${{
+                ({{ t('usage.userBilled') }}: ⭐️{{ formatCost(stats.summary.total_user_cost) }} ·
+                {{ t('admin.accounts.stats.standardCost') }}: ⭐️{{
                   formatCost(stats.summary.total_standard_cost)
                 }})
               </span>
@@ -107,7 +107,7 @@
               </div>
             </div>
             <p class="text-2xl font-bold text-gray-900 dark:text-white">
-              ${{ formatCost(stats.summary.avg_daily_cost) }}
+              ⭐️{{ formatCost(stats.summary.avg_daily_cost) }}
             </p>
              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
               {{
@@ -116,7 +116,7 @@
                 })
               }}
               <span class="text-gray-400 dark:text-gray-500">
-                ({{ t('usage.userBilled') }}: ${{ formatCost(stats.summary.avg_daily_user_cost) }})
+                ({{ t('usage.userBilled') }}: ⭐️{{ formatCost(stats.summary.avg_daily_user_cost) }})
               </span>
             </p>
           </div>
@@ -170,13 +170,13 @@
               <div class="flex items-center justify-between">
                 <span class="text-xs text-gray-500 dark:text-gray-400">{{ t('usage.accountBilled') }}</span>
                 <span class="text-sm font-semibold text-gray-900 dark:text-white"
-                  >${{ formatCost(stats.summary.today?.cost || 0) }}</span
+                  >⭐️{{ formatCost(stats.summary.today?.cost || 0) }}</span
                 >
               </div>
               <div class="flex items-center justify-between">
                 <span class="text-xs text-gray-500 dark:text-gray-400">{{ t('usage.userBilled') }}</span>
                 <span class="text-sm font-semibold text-gray-900 dark:text-white"
-                  >${{ formatCost(stats.summary.today?.user_cost || 0) }}</span
+                  >⭐️{{ formatCost(stats.summary.today?.user_cost || 0) }}</span
                 >
               </div>
               <div class="flex items-center justify-between">
@@ -220,13 +220,13 @@
               <div class="flex items-center justify-between">
                 <span class="text-xs text-gray-500 dark:text-gray-400">{{ t('usage.accountBilled') }}</span>
                 <span class="text-sm font-semibold text-orange-600 dark:text-orange-400"
-                  >${{ formatCost(stats.summary.highest_cost_day?.cost || 0) }}</span
+                  >⭐️{{ formatCost(stats.summary.highest_cost_day?.cost || 0) }}</span
                 >
               </div>
               <div class="flex items-center justify-between">
                 <span class="text-xs text-gray-500 dark:text-gray-400">{{ t('usage.userBilled') }}</span>
                 <span class="text-sm font-semibold text-gray-900 dark:text-white"
-                  >${{ formatCost(stats.summary.highest_cost_day?.user_cost || 0) }}</span
+                  >⭐️{{ formatCost(stats.summary.highest_cost_day?.user_cost || 0) }}</span
                 >
               </div>
               <div class="flex items-center justify-between">
@@ -274,13 +274,13 @@
               <div class="flex items-center justify-between">
                 <span class="text-xs text-gray-500 dark:text-gray-400">{{ t('usage.accountBilled') }}</span>
                 <span class="text-sm font-semibold text-gray-900 dark:text-white"
-                  >${{ formatCost(stats.summary.highest_request_day?.cost || 0) }}</span
+                  >⭐️{{ formatCost(stats.summary.highest_request_day?.cost || 0) }}</span
                 >
               </div>
               <div class="flex items-center justify-between">
                 <span class="text-xs text-gray-500 dark:text-gray-400">{{ t('usage.userBilled') }}</span>
                 <span class="text-sm font-semibold text-gray-900 dark:text-white"
-                  >${{ formatCost(stats.summary.highest_request_day?.user_cost || 0) }}</span
+                  >⭐️{{ formatCost(stats.summary.highest_request_day?.user_cost || 0) }}</span
                 >
               </div>
             </div>
@@ -385,7 +385,7 @@
                   t('admin.accounts.stats.todayCost')
                 }}</span>
                 <span class="text-sm font-semibold text-gray-900 dark:text-white"
-                  >${{ formatCost(stats.summary.today?.cost || 0) }}</span
+                  >⭐️{{ formatCost(stats.summary.today?.cost || 0) }}</span
                 >
               </div>
             </div>
@@ -514,7 +514,7 @@ const trendChartData = computed(() => {
     labels: stats.value.history.map((h) => h.label),
     datasets: [
       {
-        label: t('usage.accountBilled') + ' (USD)',
+        label: t('usage.accountBilled') + ' (⭐️)',
         data: stats.value.history.map((h) => h.actual_cost),
         borderColor: '#3b82f6',
         backgroundColor: 'rgba(59, 130, 246, 0.1)',
@@ -523,7 +523,7 @@ const trendChartData = computed(() => {
         yAxisID: 'y'
       },
       {
-        label: t('usage.userBilled') + ' (USD)',
+        label: t('usage.userBilled') + ' (⭐️)',
         data: stats.value.history.map((h) => h.user_cost),
         borderColor: '#10b981',
         backgroundColor: 'rgba(16, 185, 129, 0.08)',
@@ -571,8 +571,8 @@ const lineChartOptions = computed(() => ({
         label: (context: any) => {
           const label = context.dataset.label || ''
           const value = context.raw
-          if (label.includes('USD')) {
-            return `${label}: $${formatCost(value)}`
+          if (label.includes('⭐️')) {
+            return `${label}: ${formatCost(value)}`
           }
           return `${label}: ${formatNumber(value)}`
         }
@@ -605,11 +605,11 @@ const lineChartOptions = computed(() => ({
         font: {
           size: 10
         },
-        callback: (value: string | number) => '$' + formatCost(Number(value))
+        callback: (value: string | number) => '⭐️' + formatCost(Number(value))
       },
       title: {
         display: true,
-        text: t('usage.accountBilled') + ' (USD)',
+        text: t('usage.accountBilled') + ' (⭐️)',
         color: '#3b82f6',
         font: {
           size: 11

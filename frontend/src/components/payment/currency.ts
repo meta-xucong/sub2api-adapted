@@ -1,25 +1,5 @@
 export const DEFAULT_PAYMENT_CURRENCY = 'CNY'
-
-const PAYMENT_CURRENCY_SYMBOLS: Record<string, string> = {
-  USD: '$',
-  CNY: '¥',
-  RMB: '¥',
-  EUR: '€',
-  GBP: '£',
-  JPY: '¥',
-  HKD: 'HK$',
-  TWD: 'NT$',
-  KRW: '₩',
-  AUD: 'A$',
-  CAD: 'C$',
-  SGD: 'S$',
-  NZD: 'NZ$',
-  MOP: 'MOP$',
-  MYR: 'RM',
-  THB: '฿',
-  PHP: '₱',
-  INR: '₹',
-}
+export const LOCAL_POINTS_SYMBOL = '⭐️'
 
 export function normalizePaymentCurrency(currency?: string | null): string {
   const normalized = String(currency || '').trim().toUpperCase()
@@ -27,8 +7,7 @@ export function normalizePaymentCurrency(currency?: string | null): string {
 }
 
 export function currencySymbol(currency?: string | null): string {
-  const normalized = normalizePaymentCurrency(currency)
-  return PAYMENT_CURRENCY_SYMBOLS[normalized] || normalized
+  return normalizePaymentCurrency(currency)
 }
 
 function paymentCurrencyFractionDigits(currency: string): number {
@@ -49,7 +28,7 @@ export function formatPaymentAmount(amount: number, currency?: string | null, lo
     return new Intl.NumberFormat(locale || undefined, {
       style: 'currency',
       currency: normalized,
-      currencyDisplay: 'narrowSymbol',
+      currencyDisplay: 'code',
       minimumFractionDigits: fractionDigits,
       maximumFractionDigits: fractionDigits,
     }).format(Number.isFinite(amount) ? amount : 0)

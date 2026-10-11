@@ -34,7 +34,10 @@ const initialState = () => ({
   active_revision: 2,
   restart_needed: true,
   groups: [{ id: 7, name: 'unified-api-internal' }],
-  accounts: [{ id: 42, name: 'YeToken', wokey_eligible: false }, { id: 43, name: 'Wokey', wokey_eligible: true }],
+  accounts: [
+    { id: 42, name: 'YeToken #1', wokey_eligible: false, provider_key: 'origin:https://yetoken.vip', provider_label: 'https://yetoken.vip' },
+    { id: 43, name: 'Wokey', wokey_eligible: true, provider_key: 'provider:wokey', provider_label: 'Wokey' },
+  ],
 })
 
 function mountPage() {
@@ -62,6 +65,9 @@ describe('Unified Gateway route pricing page', () => {
     expect(api.get).toHaveBeenCalledOnce()
     expect(wrapper.text()).toContain('unified-api-internal')
     expect(wrapper.text()).toContain('admin.unifiedGateway.pricingRestartRequired')
+    expect(wrapper.text()).toContain('admin.unifiedGateway.pricingFallback')
+    expect(wrapper.text()).not.toContain('admin.unifiedGateway.pricingSavedRevision')
+    expect(wrapper.text()).not.toContain('admin.unifiedGateway.pricingActiveRevision')
     await wrapper.get('[data-testid="add-route-pricing"]').trigger('click')
     await wrapper.get('[data-testid="route-pricing-account"]').setValue('42')
     await wrapper.get('[data-testid="route-pricing-model"]').setValue('glm-5.2')
@@ -75,7 +81,48 @@ describe('Unified Gateway route pricing page', () => {
       entries: [{ account_id: 42, model: 'glm-5.2', kind: 'token', multiplier: 0.4 }],
     })
     expect(wrapper.text()).toContain('admin.unifiedGateway.pricingSaved')
-    expect(wrapper.text()).toContain('admin.unifiedGateway.pricingSavedRevision')
+  })
+
+  it('groups route cards by upstream origin and keeps provider cards collapsed by default', async () => {
+    api.get.mockResolvedValueOnce({
+      ...initialState(),
+      accounts: [
+        ...initialState().accounts,
+        { id: 44, name: 'YeToken #2', wokey_eligible: false, provider_key: 'origin:https://yetoken.vip', provider_label: 'https://yetoken.vip' },
+      ],
+      saved: {
+        ...initialState().saved,
+        entries: [
+          { account_id: 42, model: 'glm-5.2', kind: 'token' as const, multiplier: 0.4 },
+          { account_id: 44, model: 'deepseek-v4-flash', kind: 'token' as const, multiplier: 1 },
+          { account_id: 43, model: 'grok-imagine-video-1.5', kind: 'video' as const, video_resolution: '720p', video_duration_seconds: 5, unit_price: 0.049 },
+        ],
+      },
+    })
+    const wrapper = mountPage()
+    await flushPromises()
+
+    const cards = wrapper.findAll('[data-testid="route-pricing-provider-card"]')
+    expect(cards).toHaveLength(2)
+    expect(cards[0].find('summary').text()).toContain('https://yetoken.vip')
+    expect(cards[0].find('summary').text()).toContain('admin.unifiedGateway.pricingProviderCardCount 2')
+    expect(cards[1].find('summary').text()).toContain('Wokey')
+    expect(cards[1].find('summary').text()).toContain('admin.unifiedGateway.pricingProviderCardCount 1')
+    expect(cards.every((card) => !(card.element as HTMLDetailsElement).open)).toBe(true)
+    expect(cards[0].findAll('[data-testid="route-pricing-row"]')).toHaveLength(2)
+    expect(cards[1].find('[data-testid="route-pricing-row"]').exists()).toBe(true)
+  })
+
+  it('keeps the Wokey price-sync panel collapsed until explicitly opened', async () => {
+    const wrapper = mountPage()
+    await flushPromises()
+
+    expect((wrapper.get('[data-testid="wokey-price-sync"]').element as HTMLDetailsElement).open).toBe(false)
+    const summary = wrapper.get('[data-testid="wokey-price-sync"] summary').text()
+    expect(summary).toContain('admin.unifiedGateway.wokeySyncSummaryDisabled')
+    expect(summary).not.toContain('admin.unifiedGateway.wokeySyncStatus')
+    await wrapper.get('[data-testid="wokey-price-sync"] summary').trigger('click')
+    expect((wrapper.get('[data-testid="wokey-price-sync"]').element as HTMLDetailsElement).open).toBe(true)
   })
 
   it('shows the base-card unit and precedence, and saves a complete card alongside its legacy fallback', async () => {

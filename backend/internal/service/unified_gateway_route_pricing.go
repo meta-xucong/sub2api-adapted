@@ -199,6 +199,8 @@ type UnifiedGatewayRoutePricingAccountOption struct {
 	ID            int64  `json:"id"`
 	Name          string `json:"name"`
 	WokeyEligible bool   `json:"wokey_eligible"`
+	ProviderKey   string `json:"provider_key"`
+	ProviderLabel string `json:"provider_label"`
 }
 
 type UnifiedGatewayRoutePricingAdminState struct {
@@ -510,7 +512,8 @@ func buildUnifiedGatewayRoutePricingAdminState(cfg UnifiedGatewayRoutePricingCon
 		state.Groups = append(state.Groups, UnifiedGatewayRoutePricingGroupOption{ID: group.ID, Name: group.Name})
 	}
 	for _, account := range accounts {
-		state.Accounts = append(state.Accounts, UnifiedGatewayRoutePricingAccountOption{ID: account.ID, Name: account.Name, WokeyEligible: isWokeyBaseURL(account.GetBaseURL())})
+		providerKey, providerLabel := unifiedGatewayUpstreamIdentity(&account)
+		state.Accounts = append(state.Accounts, UnifiedGatewayRoutePricingAccountOption{ID: account.ID, Name: account.Name, WokeyEligible: isWokeyBaseURL(account.GetBaseURL()), ProviderKey: providerKey, ProviderLabel: providerLabel})
 	}
 	sort.Slice(state.Accounts, func(i, j int) bool { return state.Accounts[i].ID < state.Accounts[j].ID })
 	return state
@@ -586,7 +589,8 @@ func (s *SettingService) getUnifiedGatewayRoutePricingAdminStateLocked(ctx conte
 		}
 		state.Accounts = make([]UnifiedGatewayRoutePricingAccountOption, 0, len(accounts))
 		for _, account := range accounts {
-			state.Accounts = append(state.Accounts, UnifiedGatewayRoutePricingAccountOption{ID: account.ID, Name: account.Name, WokeyEligible: isWokeyBaseURL(account.GetBaseURL())})
+			providerKey, providerLabel := unifiedGatewayUpstreamIdentity(&account)
+			state.Accounts = append(state.Accounts, UnifiedGatewayRoutePricingAccountOption{ID: account.ID, Name: account.Name, WokeyEligible: isWokeyBaseURL(account.GetBaseURL()), ProviderKey: providerKey, ProviderLabel: providerLabel})
 		}
 		sort.Slice(state.Accounts, func(i, j int) bool { return state.Accounts[i].ID < state.Accounts[j].ID })
 	}

@@ -607,7 +607,7 @@ const props = withDefaults(defineProps<Props>(), {
   defaultSortOrder: 'asc',
   showAccountBilling: true,
   showUpstreamEndpoint: true,
-  costSymbol: '$',
+  costSymbol: '⭐️',
   flat: false
 })
 const emit = defineEmits<{

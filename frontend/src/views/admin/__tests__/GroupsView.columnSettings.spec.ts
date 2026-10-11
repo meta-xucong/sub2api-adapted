@@ -425,9 +425,9 @@ describe('admin GroupsView column settings', () => {
     const wrapper = await mountView()
     const text = wrapper.get('[data-test="usage-cell"]').text()
 
-    expect(text).toContain('Today$1.25')
-    expect(text).toContain('Yesterday$2.50')
-    expect(text).toContain('Total$9.75')
+    expect(text).toContain('Today⭐️1.25')
+    expect(text).toContain('Yesterday⭐️2.50')
+    expect(text).toContain('Total⭐️9.75')
     expect(text.indexOf('Today')).toBeLessThan(text.indexOf('Yesterday'))
     expect(text.indexOf('Yesterday')).toBeLessThan(text.indexOf('Total'))
   })

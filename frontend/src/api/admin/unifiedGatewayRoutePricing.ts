@@ -94,6 +94,8 @@ export interface RoutePricingAccountOption {
   id: number
   name: string
   wokey_eligible: boolean
+  provider_key: string
+  provider_label: string
 }
 
 export interface UnifiedGatewayRoutePricingState {

@@ -129,6 +129,9 @@ describe('KeyUsageView daily detail', () => {
           remaining: 9,
           unit: 'USD',
         },
+        rate_limits: [
+          { window: '5h', used: 1, limit: 10, reset_at: '2026-05-19T12:00:00Z' },
+        ],
         usage: {
           today: {
             requests: 1,
@@ -210,6 +213,8 @@ describe('KeyUsageView daily detail', () => {
     expect(text).toContain('30')
     expect(text).toContain('10')
     expect(text).toContain('⭐️0.12')
+    expect(wrapper.html()).not.toContain('M17 5H9.5')
+    expect(wrapper.html()).toContain('polygon points="12 2 15 8.5 22 9.3')
 
     wrapper.unmount()
   })

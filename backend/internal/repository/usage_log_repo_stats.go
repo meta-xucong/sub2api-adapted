@@ -860,6 +860,45 @@ func (r *usageLogRepository) GetAPIKeyAccountBillingBreakdown(ctx context.Contex
 	return result, nil
 }
 
+// GetUnifiedGatewayUserBillingBreakdown returns read-only costs scoped to one
+// gateway group. The LEFT JOIN intentionally keeps usage for deleted users.
+func (r *usageLogRepository) GetUnifiedGatewayUserBillingBreakdown(ctx context.Context, groupID int64, startTime, endTime time.Time) ([]service.UnifiedGatewayUserBillingBreakdown, error) {
+	query := `
+		SELECT
+			ul.user_id,
+			COALESCE(u.username, ''),
+			COALESCE(u.email, ''),
+			ul.account_id,
+			ul.billing_type,
+			COALESCE(SUM(ul.actual_cost), 0) AS actual_cost,
+			COALESCE(SUM(COALESCE(ul.account_stats_cost, ul.total_cost) * COALESCE(ul.account_rate_multiplier, 1)), 0) AS account_cost
+		FROM usage_logs ul
+		LEFT JOIN users u ON u.id = ul.user_id
+		WHERE ul.group_id = $1 AND ul.created_at >= $2 AND ul.created_at < $3
+		GROUP BY ul.user_id, u.username, u.email, ul.account_id, ul.billing_type
+		ORDER BY ul.user_id, ul.account_id, ul.billing_type
+	`
+
+	rows, err := r.sql.QueryContext(ctx, query, groupID, startTime, endTime)
+	if err != nil {
+		return nil, fmt.Errorf("query unified gateway user billing breakdown: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	result := make([]service.UnifiedGatewayUserBillingBreakdown, 0)
+	for rows.Next() {
+		var row service.UnifiedGatewayUserBillingBreakdown
+		if err := rows.Scan(&row.UserID, &row.Username, &row.Email, &row.AccountID, &row.BillingType, &row.ActualCost, &row.AccountCost); err != nil {
+			return nil, fmt.Errorf("scan unified gateway user billing breakdown: %w", err)
+		}
+		result = append(result, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate unified gateway user billing breakdown: %w", err)
+	}
+	return result, nil
+}
+
 // AccountUsageHistory represents daily usage history for an account
 type AccountUsageHistory = usagestats.AccountUsageHistory
 

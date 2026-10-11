@@ -308,7 +308,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { formatScaled, resolveIntervalPrices } from '@/utils/pricing'
+import { formatOfficialUsdScaled, formatScaled, resolveIntervalPrices } from '@/utils/pricing'
 import { platformAccentColor, platformBadgeLightClass, platformLabel } from '@/utils/platformColors'
 import {
   BILLING_MODE_TOKEN,
@@ -454,7 +454,7 @@ function paidRequestPrice(m: PlazaModel, value: number | null | undefined): stri
 /** 官方参考价不乘倍率。 */
 function official(value: number | null | undefined): string {
   if (value == null) return '-'
-  return formatScaled(value, PER_MILLION, MIN_DECIMALS)
+  return formatOfficialUsdScaled(value, PER_MILLION, MIN_DECIMALS)
 }
 
 /** 非 token 计费的单位后缀:按图片 → “/ 张”,按次 → “/ 次”。 */

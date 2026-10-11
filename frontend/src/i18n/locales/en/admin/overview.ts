@@ -50,7 +50,7 @@ export default {
       accountCost: 'Cost',
       noDataAvailable: 'No data available',
       recentUsage: 'Recent Usage',
-      actualSpending: 'Actual spending ($)',
+      actualSpending: 'Actual spending (⭐️)',
       viewModelDistribution: 'Model Distribution',
       viewSpendingRanking: 'User Spending Ranking',
       spendingRankingTitle: 'User Spending Ranking',
@@ -1086,7 +1086,7 @@ export default {
       videoPricing: {
         title: 'Video Generation Pricing',
         description:
-          'Configure Grok video generation prices in USD per second of output video. Leave empty to use the default per-second rates (grok-imagine-video: $0.05/s 480p, $0.07/s 720p; video-1.5: $0.08/s 480p, $0.14/s 720p, $0.25/s 1080p).',
+          'Configure Grok video generation prices in stars per second of output video. Leave empty to use the default per-second rates (grok-imagine-video: USD 0.05/s 480p, USD 0.07/s 720p; video-1.5: USD 0.08/s 480p, USD 0.14/s 720p, USD 0.25/s 1080p).',
         modelOverridesTitle: 'Per-model video price overrides',
         modelOverridesDescription: 'Each populated cell overrides the flat resolution price for that model family. Preview and legacy aliases for video-1.5 use the same family; empty cells fall back to the flat resolution price.',
         independentMultiplier: 'Use independent video multiplier',
@@ -1121,7 +1121,7 @@ export default {
         title: 'Codex Web Search Pricing',
         pricePerCall: 'Price per search call (USD)',
         pricePerCallHint:
-          'Leave empty to use the default $0.01 per call (official pricing: $10 per 1,000 calls); 0 means free. The group rate multiplier is applied on top.',
+          'Leave empty to use the default ⭐️0.01 per call (official pricing: USD 10 per 1,000 calls); 0 means free. The group rate multiplier is applied on top.',
         finalPricePreview: 'Per-call price after current multiplier: {price}'
       },
       peakRate: {

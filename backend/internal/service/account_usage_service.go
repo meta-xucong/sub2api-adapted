@@ -69,6 +69,7 @@ type UsageLogRepository interface {
 	GetGlobalStats(ctx context.Context, startTime, endTime time.Time) (*usagestats.UsageStats, error)
 	GetStatsWithFilters(ctx context.Context, filters usagestats.UsageLogFilters) (*usagestats.UsageStats, error)
 	GetAPIKeyAccountBillingBreakdown(ctx context.Context, apiKeyID int64, startTime, endTime time.Time) ([]AccountBillingBreakdown, error)
+	GetUnifiedGatewayUserBillingBreakdown(ctx context.Context, groupID int64, startTime, endTime time.Time) ([]UnifiedGatewayUserBillingBreakdown, error)
 
 	// Account stats
 	GetAccountUsageStats(ctx context.Context, accountID int64, startTime, endTime time.Time) (*usagestats.AccountUsageStatsResponse, error)

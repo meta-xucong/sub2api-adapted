@@ -90,7 +90,7 @@
           </template>
           <template #cell-pay_amount="{ row }">
             <span v-if="row.pay_amount == null" class="text-sm text-gray-400 dark:text-dark-500">-</span>
-            <span v-else class="text-sm text-gray-900 dark:text-white">¥{{ formatAmount(row.pay_amount) }}</span>
+            <span v-else class="text-sm text-gray-900 dark:text-white">{{ formatPaymentAmount(row.pay_amount, row.currency) }}</span>
           </template>
           <template #cell-rebate_amount="{ row }">
             <AmountText :value="row.rebate_amount" strong />
@@ -160,8 +160,8 @@
           <OverviewStat :label="t('admin.affiliates.overview.rebateRate')" :value="formatPercent(selectedOverview.rebate_rate_percent)" />
           <OverviewStat :label="t('admin.affiliates.overview.invitedCount')" :value="String(selectedOverview.invited_count)" />
           <OverviewStat :label="t('admin.affiliates.overview.rebatedInviteeCount')" :value="String(selectedOverview.rebated_invitee_count)" />
-          <OverviewStat :label="t('admin.affiliates.overview.availableQuota')" :value="'$' + formatAmount(selectedOverview.available_quota)" />
-          <OverviewStat :label="t('admin.affiliates.overview.historyQuota')" :value="'$' + formatAmount(selectedOverview.history_quota)" />
+          <OverviewStat :label="t('admin.affiliates.overview.availableQuota')" :value="'⭐️' + formatAmount(selectedOverview.available_quota)" />
+          <OverviewStat :label="t('admin.affiliates.overview.historyQuota')" :value="'⭐️' + formatAmount(selectedOverview.history_quota)" />
         </div>
       </div>
     </BaseDialog>
@@ -185,6 +185,7 @@ import { affiliatesAPI, type AffiliateInviteRecord, type AffiliateRebateRecord, 
 import type { PaginatedResponse } from '@/types'
 import { extractI18nErrorMessage } from '@/utils/apiError'
 import { formatDateTime as formatDisplayDateTime } from '@/utils/format'
+import { formatPaymentAmount } from '@/components/payment/currency'
 
 type RecordType = 'invites' | 'rebates' | 'transfers'
 type AffiliateRecord = AffiliateInviteRecord | AffiliateRebateRecord | AffiliateTransferRecord
@@ -405,7 +406,7 @@ const AmountText = defineComponent({
       class: amountProps.strong
         ? 'text-sm font-semibold text-emerald-600 dark:text-emerald-400'
         : 'text-sm text-gray-900 dark:text-white',
-    }, `$${formatAmount(amountProps.value)}`)
+    }, `⭐️${formatAmount(amountProps.value)}`)
   },
 })
 

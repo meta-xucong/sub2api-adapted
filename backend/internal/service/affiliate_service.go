@@ -176,6 +176,7 @@ type AffiliateRebateRecord struct {
 	InviteeUsername string    `json:"invitee_username"`
 	OrderAmount     *float64  `json:"order_amount"`
 	PayAmount       *float64  `json:"pay_amount"`
+	Currency        string    `json:"currency"`
 	RebateAmount    float64   `json:"rebate_amount"`
 	PaymentType     string    `json:"payment_type"`
 	OrderStatus     string    `json:"order_status"`

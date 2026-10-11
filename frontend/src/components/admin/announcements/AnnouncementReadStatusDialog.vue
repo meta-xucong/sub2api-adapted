@@ -35,7 +35,7 @@
         </template>
 
         <template #cell-balance="{ value }">
-          <span class="font-medium text-gray-900 dark:text-white">${{ Number(value ?? 0).toFixed(2) }}</span>
+          <span class="font-medium text-gray-900 dark:text-white">⭐️{{ Number(value ?? 0).toFixed(2) }}</span>
         </template>
 
         <template #cell-eligible="{ value }">
