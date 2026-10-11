@@ -294,13 +294,7 @@ func debitHandler(accounts BalanceAccountService, ledger DebitLedger) gin.Handle
 			response.BadRequest(c, "Invalid request")
 			return
 		}
-		result, err := DebitBalance(c.Request.Context(), accounts, ledger, DebitInput{
-			UserID:         req.UserID,
-			Amount:         req.Amount,
-			IdempotencyKey: req.IdempotencyKey,
-			Source:         req.Source,
-			ReferenceID:    req.ReferenceID,
-		})
+		result, err := DebitBalance(c.Request.Context(), accounts, ledger, DebitInput(req))
 		if err != nil {
 			writeDebitError(c, err)
 			return

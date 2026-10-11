@@ -1067,10 +1067,8 @@ func TestParseGrokMediaRequestAcceptsOfficialImageURLFields(t *testing.T) {
 
 	info := ParseGrokMediaRequest("application/json", body)
 
-	require.Equal(t, []string{
-		"https://example.com/source.png",
-		"https://example.com/reference.png",
-	}, info.InputImageURLs)
+	require.Equal(t, []string{"https://example.com/source.png"}, info.InputImageURLs)
+	require.Equal(t, []string{"https://example.com/reference.png"}, info.ReferenceImageURLs)
 	require.True(t, info.HasInputImage())
 }
 

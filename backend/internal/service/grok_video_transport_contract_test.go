@@ -53,7 +53,9 @@ func TestKIEJobsVideoSchemaAndStatusNegativeCases(t *testing.T) {
 }
 
 func TestWokeyVideoNegativeModeAndDefaultNormalization(t *testing.T) {
-	body := []byte(`{"model":"grok-imagine-video","prompt":"p","reference_images":[{"url":"https://images.example/a.png"}],"mode":"image_to_video"}`)
+	// Use a public IP literal so URL safety validation is deterministic and does
+	// not depend on DNS resolution in the test environment.
+	body := []byte(`{"model":"grok-imagine-video","prompt":"p","reference_images":[{"url":"https://8.8.8.8/a.png"}],"mode":"image_to_video"}`)
 	info := ParseGrokMediaRequest("application/json", body)
 	if !info.HasReferenceImages() {
 		t.Fatal("reference_images must remain distinct for provider adapters")

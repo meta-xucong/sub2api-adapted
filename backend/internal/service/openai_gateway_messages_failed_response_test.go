@@ -22,6 +22,12 @@ func buildResponsesFailedSSEStream(errType, errorMessage string) string {
 	return fmt.Sprintf("data: %s\n\n", failed)
 }
 
+func rawResponsesSupportedTestAccount() *Account {
+	account := rawChatCompletionsTestAccount()
+	account.Extra = map[string]any{"openai_responses_supported": true}
+	return account
+}
+
 func TestForwardAsAnthropic_BufferedResponseFailed_ReturnsError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -42,7 +48,7 @@ func TestForwardAsAnthropic_BufferedResponseFailed_ReturnsError(t *testing.T) {
 		httpUpstream: upstream,
 	}
 
-	account := rawChatCompletionsTestAccount()
+	account := rawResponsesSupportedTestAccount()
 	_, err := svc.ForwardAsAnthropic(context.Background(), c, account, body, "", "")
 
 	require.Error(t, err, "non-cyber response.failed must return an error, not swallow as 200")
@@ -70,7 +76,7 @@ func TestForwardAsAnthropic_StreamingResponseFailed_ReturnsError(t *testing.T) {
 		httpUpstream: upstream,
 	}
 
-	account := rawChatCompletionsTestAccount()
+	account := rawResponsesSupportedTestAccount()
 	_, err := svc.ForwardAsAnthropic(context.Background(), c, account, body, "", "")
 
 	require.Error(t, err, "streaming response.failed must return an error")
@@ -107,7 +113,7 @@ func TestForwardAsAnthropic_StreamingBareErrorAfterOutputIsVisible(t *testing.T)
 		httpUpstream: upstream,
 	}
 
-	account := rawChatCompletionsTestAccount()
+	account := rawResponsesSupportedTestAccount()
 	_, err := svc.ForwardAsAnthropic(context.Background(), c, account, body, "", "")
 
 	require.Error(t, err)
@@ -146,7 +152,7 @@ func TestForwardAsAnthropic_StreamingBareErrorBeforeOutputFailsOver(t *testing.T
 		httpUpstream: upstream,
 	}
 
-	account := rawChatCompletionsTestAccount()
+	account := rawResponsesSupportedTestAccount()
 	_, err := svc.ForwardAsAnthropic(context.Background(), c, account, body, "", "")
 
 	require.Error(t, err)
@@ -174,7 +180,7 @@ func TestForwardAsAnthropic_StreamingGenericBareErrorBeforeOutputIsNotHiddenByFa
 	}}
 	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
 
-	_, err := svc.ForwardAsAnthropic(context.Background(), c, rawChatCompletionsTestAccount(), body, "", "")
+	_, err := svc.ForwardAsAnthropic(context.Background(), c, rawResponsesSupportedTestAccount(), body, "", "")
 
 	require.Error(t, err)
 	var failoverErr *UpstreamFailoverError
@@ -203,7 +209,7 @@ func TestForwardAsAnthropic_BufferedResponseFailed_Failover(t *testing.T) {
 		httpUpstream: upstream,
 	}
 
-	account := rawChatCompletionsTestAccount()
+	account := rawResponsesSupportedTestAccount()
 	_, err := svc.ForwardAsAnthropic(context.Background(), c, account, body, "", "")
 
 	require.Error(t, err)
