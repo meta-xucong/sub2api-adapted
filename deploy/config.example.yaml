@@ -212,6 +212,15 @@ security:
     # 不影响 AI 账号网关连接。默认 false：fail-fast 防止 IP 泄露。
     allow_direct_on_error: false
 
+# Optional aiself/Veyra portal bridge. Leave disabled on generic deployments.
+veyra:
+  enabled: false
+  portal_enabled: false
+  alchemy_base_url: "https://alchemy.aiself.vip"
+  video_base_url: "https://video.aiself.vip"
+  internal_token: ""
+  login_ticket_ttl_seconds: 120
+
 # =============================================================================
 # Gateway Configuration
 # 网关配置

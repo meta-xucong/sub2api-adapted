@@ -1,7 +1,9 @@
 package veyra
 
 import (
+	"context"
 	"crypto/subtle"
+	"errors"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -11,6 +13,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	servermiddleware "github.com/Wei-Shaw/sub2api/internal/server/middleware"
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 )
 
@@ -18,6 +21,7 @@ type RoutesConfig struct {
 	Enabled               bool
 	PortalEnabled         bool
 	AlchemyBaseURL        string
+	VideoBaseURL          string
 	InternalToken         string
 	LoginTicketTTLSeconds int
 }
@@ -28,6 +32,7 @@ type loginTicketRequest struct {
 
 type exchangeTicketRequest struct {
 	Ticket string `json:"ticket"`
+	Intent string `json:"intent"`
 }
 
 type debitRequest struct {
@@ -60,6 +65,19 @@ type debitResponse struct {
 	Replayed       bool    `json:"replayed"`
 }
 
+// VideoUsageReader is deliberately read-only. It is backed by Sub2API's
+// existing usage_logs and does not create another balance or usage ledger.
+type VideoUsageReader interface {
+	GetVideoUsage(ctx context.Context, userID int64, requestID string) (service.VideoUsageFact, error)
+}
+
+type videoUsageResponse struct {
+	UserID     int64  `json:"user_id"`
+	RequestID  string `json:"request_id"`
+	Model      string `json:"model"`
+	ActualCost string `json:"actual_cost"`
+}
+
 type accountSummaryResponse struct {
 	UserID      int64   `json:"user_id"`
 	Email       string  `json:"email"`
@@ -71,6 +89,7 @@ type accountSummaryResponse struct {
 
 type portalConfigResponse struct {
 	AlchemyBaseURL string `json:"alchemy_base_url"`
+	VideoBaseURL   string `json:"video_base_url"`
 }
 
 func RoutesConfigFromConfig(cfg *config.Config) RoutesConfig {
@@ -81,12 +100,13 @@ func RoutesConfigFromConfig(cfg *config.Config) RoutesConfig {
 		Enabled:               cfg.Veyra.Enabled,
 		PortalEnabled:         cfg.Veyra.PortalEnabled,
 		AlchemyBaseURL:        cfg.Veyra.AlchemyBaseURL,
+		VideoBaseURL:          cfg.Veyra.VideoBaseURL,
 		InternalToken:         cfg.Veyra.InternalToken,
 		LoginTicketTTLSeconds: cfg.Veyra.LoginTicketTTLSeconds,
 	}
 }
 
-func RegisterRoutes(base *gin.RouterGroup, jwtAuth servermiddleware.JWTAuthMiddleware, cfg RoutesConfig, store TicketStore, ledger DebitLedger, users BalanceAccountService) {
+func RegisterRoutes(base *gin.RouterGroup, jwtAuth servermiddleware.JWTAuthMiddleware, cfg RoutesConfig, store TicketStore, ledger DebitLedger, users BalanceAccountService, usageReaders ...VideoUsageReader) {
 	if base == nil || !cfg.Enabled || !cfg.PortalEnabled {
 		return
 	}
@@ -102,6 +122,11 @@ func RegisterRoutes(base *gin.RouterGroup, jwtAuth servermiddleware.JWTAuthMiddl
 	internal.Use(internalTokenGuard(cfg.InternalToken))
 	internal.POST("/login-ticket/exchange", exchangeLoginTicketHandler(store))
 	internal.GET("/users/:user_id/account", accountSummaryHandler(users))
+	var usageReader VideoUsageReader
+	if len(usageReaders) > 0 {
+		usageReader = usageReaders[0]
+	}
+	internal.GET("/users/:user_id/usage/:request_id", videoUsageHandler(usageReader))
 	internal.POST("/billing/debit", debitHandler(users, ledger))
 }
 
@@ -109,6 +134,7 @@ func portalConfigHandler(cfg RoutesConfig) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		response.Success(c, portalConfigResponse{
 			AlchemyBaseURL: normalizePortalBaseURL(cfg.AlchemyBaseURL),
+			VideoBaseURL:   normalizeVideoBaseURL(cfg.VideoBaseURL),
 		})
 	}
 }
@@ -120,6 +146,18 @@ func normalizePortalBaseURL(raw string) string {
 		return safeDefault
 	}
 	if strings.ToLower(parsed.Hostname()) != "alchemy.aiself.vip" || (parsed.Port() != "" && parsed.Port() != "443") {
+		return safeDefault
+	}
+	return safeDefault
+}
+
+func normalizeVideoBaseURL(raw string) string {
+	const safeDefault = "https://video.aiself.vip"
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed == nil || parsed.Scheme != "https" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return safeDefault
+	}
+	if strings.ToLower(parsed.Hostname()) != "video.aiself.vip" || (parsed.Port() != "" && parsed.Port() != "443") {
 		return safeDefault
 	}
 	return safeDefault
@@ -138,11 +176,12 @@ func issueLoginTicketHandler(cfg RoutesConfig, store TicketStore) gin.HandlerFun
 		}
 		var req loginTicketRequest
 		_ = c.ShouldBindJSON(&req)
-		if NormalizePortalIntent(req.Intent) != PortalIntentAlchemy {
+		intent := NormalizePortalIntent(req.Intent)
+		if intent != PortalIntentAlchemy && intent != PortalIntentVideo {
 			response.BadRequest(c, "Invalid ticket intent")
 			return
 		}
-		ticket, err := store.Create(c.Request.Context(), subject.UserID, req.Intent, TicketTTL(cfg.LoginTicketTTLSeconds))
+		ticket, err := store.Create(c.Request.Context(), subject.UserID, intent, TicketTTL(cfg.LoginTicketTTLSeconds))
 		if err != nil {
 			response.InternalError(c, "Failed to create login ticket")
 			return
@@ -166,8 +205,19 @@ func exchangeLoginTicketHandler(store TicketStore) gin.HandlerFunc {
 			response.BadRequest(c, "Invalid request")
 			return
 		}
-		ticket, err := store.Consume(c.Request.Context(), req.Ticket, PortalIntentAlchemy, time.Now().UTC())
-		if err != nil {
+		// The established Video OS identity adapter sends only {ticket}; the
+		// ticket itself is the source of truth for its intent. Keep accepting an
+		// optional explicit intent for clients that want server-side matching.
+		intent := ""
+		if strings.TrimSpace(req.Intent) != "" {
+			intent = NormalizePortalIntent(req.Intent)
+		}
+		if intent != "" && intent != PortalIntentAlchemy && intent != PortalIntentVideo {
+			response.BadRequest(c, "Invalid ticket intent")
+			return
+		}
+		ticket, err := store.ConsumeAllowed(c.Request.Context(), req.Ticket, []string{PortalIntentAlchemy, PortalIntentVideo}, intent, time.Now().UTC())
+		if err != nil || ticket == nil || (ticket.Intent != PortalIntentAlchemy && ticket.Intent != PortalIntentVideo) {
 			response.Unauthorized(c, "Invalid or expired ticket")
 			return
 		}
@@ -206,6 +256,37 @@ func accountSummaryHandler(users SessionUserReader) gin.HandlerFunc {
 	}
 }
 
+func videoUsageHandler(reader VideoUsageReader) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if reader == nil {
+			response.Error(c, http.StatusServiceUnavailable, "Video usage service is not configured")
+			return
+		}
+		userID, err := strconv.ParseInt(strings.TrimSpace(c.Param("user_id")), 10, 64)
+		requestID := strings.TrimSpace(c.Param("request_id"))
+		if err != nil || userID <= 0 || requestID == "" || len(requestID) > 255 {
+			response.BadRequest(c, "Invalid video usage lookup")
+			return
+		}
+		fact, err := reader.GetVideoUsage(c.Request.Context(), userID, requestID)
+		if err != nil {
+			if errors.Is(err, service.ErrUsageLogNotFound) {
+				response.NotFound(c, "Video usage is not settled")
+				return
+			}
+			response.InternalError(c, "Video usage could not be read")
+			return
+		}
+		if fact.UserID != userID || strings.TrimSpace(fact.RequestID) == "" || strings.TrimSpace(fact.Model) == "" || strings.TrimSpace(fact.ActualCost) == "" {
+			response.InternalError(c, "Video usage returned an invalid fact")
+			return
+		}
+		response.Success(c, videoUsageResponse{
+			UserID: fact.UserID, RequestID: fact.RequestID, Model: fact.Model, ActualCost: fact.ActualCost,
+		})
+	}
+}
+
 func debitHandler(accounts BalanceAccountService, ledger DebitLedger) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req debitRequest
@@ -213,13 +294,7 @@ func debitHandler(accounts BalanceAccountService, ledger DebitLedger) gin.Handle
 			response.BadRequest(c, "Invalid request")
 			return
 		}
-		result, err := DebitBalance(c.Request.Context(), accounts, ledger, DebitInput{
-			UserID:         req.UserID,
-			Amount:         req.Amount,
-			IdempotencyKey: req.IdempotencyKey,
-			Source:         req.Source,
-			ReferenceID:    req.ReferenceID,
-		})
+		result, err := DebitBalance(c.Request.Context(), accounts, ledger, DebitInput(req))
 		if err != nil {
 			writeDebitError(c, err)
 			return
