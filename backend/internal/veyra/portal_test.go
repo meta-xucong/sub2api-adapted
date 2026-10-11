@@ -4,6 +4,7 @@ import (
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -44,6 +45,28 @@ func TestPortalMiddlewareServesRootWhenEnabled(t *testing.T) {
 	require.Contains(t, rec.Body.String(), "/_veyra/styles.css")
 	require.Contains(t, rec.Body.String(), "Video OS")
 	require.Contains(t, rec.Body.String(), "target=video")
+	require.Contains(t, rec.Body.String(), "打开 Video OS")
+}
+
+func TestVideoPortalEntryIsProminentOnDesktopAndMobile(t *testing.T) {
+	subFS, err := fs.Sub(portalFS, "portal_dist")
+	require.NoError(t, err)
+
+	for _, name := range []string{"index.html", "mobile.html"} {
+		content, readErr := fs.ReadFile(subFS, name)
+		require.NoError(t, readErr)
+		page := string(content)
+		cta := strings.Index(page, "打开 Video OS")
+		cards := strings.Index(page, `class="entry-grid"`)
+		require.NotEqual(t, -1, cta, name+" CTA")
+		require.NotEqual(t, -1, cards, name+" app grid")
+		require.Less(t, cta, cards, name+" CTA must precede the app cards")
+	}
+
+	styles, err := fs.ReadFile(subFS, "styles.css")
+	require.NoError(t, err)
+	require.Contains(t, string(styles), "grid-template-columns: repeat(3, minmax(0, 1fr))")
+	require.Contains(t, string(styles), "grid-template-columns: repeat(2, minmax(0, 1fr))")
 }
 
 func TestPortalMiddlewareServesVeyraReturnWhenEnabled(t *testing.T) {
@@ -115,6 +138,7 @@ func TestPortalMiddlewareServesAssetsWhenEnabled(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Contains(t, rec.Header().Get("Content-Type"), "text/css")
+	require.Equal(t, "no-cache", rec.Header().Get("Cache-Control"))
 	require.Contains(t, rec.Body.String(), "--paper")
 }
 

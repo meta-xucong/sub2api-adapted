@@ -58,6 +58,7 @@ func PortalMiddleware(cfg PortalConfig) gin.HandlerFunc {
 				c.Abort()
 				return
 			}
+			c.Header("Cache-Control", "no-cache")
 			c.Request.URL.Path = "/" + cleanPath
 			fileServer.ServeHTTP(c.Writer, c.Request)
 			c.Abort()
