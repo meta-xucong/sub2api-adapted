@@ -46,6 +46,10 @@ func (s *RedisTicketStore) Create(ctx context.Context, userID int64, intent stri
 }
 
 func (s *RedisTicketStore) Consume(ctx context.Context, token string, expectedIntent string, now time.Time) (*LoginTicket, error) {
+	return s.ConsumeAllowed(ctx, token, nil, expectedIntent, now)
+}
+
+func (s *RedisTicketStore) ConsumeAllowed(ctx context.Context, token string, allowedIntents []string, expectedIntent string, now time.Time) (*LoginTicket, error) {
 	if s == nil || s.sessions == nil {
 		return nil, ErrTicketInvalid
 	}
@@ -69,6 +73,9 @@ func (s *RedisTicketStore) Consume(ctx context.Context, token string, expectedIn
 		return nil, ErrTicketExpired
 	}
 	if expected := NormalizePortalIntent(expectedIntent); expectedIntent != "" && ticket.Intent != expected {
+		return nil, ErrTicketIntent
+	}
+	if len(allowedIntents) > 0 && !portalIntentAllowed(ticket.Intent, allowedIntents) {
 		return nil, ErrTicketIntent
 	}
 	claimed, err := s.sessions.TryConsume(ctx, token)

@@ -29,6 +29,7 @@ type LoginTicket struct {
 type TicketStore interface {
 	Create(ctx context.Context, userID int64, intent string, ttl time.Duration) (*LoginTicket, error)
 	Consume(ctx context.Context, token string, expectedIntent string, now time.Time) (*LoginTicket, error)
+	ConsumeAllowed(ctx context.Context, token string, allowedIntents []string, expectedIntent string, now time.Time) (*LoginTicket, error)
 }
 
 type MemoryTicketStore struct {
@@ -67,7 +68,11 @@ func (s *MemoryTicketStore) Create(_ context.Context, userID int64, intent strin
 	return cloneTicket(ticket), nil
 }
 
-func (s *MemoryTicketStore) Consume(_ context.Context, token string, expectedIntent string, now time.Time) (*LoginTicket, error) {
+func (s *MemoryTicketStore) Consume(ctx context.Context, token string, expectedIntent string, now time.Time) (*LoginTicket, error) {
+	return s.ConsumeAllowed(ctx, token, nil, expectedIntent, now)
+}
+
+func (s *MemoryTicketStore) ConsumeAllowed(_ context.Context, token string, allowedIntents []string, expectedIntent string, now time.Time) (*LoginTicket, error) {
 	if s == nil {
 		return nil, ErrTicketInvalid
 	}
@@ -94,9 +99,22 @@ func (s *MemoryTicketStore) Consume(_ context.Context, token string, expectedInt
 	if expected := NormalizePortalIntent(expectedIntent); expectedIntent != "" && ticket.Intent != expected {
 		return nil, ErrTicketIntent
 	}
+	if len(allowedIntents) > 0 && !portalIntentAllowed(ticket.Intent, allowedIntents) {
+		return nil, ErrTicketIntent
+	}
 	usedAt := now
 	ticket.UsedAt = &usedAt
 	return cloneTicket(ticket), nil
+}
+
+func portalIntentAllowed(intent string, allowed []string) bool {
+	intent = NormalizePortalIntent(intent)
+	for _, candidate := range allowed {
+		if intent == NormalizePortalIntent(candidate) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *MemoryTicketStore) currentTime() time.Time {
