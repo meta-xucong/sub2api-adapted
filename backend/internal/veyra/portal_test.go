@@ -46,10 +46,9 @@ func TestPortalMiddlewareServesRootWhenEnabled(t *testing.T) {
 	require.Contains(t, rec.Body.String(), "/_veyra/styles.css")
 	require.Contains(t, rec.Body.String(), "Video OS")
 	require.Contains(t, rec.Body.String(), "target=video")
-	require.Contains(t, rec.Body.String(), "打开 Video OS")
 }
 
-func TestVideoPortalEntryIsProminentOnDesktopAndMobile(t *testing.T) {
+func TestVideoPortalRetainsOriginalThreeCardLayout(t *testing.T) {
 	subFS, err := fs.Sub(portalFS, "portal_dist")
 	require.NoError(t, err)
 
@@ -57,17 +56,25 @@ func TestVideoPortalEntryIsProminentOnDesktopAndMobile(t *testing.T) {
 		content, readErr := fs.ReadFile(subFS, name)
 		require.NoError(t, readErr)
 		page := string(content)
-		cta := strings.Index(page, "打开 Video OS")
 		cards := strings.Index(page, `class="entry-grid"`)
-		require.NotEqual(t, -1, cta, name+" CTA")
+		gateway := strings.Index(page, `data-route="sub2api-console"`)
+		alchemy := strings.Index(page, `data-route="alchemy`)
+		video := strings.Index(page, `data-route="video"`)
 		require.NotEqual(t, -1, cards, name+" app grid")
-		require.Less(t, cta, cards, name+" CTA must precede the app cards")
+		require.NotEqual(t, -1, gateway, name+" gateway card")
+		require.NotEqual(t, -1, alchemy, name+" Alchemy card")
+		require.NotEqual(t, -1, video, name+" Video OS card")
+		require.Less(t, cards, gateway, name+" grid starts before cards")
+		require.Less(t, gateway, alchemy, name+" gateway remains first")
+		require.Less(t, alchemy, video, name+" Video OS remains third")
+		require.NotContains(t, page, "video-quick-link")
+		require.NotContains(t, page, "打开 Video OS")
 	}
 
 	styles, err := fs.ReadFile(subFS, "styles.css")
 	require.NoError(t, err)
-	require.Contains(t, string(styles), "grid-template-columns: repeat(3, minmax(0, 1fr))")
 	require.Contains(t, string(styles), "grid-template-columns: repeat(2, minmax(0, 1fr))")
+	require.Contains(t, string(styles), "grid-template-columns: 1fr")
 }
 
 func TestPortalMiddlewareServesVeyraReturnWhenEnabled(t *testing.T) {

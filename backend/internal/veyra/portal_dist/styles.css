@@ -185,12 +185,8 @@ button {
 
 .entry-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
-}
-
-.video-quick-link {
-  margin-top: 18px;
 }
 
 .entry-card {
@@ -512,11 +508,5 @@ button {
 
   .account-strip strong {
     font-size: 18px;
-  }
-}
-
-@media (min-width: 761px) and (max-width: 1000px) {
-  .entry-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
