@@ -1130,7 +1130,7 @@ func TestForwardAsRawChatCompletions_UpstreamRequestIgnoresClientCancel(t *testi
 	require.NoError(t, upstream.lastReq.Context().Err())
 }
 
-func TestForwardAsChatCompletions_UnknownResponsesSupportFallbackUsesVersionedChatURL(t *testing.T) {
+func TestForwardAsChatCompletions_UnknownResponsesSupportUsesVersionedChatURL(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	body := []byte(`{"model":"glm-4.5-air","messages":[{"role":"user","content":"hello"}],"stream":false}`)
@@ -1139,19 +1139,12 @@ func TestForwardAsChatCompletions_UnknownResponsesSupportFallbackUsesVersionedCh
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
 	c.Request.Header.Set("Content-Type", "application/json")
 
-	upstream := &httpUpstreamRecorder{responses: []*http.Response{
-		{
-			StatusCode: http.StatusNotFound,
-			Header:     http.Header{"Content-Type": []string{"application/json"}},
-			Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"not found"}}`)),
-		},
-		{
-			StatusCode: http.StatusOK,
-			Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_raw_fallback"}},
-			Body: io.NopCloser(strings.NewReader(
-				`{"id":"chatcmpl_1","object":"chat.completion","model":"glm-4.5-air","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}`,
-			)),
-		},
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_unknown_chat"}},
+		Body: io.NopCloser(strings.NewReader(
+			`{"id":"chatcmpl_1","object":"chat.completion","model":"glm-4.5-air","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}`,
+		)),
 	}}
 
 	svc := &OpenAIGatewayService{
@@ -1159,16 +1152,17 @@ func TestForwardAsChatCompletions_UnknownResponsesSupportFallbackUsesVersionedCh
 		httpUpstream: upstream,
 	}
 	account := rawChatCompletionsTestAccount()
-	account.Credentials["base_url"] = "https://open.bigmodel.cn/api/paas/v4"
+	// An unclassified custom OpenAI-compatible upstream with unknown Responses
+	// support follows the broadly supported versioned Chat Completions contract.
+	account.Credentials["base_url"] = "https://gateway.example/api/paas/v4"
 
 	result, err := svc.ForwardAsChatCompletions(context.Background(), c, account, body, "", "")
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.Equal(t, 1, result.Usage.InputTokens)
 	require.Equal(t, 2, result.Usage.OutputTokens)
-	require.Len(t, upstream.requests, 2)
-	require.Equal(t, "https://open.bigmodel.cn/api/paas/v4/responses", upstream.requests[0].URL.String())
-	require.Equal(t, "https://open.bigmodel.cn/api/paas/v4/chat/completions", upstream.requests[1].URL.String())
+	require.Len(t, upstream.requests, 1)
+	require.Equal(t, "https://gateway.example/api/paas/v4/chat/completions", upstream.requests[0].URL.String())
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Contains(t, rec.Body.String(), `"content":"ok"`)
 }

@@ -90,6 +90,8 @@ func TestForwardAsChatCompletions_CancelsUpstreamBeforeClosingBody(t *testing.T)
 
 	cfg := rawChatCompletionsTestConfig()
 	cfg.Gateway.StreamKeepaliveInterval = 1
+	account := rawChatCompletionsTestAccount()
+	account.Extra = map[string]any{"openai_responses_supported": true}
 	svc := &OpenAIGatewayService{
 		cfg:          cfg,
 		httpUpstream: &contextBoundHTTPUpstream{body: stream},
@@ -101,7 +103,7 @@ func TestForwardAsChatCompletions_CancelsUpstreamBeforeClosingBody(t *testing.T)
 	}
 	resultCh := make(chan forwardResult, 1)
 	go func() {
-		result, err := svc.ForwardAsChatCompletions(context.Background(), c, rawChatCompletionsTestAccount(), body, "", "gpt-5.1")
+		result, err := svc.ForwardAsChatCompletions(context.Background(), c, account, body, "", "gpt-5.1")
 		resultCh <- forwardResult{result: result, err: err}
 	}()
 

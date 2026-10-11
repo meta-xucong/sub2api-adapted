@@ -92,23 +92,31 @@ func TestForwardResponses_ForceChatCompletionsOmitsNoneReasoningEffort(t *testin
 	require.Nil(t, result.ReasoningEffort)
 }
 
-func TestForwardResponses_PassthroughFlagWithUnsupportedResponsesUsesAccountMapping(t *testing.T) {
+func TestForwardResponses_PassthroughFlagPreservesResponsesRouteAndCompactMapping(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	for _, path := range []string{"/v1/responses", "/v1/responses/compact"} {
-		path := path
-		t.Run(path, func(t *testing.T) {
+	tests := []struct {
+		path          string
+		upstreamPath  string
+		upstreamModel string
+	}{
+		{path: "/v1/responses", upstreamPath: "/v1/responses", upstreamModel: "gpt-5.4-channel"},
+		{path: "/v1/responses/compact", upstreamPath: "/v1/responses/compact", upstreamModel: "gpt-5.4-compact"},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.path, func(t *testing.T) {
 			body := []byte(`{"model":"gpt-5.4-channel","input":"hello","stream":false}`)
 			rec := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(rec)
-			c.Request = httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+			c.Request = httptest.NewRequest(http.MethodPost, tt.path, bytes.NewReader(body))
 			c.Request.Header.Set("Content-Type", "application/json")
 
 			upstream := &httpUpstreamRecorder{resp: &http.Response{
 				StatusCode: http.StatusOK,
 				Header:     http.Header{"Content-Type": []string{"application/json"}},
 				Body: io.NopCloser(strings.NewReader(
-					`{"id":"chatcmpl_mapping","object":"chat.completion","model":"gpt-5.4-account","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`,
+					`{"id":"resp_passthrough","object":"response","model":"` + tt.upstreamModel + `","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}],"status":"completed"}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`,
 				)),
 			}}
 			svc := &OpenAIGatewayService{
@@ -120,7 +128,7 @@ func TestForwardResponses_PassthroughFlagWithUnsupportedResponsesUsesAccountMapp
 				"gpt-5.4-channel": "gpt-5.4-account",
 			}
 			account.Credentials["compact_model_mapping"] = map[string]any{
-				"gpt-5.4-account": "gpt-5.4-compact",
+				"gpt-5.4-channel": "gpt-5.4-compact",
 			}
 			account.Extra = map[string]any{
 				"openai_passthrough":                     true,
@@ -130,8 +138,8 @@ func TestForwardResponses_PassthroughFlagWithUnsupportedResponsesUsesAccountMapp
 			result, err := svc.Forward(context.Background(), c, account, body)
 			require.NoError(t, err)
 			require.NotNil(t, result)
-			require.Equal(t, "http://upstream.example/v1/chat/completions", upstream.lastReq.URL.String())
-			require.Equal(t, "gpt-5.4-account", gjson.GetBytes(upstream.lastBody, "model").String())
+			require.Equal(t, "http://upstream.example"+tt.upstreamPath, upstream.lastReq.URL.String())
+			require.Equal(t, tt.upstreamModel, gjson.GetBytes(upstream.lastBody, "model").String())
 		})
 	}
 }
@@ -183,7 +191,10 @@ func TestForwardResponses_ForceChatCompletionsRoutesStreamingToChatCompletions(t
 	require.Equal(t, 3, result.Usage.OutputTokens)
 	require.True(t, result.Stream)
 	require.NotEmpty(t, result.ResponseID)
-	require.Equal(t, "chatcmpl_stream", result.ResponseID)
+	// The Responses adapter owns the public response identity; a Chat
+	// Completions upstream ID must not be exposed as a Responses ID.
+	require.True(t, strings.HasPrefix(result.ResponseID, "resp_"), result.ResponseID)
+	require.NotEqual(t, "chatcmpl_stream", result.ResponseID)
 	require.NotNil(t, result.FirstTokenMs)
 }
 

@@ -224,13 +224,13 @@ func TestIsUpstreamModelRestrictedByChannel_PassthroughFlagWithRawChatFallbackMa
 		Platform: PlatformOpenAI,
 		Type:     AccountTypeAPIKey,
 		Credentials: map[string]any{
+			"base_url":      "http://upstream.example",
 			"model_mapping": map[string]any{"gpt-5.4-channel": "gpt-5.4-account"},
 			"compact_model_mapping": map[string]any{
 				"gpt-5.4-account": "gpt-5.4-compact",
 			},
 		},
 		Extra: map[string]any{
-			"openai_passthrough":         true,
 			"openai_responses_supported": false,
 		},
 	}
@@ -292,7 +292,7 @@ func TestIsUpstreamModelRestrictedByChannel_ForwardModelContextMatchesNormalForw
 		RestrictModels:     true,
 		BillingModelSource: BillingModelSourceUpstream,
 		ModelPricing: []ChannelModelPricing{
-			{Platform: PlatformOpenAI, Models: []string{"gpt-5.4-account"}},
+			{Platform: PlatformOpenAI, Models: []string{"gpt-5.4-channel"}},
 		},
 		ModelMapping: map[string]map[string]string{
 			PlatformOpenAI: {"gpt-5.4": "gpt-5.4-channel"},

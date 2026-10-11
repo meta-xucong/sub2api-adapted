@@ -26,6 +26,12 @@ func buildContextLengthFailedSSE() string {
 	return fmt.Sprintf("data: %s\n\n", failed)
 }
 
+func responseFailedPassthroughTestAccount() *Account {
+	account := rawChatCompletionsTestAccount()
+	account.Extra = map[string]any{"openai_responses_supported": true}
+	return account
+}
+
 func bindPassthroughRule(c *gin.Context, platform string, keywords []string, responseCode int) {
 	svc := &ErrorPassthroughService{}
 	rules := make([]*cachedPassthroughRule, 0, len(keywords))
@@ -72,7 +78,7 @@ func TestForwardAsChatCompletions_ResponseFailed_PassthroughRule(t *testing.T) {
 		httpUpstream: upstream,
 	}
 
-	account := rawChatCompletionsTestAccount()
+	account := responseFailedPassthroughTestAccount()
 	_, err := svc.ForwardAsChatCompletions(context.Background(), c, account, body, "", "")
 
 	require.Error(t, err)
@@ -203,7 +209,7 @@ func TestForwardAsAnthropic_ResponseFailed_PassthroughRule(t *testing.T) {
 		httpUpstream: upstream,
 	}
 
-	account := rawChatCompletionsTestAccount()
+	account := responseFailedPassthroughTestAccount()
 	_, err := svc.ForwardAsAnthropic(context.Background(), c, account, body, "", "")
 
 	require.Error(t, err)
@@ -233,7 +239,7 @@ func TestForwardAsChatCompletions_ResponseFailed_NoRule_Still502(t *testing.T) {
 		httpUpstream: upstream,
 	}
 
-	account := rawChatCompletionsTestAccount()
+	account := responseFailedPassthroughTestAccount()
 	_, err := svc.ForwardAsChatCompletions(context.Background(), c, account, body, "", "")
 
 	require.Error(t, err)
@@ -281,7 +287,7 @@ func TestForwardAsChatCompletions_ResponseFailed_ErrorCodeRuleMatchesViaSemantic
 		httpUpstream: upstream,
 	}
 
-	account := rawChatCompletionsTestAccount()
+	account := responseFailedPassthroughTestAccount()
 	_, err := svc.ForwardAsChatCompletions(context.Background(), c, account, body, "", "")
 
 	require.Error(t, err)
@@ -312,7 +318,7 @@ func TestForwardAsAnthropic_ResponseFailed_ErrorCodeRuleMatchesViaSemanticStatus
 		httpUpstream: upstream,
 	}
 
-	account := rawChatCompletionsTestAccount()
+	account := responseFailedPassthroughTestAccount()
 	_, err := svc.ForwardAsAnthropic(context.Background(), c, account, body, "", "")
 
 	require.Error(t, err)
