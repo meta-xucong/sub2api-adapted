@@ -1,0 +1,14 @@
+{
+  "data": {
+    "success": true,
+    "info": {
+      "title": "百炼模型下线通知",
+      "detailList": [
+        {
+          "contentHtml": "<p>将于 2099 年 2 月 3 日对下表中的主线模型进行下线处理。具体下线清单及推荐替换方案如下：</p><table><tr><th>主线模型名称</th><th>下线日期</th><th>推荐替换模型</th></tr><tr><td><code>qwen-old-test</code></td><td>2099-02-03</td><td><code>qwen-new-test</code></td></tr></table><p>将于 2099 年 3 月 4 日对 gte-rerank 模型进行下线处理。</p><p>具体下线清单如下：</p><ul><li>qwen-list-group系列快照：qwen-list-old-a，qwen-list-old-b</li></ul><p>推荐替换方案：qwen-list-successor</p>"
+        },
+        { "contentHtml": "   " }
+      ]
+    }
+  }
+}

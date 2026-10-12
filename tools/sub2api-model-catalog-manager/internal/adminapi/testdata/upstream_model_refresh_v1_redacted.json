@@ -1,0 +1,78 @@
+{
+  "code": 0,
+  "data": {
+    "id": 22,
+    "platform": "openai",
+    "type": "apikey",
+    "status": "active",
+    "api_protocol": "openai",
+    "base_url": "https://provider.example/v1",
+    "credentials_status": {
+      "has_api_key": true
+    },
+    "credentials": {
+      "api_key": "FIXTURE_CREDENTIAL_SECRET_MUST_NOT_ESCAPE",
+      "header_overrides": {
+        "Authorization": "FIXTURE_HEADER_SECRET_MUST_NOT_ESCAPE"
+      },
+      "model_mapping": {
+        "gpt-6-sol": "gpt-6-sol"
+      }
+    },
+    "extra": {
+      "unrelated_secret": "FIXTURE_EXTRA_SECRET_MUST_NOT_ESCAPE",
+      "upstream_model_refresh": {
+        "schema_version": 1,
+        "status": "fresh",
+        "source": "upstream_models_endpoint",
+        "last_attempt_at": "2026-10-11T20:00:02Z",
+        "last_success_at": "2026-10-11T20:00:02Z",
+        "next_refresh_at": "2026-10-12T20:00:00Z",
+        "raw_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "raw_models": [
+          "retired-claude-fixture-01",
+          "retired-claude-fixture-02",
+          "retired-claude-fixture-03",
+          "retired-claude-fixture-04",
+          "retired-claude-fixture-05",
+          "retired-claude-fixture-06",
+          "retired-claude-fixture-07",
+          "gpt-6-sol",
+          "claude-sonnet-4-5",
+          "deepseek-v4-flash",
+          "glm-5.2",
+          "qwen3-flash",
+          "raw-fixture-01",
+          "raw-fixture-02",
+          "raw-fixture-03",
+          "raw-fixture-04",
+          "raw-fixture-05",
+          "raw-fixture-06",
+          "raw-fixture-07",
+          "raw-fixture-08",
+          "raw-fixture-09"
+        ],
+        "public_models": [
+          "gpt-6-sol",
+          "claude-sonnet-4-5",
+          "deepseek-v4-flash",
+          "glm-5.2",
+          "qwen3-flash"
+        ],
+        "public_to_upstream": {
+          "gpt-6-sol": "gpt-6-sol",
+          "claude-sonnet-4-5": "claude-sonnet-4-5",
+          "deepseek-v4-flash": "deepseek-v4-flash",
+          "glm-5.2": "glm-5.2",
+          "qwen3-flash": "qwen3-flash"
+        },
+        "last_error": {
+          "kind": "upstream",
+          "status_code": 503,
+          "message": "FIXTURE_ERROR_SECRET_MUST_NOT_ESCAPE"
+        },
+        "unrelated_snapshot_secret": "FIXTURE_SNAPSHOT_SECRET_MUST_NOT_ESCAPE"
+      }
+    }
+  }
+}
