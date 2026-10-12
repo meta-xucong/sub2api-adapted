@@ -1,0 +1,22 @@
+# Private runtime configuration and approved production rules
+/config*.json
+!/config.example.json
+/model-rules*.json
+!/model-rules.example.json
+
+# Local operational data
+/state/
+/state-*/
+/reports/
+/reports-*/
+/backups/
+/backups-*/
+/logs/
+/bin/
+/.live-test/
+/.local-run/
+/.test-temp/
+
+# Local executables
+/*.exe
+/*.test

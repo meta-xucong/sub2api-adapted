@@ -1,0 +1,711 @@
+package adminapi
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"strings"
+	"testing"
+)
+
+func TestClientAllowlistedReadsSyncAndMappingOnlyWrite(t *testing.T) {
+	var seen []string
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.Method+" "+r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/admin/model-catalog-refresh/status":
+			assertAPIKey(t, r)
+			_, _ = io.WriteString(w, `{"code":0,"data":{"enabled":true,"schedule":"04:00","timezone":"Asia/Shanghai","status_source":"postgres","last_run_status":"completed","last_scheduled_at":"2026-10-12T20:00:00Z","last_finished_at":"2026-10-12T20:01:00Z","accounts":[{"account_id":42,"source_profile_id":"manual_only","status":"skipped"}]}}`)
+		case "/api/v1/admin/accounts/42":
+			assertAPIKey(t, r)
+			_, _ = io.WriteString(w, `{"code":0,"data":{"id":42,"platform":"openai","type":"apikey","api_protocol":"openai","base_url":"https://provider.example/v1","credentials_status":{"has_api_key":true,"has_refresh_token":true},"credentials":{"api_key":"provider-secret","header_overrides":{"Authorization":"header-secret"},"model_mapping":{"public":"upstream"}}}}`)
+		case "/api/v1/admin/accounts/42/models/sync-upstream":
+			assertAPIKey(t, r)
+			if r.Method != http.MethodPost {
+				t.Errorf("sync method = %s", r.Method)
+			}
+			_, _ = io.WriteString(w, `{"code":0,"data":{"models":["upstream","new-model"],"live_list_available":true,"warnings":[]}}`)
+		case "/api/v1/admin/accounts/bulk-update":
+			assertAPIKey(t, r)
+			if r.Method != http.MethodPost {
+				t.Errorf("bulk update method = %s", r.Method)
+			}
+			body, _ := io.ReadAll(r.Body)
+			var got map[string]any
+			if err := json.Unmarshal(body, &got); err != nil {
+				t.Errorf("invalid update JSON")
+			}
+			if len(got) != 2 || got["account_ids"] == nil || got["filters"] != nil {
+				t.Errorf("bulk update was not single-account scoped")
+			}
+			credentials, ok := got["credentials"].(map[string]any)
+			if !ok || len(credentials) != 1 || credentials["model_mapping"] == nil {
+				t.Errorf("credentials update must contain only model_mapping")
+			}
+			_, _ = io.WriteString(w, `{"code":0,"data":{"success_ids":[42],"failed_ids":[]}}`)
+		default:
+			t.Errorf("unexpected API path: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	})
+	client := newHandlerClient(t, handler)
+	ctx := context.Background()
+	if err := client.SetAPIKey([]byte("test-admin-key")); err != nil {
+		t.Fatal(err)
+	}
+	status, err := client.RefreshStatus(ctx)
+	if err != nil || !status.Enabled || status.RunStatus != "completed" || status.Schedule != "04:00" || status.StatusSource != "postgres" || status.LastScheduledAt == nil || len(status.Accounts) != 1 || status.Accounts[0].SourceProfileID != "manual_only" {
+		t.Fatalf("unexpected status: %#v, %v", status, err)
+	}
+	account, err := client.Account(ctx, 42)
+	if err != nil || account.ModelMapping["public"] != "upstream" {
+		t.Fatalf("unexpected account: %#v, %v", account, err)
+	}
+	catalog, err := client.SyncUpstream(ctx, 42)
+	if err != nil || !catalog.LiveListAvailable || len(catalog.Models) != 2 {
+		t.Fatalf("unexpected catalog: %#v, %v", catalog, err)
+	}
+	if _, err := client.BulkUpdateMapping(ctx, 42, map[string]string{"public": "upstream"}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"GET /api/v1/admin/model-catalog-refresh/status",
+		"GET /api/v1/admin/accounts/42",
+		"POST /api/v1/admin/accounts/42/models/sync-upstream",
+		"POST /api/v1/admin/accounts/bulk-update",
+	}
+	if fmt.Sprint(seen) != fmt.Sprint(want) {
+		t.Fatalf("requests = %v, want %v", seen, want)
+	}
+}
+
+func TestRefreshStatusRejectsDuplicateFieldsAtEveryLevel(t *testing.T) {
+	cases := map[string]string{
+		"duplicate status field":        `{"enabled":true,"schedule":"04:00","timezone":"Asia/Shanghai","status_source":"postgres","last_run_status":"completed","last_scheduled_at":"2026-10-12T20:00:00Z","last_finished_at":"2026-10-12T20:01:00Z","accounts":[{"account_id":42,"source_profile_id":"manual_only","status":"skipped","status":"failed"}]}`,
+		"duplicate top-level field":     `{"enabled":true,"enabled":false,"schedule":"04:00","timezone":"Asia/Shanghai","status_source":"postgres","last_run_status":"completed","last_scheduled_at":"2026-10-12T20:00:00Z","last_finished_at":"2026-10-12T20:01:00Z","accounts":[{"account_id":42,"source_profile_id":"manual_only","status":"skipped"}]}`,
+		"duplicate envelope data field": `{"code":0,"data":{"enabled":true,"schedule":"04:00","timezone":"Asia/Shanghai","status_source":"postgres","last_run_status":"completed","last_scheduled_at":"2026-10-12T20:00:00Z","last_finished_at":"2026-10-12T20:01:00Z","accounts":[{"account_id":42,"source_profile_id":"manual_only","status":"skipped"}]},"data":{}}`,
+	}
+	for name, payload := range cases {
+		t.Run(name, func(t *testing.T) {
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				body := `{"code":0,"data":` + payload + `}`
+				if name == "duplicate envelope data field" {
+					body = payload
+				}
+				_, _ = io.WriteString(w, body)
+			})
+			client := newHandlerClient(t, handler)
+			if err := client.SetAPIKey([]byte("test-admin-key")); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := client.RefreshStatus(context.Background()); err == nil {
+				t.Fatal("duplicate status fields were accepted")
+			}
+		})
+	}
+}
+
+func TestListAllAccountsReadsEveryPageAndRetainsOnlySafeSummary(t *testing.T) {
+	var pageRequests int
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertAPIKey(t, r)
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/admin/accounts" || r.URL.Query().Get("page_size") != "1000" || r.URL.Query().Get("lite") != "1" || r.URL.Query().Get("sort_by") != "id" || r.URL.Query().Get("sort_order") != "asc" {
+			t.Errorf("unexpected account-list request: %s %s?%s", r.Method, r.URL.Path, r.URL.RawQuery)
+		}
+		pageRequests++
+		page := r.URL.Query().Get("page")
+		w.Header().Set("Content-Type", "application/json")
+		if page == "1" {
+			_, _ = io.WriteString(w, `{"code":0,"data":{"items":[`)
+			for id := 1; id <= 1000; id++ {
+				if id > 1 {
+					_, _ = io.WriteString(w, ",")
+				}
+				if id == 1 {
+					_, _ = fmt.Fprintf(w, `{"id":%d,"platform":"openai","type":"apikey","status":"active","credentials":{"api_key":"secret-marker","model_mapping":{}},"extra":{"header":"secret-marker"}}`, id)
+				} else {
+					_, _ = fmt.Fprintf(w, `{"id":%d,"platform":"openai","type":"apikey","status":"active","credentials":{"api_key":"provider-secret"}}`, id)
+				}
+			}
+			_, _ = io.WriteString(w, `],"total":1001,"page":1,"page_size":1000,"pages":2}}`)
+			return
+		}
+		if page == "2" {
+			_, _ = io.WriteString(w, `{"code":0,"data":{"items":[{"id":1001,"platform":"anthropic","type":"apikey","status":"active","credentials":{"api_key":"secret-marker"}}],"total":1001,"page":2,"page_size":1000,"pages":2}}`)
+			return
+		}
+		t.Errorf("unexpected account-list page: %q", page)
+	})
+	client := newHandlerClient(t, handler)
+	if err := client.SetAPIKey([]byte("test-admin-key")); err != nil {
+		t.Fatal(err)
+	}
+	accounts, err := client.ListAllAccounts(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pageRequests != 2 || len(accounts) != 1001 || accounts[0].ID != 1 || accounts[1000].ID != 1001 || accounts[1000].Platform != "anthropic" {
+		t.Fatalf("account inventory incomplete: requests=%d count=%d first=%#v last=%#v", pageRequests, len(accounts), accounts[0], accounts[len(accounts)-1])
+	}
+	serialized, _ := json.Marshal(accounts)
+	if strings.Contains(string(serialized), "secret-marker") || strings.Contains(string(serialized), "provider-secret") {
+		t.Fatal("account list projection retained credential fields")
+	}
+}
+
+func TestListAllAccountsRejectsIncompletePaginationAndDuplicateIDs(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{name: "missing pages", body: `{"code":0,"data":{"items":[{"id":1}],"total":1,"page":1,"page_size":1000}}`},
+		{name: "duplicate ID", body: `{"code":0,"data":{"items":[{"id":1},{"id":1}],"total":2,"page":1,"page_size":1000,"pages":1}}`},
+		{name: "short page", body: `{"code":0,"data":{"items":[{"id":1}],"total":2,"page":1,"page_size":1000,"pages":1}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assertAPIKey(t, r)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, tc.body)
+			})
+			client := newHandlerClient(t, handler)
+			if err := client.SetAPIKey([]byte("test-admin-key")); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := client.ListAllAccounts(context.Background()); err == nil {
+				t.Fatal("incomplete or inconsistent list was accepted")
+			}
+		})
+	}
+}
+
+func TestAccountResponseNeverReturnsCredentialSecrets(t *testing.T) {
+	const providerSecret = "provider-secret-marker"
+	const headerSecret = "header-secret-marker"
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertAPIKey(t, r)
+		_, _ = fmt.Fprintf(w, `{"code":0,"data":{"id":7,"platform":"openai","type":"apikey","credentials_status":{"has_api_key":true},"credentials":{"api_protocol":"openai","base_url":"https://provider.example/v1","api_key":%q,"header_overrides":{"Authorization":%q},"model_mapping":{"a":"b"}}}}`, providerSecret, headerSecret)
+	})
+	client := newHandlerClient(t, handler)
+	if err := client.SetAPIKey([]byte("test-admin-key")); err != nil {
+		t.Fatal(err)
+	}
+	account, err := client.Account(context.Background(), 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serialized, _ := json.Marshal(account)
+	if strings.Contains(string(serialized), providerSecret) || strings.Contains(string(serialized), headerSecret) {
+		t.Fatal("account projection returned credential secrets")
+	}
+	if account.Protocol != "openai" || account.BaseURL != "https://provider.example/v1" || account.ModelMapping["a"] != "b" {
+		t.Fatalf("nested safe account fields were not decoded: %#v", account)
+	}
+	if account.APIKeyPresent == nil || !*account.APIKeyPresent {
+		t.Fatal("redacted API-key-presence marker was not decoded")
+	}
+}
+
+func TestAccountDecodePreservesMissingNestedAPIProtocolAsEmpty(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertAPIKey(t, r)
+		_, _ = io.WriteString(w, `{"code":0,"data":{"id":9001,"platform":"openai","type":"apikey","credentials_status":{"has_api_key":true},"credentials":{"base_url":"https://provider.example/v1","model_mapping":{"model-a":"model-a"}}}}`)
+	})
+	client := newHandlerClient(t, handler)
+	if err := client.SetAPIKey([]byte("test-admin-key")); err != nil {
+		t.Fatal(err)
+	}
+	account, err := client.Account(context.Background(), 9001)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if account.Protocol != "" || account.BaseURL != "https://provider.example/v1" || account.ModelMapping["model-a"] != "model-a" {
+		t.Fatalf("missing protocol was inferred or safe nested fields were lost: %#v", account)
+	}
+}
+
+func TestAccountPreservesModelMappingPresence(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		data    string
+		present bool
+		wantLen int
+	}{
+		{
+			name:    "credentials object without mapping",
+			data:    `{"id":7,"platform":"openai","type":"apikey","status":"error","credentials":{}}`,
+			present: false,
+		},
+		{
+			name:    "explicit empty nested mapping",
+			data:    `{"id":7,"platform":"openai","type":"apikey","credentials":{"model_mapping":{}}}`,
+			present: true,
+		},
+		{
+			name:    "legacy top-level mapping",
+			data:    `{"id":7,"platform":"openai","type":"apikey","model_mapping":{"public":"upstream"}}`,
+			present: true,
+			wantLen: 1,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assertAPIKey(t, r)
+				_, _ = fmt.Fprintf(w, `{"code":0,"data":%s}`, tc.data)
+			})
+			client := newHandlerClient(t, handler)
+			if err := client.SetAPIKey([]byte("test-admin-key")); err != nil {
+				t.Fatal(err)
+			}
+			account, err := client.Account(context.Background(), 7)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if account.HasModelMapping() != tc.present || len(account.ModelMapping) != tc.wantLen {
+				t.Fatalf("model mapping presence changed: present=%v mapping=%#v want_present=%v want_len=%d", account.HasModelMapping(), account.ModelMapping, tc.present, tc.wantLen)
+			}
+		})
+	}
+}
+
+func TestAccountOnlyKeepsRedactedAPIKeyPresenceBoolean(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		json string
+		want *bool
+	}{
+		{name: "true", json: `{"has_api_key":true}`, want: boolPointerTest(true)},
+		{name: "false", json: `{"has_api_key":false,"has_refresh_token":true}`, want: boolPointerTest(false)},
+		{name: "missing", json: `{}`, want: nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assertAPIKey(t, r)
+				_, _ = io.WriteString(w, `{"code":0,"data":{"id":7,"platform":"openai","type":"apikey","api_protocol":"openai","base_url":"https://provider.example","credentials_status":`+tc.json+`,"credentials":{"model_mapping":{"a":"b"}}}}`)
+			})
+			client := newHandlerClient(t, handler)
+			if err := client.SetAPIKey([]byte("test-admin-key")); err != nil {
+				t.Fatal(err)
+			}
+			account, err := client.Account(context.Background(), 7)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.want == nil {
+				if account.APIKeyPresent != nil {
+					t.Fatalf("unexpected presence marker: %v", *account.APIKeyPresent)
+				}
+			} else if account.APIKeyPresent == nil || *account.APIKeyPresent != *tc.want {
+				t.Fatalf("presence marker=%v, want %v", account.APIKeyPresent, *tc.want)
+			}
+		})
+	}
+}
+
+func TestAccountWithPublishedSnapshotMatchesRedacted404tokenFixture(t *testing.T) {
+	fixture, err := os.ReadFile("testdata/upstream_model_refresh_v1_redacted.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertAPIKey(t, r)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(fixture)
+	})
+	client := newHandlerClient(t, handler)
+	if err := client.SetAPIKey([]byte("test-admin-key")); err != nil {
+		t.Fatal(err)
+	}
+	account, err := client.AccountWithPublishedSnapshot(context.Background(), 22, "0.2.12", "admin-catalog-all-v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := account.PublishedSnapshot
+	if account.ID != 22 || snapshot == nil || snapshot.ContractStatus != PublishedSnapshotContractStatusSupported || snapshot.Status != "fresh" || snapshot.Source != "upstream_models_endpoint" {
+		t.Fatalf("fixture contract did not parse: account=%#v snapshot=%#v", account, snapshot)
+	}
+	if snapshot.RawCount != 21 || snapshot.PublicCount != 5 || len(snapshot.RawModels) != 21 || len(snapshot.PublicModels) != 5 || len(snapshot.PublicToUpstream) != 5 || snapshot.PublicToUpstreamCount != 5 {
+		t.Fatalf("snapshot lists were not retained within their bounded valid contract: %#v", snapshot)
+	}
+	if snapshot.UnmappedTargetCount != 0 {
+		t.Fatalf("valid raw/public mapping relationships were reported broken: %#v", snapshot)
+	}
+	if snapshot.LastAttemptAt == nil || snapshot.LastSuccessAt == nil || snapshot.NextRefreshAt == nil || snapshot.RawDigest == "" {
+		t.Fatalf("snapshot timestamps/digest missing: %#v", snapshot)
+	}
+	serialized, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	accountSerialized, err := json.Marshal(account)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sentinel := range []string{
+		"FIXTURE_CREDENTIAL_SECRET_MUST_NOT_ESCAPE",
+		"FIXTURE_HEADER_SECRET_MUST_NOT_ESCAPE",
+		"FIXTURE_EXTRA_SECRET_MUST_NOT_ESCAPE",
+		"FIXTURE_ERROR_SECRET_MUST_NOT_ESCAPE",
+		"FIXTURE_SNAPSHOT_SECRET_MUST_NOT_ESCAPE",
+	} {
+		if strings.Contains(string(serialized), sentinel) || strings.Contains(string(accountSerialized), sentinel) {
+			t.Fatalf("secret-shaped unknown field was retained: %s", sentinel)
+		}
+	}
+}
+
+func TestPublishedSnapshotFailsClosedWithoutCopyingModelIDs(t *testing.T) {
+	fixture, err := os.ReadFile("testdata/upstream_model_refresh_v1_redacted.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name       string
+		body       []byte
+		buildID    string
+		contractID string
+		wantStatus string
+	}{
+		{name: "unsupported build", body: fixture, buildID: "0.2.13", contractID: publishedSnapshotAPIContractID, wantStatus: PublishedSnapshotContractStatusUnsupported},
+		{name: "unsupported API contract", body: fixture, buildID: publishedSnapshotBuildID, contractID: "unknown-contract", wantStatus: PublishedSnapshotContractStatusUnsupported},
+		{name: "unknown schema", body: []byte(strings.Replace(string(fixture), `"schema_version": 1`, `"schema_version": 2`, 1)), buildID: publishedSnapshotBuildID, contractID: publishedSnapshotAPIContractID, wantStatus: PublishedSnapshotContractStatusUnsupported},
+		{name: "bad timestamp", body: []byte(strings.Replace(string(fixture), `2026-10-11T20:00:02Z`, `not-a-time`, 1)), buildID: publishedSnapshotBuildID, contractID: publishedSnapshotAPIContractID, wantStatus: PublishedSnapshotContractStatusIncomplete},
+		{name: "relationship mismatch", body: []byte(strings.Replace(string(fixture), `"qwen3-flash": "qwen3-flash"`, `"qwen3-flash": "missing-upstream"`, 1)), buildID: publishedSnapshotBuildID, contractID: publishedSnapshotAPIContractID, wantStatus: PublishedSnapshotContractStatusIncomplete},
+		{name: "missing required field", body: []byte(strings.Replace(string(fixture), `        "next_refresh_at": "2026-10-12T20:00:00Z",`+"\n", "", 1)), buildID: publishedSnapshotBuildID, contractID: publishedSnapshotAPIContractID, wantStatus: PublishedSnapshotContractStatusIncomplete},
+		{name: "overlong ID", body: []byte(strings.Replace(string(fixture), "retired-claude-fixture-01", strings.Repeat("x", maxPublishedSnapshotIDBytes+1), 1)), buildID: publishedSnapshotBuildID, contractID: publishedSnapshotAPIContractID, wantStatus: PublishedSnapshotContractStatusIncomplete},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assertAPIKey(t, r)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write(tc.body)
+			})
+			client := newHandlerClient(t, handler)
+			if err := client.SetAPIKey([]byte("test-admin-key")); err != nil {
+				t.Fatal(err)
+			}
+			account, err := client.AccountWithPublishedSnapshot(context.Background(), 22, tc.buildID, tc.contractID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if account.PublishedSnapshot == nil || account.PublishedSnapshot.ContractStatus != tc.wantStatus {
+				t.Fatalf("contract status = %#v, want %q", account.PublishedSnapshot, tc.wantStatus)
+			}
+			if len(account.PublishedSnapshot.RawModels) != 0 || len(account.PublishedSnapshot.PublicModels) != 0 || len(account.PublishedSnapshot.PublicToUpstream) != 0 {
+				t.Fatalf("invalid or unsupported contract leaked IDs: %#v", account.PublishedSnapshot)
+			}
+			if tc.wantStatus == PublishedSnapshotContractStatusUnsupported && (account.PublishedSnapshot.Status != "" || account.PublishedSnapshot.Source != "" || account.PublishedSnapshot.RawDigest != "" || account.PublishedSnapshot.LastAttemptAt != nil || account.PublishedSnapshot.LastSuccessAt != nil || account.PublishedSnapshot.NextRefreshAt != nil) {
+				t.Fatalf("unsupported contract retained metadata: %#v", account.PublishedSnapshot)
+			}
+		})
+	}
+	t.Run("wrong field type", func(t *testing.T) {
+		snapshot := `{"schema_version":1,"status":"fresh","source":"upstream_models_endpoint","last_attempt_at":"2026-10-11T20:30:00Z","next_refresh_at":"2026-10-12T20:00:00Z","raw_digest":"sha256:0000000000000000000000000000000000000000000000000000000000000000","raw_models":"not-an-array","public_models":[],"public_to_upstream":{}}`
+		got := readPublishedSnapshotForTest(t, accountResponseWithSnapshot(snapshot), publishedSnapshotBuildID, publishedSnapshotAPIContractID)
+		if got.ContractStatus != PublishedSnapshotContractStatusIncomplete || len(got.RawModels) != 0 || len(got.PublicModels) != 0 {
+			t.Fatalf("wrong field type was not rejected safely: %#v", got)
+		}
+	})
+	t.Run("oversized array", func(t *testing.T) {
+		var raw strings.Builder
+		for i := 0; i <= maxPublishedSnapshotIDs; i++ {
+			if i > 0 {
+				raw.WriteByte(',')
+			}
+			raw.WriteString(`"m"`)
+		}
+		snapshot := fmt.Sprintf(`{"schema_version":1,"status":"fresh","source":"upstream_models_endpoint","last_attempt_at":"2026-10-11T20:30:00Z","next_refresh_at":"2026-10-12T20:00:00Z","raw_digest":"sha256:0000000000000000000000000000000000000000000000000000000000000000","raw_models":[%s],"public_models":["m"],"public_to_upstream":{"m":"m"}}`, raw.String())
+		got := readPublishedSnapshotForTest(t, accountResponseWithSnapshot(snapshot), publishedSnapshotBuildID, publishedSnapshotAPIContractID)
+		if got.ContractStatus != PublishedSnapshotContractStatusIncomplete || len(got.RawModels) != 0 || got.RawCount <= maxPublishedSnapshotIDs {
+			t.Fatalf("oversized list was not rejected safely: status=%q raw_count=%d ids=%d", got.ContractStatus, got.RawCount, len(got.RawModels))
+		}
+	})
+}
+
+func TestPublishedSnapshotSanitizesMetadataAndNeverReturnsParseSentinels(t *testing.T) {
+	fixture, err := os.ReadFile("testdata/upstream_model_refresh_v1_redacted.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const badStatus = "STATUS_SENTINEL_MUST_NOT_ESCAPE"
+	const badSource = "SOURCE_SENTINEL_MUST_NOT_ESCAPE"
+	const badDigest = "DIGEST_SENTINEL_MUST_NOT_ESCAPE"
+	cases := []struct {
+		name   string
+		body   []byte
+		status string
+	}{
+		{name: "invalid status", body: []byte(strings.Replace(string(fixture), `"status": "fresh"`, `"status": "`+badStatus+`"`, 1)), status: PublishedSnapshotContractStatusIncomplete},
+		{name: "invalid source", body: []byte(strings.Replace(string(fixture), `"source": "upstream_models_endpoint"`, `"source": "`+badSource+`"`, 1)), status: PublishedSnapshotContractStatusIncomplete},
+		{name: "invalid digest", body: []byte(strings.Replace(string(fixture), `"raw_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"`, `"raw_digest": "`+badDigest+`"`, 1)), status: PublishedSnapshotContractStatusIncomplete},
+		{name: "unknown schema clears metadata", body: []byte(strings.Replace(string(fixture), `"schema_version": 1`, `"schema_version": 999`, 1)), status: PublishedSnapshotContractStatusUnsupported},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			snapshot := readPublishedSnapshotForTestAccount(t, tc.body, 22, publishedSnapshotBuildID, publishedSnapshotAPIContractID)
+			if snapshot.ContractStatus != tc.status {
+				t.Fatalf("contract status = %q, want %q", snapshot.ContractStatus, tc.status)
+			}
+			serialized, err := json.Marshal(snapshot)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, sentinel := range []string{badStatus, badSource, badDigest} {
+				if strings.Contains(string(serialized), sentinel) {
+					t.Fatalf("untrusted metadata escaped parse projection: %s", sentinel)
+				}
+			}
+			if tc.status == PublishedSnapshotContractStatusUnsupported && (snapshot.Status != "" || snapshot.Source != "" || snapshot.RawDigest != "" || snapshot.LastAttemptAt != nil || snapshot.LastSuccessAt != nil || snapshot.NextRefreshAt != nil || len(snapshot.RawModels) != 0 || len(snapshot.PublicModels) != 0 || len(snapshot.PublicToUpstream) != 0) {
+				t.Fatalf("unknown schema retained metadata or IDs: %#v", snapshot)
+			}
+		})
+	}
+}
+
+func TestPublishedSnapshotAPIErrorsDoNotExposeSnapshotSentinels(t *testing.T) {
+	const sentinel = "API_ERROR_SNAPSHOT_SECRET_SENTINEL"
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertAPIKey(t, r)
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = io.WriteString(w, sentinel)
+	})
+	client := newHandlerClient(t, handler)
+	if err := client.SetAPIKey([]byte("test-admin-key")); err != nil {
+		t.Fatal(err)
+	}
+	_, err := client.AccountWithPublishedSnapshot(context.Background(), 22, publishedSnapshotBuildID, publishedSnapshotAPIContractID)
+	if err == nil || strings.Contains(err.Error(), sentinel) {
+		t.Fatalf("API error exposed the response sentinel: %v", err)
+	}
+}
+
+func TestPublishedSnapshotParseErrorsDoNotExposeSnapshotSentinels(t *testing.T) {
+	const sentinel = "PARSE_ERROR_SNAPSHOT_SECRET_SENTINEL"
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertAPIKey(t, r)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"code":0,"data":{"id":22,"platform":"openai","type":"apikey","extra":{"upstream_model_refresh":{"schema_version":1,"status":"fresh","source":"upstream_models_endpoint","raw_digest":"`+sentinel+`","raw_models":[`)
+	})
+	client := newHandlerClient(t, handler)
+	if err := client.SetAPIKey([]byte("test-admin-key")); err != nil {
+		t.Fatal(err)
+	}
+	_, err := client.AccountWithPublishedSnapshot(context.Background(), 22, publishedSnapshotBuildID, publishedSnapshotAPIContractID)
+	if err == nil || strings.Contains(err.Error(), sentinel) {
+		t.Fatalf("parse error exposed the snapshot sentinel: %v", err)
+	}
+}
+
+func accountResponseWithSnapshot(snapshot string) []byte {
+	return []byte(fmt.Sprintf(`{"code":0,"data":{"id":8,"platform":"openai","type":"apikey","credentials":{"model_mapping":{}},"extra":{"upstream_model_refresh":%s}}}`, snapshot))
+}
+
+func readPublishedSnapshotForTest(t *testing.T, body []byte, buildID, contractID string) PublishedSnapshot {
+	return readPublishedSnapshotForTestAccount(t, body, 8, buildID, contractID)
+}
+
+func readPublishedSnapshotForTestAccount(t *testing.T, body []byte, accountID int64, buildID, contractID string) PublishedSnapshot {
+	t.Helper()
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertAPIKey(t, r)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(body)
+	})
+	client := newHandlerClient(t, handler)
+	if err := client.SetAPIKey([]byte("test-admin-key")); err != nil {
+		t.Fatal(err)
+	}
+	account, err := client.AccountWithPublishedSnapshot(context.Background(), accountID, buildID, contractID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if account.PublishedSnapshot == nil {
+		t.Fatal("published snapshot projection is missing")
+	}
+	return *account.PublishedSnapshot
+}
+
+func TestPublishedSnapshotExpiredAndUnsupportedStatesDoNotBecomeEffectiveIDs(t *testing.T) {
+	fixture, err := os.ReadFile("testdata/upstream_model_refresh_v1_redacted.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, status := range []string{"expired", "unsupported", "error"} {
+		t.Run(status, func(t *testing.T) {
+			body := []byte(strings.Replace(string(fixture), `"status": "fresh"`, `"status": "`+status+`"`, 1))
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assertAPIKey(t, r)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write(body)
+			})
+			client := newHandlerClient(t, handler)
+			if err := client.SetAPIKey([]byte("test-admin-key")); err != nil {
+				t.Fatal(err)
+			}
+			account, err := client.AccountWithPublishedSnapshot(context.Background(), 22, publishedSnapshotBuildID, publishedSnapshotAPIContractID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if account.PublishedSnapshot.ContractStatus != PublishedSnapshotContractStatusSupported || account.PublishedSnapshot.RawCount != 21 {
+				t.Fatalf("valid non-current snapshot metadata was lost: %#v", account.PublishedSnapshot)
+			}
+			if status == "expired" {
+				if len(account.PublishedSnapshot.PublicModels) != 5 {
+					t.Fatal("expired snapshot should remain available only as historical evidence")
+				}
+			} else if len(account.PublishedSnapshot.RawModels) != 0 || len(account.PublishedSnapshot.PublicModels) != 0 {
+				t.Fatalf("unsupported/error snapshot retained model IDs: %#v", account.PublishedSnapshot)
+			}
+		})
+	}
+}
+
+func TestPublishedSnapshotReportsOnlyExactInListDuplicates(t *testing.T) {
+	snapshot := `{"schema_version":1,"status":"fresh","source":"upstream_models_endpoint","last_attempt_at":"2026-10-11T20:30:00Z","next_refresh_at":"2026-10-12T20:00:00Z","raw_digest":"sha256:0000000000000000000000000000000000000000000000000000000000000000","raw_models":["Model-A","Model-A","model-a"],"public_models":["Model-A","Model-A"],"public_to_upstream":{"Model-A":"Model-A"}}`
+	got := readPublishedSnapshotForTest(t, accountResponseWithSnapshot(snapshot), publishedSnapshotBuildID, publishedSnapshotAPIContractID)
+	if got.ContractStatus != PublishedSnapshotContractStatusSupported {
+		t.Fatalf("duplicate model observations should not make the source contract incomplete: %#v", got)
+	}
+	if len(got.DuplicateRawIDs) != 1 || got.DuplicateRawIDs[0] != "Model-A" || len(got.DuplicatePublicIDs) != 1 || got.DuplicatePublicIDs[0] != "Model-A" {
+		t.Fatalf("exact case-sensitive duplicates were not reported: %#v", got)
+	}
+}
+
+func TestAPIErrorDoesNotExposeResponseBodyOrSecrets(t *testing.T) {
+	const secret = "server-error-secret-marker"
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = io.WriteString(w, secret)
+	})
+	client := newHandlerClient(t, handler)
+	if err := client.SetAPIKey([]byte("test-admin-key")); err != nil {
+		t.Fatal(err)
+	}
+	_, err := client.RefreshStatus(context.Background())
+	if err == nil || strings.Contains(err.Error(), secret) || strings.Contains(err.Error(), "secret") {
+		t.Fatalf("unsafe API error: %v", err)
+	}
+}
+
+func TestRedirectIsNotFollowedAndUnsafePathsAreBlocked(t *testing.T) {
+	requests := 0
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		http.Redirect(w, r, "/api/v1/admin/accounts/99", http.StatusFound)
+	})
+	client := newHandlerClient(t, handler)
+	if err := client.SetAPIKey([]byte("test-admin-key")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.RefreshStatus(context.Background()); err == nil {
+		t.Fatal("expected redirect status to fail")
+	}
+	if requests != 1 {
+		t.Fatalf("redirect was followed: requests=%d", requests)
+	}
+	for _, tc := range []struct{ method, path string }{
+		{http.MethodGet, "/api/v1/admin/accounts/42/models"},
+		{http.MethodGet, "/api/v1/admin/accounts/42/models/sync-upstream"},
+		{http.MethodPost, "/api/v1/admin/accounts/42/models"},
+		{http.MethodPut, "/api/v1/admin/accounts/42"},
+		{http.MethodPatch, "/api/v1/admin/accounts/42"},
+		{http.MethodDelete, "/api/v1/admin/accounts/42"},
+		{http.MethodPost, "/api/v1/admin/accounts"},
+		{http.MethodDelete, "/api/v1/admin/accounts/42/models/sync-upstream"},
+		{http.MethodPost, "/api/v1/admin/accounts/42/models/sync-upstream-preview"},
+		{http.MethodPost, "/api/v1/admin/accounts/models/sync-upstream-preview"},
+		{http.MethodPost, "/api/v1/admin/accounts/042/models/sync-upstream"},
+		{http.MethodPost, "/v1/responses"},
+		{http.MethodPost, "/v1/responses/compact"},
+		{http.MethodPost, "/v1/chat/completions"},
+		{http.MethodPost, "/v1/images/generations"},
+		{http.MethodPost, "/v1/videos"},
+		{http.MethodPost, "/api/v1/admin/accounts/bulk-update/anything"},
+		{http.MethodPost, "/api/v1/auth/login"},
+	} {
+		if allowed(tc.method, tc.path) {
+			t.Errorf("unsafe path allowed: %s %s", tc.method, tc.path)
+		}
+		if err := client.request(context.Background(), tc.method, tc.path, nil, nil); err == nil {
+			t.Errorf("unsafe request was accepted: %s %s", tc.method, tc.path)
+		}
+	}
+	if requests != 1 {
+		t.Fatalf("blocked paths still reached the mock server: requests=%d", requests)
+	}
+}
+
+func TestOversizedResponseFailsWithoutReturningBody(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"code":0,"data":{"access_token":"x"},"padding":"`)
+		_, _ = io.CopyN(w, strings.NewReader(strings.Repeat("a", maxResponseBytes+1024)), maxResponseBytes+1024)
+		_, _ = io.WriteString(w, `"}`)
+	})
+	client := newHandlerClient(t, handler)
+	if err := client.SetAPIKey([]byte("test-admin-key")); err != nil {
+		t.Fatal(err)
+	}
+	_, err := client.RefreshStatus(context.Background())
+	if err == nil || strings.Contains(err.Error(), "aaaa") {
+		t.Fatalf("oversized response was not safely rejected: %v", err)
+	}
+}
+
+func assertAPIKey(t *testing.T, r *http.Request) {
+	t.Helper()
+	if r.Header.Get("x-api-key") != "test-admin-key" || r.Header.Get("Authorization") != "" {
+		t.Errorf("missing API-key auth or unexpected Authorization header")
+	}
+}
+
+func boolPointerTest(value bool) *bool { return &value }
+
+type handlerRoundTripper struct{ handler http.Handler }
+
+func (h handlerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	recorder := httptest.NewRecorder()
+	h.handler.ServeHTTP(recorder, req)
+	return recorder.Result(), nil
+}
+
+func newHandlerClient(t *testing.T, handler http.Handler) *Client {
+	t.Helper()
+	base, err := url.Parse("https://404token.xyz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := newClient(base)
+	client.http.Transport = handlerRoundTripper{handler: handler}
+	t.Cleanup(client.Close)
+	return client
+}
+
+func TestNewPinsTrustedOriginAndRequestsRequireKey(t *testing.T) {
+	valid, err := New("https://404token.xyz")
+	if err != nil {
+		t.Fatalf("trusted target rejected: %v", err)
+	}
+	valid.Close()
+	for _, target := range []string{"https://example.invalid", "http://404token.xyz", "https://404token.xyz:443", "http://127.0.0.1:18081"} {
+		if _, err := New(target); err == nil {
+			t.Errorf("non-trusted destination accepted: %q", target)
+		}
+	}
+	requests := 0
+	client := newHandlerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+	}))
+	if _, err := client.RefreshStatus(context.Background()); err == nil {
+		t.Fatal("request without an API key succeeded")
+	}
+	if requests != 0 {
+		t.Fatalf("request without an API key reached transport: %d", requests)
+	}
+}

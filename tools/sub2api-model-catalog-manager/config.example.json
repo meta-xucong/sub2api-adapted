@@ -1,0 +1,29 @@
+{
+  "target": {
+    "base_url": "https://404token.xyz",
+    "runtime_compatibility": {
+      "build_id": "",
+      "api_contract_id": "",
+      "evidence": "",
+      "reviewed_at": ""
+    }
+  },
+  "account_scope": "allowlist",
+  "accept_all_credential_response_memory_exposure": false,
+  "accounts": [
+    {
+      "id": 999999999,
+      "accept_credential_response_memory_exposure": false
+    }
+  ],
+  "allow_native_sync_metadata_write": false,
+  "apply_mode": "preview",
+  "approved_rules_sha256": "",
+  "credential": {
+    "windows_credential_target": "Sub2API 404token Admin API Key"
+  },
+  "state_dir": "state",
+  "report_dir": "reports",
+  "backup_dir": "backups",
+  "rules_file": "model-rules.json"
+}
