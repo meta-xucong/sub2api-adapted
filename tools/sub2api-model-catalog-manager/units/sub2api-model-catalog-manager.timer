@@ -1,0 +1,11 @@
+[Unit]
+Description=Run approved 404token model refresh after native 04:00 refresh
+
+[Timer]
+OnCalendar=*-*-* 04:10:00 Asia/Shanghai
+Persistent=true
+AccuracySec=1s
+Unit=sub2api-model-catalog-manager.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,34 @@
+[Unit]
+Description=404token approved manual-only upstream model refresh
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=sub2api-model-catalog-manager
+Group=sub2api-model-catalog-manager
+WorkingDirectory=/var/lib/sub2api-model-catalog-manager
+Environment=HOME=/var/lib/sub2api-model-catalog-manager
+Environment=XDG_CACHE_HOME=/var/lib/sub2api-model-catalog-manager/cache
+ExecStart=/opt/sub2api-model-catalog-manager/bin/model-catalog-manager run --manual-only --config /etc/sub2api-model-catalog-manager/config.json
+LoadCredentialEncrypted=admin-api-key:/etc/credstore.encrypted/sub2api-model-catalog-manager-admin-api-key
+UMask=0077
+TimeoutStartSec=50min
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/sub2api-model-catalog-manager

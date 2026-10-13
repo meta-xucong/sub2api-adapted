@@ -71,6 +71,40 @@ func TestDiscoveryRequiresExactSourceBuildAndAPIMatch(t *testing.T) {
 	}
 }
 
+func TestGeneratedApprovalPlanUsesSingleClockReadForValidityWindow(t *testing.T) {
+	cfg, account, _ := testWorkflowConfig(t, true, true)
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 10, 13, 12, 0, 0, 0, loc)
+	clockCalls := 0
+	now := func() time.Time {
+		clockCalls++
+		return base.Add(time.Duration(clockCalls) * time.Second)
+	}
+	api := newWorkflowAPI(account, base, adminapi.Catalog{Models: []string{"upstream-known"}, LiveListAvailable: true})
+	discoverer := Discoverer{
+		ReadCredential: workflowCredential,
+		NewClient:      func(string) (AdminAPI, error) { return api, nil },
+		Now:            now,
+	}
+
+	result, err := discoverer.Discover(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Plan == nil {
+		t.Fatal("expected discovery to generate an approval plan")
+	}
+	if got := result.Plan.ExpiresAt.Sub(result.Plan.CreatedAt); got != catalog.ApprovalPlanTTL {
+		t.Fatalf("approval plan validity window = %s, want %s", got, catalog.ApprovalPlanTTL)
+	}
+	if err := result.Plan.ValidateShape(now().UTC()); err != nil {
+		t.Fatalf("generated approval plan failed validation: %v", err)
+	}
+}
+
 func TestAllAccountDiscoveryCoversInventoryAndApplyChecksSnapshot(t *testing.T) {
 	cfg, account, now := testWorkflowConfig(t, true, true)
 	cfg.AccountScope = "all"
