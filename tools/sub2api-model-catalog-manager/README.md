@@ -42,3 +42,5 @@ The executable's `--help` output is authoritative for current command flags. The
 ## Runtime files
 
 Keep real configs, model rules, state, reports, backups, logs, local binaries, and temporary test output outside version control. `.gitignore` blocks the standard runtime names; review `git status` before committing.
+
+For Windows Task Scheduler runs, see [the scheduled runner guide](docs/WINDOWS-SCHEDULED-RUNNER.md). The runner is platform glue and does not change the manager's API or account-selection behavior.
