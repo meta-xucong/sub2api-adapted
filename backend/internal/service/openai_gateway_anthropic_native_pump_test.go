@@ -203,6 +203,12 @@ func TestResponsesStreamingFromNativeAnthropic_HangTimesOut(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		t.Fatalf("handler did not respect interval bound: %v", elapsed)
 	}
+	if !strings.Contains(rec.Body.String(), `"type":"response.failed"`) {
+		t.Fatalf("expected a failed terminal event after idle timeout, got %q", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), `"type":"response.completed"`) || strings.Contains(rec.Body.String(), `"type":"response.incomplete"`) {
+		t.Fatalf("idle timeout must not be finalized as success, got %q", rec.Body.String())
+	}
 }
 
 func TestCCStreamingFromNativeAnthropic_HappyPathStillConverts(t *testing.T) {
@@ -330,3 +336,5 @@ func TestResponsesBufferedFromNativeAnthropic_ToolArgumentsAreValidJSON(t *testi
 		t.Fatalf("expected valid tool arguments, got %q", args)
 	}
 }
+
+

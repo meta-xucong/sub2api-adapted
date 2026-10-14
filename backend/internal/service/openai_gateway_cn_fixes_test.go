@@ -156,11 +156,23 @@ func TestResponsesStreamingFromNativeAnthropic_NormalizesTerminalUsage(t *testin
 
 				result, err := (&OpenAIGatewayService{}).handleResponsesStreamingFromNativeAnthropic(
 					resp, c, "k3", "k3", "k3", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
-				require.NoError(t, err)
+				if terminal == "message_stop" {
+					require.NoError(t, err)
+				} else {
+					require.Error(t, err)
+					require.Contains(t, err.Error(), "upstream response failed:")
+				}
 				require.Equal(t, tt.wantInput+tt.wantCached+tt.wantCacheCreation, result.Usage.InputTokens)
 				require.Equal(t, tt.wantOutput, result.Usage.OutputTokens)
 				require.Equal(t, tt.wantCached, result.Usage.CacheReadInputTokens)
 				require.Equal(t, tt.wantCacheCreation, result.Usage.CacheCreationInputTokens)
+				if terminal == "eof" {
+					body := rec.Body.String()
+					require.Contains(t, body, `"type":"response.failed"`)
+					require.NotContains(t, body, `"type":"response.completed"`)
+					require.NotContains(t, body, `"type":"response.incomplete"`)
+					return
+				}
 
 				var completed apicompat.ResponsesStreamEvent
 				for _, line := range strings.Split(rec.Body.String(), "\n") {
@@ -338,3 +350,5 @@ func TestHandle403_CNProviderNearMatchRetainsNormalPermanentErrorPolicy(t *testi
 	require.Equal(t, 1, repo.setErrorCalls, "non-exact 403 must retain existing permission/auth protection")
 	require.Equal(t, 0, repo.tempCalls)
 }
+
+
