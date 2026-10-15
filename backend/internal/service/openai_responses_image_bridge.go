@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -66,6 +67,9 @@ func BuildOpenAIResponsesImageBridgeRequest(body []byte) ([]byte, *OpenAIImagesR
 	}
 
 	model := strings.TrimSpace(tool.Get("model").String())
+	if !isOpenAIImageGenerationModel(model) {
+		model = strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	}
 	if !isOpenAIImageGenerationModel(model) {
 		model = "gpt-image-2"
 	}
@@ -226,6 +230,10 @@ func (s *OpenAIGatewayService) ForwardResponsesImageBridge(
 	// mapping; passing the Responses channel mapping here would overwrite it.
 	result, err := s.ForwardImages(ctx, bridgeContext, account, imageBody, parsed, "")
 	if err != nil {
+		var imageUpstreamErr *OpenAIImagesUpstreamError
+		if errors.As(err, &imageUpstreamErr) {
+			writeOpenAIImagesUpstreamErrorResponse(c, imageUpstreamErr)
+		}
 		return result, err
 	}
 	imageResponse := bytes.TrimSpace(recorder.Body.Bytes())
