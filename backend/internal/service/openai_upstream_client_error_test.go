@@ -357,3 +357,37 @@ func TestWriteOpenAIUpstreamClientError_PayloadShape(t *testing.T) {
 		})
 	}
 }
+
+// Regression for the non-streaming Responses image request sent by the media MCP.
+// A deterministic upstream invalid_image_input must remain a client 400, with
+// actionable structured fields intact, and must not trigger account failover.
+func TestHandleErrorResponse_ResponsesImageGenerationInvalidImageInputReturns400(t *testing.T) {
+	c, rec := newOpenAIUpstreamErrorTestContext(t)
+	requestBody := []byte(`{"model":"gpt-image-2.5","input":[{"role":"user","content":[{"type":"input_text","text":"Create a product image from this reference"},{"type":"input_image","image_url":"data:image/png;base64,ZmFrZQ=="}]}],"tools":[{"type":"image_generation"}],"tool_choice":{"type":"image_generation"}}`)
+	upstreamBody := `{"error":{"type":"invalid_request_error","code":"invalid_image_input","param":"input[0].content[1].image_url","message":"The image request is invalid. Check the input and try again."}}`
+	account := newOpenAIUpstreamErrorTestAccount()
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+	upstreamMessage := "The image request is invalid. Check the input and try again."
+
+	require.False(t, svc.shouldFailoverOpenAIUpstreamResponse(
+		account, http.StatusBadRequest, upstreamMessage, []byte(upstreamBody),
+	), "deterministic invalid_image_input must not trigger failover")
+
+	_, err := svc.handleErrorResponse(
+		context.Background(),
+		newOpenAIUpstreamErrorResponse(http.StatusBadRequest, upstreamBody),
+		c, account, requestBody, "gpt-image-2.5",
+	)
+
+	require.Error(t, err)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	responseBody := rec.Body.String()
+	require.Equal(t, "invalid_request_error", gjson.Get(responseBody, "error.type").String())
+	require.Equal(t, "invalid_image_input", gjson.Get(responseBody, "error.code").String())
+	require.Equal(t, "input[0].content[1].image_url", gjson.Get(responseBody, "error.param").String())
+	require.Equal(t, upstreamMessage, gjson.Get(responseBody, "error.message").String())
+	require.NotContains(t, responseBody, "Upstream request failed")
+
+	var failoverErr *UpstreamFailoverError
+	require.False(t, errors.As(err, &failoverErr), "terminal invalid_image_input must not trigger failover")
+}
