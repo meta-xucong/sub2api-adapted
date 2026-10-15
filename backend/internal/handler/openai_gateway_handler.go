@@ -3846,6 +3846,7 @@ func openAIForwardErrorAlreadyCommunicated(c *gin.Context, writerSizeBeforeForwa
 	for _, prefix := range []string{
 		"upstream response failed:",
 		"non-streaming openai protocol error:",
+		"openai images upstream error:",
 	} {
 		if strings.HasPrefix(msg, prefix) {
 			return true
