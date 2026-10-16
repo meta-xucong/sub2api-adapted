@@ -633,6 +633,36 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			service.SetOpsLatencyMs(c, service.OpsTimeToFirstTokenMsKey, int64(*result.FirstTokenMs))
 		}
 		if err != nil {
+			if errors.Is(err, service.ErrOpenAIImageGenerationOutputMissing) {
+				reqLog.Warn("openai.image_generation_completed_without_artifact", zap.Int64("account_id", account.ID), zap.Bool("usage_available", result != nil), zap.Error(err))
+				if result != nil {
+					userAgent := c.GetHeader("User-Agent")
+					clientIP := ip.GetClientIP(c)
+					requestPayloadHash := service.HashUsageRequestPayload(body)
+					inboundEndpoint := GetInboundEndpoint(c)
+					upstreamEndpoint := resolveOpenAIUpstreamEndpoint(c, account, result)
+					quotaPlatform := service.QuotaPlatform(c.Request.Context(), apiKey)
+					sessionID := service.ExtractClientSessionID(c)
+					cyberBlocked := service.GetOpsCyberPolicy(c) != nil
+					h.submitOpenAIUsageRecordTask(c.Request.Context(), result, func(ctx context.Context) {
+						if recordErr := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
+							Result: result, APIKey: apiKey, User: apiKey.User, Account: account, Subscription: subscription,
+							InboundEndpoint: inboundEndpoint, UpstreamEndpoint: upstreamEndpoint, UserAgent: userAgent,
+							IPAddress: clientIP, RequestPayloadHash: requestPayloadHash, APIKeyService: h.apiKeyService,
+							QuotaPlatform: quotaPlatform, SessionID: sessionID,
+							ChannelUsageFields: clientRequestedUsageFields(c, channelMapping, reqModel, result.UpstreamModel),
+							PricingAt:          pricingAt, CyberBlocked: cyberBlocked,
+						}); recordErr != nil {
+							logger.L().With(zap.String("component", "handler.openai_gateway.responses"), zap.Int64("user_id", subject.UserID), zap.Int64("api_key_id", apiKey.ID), zap.String("model", reqModel), zap.Int64("account_id", account.ID)).Error("openai.record_usage_failed", zap.Error(recordErr))
+						}
+					})
+				}
+				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, account.GetMappedModel(reqModel), false, nil)
+				if !openAIForwardErrorAlreadyCommunicated(c, writerSizeBeforeForward, err) {
+					h.ensureForwardErrorResponse(c, streamStarted)
+				}
+				return
+			}
 			if result != nil && result.ImageCount > 0 {
 				reqLog.Warn("openai.forward_partial_error_with_image_result",
 					zap.Int64("account_id", account.ID),

@@ -1,9 +1,20 @@
 package service
 
-import "github.com/gin-gonic/gin"
+import (
+	"errors"
+	"strings"
+
+	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
+)
 
 // 请求级 hint 仅限 HTTP：缺失表示 unknown，false/true 都表示已完成 canonical 判定。
 const openAIImageIntentHintContextKey = "openai_image_intent_hint"
+const openAIImageGenerationOutputRequiredContextKey = "openai_image_generation_output_required"
+
+// ErrOpenAIImageGenerationOutputMissing indicates the upstream completed an
+// explicit image request but did not return any usable image artifact.
+var ErrOpenAIImageGenerationOutputMissing = errors.New("upstream image generation completed without an image result")
 
 type openAIImageIntentClassifier func(endpoint string, requestedModel string, body []byte) bool
 
@@ -13,6 +24,50 @@ func SetOpenAIImageIntentHint(c *gin.Context, imageIntent bool) {
 		return
 	}
 	c.Set(openAIImageIntentHintContextKey, imageIntent)
+}
+
+func setOpenAIImageGenerationOutputRequired(c *gin.Context, required bool) {
+	if c != nil {
+		c.Set(openAIImageGenerationOutputRequiredContextKey, required)
+	}
+}
+
+func openAIImageGenerationOutputRequired(c *gin.Context) bool {
+	if c == nil {
+		return false
+	}
+	required, _ := c.Get(openAIImageGenerationOutputRequiredContextKey)
+	value, _ := required.(bool)
+	return value
+}
+
+// isOpenAIImageGenerationOutputRequired uses only explicit request signals.
+// Merely advertising image_generation (which Codex does on ordinary turns)
+// must not turn a text response into a failed image request.
+func isOpenAIImageGenerationOutputRequired(requestedModel string, body []byte) bool {
+	if isOpenAIImageGenerationModel(strings.TrimSpace(requestedModel)) {
+		return true
+	}
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		return false
+	}
+	if isOpenAIImageGenerationModel(strings.TrimSpace(gjson.GetBytes(body, "model").String())) ||
+		openAIJSONToolChoiceSelectsImageGeneration(gjson.GetBytes(body, "tool_choice")) {
+		return true
+	}
+	tools := gjson.GetBytes(body, "tools")
+	if !tools.IsArray() {
+		return false
+	}
+	for _, tool := range tools.Array() {
+		if !isOpenAIImageGenerationType(strings.TrimSpace(tool.Get("type").String())) {
+			continue
+		}
+		if isOpenAIImageGenerationModel(strings.TrimSpace(tool.Get("model").String())) {
+			return true
+		}
+	}
+	return false
 }
 
 func getOpenAIImageIntentHint(c *gin.Context) (imageIntent bool, known bool) {

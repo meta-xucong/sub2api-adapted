@@ -311,6 +311,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	} else {
 		imageIntent = canonicalImageIntent
 	}
+	setOpenAIImageGenerationOutputRequired(c, isOpenAIImageGenerationOutputRequired(reqModel, canonicalImageIntentBody))
 	if imageIntent && !imageGenerationAllowed {
 		MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalFeatureGate)
 		c.JSON(http.StatusForbidden, gin.H{"error": gin.H{"type": "permission_error", "message": ImageGenerationPermissionMessage()}})
@@ -1002,6 +1003,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		if reqStream {
 			streamResult, err := s.handleStreamingResponseWithReasoning(ctx, resp, c, account, startTime, originalModel, upstreamModel, reasoningEffortValue)
 			if err != nil {
+				if errors.Is(err, ErrOpenAIImageGenerationOutputMissing) && streamResult != nil && streamResult.usage != nil {
+					return &OpenAIForwardResult{RequestID: resp.Header.Get("x-request-id"), ResponseID: streamResult.responseID, Usage: *streamResult.usage, Model: originalModel, BillingModel: billingModel, UpstreamModel: upstreamModel, Stream: true, ResponseHeaders: resp.Header, Duration: time.Since(startTime)}, err
+				}
 				return nil, err
 			}
 			usage = streamResult.usage
@@ -1014,6 +1018,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		} else {
 			nonStreamResult, err := s.handleNonStreamingResponse(ctx, resp, c, account, originalModel, upstreamModel)
 			if err != nil {
+				if errors.Is(err, ErrOpenAIImageGenerationOutputMissing) && nonStreamResult != nil && nonStreamResult.usage != nil {
+					return &OpenAIForwardResult{RequestID: resp.Header.Get("x-request-id"), ResponseID: nonStreamResult.responseID, Usage: *nonStreamResult.usage, Model: originalModel, BillingModel: billingModel, UpstreamModel: upstreamModel, ResponseHeaders: resp.Header, Duration: time.Since(startTime)}, err
+				}
 				return nil, err
 			}
 			usage = nonStreamResult.usage

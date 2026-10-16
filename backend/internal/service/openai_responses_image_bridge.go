@@ -238,9 +238,20 @@ func (s *OpenAIGatewayService) ForwardResponsesImageBridge(
 	}
 	imageResponse := bytes.TrimSpace(recorder.Body.Bytes())
 	if len(imageResponse) == 0 || !gjson.ValidBytes(imageResponse) {
-		return nil, &UpstreamFailoverError{StatusCode: http.StatusBadGateway, ResponseBody: []byte(`{"error":{"message":"image upstream returned an invalid response"}}`)}
+		if result != nil {
+			result.ImageCount = 0
+			result.ImageOutputSizes = nil
+		}
+		return result, errors.Join(ErrOpenAIImageGenerationOutputMissing, errors.New("image upstream returned an invalid response"))
 	}
 	if err := writeResponsesImageBridgeResponse(c, body, imageResponse); err != nil {
+		if errors.Is(err, ErrOpenAIImageGenerationOutputMissing) {
+			if result != nil {
+				result.ImageCount = 0
+				result.ImageOutputSizes = nil
+			}
+			return result, err
+		}
 		return nil, err
 	}
 	return result, nil
@@ -259,7 +270,12 @@ func writeResponsesImageBridgeResponse(c *gin.Context, requestBody, imageBody []
 		return fmt.Errorf("parse Images API response: %w", err)
 	}
 	if len(imageResponse.Data) == 0 {
-		return &UpstreamFailoverError{StatusCode: http.StatusBadGateway, ResponseBody: []byte(`{"error":{"message":"image upstream returned no image"}}`)}
+		return ErrOpenAIImageGenerationOutputMissing
+	}
+	for _, image := range imageResponse.Data {
+		if strings.TrimSpace(image.B64JSON) == "" && strings.TrimSpace(image.URL) == "" {
+			return ErrOpenAIImageGenerationOutputMissing
+		}
 	}
 	model := strings.TrimSpace(gjson.GetBytes(requestBody, "model").String())
 	if model == "" {
