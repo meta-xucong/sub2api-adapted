@@ -166,3 +166,161 @@ func TestOpenAIResponsesCompletedEventIsEmpty(t *testing.T) {
 		})
 	}
 }
+
+func TestOpenAIImageGenerationCompletedWithoutArtifactIsNotRetried(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"id":"resp_missing_image","status":"completed","output":[{"type":"image_generation_call"}],"usage":{"input_tokens":12,"output_tokens":3,"total_tokens":15}}`)),
+	}}
+	svc := newOpenAIImageGenerationControlTestService(upstream)
+	c, recorder := newOpenAIImageGenerationControlTestContext(true, "codex_cli_rs/0.144.1")
+	account := newOpenAIImageGenerationControlTestAccount()
+	account.Extra = map[string]any{"openai_passthrough": true}
+	body := []byte(`{"model":"gpt-5.6-sol","stream":false,"tools":[{"type":"image_generation","model":"gpt-image-2.5"}],"tool_choice":{"type":"image_generation"},"input":"draw a ceramic cup"}`)
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+
+	require.ErrorIs(t, err, ErrOpenAIImageGenerationOutputMissing)
+	require.NotNil(t, result)
+	require.NotNil(t, result.Usage)
+	require.Equal(t, 12, result.Usage.InputTokens)
+	require.Len(t, upstream.requests, 1, "a completed upstream image request without an artifact must not be retried")
+	require.Equal(t, http.StatusBadGateway, recorder.Code)
+	require.Contains(t, recorder.Body.String(), "without an image result")
+}
+
+func TestOpenAIImageGenerationCompletedWithoutArtifactStreamIsNotRetried(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, passthrough := range []bool{false, true} {
+		name := "native"
+		if passthrough {
+			name = "passthrough"
+		}
+		t.Run(name, func(t *testing.T) {
+			upstream := &httpUpstreamRecorder{resp: &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "X-Request-Id": []string{"resp-missing-image"}},
+				Body: io.NopCloser(strings.NewReader(
+					"data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_missing_image\",\"status\":\"in_progress\"}}\n\n" +
+						"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_missing_image\",\"status\":\"completed\",\"output\":[{\"type\":\"image_generation_call\"}],\"usage\":{\"input_tokens\":12,\"output_tokens\":3,\"total_tokens\":15}}}\n\n",
+				)),
+			}}
+			svc := newOpenAIImageGenerationControlTestService(upstream)
+			c, recorder := newOpenAIImageGenerationControlTestContext(true, "codex_cli_rs/0.144.1")
+			account := newOpenAIImageGenerationControlTestAccount()
+			if passthrough {
+				account.Extra = map[string]any{"openai_passthrough": true}
+			}
+			body := []byte(`{"model":"gpt-5.6-sol","stream":true,"tools":[{"type":"image_generation","model":"gpt-image-2.5"}],"tool_choice":{"type":"image_generation"},"input":"draw a ceramic cup"}`)
+
+			result, err := svc.Forward(context.Background(), c, account, body)
+
+			require.ErrorIs(t, err, ErrOpenAIImageGenerationOutputMissing)
+			require.NotNil(t, result)
+			require.Equal(t, 12, result.Usage.InputTokens, "available upstream usage must be preserved")
+			require.Len(t, upstream.requests, 1, "completed-without-artifact must never trigger another upstream attempt")
+			require.Contains(t, recorder.Body.String(), "without an image result")
+		})
+	}
+}
+
+func TestOpenAIImageGenerationCompletedWithoutArtifactSSEToJSONIsNotRetried(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, passthrough := range []bool{false, true} {
+		name := "native"
+		if passthrough {
+			name = "passthrough"
+		}
+		t.Run(name, func(t *testing.T) {
+			upstream := &httpUpstreamRecorder{resp: &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "X-Request-Id": []string{"resp-missing-image-sse"}},
+				Body: io.NopCloser(strings.NewReader(
+					"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_missing_image\",\"status\":\"completed\",\"output\":[{\"type\":\"image_generation_call\"}],\"usage\":{\"input_tokens\":8,\"output_tokens\":2,\"total_tokens\":10}}}\n\n",
+				)),
+			}}
+			svc := newOpenAIImageGenerationControlTestService(upstream)
+			c, recorder := newOpenAIImageGenerationControlTestContext(true, "codex_cli_rs/0.144.1")
+			account := newOpenAIImageGenerationControlTestAccount()
+			if passthrough {
+				account.Extra = map[string]any{"openai_passthrough": true}
+			}
+			body := []byte(`{"model":"gpt-5.6-sol","stream":false,"tools":[{"type":"image_generation","model":"gpt-image-2.5"}],"tool_choice":{"type":"image_generation"},"input":"draw a ceramic cup"}`)
+
+			result, err := svc.Forward(context.Background(), c, account, body)
+
+			require.ErrorIs(t, err, ErrOpenAIImageGenerationOutputMissing)
+			require.NotNil(t, result)
+			require.Equal(t, 8, result.Usage.InputTokens)
+			require.Len(t, upstream.requests, 1, "SSE-to-JSON conversion must not replay a completed image request")
+			require.Equal(t, http.StatusBadGateway, recorder.Code)
+			require.Contains(t, recorder.Body.String(), "without an image result")
+		})
+	}
+}
+
+func TestOpenAIAdvertisedImageToolDoesNotFailOrdinaryTextStream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body: io.NopCloser(strings.NewReader(
+			"data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n" +
+				"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_text\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello\"}]}],\"usage\":{\"input_tokens\":4,\"output_tokens\":1,\"total_tokens\":5}}}\n\n",
+		)),
+	}}
+	svc := newOpenAIImageGenerationControlTestService(upstream)
+	c, recorder := newOpenAIImageGenerationControlTestContext(true, "codex_cli_rs/0.144.1")
+	account := newOpenAIImageGenerationControlTestAccount()
+	account.Extra = map[string]any{"openai_passthrough": true}
+	body := []byte(`{"model":"gpt-5.6-sol","stream":true,"tools":[{"type":"image_generation"}],"input":"say hello"}`)
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 4, result.Usage.InputTokens)
+	require.Len(t, upstream.requests, 1)
+	require.Contains(t, recorder.Body.String(), "hello")
+	require.NotContains(t, recorder.Body.String(), "image_output_missing")
+}
+
+func TestOpenAIImageGenerationMissingArtifactClassifier(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cases := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{
+			name: "completed image call without result",
+			body: `{"model":"gpt-5.6-sol","tools":[{"type":"image_generation","model":"gpt-image-2.5"}],"status":"completed","output":[{"type":"image_generation_call"}]}`,
+			want: true,
+		},
+		{
+			name: "completed image call with result",
+			body: `{"model":"gpt-5.6-sol","tools":[{"type":"image_generation","model":"gpt-image-2.5"}],"status":"completed","output":[{"type":"image_generation_call","result":"aGVsbG8="}]}`,
+			want: false,
+		},
+		{
+			name: "incomplete image response",
+			body: `{"model":"gpt-image-2.5","status":"incomplete","output":[]}`,
+			want: false,
+		},
+		{
+			name: "ordinary text response with advertised image tool",
+			body: `{"model":"gpt-5.6-sol","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"hello"}]}]}`,
+			want: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, _ := newOpenAIImageGenerationControlTestContext(true, "codex_cli_rs/0.144.1")
+			body := []byte(tc.body)
+			setOpenAIImageGenerationOutputRequired(c, isOpenAIImageGenerationOutputRequired("gpt-5.6-sol", body))
+			require.Equal(t, tc.want, openAIImageGenerationOutputMissing(c, body))
+		})
+	}
+}

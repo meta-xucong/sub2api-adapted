@@ -281,6 +281,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		attemptImageIntentInvalidated,
 		IsImageGenerationIntent,
 	)
+	setOpenAIImageGenerationOutputRequired(c, isOpenAIImageGenerationOutputRequired(reqModel, canonicalImageIntentBody))
 	if imageIntent && !GroupAllowsImageGeneration(apiKeyGroup(apiKey)) {
 		MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalFeatureGate)
 		c.JSON(http.StatusForbidden, gin.H{
@@ -447,6 +448,9 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		if reqStream {
 			result, handleErr := s.handleStreamingResponsePassthrough(ctx, resp, c, account, startTime, reqModel, upstreamPassthroughModel)
 			if handleErr != nil {
+				if errors.Is(handleErr, ErrOpenAIImageGenerationOutputMissing) && result != nil && result.usage != nil {
+					return &OpenAIForwardResult{RequestID: resp.Header.Get("x-request-id"), ResponseID: result.responseID, Usage: *result.usage, Model: reqModel, UpstreamModel: upstreamPassthroughModel, Stream: true, ResponseHeaders: resp.Header, Duration: time.Since(startTime)}, handleErr
+				}
 				if retryBody, fallbackModel, retry := s.applyOpenAIPassthroughCompactFallbackFromSignal(
 					c, account, requestedModel, body, handleErr, compactModelFallbackRetried, resp,
 				); retry {
@@ -474,6 +478,9 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		} else {
 			result, handleErr := s.handleNonStreamingResponsePassthrough(ctx, resp, c, account, reqModel, upstreamPassthroughModel)
 			if handleErr != nil {
+				if errors.Is(handleErr, ErrOpenAIImageGenerationOutputMissing) && result != nil && result.usage != nil {
+					return &OpenAIForwardResult{RequestID: resp.Header.Get("x-request-id"), ResponseID: result.responseID, Usage: *result.usage, Model: reqModel, UpstreamModel: upstreamPassthroughModel, ResponseHeaders: resp.Header, Duration: time.Since(startTime)}, handleErr
+				}
 				if retryBody, fallbackModel, retry := s.applyOpenAIPassthroughCompactFallbackFromSignal(
 					c, account, requestedModel, body, handleErr, compactModelFallbackRetried, resp,
 				); retry {
@@ -1883,6 +1890,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	clientDisconnected := false
 	sawDone := false
 	sawTerminalEvent := false
+	sawResponseIncomplete := false
 	sawFailedEvent := false
 	sawBareError := false
 	sawResponseFailed := false
@@ -2149,10 +2157,38 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 					terminalEventType = eventType
 				}
 			}
+			switch eventType {
+			case "response.incomplete":
+				sawResponseIncomplete = true
+			case "response.completed", "response.done":
+				sawResponseIncomplete = false
+			}
 			if responseID == "" {
 				responseID = extractOpenAIResponseIDFromJSONBytes(dataBytes)
 			}
 			imageCounter.AddSSEData(dataBytes)
+			if (openAIImageGenerationOutputRequired(c) || imageCounter.HasResponsesImageGenerationCall()) &&
+				(eventType == "response.completed" || eventType == "response.done" || trimmedData == "[DONE]") &&
+				!sawResponseIncomplete && !imageCounter.HasResponsesImageResult() {
+				s.parseSSEUsageBytesWithType(dataBytes, eventType, usage)
+				if !clientDisconnected && !failureDelivered {
+					if len(pendingLines) > 0 && !writePendingLines() {
+						return resultWithUsage(), ErrOpenAIImageGenerationOutputMissing
+					}
+					payload, _ := json.Marshal(map[string]any{
+						"type":            "error",
+						"sequence_number": 0,
+						"code":            "image_output_missing",
+						"message":         openAIImageGenerationMissingOutputMessage,
+						"param":           nil,
+					})
+					_, _ = fmt.Fprintln(w, "event: error")
+					_, _ = fmt.Fprintf(w, "data: %s\n\n", payload)
+					flusher.Flush()
+					clientOutputStarted = true
+				}
+				return resultWithUsage(), ErrOpenAIImageGenerationOutputMissing
+			}
 			if sanitizedData, sanitized := sanitizeOpenAIResponseFailedEventForClient(
 				dataBytes,
 				eventType,
@@ -2331,6 +2367,10 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 		// 兜底：尝试从 SSE 文本中解析 usage
 		usage = s.parseSSEUsageFromBody(string(body))
 	}
+	if openAIImageGenerationOutputMissing(c, body) {
+		err := s.writeOpenAINonStreamingProtocolError(resp, c, openAIImageGenerationMissingOutputMessage)
+		return &openaiNonStreamingResultPassthrough{OpenAIUsage: usage, usage: usage, responseID: extractOpenAIResponseIDFromJSONBytes(body)}, errors.Join(ErrOpenAIImageGenerationOutputMissing, err)
+	}
 	logOpenAISuccessMissingUsage(ctx, c, account, resp, usage, "json", false)
 
 	writeOpenAIPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
@@ -2416,6 +2456,11 @@ func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(resp *http.Response, c
 			bodyText = s.replaceModelInSSEBody(bodyText, mappedModel, originalModel)
 		}
 		body = []byte(bodyText)
+	}
+	if openAIImageGenerationOutputMissingInSSEBody(c, bodyText) {
+		err := s.writeOpenAINonStreamingProtocolError(resp, c, openAIImageGenerationMissingOutputMessage)
+		finalResponse, _ := extractCodexFinalResponse(bodyText)
+		return &openaiNonStreamingResultPassthrough{OpenAIUsage: usage, usage: usage, responseID: extractOpenAIResponseIDFromJSONBytes(finalResponse)}, errors.Join(ErrOpenAIImageGenerationOutputMissing, err)
 	}
 
 	writeOpenAIPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)

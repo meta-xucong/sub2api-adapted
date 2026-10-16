@@ -358,6 +358,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		s.isCodexImageGenerationBridgeEnabled(ctx, account, apiKey)
 	var imageIntent bool
 	canonicalImageIntent := resolveOpenAIImageIntentHint(c, reqModel, canonicalImageIntentBody, IsImageGenerationIntent)
+	setOpenAIImageGenerationOutputRequired(c, isOpenAIImageGenerationOutputRequired(reqModel, canonicalImageIntentBody))
 	if isCodexCLI && codexImageGenerationExplicitToolPolicy == codexImageGenerationExplicitToolPolicyStrip {
 		decoded, decodeErr := ensureReqBody()
 		if decodeErr != nil {
@@ -1220,6 +1221,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		if reqStream {
 			streamResult, err := s.handleStreamingResponseWithReasoning(ctx, resp, c, account, startTime, originalModel, upstreamModel, reasoningEffortValue)
 			if err != nil {
+				if errors.Is(err, ErrOpenAIImageGenerationOutputMissing) && streamResult != nil && streamResult.usage != nil {
+					return &OpenAIForwardResult{RequestID: resp.Header.Get("x-request-id"), ResponseID: streamResult.responseID, Usage: *streamResult.usage, Model: originalModel, BillingModel: billingModel, UpstreamModel: upstreamModel, Stream: true, ResponseHeaders: resp.Header, Duration: time.Since(startTime)}, err
+				}
 				if signal, ok := asOpenAICompactFallbackSignal(err); ok {
 					if retryBody, fallbackModel, retry := s.prepareOpenAICompactFallbackRetry(
 						c, account, requestedModel, body, http.StatusBadRequest, signal.message, signal.payload, compactModelFallbackRetried,
@@ -1268,6 +1272,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		} else {
 			nonStreamResult, err := s.handleNonStreamingResponse(ctx, resp, c, account, originalModel, upstreamModel)
 			if err != nil {
+				if errors.Is(err, ErrOpenAIImageGenerationOutputMissing) && nonStreamResult != nil && nonStreamResult.usage != nil {
+					return &OpenAIForwardResult{RequestID: resp.Header.Get("x-request-id"), ResponseID: nonStreamResult.responseID, Usage: *nonStreamResult.usage, Model: originalModel, BillingModel: billingModel, UpstreamModel: upstreamModel, ResponseHeaders: resp.Header, Duration: time.Since(startTime)}, err
+				}
 				if signal, ok := asOpenAICompactFallbackSignal(err); ok {
 					if retryBody, fallbackModel, retry := s.prepareOpenAICompactFallbackRetry(
 						c, account, requestedModel, body, http.StatusBadRequest, signal.message, signal.payload, compactModelFallbackRetried,
