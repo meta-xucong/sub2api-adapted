@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -146,6 +147,9 @@ func BuildOpenAIResponsesImageBridgeRequest(body []byte) ([]byte, *OpenAIImagesR
 	}
 
 	model := strings.TrimSpace(tool.Get("model").String())
+	if !isOpenAIImageGenerationModel(model) {
+		model = strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	}
 	if !isOpenAIImageGenerationModel(model) {
 		model = "gpt-image-2"
 	}
@@ -306,11 +310,21 @@ func (s *OpenAIGatewayService) ForwardResponsesImageBridge(
 
 	result, err := s.ForwardImages(ctx, bridgeContext, account, imageBody, parsed, "")
 	if err != nil {
+		var imageUpstreamErr *OpenAIImagesUpstreamError
+		if errors.As(err, &imageUpstreamErr) {
+			writeOpenAIImagesUpstreamErrorResponse(c, imageUpstreamErr)
+		}
 		return result, err
 	}
 	imageResponse := bytes.TrimSpace(recorder.Body.Bytes())
 	if len(imageResponse) == 0 || !gjson.ValidBytes(imageResponse) {
-		return nil, newResponsesImageBridgeFailoverError("image upstream returned an invalid response")
+		if result != nil {
+			result.ImageCount = 0
+			result.ImageOutputSizes = nil
+		}
+		missingErr := fmt.Errorf("%w: image upstream returned an invalid response", ErrOpenAIImageGenerationOutputMissing)
+		_ = writeResponsesImageBridgeError(c, body, missingErr.Error())
+		return result, missingErr
 	}
 	preserve := true
 	if len(preserveStreaming) > 0 {
@@ -319,18 +333,54 @@ func (s *OpenAIGatewayService) ForwardResponsesImageBridge(
 	if err := writeResponsesImageBridgeResponse(c, body, imageResponse, preserve); err != nil {
 		// Preserve upstream usage metadata when the client disconnects during
 		// response writing; the handler records partial results on this path.
+		if errors.Is(err, ErrOpenAIImageGenerationOutputMissing) && result != nil {
+			result.ImageCount = 0
+			result.ImageOutputSizes = nil
+		}
+		if errors.Is(err, ErrOpenAIImageGenerationOutputMissing) {
+			_ = writeResponsesImageBridgeError(c, body, err.Error())
+		}
 		return result, err
 	}
 	return result, nil
 }
 
-func newResponsesImageBridgeFailoverError(message string) *UpstreamFailoverError {
-	return &UpstreamFailoverError{
-		StatusCode:       http.StatusBadGateway,
-		ClientStatusCode: http.StatusBadGateway,
-		ClientMessage:    message,
-		ResponseBody:     []byte(fmt.Sprintf(`{"error":{"type":"upstream_error","code":"image_generation_unavailable","message":%q}}`, message)),
+func writeResponsesImageBridgeError(c *gin.Context, requestBody []byte, message string) error {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		message = ErrOpenAIImageGenerationOutputMissing.Error()
 	}
+	payload := map[string]any{
+		"type":    "upstream_error",
+		"code":    "image_generation_output_missing",
+		"message": message,
+	}
+	if gjson.GetBytes(requestBody, "stream").Bool() {
+		payload["type"] = "error"
+		payload["sequence_number"] = 0
+		payload["param"] = nil
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			return err
+		}
+		c.Header("Content-Type", "text/event-stream")
+		c.Header("Cache-Control", "no-cache")
+		c.Status(http.StatusOK)
+		frame := append(append([]byte("event: error\ndata: "), encoded...), []byte("\n\n")...)
+		n, err := c.Writer.Write(frame)
+		if err != nil {
+			return err
+		}
+		if n != len(frame) {
+			return io.ErrShortWrite
+		}
+		if flusher, ok := c.Writer.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		return nil
+	}
+	c.JSON(http.StatusBadGateway, gin.H{"error": payload})
+	return nil
 }
 
 func writeResponsesImageBridgeResponse(c *gin.Context, requestBody, imageBody []byte, preserveStreaming ...bool) error {
@@ -343,10 +393,10 @@ func writeResponsesImageBridgeResponse(c *gin.Context, requestBody, imageBody []
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(imageBody, &imageResponse); err != nil {
-		return newResponsesImageBridgeFailoverError("parse Images API response failed")
+		return fmt.Errorf("%w: parse Images API response failed", ErrOpenAIImageGenerationOutputMissing)
 	}
 	if len(imageResponse.Data) == 0 {
-		return newResponsesImageBridgeFailoverError("image upstream returned no image")
+		return fmt.Errorf("%w: image upstream returned no image", ErrOpenAIImageGenerationOutputMissing)
 	}
 	model := strings.TrimSpace(gjson.GetBytes(requestBody, "model").String())
 	if model == "" {
@@ -364,7 +414,7 @@ func writeResponsesImageBridgeResponse(c *gin.Context, requestBody, imageBody []
 			result = strings.TrimSpace(image.URL)
 		}
 		if result == "" {
-			return newResponsesImageBridgeFailoverError("image upstream returned an empty image result")
+			return fmt.Errorf("%w: image upstream returned an empty image result", ErrOpenAIImageGenerationOutputMissing)
 		}
 		item := map[string]any{
 			"type":           "image_generation_call",

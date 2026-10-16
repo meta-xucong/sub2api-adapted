@@ -3271,6 +3271,26 @@ data: {"type":"response.failed","error":{"message":"This content was flagged"}}
 		require.False(t, reported)
 	})
 
+	t.Run("images upstream JSON error is already communicated", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodPost, EndpointResponses, nil)
+		before := c.Writer.Size()
+		wanted := `{"error":{"type":"invalid_request_error","code":"invalid_image_input","message":"The image request is invalid."}}`
+		c.Data(http.StatusBadRequest, "application/json", []byte(wanted))
+		imageErr := &service.OpenAIImagesUpstreamError{
+			StatusCode: http.StatusBadRequest, ErrorType: "invalid_request_error",
+			Code: "invalid_image_input", Message: "The image request is invalid.",
+		}
+
+		communicated := openAIForwardErrorAlreadyCommunicated(c, before, imageErr)
+		require.True(t, communicated)
+		if !communicated {
+			(&OpenAIGatewayHandler{}).ensureForwardErrorResponse(c, false)
+		}
+		require.Equal(t, wanted, strings.TrimSpace(w.Body.String()), "outer handler must not append response.failed SSE to JSON")
+	})
+
 	// H-2: cyber_policy 命中且响应已写出时，即便 err 前缀不在白名单（非流式 400 cyber
 	// 返回 "openai cyber_policy:"、透传账号返回 "upstream error:"），也须判定已透传，避免
 	// ensureForwardErrorResponse 在已写出的完整响应尾部追加 SSE 污染响应体。

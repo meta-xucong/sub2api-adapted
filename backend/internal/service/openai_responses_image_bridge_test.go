@@ -15,6 +15,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 type responsesImageBridgeHTTPUpstream struct{}
@@ -28,6 +29,52 @@ func (responsesImageBridgeHTTPUpstream) Do(_ *http.Request, _ string, _ int64, _
 }
 
 func (u responsesImageBridgeHTTPUpstream) DoWithTLS(req *http.Request, proxyURL string, accountID int64, concurrency int, _ *tlsfingerprint.Profile) (*http.Response, error) {
+	return u.Do(req, proxyURL, accountID, concurrency)
+}
+
+type responsesImageBridgeStatusHTTPUpstream struct {
+	statusCode   int
+	body         string
+	requestModel string
+	calls        int
+}
+
+func (u *responsesImageBridgeStatusHTTPUpstream) Do(req *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
+	u.calls++
+	requestBody, _ := io.ReadAll(req.Body)
+	u.requestModel = gjson.GetBytes(requestBody, "model").String()
+	return &http.Response{
+		StatusCode: u.statusCode,
+		Header:     http.Header{"Content-Type": []string{"application/json"}, "X-Request-Id": []string{"image-error-req"}},
+		Body:       io.NopCloser(strings.NewReader(u.body)),
+	}, nil
+}
+
+func TestForwardResponsesImageBridgeCompletedWithoutArtifactDoesNotFailover(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := &config.Config{RunMode: config.RunModeSimple}
+	upstream := &responsesImageBridgeStatusHTTPUpstream{statusCode: http.StatusOK, body: `{"created":1720000000,"data":[]}`}
+	svc := NewOpenAIGatewayService(nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil, nil, nil, upstream, nil, nil, nil, nil, nil, nil, nil, nil)
+	body := []byte(`{"model":"gpt-image-2.5","input":"draw a product","tools":[{"type":"image_generation"}]}`)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	account := &Account{ID: 41, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{
+		"api_key": "test-key", "base_url": "https://images.example/v1",
+	}}
+
+	result, err := svc.ForwardResponsesImageBridge(context.Background(), c, account, body)
+
+	require.ErrorIs(t, err, ErrOpenAIImageGenerationOutputMissing)
+	require.NotNil(t, result)
+	require.Zero(t, result.ImageCount, "a completed response without an artifact must not be billed as an image")
+	require.Empty(t, result.ImageOutputSizes)
+	require.Equal(t, 1, upstream.calls, "a completed image request must not fail over and submit again")
+	require.Equal(t, http.StatusBadGateway, recorder.Code)
+	require.Contains(t, recorder.Body.String(), "without an image result")
+}
+
+func (u *responsesImageBridgeStatusHTTPUpstream) DoWithTLS(req *http.Request, proxyURL string, accountID int64, concurrency int, _ *tlsfingerprint.Profile) (*http.Response, error) {
 	return u.Do(req, proxyURL, accountID, concurrency)
 }
 
@@ -107,6 +154,57 @@ func TestBuildOpenAIResponsesImageBridgeRequestRequiresExplicitTool(t *testing.T
 	require.ErrorContains(t, err, "file_id is not supported")
 }
 
+func TestBuildOpenAIResponsesImageBridgeUsesTopLevelImageModelWhenValid(t *testing.T) {
+	topLevelImageModel := []byte(`{"model":"gpt-image-2.5","input":"draw a lighthouse","tools":[{"type":"image_generation"}]}`)
+	imagesBody, parsed, err := BuildOpenAIResponsesImageBridgeRequest(topLevelImageModel)
+	require.NoError(t, err)
+	require.Equal(t, "gpt-image-2.5", parsed.Model)
+	require.Equal(t, "gpt-image-2.5", gjson.GetBytes(imagesBody, "model").String())
+
+	textModel := []byte(`{"model":"gpt-5.6","input":"draw a lighthouse","tools":[{"type":"image_generation"}]}`)
+	imagesBody, parsed, err = BuildOpenAIResponsesImageBridgeRequest(textModel)
+	require.NoError(t, err)
+	require.Equal(t, "gpt-image-2", parsed.Model, "a top-level text model must not become the image model")
+	require.Equal(t, "gpt-image-2", gjson.GetBytes(imagesBody, "model").String())
+}
+
+func TestForwardResponsesImageBridgeWritesStructuredImageError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := &config.Config{RunMode: config.RunModeSimple}
+	upstream := &responsesImageBridgeStatusHTTPUpstream{
+		statusCode: http.StatusBadRequest,
+		body:       `{"error":{"type":"invalid_request_error","code":"invalid_image_input","param":"input[0].content[1].image_url","message":"The image request is invalid. Check the input and try again."}}`,
+	}
+	svc := NewOpenAIGatewayService(nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil, nil, nil, upstream, nil, nil, nil, nil, nil, nil, nil, nil)
+	body := []byte(`{"model":"gpt-image-2.5","input":"draw a product","tools":[{"type":"image_generation"}]}`)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+	account := &Account{ID: 41, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{
+		"api_key": "test-key", "base_url": "https://images.example/v1",
+	}}
+
+	_, err := svc.ForwardResponsesImageBridge(context.Background(), c, account, body)
+	require.Equal(t, "gpt-image-2.5", upstream.requestModel)
+	var imageErr *OpenAIImagesUpstreamError
+	require.ErrorAs(t, err, &imageErr)
+	require.Equal(t, http.StatusBadRequest, recorder.Code)
+	var response struct {
+		Error struct {
+			Type    string `json:"type"`
+			Code    string `json:"code"`
+			Param   string `json:"param"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &response))
+	require.Equal(t, "invalid_request_error", response.Error.Type)
+	require.Equal(t, "invalid_image_input", response.Error.Code)
+	require.Equal(t, "input[0].content[1].image_url", response.Error.Param)
+	require.Equal(t, "The image request is invalid. Check the input and try again.", response.Error.Message)
+}
+
 func TestWriteResponsesImageBridgeRejectsInvalidOrEmptyImageResults(t *testing.T) {
 	tests := []struct {
 		name string
@@ -124,10 +222,8 @@ func TestWriteResponsesImageBridgeRejectsInvalidOrEmptyImageResults(t *testing.T
 			c, _ := gin.CreateTestContext(recorder)
 			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 			err := writeResponsesImageBridgeResponse(c, []byte(`{"model":"gpt-5.6"}`), tt.body)
-			var failover *UpstreamFailoverError
-			require.ErrorAs(t, err, &failover)
-			require.Equal(t, http.StatusBadGateway, failover.ClientStatusCode)
-			require.Contains(t, failover.ClientMessage, tt.want)
+			require.ErrorIs(t, err, ErrOpenAIImageGenerationOutputMissing)
+			require.Contains(t, err.Error(), tt.want)
 			require.Empty(t, recorder.Body.String(), "bridge must not emit success before a valid complete image exists")
 		})
 	}

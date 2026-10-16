@@ -273,6 +273,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 	errorEventSent := false
 	clientDisconnected := false // 客户端断开后继续 drain 上游以收集 usage
 	sawTerminalEvent := false
+	sawResponseIncomplete := false
 	sawFailedEvent := false
 	sawBareError := false
 	sawResponseFailed := false
@@ -532,6 +533,12 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 				suppressCurrentEvent = true
 			}
 			observer.ObserveOpenAI(dataBytes, eventType)
+			switch eventType {
+			case "response.incomplete":
+				sawResponseIncomplete = true
+			case "response.completed", "response.done":
+				sawResponseIncomplete = false
+			}
 			// 初始上游 data 的 type 只解析一次：原始值保持终止事件的精确匹配，规范化值供后续分支复用。
 			if openAIStreamEventIsTerminalWithType(data, eventType) {
 				sawTerminalEvent = true
@@ -646,6 +653,15 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 				line = "data: " + data
 			}
 			imageCounter.AddSSEData(dataBytes)
+			if (openAIImageGenerationOutputRequired(c) || imageCounter.HasResponsesImageGenerationCall()) &&
+				(eventType == "response.completed" || eventType == "response.done" || strings.TrimSpace(data) == "[DONE]") &&
+				!sawResponseIncomplete && !imageCounter.HasResponsesImageResult() {
+				s.parseSSEUsageBytesWithType(dataBytes, eventType, usage)
+				sawTerminalEvent = true
+				sendErrorEvent("image_output_missing", openAIImageGenerationMissingOutputMessage)
+				streamEarlyErr = ErrOpenAIImageGenerationOutputMissing
+				return
+			}
 			searchCounter += countGrokNativeSearchCallsInSSEDataDedup(dataBytes, streamSearchSeen)
 
 			// Correct Codex tool calls if needed (apply_patch -> edit, etc.)
@@ -1539,6 +1555,31 @@ func openAIResponsesCompletedEventIsEmpty(data []byte, usage *OpenAIUsage) bool 
 	return true
 }
 
+const openAIImageGenerationMissingOutputMessage = "Upstream completed image generation without an image result"
+
+func openAIImageGenerationOutputMissing(c *gin.Context, body []byte) bool {
+	if (!openAIImageGenerationOutputRequired(c) && !hasOpenAIResponsesImageGenerationCallJSON(body)) || hasOpenAIResponsesImageResultJSON(body) {
+		return false
+	}
+	status := strings.TrimSpace(gjson.GetBytes(body, "status").String())
+	if status == "" {
+		status = strings.TrimSpace(gjson.GetBytes(body, "response.status").String())
+	}
+	return status == "completed"
+}
+
+func openAIImageGenerationOutputMissingInSSEBody(c *gin.Context, body string) bool {
+	if !openAIImageGenerationOutputRequired(c) && !hasOpenAIResponsesImageGenerationCallInSSEBody(body) {
+		return false
+	}
+	finalResponse, ok := extractCodexFinalResponse(body)
+	if !ok || hasOpenAIResponsesImageResultSSEBody(body) || hasOpenAIResponsesImageResultJSON(finalResponse) {
+		return false
+	}
+	status := strings.TrimSpace(gjson.GetBytes(finalResponse, "status").String())
+	return status == "completed"
+}
+
 func mergeHostedImageGenToolUsage(imageGen gjson.Result, usage *OpenAIUsage) {
 	if !imageGen.Exists() || !imageGen.IsObject() {
 		return
@@ -1785,6 +1826,14 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 			return nil, fmt.Errorf("convert Grok compact response: %w", err)
 		}
 	}
+	if openAIImageGenerationOutputMissing(c, body) {
+		usage := &OpenAIUsage{}
+		if parsedUsage, ok := extractOpenAIUsageFromJSONBytes(body); ok {
+			*usage = parsedUsage
+		}
+		err := s.writeOpenAINonStreamingProtocolError(resp, c, openAIImageGenerationMissingOutputMessage)
+		return &openaiNonStreamingResult{OpenAIUsage: usage, usage: usage, responseID: extractOpenAIResponseIDFromJSONBytes(body)}, errors.Join(ErrOpenAIImageGenerationOutputMissing, err)
+	}
 	usageValue, usageOK := extractOpenAIUsageFromJSONBytes(body)
 	if !usageOK {
 		if bodyLooksLikeSSE {
@@ -1918,6 +1967,11 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 			bodyText = s.replaceModelInSSEBody(bodyText, mappedModel, originalModel)
 		}
 		body = []byte(bodyText)
+	}
+	if openAIImageGenerationOutputMissingInSSEBody(c, bodyText) {
+		err := s.writeOpenAINonStreamingProtocolError(resp, c, openAIImageGenerationMissingOutputMessage)
+		finalResponse, _ := extractCodexFinalResponse(bodyText)
+		return &openaiNonStreamingResult{OpenAIUsage: usage, usage: usage, responseID: extractOpenAIResponseIDFromJSONBytes(finalResponse)}, errors.Join(ErrOpenAIImageGenerationOutputMissing, err)
 	}
 
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
