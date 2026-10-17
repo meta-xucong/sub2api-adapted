@@ -248,6 +248,10 @@ func (s *OpenAIGatewayService) handleResponsesBufferedFromNativeAnthropic(
 			streamErr = fmt.Errorf("decode Anthropic SSE event: %w", err)
 			break
 		}
+		if event.Type != eventName {
+			streamErr = fmt.Errorf("Anthropic SSE event name %q does not match payload type %q", eventName, event.Type)
+			break
+		}
 		if eventName == "error" || event.Type == "error" {
 			streamErr = fmt.Errorf("Anthropic upstream emitted an error event")
 			logger.L().Warn("openai responses via native anthropic buffered: upstream error event",
@@ -539,6 +543,10 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 			streamErr = fmt.Errorf("decode Anthropic SSE event: %w", err)
 			break
 		}
+		if event.Type != eventName {
+			streamErr = fmt.Errorf("Anthropic SSE event name %q does not match payload type %q", eventName, event.Type)
+			return failStream("event_type_mismatch", "Upstream Anthropic stream was invalid", streamErr)
+		}
 		if eventName == "error" || event.Type == "error" {
 			streamErr = fmt.Errorf("Anthropic upstream emitted an error event")
 			return failStream("upstream_error_event", "Upstream Anthropic stream failed", streamErr)
@@ -565,6 +573,3 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 
 	return resultWithUsage(), nil
 }
-
-
-
