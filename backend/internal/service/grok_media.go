@@ -724,6 +724,9 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 
 	body, contentType, err = prepareGrokMediaForwardBody(endpoint, body, contentType)
 	if err != nil {
+		if isWokeyGrokImageEdit(account, endpoint) {
+			return nil, wokeyGrokImageEditInputErrorf("invalid Wokey Grok image edit multipart input")
+		}
 		return nil, err
 	}
 	billingRequestBody := body
@@ -770,6 +773,12 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 	body, contentType, err = sanitizeGrokMediaForwardBody(endpoint, body, contentType)
 	if err != nil {
 		return nil, err
+	}
+	if isWokeyGrokImageEdit(account, endpoint) {
+		body, contentType, err = prepareWokeyGrokImageEditBody(body)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	var bodyReader io.Reader

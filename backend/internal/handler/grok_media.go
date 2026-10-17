@@ -415,11 +415,7 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 		service.SetOpsLatencyMs(c, service.OpsResponseLatencyMsKey, responseLatencyMs)
 
 		if err != nil {
-			var inputValidationErr *service.GrokVideoInputValidationError
-			if errors.As(err, &inputValidationErr) {
-				if !service.IsResponseCommitted(c) && c.Writer.Size() == writerSizeBeforeForward {
-					h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", inputValidationErr.Error())
-				}
+			if h.writeGrokMediaInputValidationError(c, err, writerSizeBeforeForward) {
 				return
 			}
 			var failoverErr *service.UpstreamFailoverError
@@ -566,6 +562,24 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 		)
 		return
 	}
+}
+
+func (h *OpenAIGatewayHandler) writeGrokMediaInputValidationError(c *gin.Context, err error, writerSizeBeforeForward int) bool {
+	var videoErr *service.GrokVideoInputValidationError
+	if errors.As(err, &videoErr) {
+		if !service.IsResponseCommitted(c) && c.Writer.Size() == writerSizeBeforeForward {
+			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", videoErr.Error())
+		}
+		return true
+	}
+	var imageEditErr *service.GrokImageEditInputValidationError
+	if errors.As(err, &imageEditErr) {
+		if !service.IsResponseCommitted(c) && c.Writer.Size() == writerSizeBeforeForward {
+			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", imageEditErr.Error())
+		}
+		return true
+	}
+	return false
 }
 
 func (h *OpenAIGatewayHandler) ensureGrokMediaAccountEligibility(ctx context.Context, account *service.Account) (bool, string, error) {

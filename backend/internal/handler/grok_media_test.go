@@ -3,10 +3,13 @@ package handler
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
 
@@ -83,6 +86,26 @@ func TestShouldRecordGrokMediaUsage(t *testing.T) {
 			require.False(t, shouldRecordGrokMediaUsage(tt.endpoint, tt.model, empty))
 		})
 	}
+}
+
+func TestWokeyGrokImageEditValidationErrorMapsTo400(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/edits", nil)
+	h := &OpenAIGatewayHandler{}
+	inputErr := &service.GrokImageEditInputValidationError{Message: "invalid image"}
+
+	require.True(t, h.writeGrokMediaInputValidationError(c, inputErr, c.Writer.Size()))
+	require.Equal(t, http.StatusBadRequest, recorder.Code)
+	require.Contains(t, recorder.Body.String(), "invalid image")
+	require.NotContains(t, recorder.Body.String(), "502")
+
+	otherRecorder := httptest.NewRecorder()
+	otherCtx, _ := gin.CreateTestContext(otherRecorder)
+	otherCtx.Request = httptest.NewRequest(http.MethodPost, "/v1/images/edits", nil)
+	require.False(t, h.writeGrokMediaInputValidationError(otherCtx, errors.New("network failure"), otherCtx.Writer.Size()))
+	require.Zero(t, otherRecorder.Body.Len())
 }
 
 func TestGrokMediaRequiredCapability(t *testing.T) {
