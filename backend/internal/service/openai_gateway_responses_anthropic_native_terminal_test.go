@@ -108,6 +108,7 @@ func TestResponsesStreamingFromNativeAnthropic_FailsInsteadOfFinalizingAbnormalS
 		{name: "EOF before first event", body: strings.NewReader("")},
 		{name: "EOF after partial output", body: strings.NewReader(partial)},
 		{name: "Anthropic error event", body: strings.NewReader(start + "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"do-not-leak-this\"}}\n\n")},
+		{name: "event name and payload type mismatch", body: strings.NewReader(start + "event: message_delta\ndata: {\"type\":\"message_stop\"}\n\n")},
 		{name: "malformed JSON", body: strings.NewReader("event: message_start\ndata: {bad json}\n\n")},
 		{name: "event without data line", body: strings.NewReader("event: message_start\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")},
 		{name: "message start missing id", body: strings.NewReader("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"type\":\"message\",\"content\":[],\"model\":\"claude-test\"}}\n\n")},
@@ -174,6 +175,7 @@ func TestResponsesBufferedFromNativeAnthropic_RequiresMessageStop(t *testing.T) 
 	}{
 		{name: "EOF after partial response", body: strings.NewReader("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_buffered\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"claude-test\"}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"partial-secret\"}}\n\n")},
 		{name: "error event", body: strings.NewReader("event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"do-not-leak-this\"}}\n\n")},
+		{name: "event name and payload type mismatch", body: strings.NewReader("event: message_delta\ndata: {\"type\":\"message_stop\"}\n\n")},
 		{name: "malformed JSON", body: strings.NewReader("event: message_start\ndata: {bad json}\n\n")},
 		{name: "event without data line", body: strings.NewReader("event: message_start\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")},
 		{name: "orphan message stop", body: strings.NewReader("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")},
@@ -235,6 +237,3 @@ func TestResponsesBufferedFromNativeAnthropic_IdleTimeoutReturns502(t *testing.T
 		t.Fatalf("expected HTTP 502, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
-
-
-

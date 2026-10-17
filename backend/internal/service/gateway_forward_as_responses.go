@@ -469,6 +469,7 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 	var finalResp *apicompat.AnthropicResponse
 	var usage ClaudeUsage
 	sawMessageStop := false
+	var protocolErr error
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -479,12 +480,14 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 
 		// Read the data line
 		if !scanner.Scan() {
+			protocolErr = errors.New("upstream Anthropic stream ended with an incomplete SSE frame")
 			break
 		}
 		dataLine := scanner.Text()
 		payload, ok := parseAnthropicSSEField(dataLine, "data")
 		if !ok {
-			continue
+			protocolErr = fmt.Errorf("upstream Anthropic stream event %q is missing a data field", eventType)
+			break
 		}
 
 		var event apicompat.AnthropicStreamEvent
@@ -494,7 +497,16 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 				zap.String("request_id", requestID),
 				zap.String("event_type", eventType),
 			)
-			continue
+			protocolErr = fmt.Errorf("upstream Anthropic stream event %q contains invalid JSON: %w", eventType, err)
+			break
+		}
+		if event.Type != eventType {
+			protocolErr = fmt.Errorf("upstream Anthropic stream event name %q does not match payload type %q", eventType, event.Type)
+			break
+		}
+		if event.Type == "error" {
+			protocolErr = errors.New("upstream Anthropic stream emitted an error event")
+			break
 		}
 
 		// message_start carries the initial response structure
@@ -535,6 +547,9 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 				}
 			}
 		}
+		if event.Type == "message_stop" {
+			break
+		}
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -544,6 +559,23 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 				zap.String("request_id", requestID),
 			)
 		}
+		protocolErr = fmt.Errorf("read upstream Anthropic stream: %w", err)
+	}
+	if protocolErr == nil && !sawMessageStop {
+		protocolErr = errors.New("upstream Anthropic stream ended before message_stop")
+	}
+	if protocolErr != nil {
+		writeResponsesError(c, http.StatusBadGateway, "server_error", "Upstream stream failed before completion")
+		return &ForwardResult{
+			RequestID:       requestID,
+			UpstreamHeaders: resp.Header,
+			Usage:           usage,
+			Model:           originalModel,
+			UpstreamModel:   mappedModel,
+			ReasoningEffort: reasoningEffort,
+			Stream:          false,
+			Duration:        time.Since(startTime),
+		}, protocolErr
 	}
 
 	if finalResp == nil {
@@ -646,6 +678,7 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 	var firstTokenMs *int
 	firstChunk := true
 	sawMessageStop := false
+	var protocolErr error
 
 	scanner := bufio.NewScanner(resp.Body)
 	maxLineSize := defaultMaxLineSize
@@ -775,12 +808,14 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 
 		// Read data line
 		if !scanner.Scan() {
+			protocolErr = errors.New("upstream Anthropic stream ended with an incomplete SSE frame")
 			break
 		}
 		dataLine := scanner.Text()
 		payload, ok := parseAnthropicSSEField(dataLine, "data")
 		if !ok {
-			continue
+			protocolErr = fmt.Errorf("upstream Anthropic stream event %q is missing a data field", eventType)
+			break
 		}
 
 		var event apicompat.AnthropicStreamEvent
@@ -790,11 +825,23 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 				zap.String("request_id", requestID),
 				zap.String("event_type", eventType),
 			)
-			continue
+			protocolErr = fmt.Errorf("upstream Anthropic stream event %q contains invalid JSON: %w", eventType, err)
+			break
+		}
+		if event.Type != eventType {
+			protocolErr = fmt.Errorf("upstream Anthropic stream event name %q does not match payload type %q", eventType, event.Type)
+			break
+		}
+		if event.Type == "error" {
+			protocolErr = errors.New("upstream Anthropic stream emitted an error event")
+			break
 		}
 
 		if processEvent(&event) {
 			return resultWithUsage(), nil
+		}
+		if event.Type == "message_stop" {
+			break
 		}
 	}
 
@@ -805,12 +852,13 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 				zap.String("request_id", requestID),
 			)
 		}
-		if !sawMessageStop {
-			return failStream("Upstream response stream was interrupted", err)
-		}
+		protocolErr = fmt.Errorf("read upstream Anthropic stream: %w", err)
 	}
-	if !sawMessageStop {
-		return failStream("Upstream response stream ended before completion", io.ErrUnexpectedEOF)
+	if protocolErr == nil && !sawMessageStop {
+		protocolErr = io.ErrUnexpectedEOF
+	}
+	if protocolErr != nil {
+		return failStream("Upstream response stream failed before completion", protocolErr)
 	}
 
 	return finalizeStream()

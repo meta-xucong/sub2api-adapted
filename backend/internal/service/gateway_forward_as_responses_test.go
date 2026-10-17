@@ -290,6 +290,65 @@ func TestHandleResponsesBufferedStreamingResponse_FailsWithoutAnthropicTerminal(
 	require.NotContains(t, rec.Body.String(), `"status":"completed"`)
 }
 
+func TestHandleResponsesBufferedStreamingResponse_FailsClosedOnInvalidAnthropicFrames(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	start := "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_bad_frame\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-fable-5\",\"content\":[],\"usage\":{\"input_tokens\":4}}}\n\n"
+	terminal := "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+	for _, tc := range []struct {
+		name string
+		body io.Reader
+	}{
+		{name: "missing data", body: strings.NewReader(start + "event: content_block_delta\nnot-data\n\n" + terminal)},
+		{name: "malformed JSON", body: strings.NewReader(start + "event: content_block_delta\ndata: {bad json}\n\n" + terminal)},
+		{name: "event type mismatch", body: strings.NewReader(start + "event: content_block_delta\ndata: {\"type\":\"message_stop\"}\n\n")},
+		{name: "error event", body: strings.NewReader(start + "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\"}}\n\n" + terminal)},
+		{name: "incomplete frame", body: strings.NewReader(start + "event: content_block_delta")},
+		{name: "read error", body: io.MultiReader(strings.NewReader(start), responsesCompatInjectedReadFailure{})},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(tc.body)}
+			result, err := (&GatewayService{}).handleResponsesBufferedStreamingResponse(resp, c, "claude-fable-5", "claude-fable-5", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
+			require.Error(t, err)
+			require.NotNil(t, result)
+			require.Equal(t, http.StatusBadGateway, rec.Code)
+			require.Equal(t, 4, result.Usage.InputTokens, "usage collected before the invalid frame must be preserved")
+			require.NotContains(t, rec.Body.String(), `"status":"completed"`)
+		})
+	}
+}
+
+func TestHandleResponsesStreamingResponse_FailsClosedOnInvalidAnthropicFrames(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	start := "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_bad_frame\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-fable-5\",\"content\":[],\"usage\":{\"input_tokens\":4}}}\n\n"
+	terminal := "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+	for _, tc := range []struct {
+		name string
+		body io.Reader
+	}{
+		{name: "missing data", body: strings.NewReader(start + "event: content_block_delta\nnot-data\n\n" + terminal)},
+		{name: "malformed JSON", body: strings.NewReader(start + "event: content_block_delta\ndata: {bad json}\n\n" + terminal)},
+		{name: "event type mismatch", body: strings.NewReader(start + "event: content_block_delta\ndata: {\"type\":\"message_stop\"}\n\n")},
+		{name: "error event", body: strings.NewReader(start + "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\"}}\n\n" + terminal)},
+		{name: "incomplete frame", body: strings.NewReader(start + "event: content_block_delta")},
+		{name: "read error", body: io.MultiReader(strings.NewReader(start), responsesCompatInjectedReadFailure{})},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(tc.body)}
+			result, err := (&GatewayService{}).handleResponsesStreamingResponse(resp, c, "claude-fable-5", "claude-fable-5", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
+			require.Error(t, err)
+			require.NotNil(t, result)
+			require.Equal(t, 4, result.Usage.InputTokens, "usage collected before the invalid frame must be preserved")
+			assertResponsesFailedTerminal(t, rec.Body.String(), "upstream_stream_error")
+		})
+	}
+}
+
 func TestExtractResponsesReasoningEffortFromBody(t *testing.T) {
 	t.Parallel()
 
