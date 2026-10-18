@@ -1,0 +1,15 @@
+/state/
+/reports/
+/backups/
+/model-rules.json
+/config.json
+/config-*.json
+!/config-all-accounts.example.json
+/.live-test/
+/.local-run/
+/.test-temp/
+/.test-tmp/
+/.gocache/
+*.exe
+*.key
+*.enc
