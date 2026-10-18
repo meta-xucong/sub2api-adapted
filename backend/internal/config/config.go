@@ -1196,6 +1196,9 @@ type GatewayConfig struct {
 
 	// 是否允许对部分 400 错误触发 failover（默认关闭以避免改变语义）
 	FailoverOn400 bool `mapstructure:"failover_on_400"`
+	// ImagePollTimeoutFailoverEnabled enables the narrow image_poll_timeout
+	// HTTP 400 failover exception for OpenAI Images (default: off).
+	ImagePollTimeoutFailoverEnabled bool `mapstructure:"image_poll_timeout_failover_enabled"`
 
 	// 账户切换最大次数（遇到上游错误时切换到其他账户的次数上限）
 	MaxAccountSwitches int `mapstructure:"max_account_switches"`
@@ -2534,6 +2537,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.log_upstream_error_body_max_bytes", 2048)
 	viper.SetDefault("gateway.inject_beta_for_apikey", false)
 	viper.SetDefault("gateway.failover_on_400", false)
+	viper.SetDefault("gateway.image_poll_timeout_failover_enabled", false)
 	viper.SetDefault("gateway.max_account_switches", 10)
 	viper.SetDefault("gateway.max_account_switches_gemini", 3)
 	viper.SetDefault("gateway.smart_router.enabled", false)

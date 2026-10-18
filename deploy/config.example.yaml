@@ -585,6 +585,9 @@ gateway:
   # Allow failover on selected 400 errors (default: off)
   # 允许在特定 400 错误时进行故障转移（默认：关闭）
   failover_on_400: false
+  # Fail over only for the structured OpenAI Images image_poll_timeout HTTP 400 (default: off)
+  # 仅对结构化 OpenAI Images image_poll_timeout HTTP 400 执行故障转移（默认：关闭）
+  image_poll_timeout_failover_enabled: false
   # Scheduling configuration
   # 调度配置
   scheduling:

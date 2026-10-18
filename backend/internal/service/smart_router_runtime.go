@@ -158,7 +158,7 @@ func (s *OpenAIGatewayService) reportSmartRouterImageResult(source string, accou
 	}
 	errorClass := core.FailureClass("")
 	if !success {
-		if failoverErr != nil && failoverErr.Reason == GatewayFailureReason("openai_image_attempt_timeout") {
+		if failoverErr != nil && (failoverErr.Reason == GatewayFailureReason("openai_image_attempt_timeout") || isOpenAIImagePollTimeoutFailoverError(failoverErr)) {
 			errorClass = core.FailureTimeout
 		} else if errors.Is(err, context.DeadlineExceeded) || smartRouterIsNetTimeout(err) {
 			errorClass = core.FailureTimeout

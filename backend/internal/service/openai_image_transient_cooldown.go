@@ -74,6 +74,9 @@ func isOpenAIImageGenerationTransientError(failoverErr *UpstreamFailoverError) b
 	if failoverErr == nil {
 		return false
 	}
+	if isOpenAIImagePollTimeoutFailoverError(failoverErr) {
+		return true
+	}
 	if isOpenAIImageTransientStatus(failoverErr.StatusCode) {
 		return true
 	}
@@ -106,7 +109,7 @@ func openAIImageGenerationTransientCooldownReason(failoverErr *UpstreamFailoverE
 }
 
 func (s *OpenAIGatewayService) TempUnscheduleImageEditTransientError(ctx context.Context, account *Account, failoverErr *UpstreamFailoverError) {
-	if s == nil || account == nil || failoverErr == nil || !isOpenAIImageTransientStatus(failoverErr.StatusCode) {
+	if s == nil || account == nil || failoverErr == nil || (!isOpenAIImageTransientStatus(failoverErr.StatusCode) && !isOpenAIImagePollTimeoutFailoverError(failoverErr)) {
 		return
 	}
 	cooldown := s.openAIImageTransientCooldownForAccount(account, s.openAIImageEditTransientCooldown())
@@ -264,6 +267,9 @@ func openAIImageTransientCooldownReason(prefix string, failoverErr *UpstreamFail
 	if failoverErr != nil {
 		statusCode = failoverErr.StatusCode
 	}
+	if isOpenAIImagePollTimeoutFailoverError(failoverErr) {
+		return fmt.Sprintf("%s: status=%d: code=image_poll_timeout", prefix, statusCode)
+	}
 	reason := fmt.Sprintf("%s: status=%d", prefix, statusCode)
 	if failoverErr == nil || len(failoverErr.ResponseBody) == 0 {
 		return reason
@@ -276,4 +282,8 @@ func openAIImageTransientCooldownReason(prefix string, failoverErr *UpstreamFail
 		return reason
 	}
 	return reason + ": " + truncateString(message, 512)
+}
+
+func isOpenAIImagePollTimeoutFailoverError(failoverErr *UpstreamFailoverError) bool {
+	return failoverErr != nil && failoverErr.Reason == OpenAIImagePollTimeoutFailoverReason && failoverErr.StatusCode == http.StatusBadRequest
 }

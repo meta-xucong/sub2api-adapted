@@ -2751,6 +2751,12 @@ func TestLoad_DefaultGatewayImageStreamConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() error: %v", err)
 	}
+	if cfg.Gateway.ImagePollTimeoutFailoverEnabled {
+		t.Fatal("image_poll_timeout_failover_enabled = true, want false by default")
+	}
+	if cfg.Gateway.FailoverOn400 {
+		t.Fatal("failover_on_400 = true, want false by default")
+	}
 	if cfg.Gateway.StreamDataIntervalTimeout != 180 {
 		t.Fatalf("stream_data_interval_timeout = %d, want 180", cfg.Gateway.StreamDataIntervalTimeout)
 	}

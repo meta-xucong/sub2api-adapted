@@ -985,6 +985,25 @@ func (s *OpenAIGatewayService) handleOpenAIImagesErrorResponse(
 		writeOpenAIImagesUpstreamErrorResponse(c, upErr)
 		return nil, upErr
 	}
+	// This opt-in exception applies only after passthrough, account status-code,
+	// and OAuth main-model policy have had their existing chance to decide.
+	// Match the actual HTTP status and structured upstream code together; never
+	// infer it from an HTTP-200 SSE/model-text response.
+	if s.isOpenAIImagePollTimeoutFailover(resp.StatusCode, body) {
+		failoverErr := newOpenAIImagePollTimeoutFailover(body, resp.Header)
+		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			ProxyID:            opsUpstreamProxyID(account),
+			ProxyName:          opsUpstreamProxyName(account),
+			Platform:           account.Platform,
+			AccountID:          account.ID,
+			AccountName:        account.Name,
+			UpstreamStatusCode: resp.StatusCode,
+			UpstreamRequestID:  resp.Header.Get("x-request-id"),
+			Kind:               "failover",
+			Message:            "image_poll_timeout",
+		})
+		return nil, failoverErr
+	}
 	// Track rate limits / decide whether to disable the account (secondary failover).
 	var modelForCooldown string
 	if len(requestedModel) > 0 {

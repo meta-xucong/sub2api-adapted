@@ -88,6 +88,25 @@ func TestSmartRouterReportsPersistDistinctCapabilityAndModel(t *testing.T) {
 	require.Equal(t, "gpt-5.6-sol", ledger.events[1].Key.Model)
 }
 
+func TestSmartRouterClassifiesImagePollTimeoutAsTimeoutOnlyForImages(t *testing.T) {
+	ledger := &smartRouterRuntimeTestLedger{}
+	svc := &OpenAIGatewayService{cfg: &config.Config{
+		Gateway: config.GatewayConfig{SmartRouter: config.GatewaySmartRouterConfig{Enabled: true}},
+	}}
+	svc.SetSmartRouterHealthLedger(ledger)
+	account := smartRouterTestAccount(204, AccountTypeOAuth, nil, nil)
+	failoverErr := newOpenAIImagePollTimeoutFailover([]byte(`{"error":{"code":"image_poll_timeout"}}`), nil)
+
+	svc.ReportSmartRouterImageResult(account, &OpenAIImagesRequest{Model: "gpt-image-2"}, nil, failoverErr, 140000)
+	svc.ReportSmartRouterTextResult(account, core.CapabilityResponses, "gpt-5.6-sol", nil, failoverErr, 140000)
+
+	require.Len(t, ledger.events, 2)
+	require.Equal(t, core.CapabilityImageGeneration, ledger.events[0].Key.Capability)
+	require.Equal(t, core.FailureTimeout, ledger.events[0].FailureClass)
+	require.Equal(t, core.CapabilityResponses, ledger.events[1].Key.Capability)
+	require.NotEqual(t, core.FailureTimeout, ledger.events[1].FailureClass, "special classification must stay image-only")
+}
+
 func TestSmartRouterHealthEventsDoNotPersistUpstreamErrorBodies(t *testing.T) {
 	ledger := &smartRouterRuntimeTestLedger{}
 	svc := &OpenAIGatewayService{cfg: &config.Config{
