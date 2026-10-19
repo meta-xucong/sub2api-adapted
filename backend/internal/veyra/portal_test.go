@@ -4,11 +4,36 @@ import (
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
+
+func TestPortalSourceMatchesEmbeddedFiles(t *testing.T) {
+	subFS, err := fs.Sub(portalFS, "portal_dist")
+	require.NoError(t, err)
+
+	sourceRoot := filepath.Join("..", "..", "..", "extensions", "veyra", "portal")
+	files := []string{
+		"app.js",
+		"index.html",
+		"mobile.html",
+		"styles.css",
+		"assets/showcase/aggregator-platform.jpg",
+		"assets/showcase/luxury-product.jpg",
+		"assets/showcase/video-os.jpg",
+	}
+	for _, name := range files {
+		source, err := os.ReadFile(filepath.Join(sourceRoot, filepath.FromSlash(name)))
+		require.NoError(t, err, name)
+		embedded, err := fs.ReadFile(subFS, name)
+		require.NoError(t, err, name)
+		require.Equal(t, source, embedded, name)
+	}
+}
 
 func TestPortalMiddlewareDisabledPassesThrough(t *testing.T) {
 	gin.SetMode(gin.TestMode)

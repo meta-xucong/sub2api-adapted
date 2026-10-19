@@ -12,6 +12,16 @@ describe('Veyra login return navigation', () => {
     expect(routerPush).not.toHaveBeenCalled()
   })
 
+  it('preserves the Video OS portal intent through reauthentication', async () => {
+    const routerPush = vi.fn().mockResolvedValue(undefined)
+    const hardNavigate = vi.fn()
+
+    await completeLoginRedirect('/_veyra/return?target=video', routerPush, hardNavigate)
+
+    expect(hardNavigate).toHaveBeenCalledWith('/_veyra/return?target=video')
+    expect(routerPush).not.toHaveBeenCalled()
+  })
+
   it('keeps ordinary in-app redirects inside Vue Router', async () => {
     const routerPush = vi.fn().mockResolvedValue(undefined)
     const hardNavigate = vi.fn()

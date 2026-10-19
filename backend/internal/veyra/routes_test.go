@@ -18,27 +18,27 @@ import (
 func TestRegisterRoutesDisabled(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	v1 := router.Group("/api/v1")
+	api := router.Group("/api")
 
-	RegisterRoutes(v1, testJWTAuth(), RoutesConfig{}, NewMemoryTicketStore(), nil, nil)
+	RegisterRoutes(api, testJWTAuth(), RoutesConfig{}, NewMemoryTicketStore(), nil, nil)
 
 	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/v1/veyra/login-ticket", nil))
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/veyra/login-ticket", nil))
 	require.Equal(t, http.StatusNotFound, rec.Code)
 }
 
 func TestRegisterRoutesPortalDisabled(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	v1 := router.Group("/api/v1")
+	api := router.Group("/api")
 
-	RegisterRoutes(v1, testJWTAuth(), RoutesConfig{
+	RegisterRoutes(api, testJWTAuth(), RoutesConfig{
 		Enabled:       true,
 		PortalEnabled: false,
 	}, NewMemoryTicketStore(), nil, nil)
 
 	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/veyra/portal/config", nil))
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/veyra/portal/config", nil))
 	require.Equal(t, http.StatusNotFound, rec.Code)
 }
 
@@ -47,8 +47,8 @@ func TestLoginTicketIssueAndExchange(t *testing.T) {
 	store := NewMemoryTicketStore()
 	store.now = func() time.Time { return time.Now().UTC() }
 	router := gin.New()
-	v1 := router.Group("/api/v1")
-	RegisterRoutes(v1, testJWTAuth(), RoutesConfig{
+	api := router.Group("/api")
+	RegisterRoutes(api, testJWTAuth(), RoutesConfig{
 		Enabled:               true,
 		PortalEnabled:         true,
 		InternalToken:         "internal-secret",
@@ -57,7 +57,7 @@ func TestLoginTicketIssueAndExchange(t *testing.T) {
 
 	issueBody := bytes.NewBufferString(`{"intent":"alchemy"}`)
 	issueRec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/veyra/login-ticket", issueBody)
+	req := httptest.NewRequest(http.MethodPost, "/api/veyra/login-ticket", issueBody)
 	router.ServeHTTP(issueRec, req)
 	require.Equal(t, http.StatusOK, issueRec.Code)
 
@@ -70,7 +70,7 @@ func TestLoginTicketIssueAndExchange(t *testing.T) {
 
 	exchangeBody := bytes.NewBufferString(`{"ticket":"` + issueResp.Data.Ticket + `"}`)
 	exchangeRec := httptest.NewRecorder()
-	exchangeReq := httptest.NewRequest(http.MethodPost, "/api/v1/veyra/internal/login-ticket/exchange", exchangeBody)
+	exchangeReq := httptest.NewRequest(http.MethodPost, "/api/veyra/internal/login-ticket/exchange", exchangeBody)
 	exchangeReq.Header.Set("X-Veyra-Internal-Token", "internal-secret")
 	router.ServeHTTP(exchangeRec, exchangeReq)
 	require.Equal(t, http.StatusOK, exchangeRec.Code)
@@ -82,7 +82,7 @@ func TestLoginTicketIssueAndExchange(t *testing.T) {
 	require.Equal(t, PortalIntentAlchemy, exchangeResp.Data.Intent)
 
 	reuseRec := httptest.NewRecorder()
-	reuseReq := httptest.NewRequest(http.MethodPost, "/api/v1/veyra/internal/login-ticket/exchange", bytes.NewBufferString(`{"ticket":"`+issueResp.Data.Ticket+`"}`))
+	reuseReq := httptest.NewRequest(http.MethodPost, "/api/veyra/internal/login-ticket/exchange", bytes.NewBufferString(`{"ticket":"`+issueResp.Data.Ticket+`"}`))
 	reuseReq.Header.Set("X-Veyra-Internal-Token", "internal-secret")
 	router.ServeHTTP(reuseRec, reuseReq)
 	require.Equal(t, http.StatusUnauthorized, reuseRec.Code)
@@ -91,20 +91,19 @@ func TestLoginTicketIssueAndExchange(t *testing.T) {
 func TestLoginTicketIssueRejectsNonAlchemyIntent(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	v1 := router.Group("/api/v1")
-	RegisterRoutes(v1, testJWTAuth(), RoutesConfig{Enabled: true, PortalEnabled: true}, NewMemoryTicketStore(), nil, nil)
+	api := router.Group("/api")
+	RegisterRoutes(api, testJWTAuth(), RoutesConfig{Enabled: true, PortalEnabled: true}, NewMemoryTicketStore(), nil, nil)
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/veyra/login-ticket", bytes.NewBufferString(`{"intent":"sub2api"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/veyra/login-ticket", bytes.NewBufferString(`{"intent":"sub2api"}`))
 	router.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
-func TestVersionedAndVeyraAPIBaseShareTicketStore(t *testing.T) {
+func TestVeyraRoutesUseUnversionedSub2APIPaths(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	store := NewMemoryTicketStore()
 	router := gin.New()
-	v1 := router.Group("/api/v1")
 	api := router.Group("/api")
 	cfg := RoutesConfig{
 		Enabled:               true,
@@ -112,24 +111,27 @@ func TestVersionedAndVeyraAPIBaseShareTicketStore(t *testing.T) {
 		InternalToken:         "internal-secret",
 		LoginTicketTTLSeconds: 120,
 	}
-	RegisterRoutes(v1, testJWTAuth(), cfg, store, nil, nil)
 	RegisterRoutes(api, testJWTAuth(), cfg, store, nil, nil)
 
 	issueRec := httptest.NewRecorder()
-	router.ServeHTTP(issueRec, httptest.NewRequest(http.MethodPost, "/api/v1/veyra/login-ticket", bytes.NewBufferString(`{"intent":"alchemy"}`)))
+	router.ServeHTTP(issueRec, httptest.NewRequest(http.MethodPost, "/api/veyra/login-ticket", bytes.NewBufferString("{\"intent\":\"alchemy\"}")))
 	require.Equal(t, http.StatusOK, issueRec.Code)
 
 	var issueResp struct {
-		Data loginTicketResponse `json:"data"`
+		Data loginTicketResponse
 	}
 	require.NoError(t, json.Unmarshal(issueRec.Body.Bytes(), &issueResp))
 	require.NotEmpty(t, issueResp.Data.Ticket)
 
 	exchangeRec := httptest.NewRecorder()
-	exchangeReq := httptest.NewRequest(http.MethodPost, "/api/veyra/internal/login-ticket/exchange", bytes.NewBufferString(`{"ticket":"`+issueResp.Data.Ticket+`"}`))
+	exchangeReq := httptest.NewRequest(http.MethodPost, "/api/veyra/internal/login-ticket/exchange", bytes.NewBufferString("{\"ticket\":\""+issueResp.Data.Ticket+"\"}"))
 	exchangeReq.Header.Set("X-Veyra-Internal-Token", "internal-secret")
 	router.ServeHTTP(exchangeRec, exchangeReq)
 	require.Equal(t, http.StatusOK, exchangeRec.Code)
+
+	versionedRec := httptest.NewRecorder()
+	router.ServeHTTP(versionedRec, httptest.NewRequest(http.MethodGet, "/api/v1/veyra/portal/config", nil))
+	require.Equal(t, http.StatusNotFound, versionedRec.Code)
 }
 
 func TestPortalConfigReturnsAlchemyBaseURL(t *testing.T) {
@@ -253,11 +255,11 @@ func TestNormalizeVideoBaseURLRejectsUntrustedDestinations(t *testing.T) {
 func TestInternalTicketExchangeRequiresToken(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	v1 := router.Group("/api/v1")
-	RegisterRoutes(v1, testJWTAuth(), RoutesConfig{Enabled: true, PortalEnabled: true}, NewMemoryTicketStore(), nil, nil)
+	api := router.Group("/api")
+	RegisterRoutes(api, testJWTAuth(), RoutesConfig{Enabled: true, PortalEnabled: true}, NewMemoryTicketStore(), nil, nil)
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/veyra/internal/login-ticket/exchange", bytes.NewBufferString(`{"ticket":"x"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/veyra/internal/login-ticket/exchange", bytes.NewBufferString(`{"ticket":"x"}`))
 	router.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusForbidden, rec.Code)
 }
@@ -269,11 +271,11 @@ func TestInternalTicketExchangeRejectsNonAlchemyIntent(t *testing.T) {
 	require.NoError(t, err)
 
 	router := gin.New()
-	v1 := router.Group("/api/v1")
-	RegisterRoutes(v1, testJWTAuth(), RoutesConfig{Enabled: true, PortalEnabled: true, InternalToken: "internal-secret"}, store, nil, nil)
+	api := router.Group("/api")
+	RegisterRoutes(api, testJWTAuth(), RoutesConfig{Enabled: true, PortalEnabled: true, InternalToken: "internal-secret"}, store, nil, nil)
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/veyra/internal/login-ticket/exchange", bytes.NewBufferString(`{"ticket":"`+ticket.Token+`"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/veyra/internal/login-ticket/exchange", bytes.NewBufferString(`{"ticket":"`+ticket.Token+`"}`))
 	req.Header.Set("X-Veyra-Internal-Token", "internal-secret")
 	router.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusUnauthorized, rec.Code)
@@ -285,8 +287,8 @@ func TestInternalTicketExchangeRejectsNonAlchemyIntent(t *testing.T) {
 func TestAccountSummaryRequiresInternalTokenAndReturnsUser(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	v1 := router.Group("/api/v1")
-	RegisterRoutes(v1, testJWTAuth(), RoutesConfig{
+	api := router.Group("/api")
+	RegisterRoutes(api, testJWTAuth(), RoutesConfig{
 		Enabled:       true,
 		PortalEnabled: true,
 		InternalToken: "internal-secret",
@@ -300,11 +302,11 @@ func TestAccountSummaryRequiresInternalTokenAndReturnsUser(t *testing.T) {
 	}})
 
 	unauthorized := httptest.NewRecorder()
-	router.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "/api/v1/veyra/internal/users/42/account", nil))
+	router.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "/api/veyra/internal/users/42/account", nil))
 	require.Equal(t, http.StatusForbidden, unauthorized.Code)
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/veyra/internal/users/42/account", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/veyra/internal/users/42/account", nil)
 	req.Header.Set("X-Veyra-Internal-Token", "internal-secret")
 	router.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -322,8 +324,8 @@ func TestBillingDebitRouteDebitsAndReplays(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	accounts := &balanceAccountStub{user: &service.User{ID: 42, Status: service.StatusActive, Balance: 10}}
 	router := gin.New()
-	v1 := router.Group("/api/v1")
-	RegisterRoutes(v1, testJWTAuth(), RoutesConfig{
+	api := router.Group("/api")
+	RegisterRoutes(api, testJWTAuth(), RoutesConfig{
 		Enabled:       true,
 		PortalEnabled: true,
 		InternalToken: "internal-secret",
@@ -331,7 +333,7 @@ func TestBillingDebitRouteDebitsAndReplays(t *testing.T) {
 
 	body := `{"user_id":42,"amount":2.5,"idempotency_key":"run-1","source":"alchemy","reference_id":"img-1"}`
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/veyra/internal/billing/debit", bytes.NewBufferString(body))
+	req := httptest.NewRequest(http.MethodPost, "/api/veyra/internal/billing/debit", bytes.NewBufferString(body))
 	req.Header.Set("X-Veyra-Internal-Token", "internal-secret")
 	router.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -345,7 +347,7 @@ func TestBillingDebitRouteDebitsAndReplays(t *testing.T) {
 	require.False(t, resp.Data.Replayed)
 
 	replay := httptest.NewRecorder()
-	replayReq := httptest.NewRequest(http.MethodPost, "/api/v1/veyra/internal/billing/debit", bytes.NewBufferString(body))
+	replayReq := httptest.NewRequest(http.MethodPost, "/api/veyra/internal/billing/debit", bytes.NewBufferString(body))
 	replayReq.Header.Set("X-Veyra-Internal-Token", "internal-secret")
 	router.ServeHTTP(replay, replayReq)
 	require.Equal(t, http.StatusOK, replay.Code)
@@ -363,15 +365,15 @@ func TestBillingDebitRouteRejectsInsufficientBalance(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	accounts := &balanceAccountStub{user: &service.User{ID: 42, Status: service.StatusActive, Balance: 1}}
 	router := gin.New()
-	v1 := router.Group("/api/v1")
-	RegisterRoutes(v1, testJWTAuth(), RoutesConfig{
+	api := router.Group("/api")
+	RegisterRoutes(api, testJWTAuth(), RoutesConfig{
 		Enabled:       true,
 		PortalEnabled: true,
 		InternalToken: "internal-secret",
 	}, NewMemoryTicketStore(), nil, accounts)
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/veyra/internal/billing/debit", bytes.NewBufferString(`{"user_id":42,"amount":2,"idempotency_key":"run-low"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/veyra/internal/billing/debit", bytes.NewBufferString(`{"user_id":42,"amount":2,"idempotency_key":"run-low"}`))
 	req.Header.Set("X-Veyra-Internal-Token", "internal-secret")
 	router.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusPaymentRequired, rec.Code)
@@ -390,17 +392,17 @@ func (s *videoUsageReaderStub) GetVideoUsage(_ context.Context, _ int64, _ strin
 func TestVideoUsageRouteReadsSettledFactAndKeepsInternalTokenBoundary(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	v1 := router.Group("/api/v1")
-	RegisterRoutes(v1, testJWTAuth(), RoutesConfig{Enabled: true, PortalEnabled: true, InternalToken: "internal-secret"}, NewMemoryTicketStore(), nil, nil, &videoUsageReaderStub{fact: service.VideoUsageFact{
+	api := router.Group("/api")
+	RegisterRoutes(api, testJWTAuth(), RoutesConfig{Enabled: true, PortalEnabled: true, InternalToken: "internal-secret"}, NewMemoryTicketStore(), nil, nil, &videoUsageReaderStub{fact: service.VideoUsageFact{
 		UserID: 42, RequestID: "grok-video:req-1", Model: "grok-imagine-video-1.5", ActualCost: "0.12500000",
 	}})
 
 	unauthorized := httptest.NewRecorder()
-	router.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "/api/v1/veyra/internal/users/42/usage/req-1", nil))
+	router.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "/api/veyra/internal/users/42/usage/req-1", nil))
 	require.Equal(t, http.StatusForbidden, unauthorized.Code)
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/veyra/internal/users/42/usage/req-1", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/veyra/internal/users/42/usage/req-1", nil)
 	req.Header.Set("X-Veyra-Internal-Token", "internal-secret")
 	router.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -413,10 +415,10 @@ func TestVideoUsageRouteReadsSettledFactAndKeepsInternalTokenBoundary(t *testing
 
 func TestVideoUsageRouteFailsClosedWhenReaderIsNotConfigured(t *testing.T) {
 	router := gin.New()
-	v1 := router.Group("/api/v1")
-	RegisterRoutes(v1, testJWTAuth(), RoutesConfig{Enabled: true, PortalEnabled: true, InternalToken: "internal-secret"}, NewMemoryTicketStore(), nil, nil)
+	api := router.Group("/api")
+	RegisterRoutes(api, testJWTAuth(), RoutesConfig{Enabled: true, PortalEnabled: true, InternalToken: "internal-secret"}, NewMemoryTicketStore(), nil, nil)
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/veyra/internal/users/42/usage/req-1", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/veyra/internal/users/42/usage/req-1", nil)
 	req.Header.Set("X-Veyra-Internal-Token", "internal-secret")
 	router.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
