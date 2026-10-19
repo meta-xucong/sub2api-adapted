@@ -1,0 +1,169 @@
+package veyra
+
+import (
+	"io/fs"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
+)
+
+func TestPortalSourceMatchesEmbeddedFiles(t *testing.T) {
+	subFS, err := fs.Sub(portalFS, "portal_dist")
+	require.NoError(t, err)
+
+	sourceRoot := filepath.Join("..", "..", "..", "extensions", "veyra", "portal")
+	files := []string{
+		"app.js",
+		"index.html",
+		"mobile.html",
+		"styles.css",
+		"assets/showcase/aggregator-platform.jpg",
+		"assets/showcase/luxury-product.jpg",
+		"assets/showcase/video-os.jpg",
+	}
+	for _, name := range files {
+		source, err := os.ReadFile(filepath.Join(sourceRoot, filepath.FromSlash(name)))
+		require.NoError(t, err, name)
+		embedded, err := fs.ReadFile(subFS, name)
+		require.NoError(t, err, name)
+		require.Equal(t, source, embedded, name)
+	}
+}
+
+func TestPortalMiddlewareDisabledPassesThrough(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	nextCalled := false
+	router.Use(PortalMiddleware(PortalConfig{}))
+	router.GET("/", func(c *gin.Context) {
+		nextCalled = true
+		c.String(http.StatusOK, "original frontend")
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	router.ServeHTTP(rec, req)
+
+	require.True(t, nextCalled)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, "original frontend", rec.Body.String())
+}
+
+func TestPortalMiddlewareServesRootWhenEnabled(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Use(PortalMiddleware(PortalConfig{Enabled: true, PortalEnabled: true}))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Header().Get("Content-Type"), "text/html")
+	require.Contains(t, rec.Body.String(), "Veyra Agent")
+	require.Contains(t, rec.Body.String(), "/_veyra/styles.css")
+	require.Contains(t, rec.Body.String(), "Video OS")
+	require.Contains(t, rec.Body.String(), "target=video")
+}
+
+func TestPortalMiddlewareServesVeyraReturnWhenEnabled(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Use(PortalMiddleware(PortalConfig{Enabled: true, PortalEnabled: true}))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/_veyra/return?target=alchemy", nil)
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Header().Get("Content-Type"), "text/html")
+	require.Contains(t, rec.Body.String(), "Veyra Agent")
+	require.Contains(t, rec.Body.String(), "/_veyra/app.js")
+	require.Contains(t, rec.Body.String(), "Video OS")
+}
+
+func TestPortalMiddlewareServesMobilePortalAtDirectoryRoot(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Use(PortalMiddleware(PortalConfig{Enabled: true, PortalEnabled: true}))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/_veyra/", nil)
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Header().Get("Content-Type"), "text/html")
+	require.Contains(t, rec.Body.String(), "Veyra Agent")
+	require.Contains(t, rec.Body.String(), "/_veyra/app.js")
+}
+
+func TestPortalAppDefaultsLoginReturnToHome(t *testing.T) {
+	subFS, err := fs.Sub(portalFS, "portal_dist")
+	require.NoError(t, err)
+	content, err := fs.ReadFile(subFS, "app.js")
+	require.NoError(t, err)
+	script := string(content)
+
+	require.Contains(t, script, `home: "/_veyra/return?target=home"`)
+	require.Contains(t, script, `video: "/_veyra/return?target=video"`)
+	require.Contains(t, script, `JSON.stringify({ intent: "video" })`)
+	require.Contains(t, script, `"/auth/veyra/callback"`)
+	require.Contains(t, script, `target === "home"`)
+	require.Contains(t, script, `state.authenticated ? "/" : loginUrl(routeTargets.home)`)
+	require.NotContains(t, script, `state.authenticated ? "/dashboard" : loginUrl(routeTargets.home)`)
+}
+
+func TestPortalAlchemyLaunchTargetsRootWithoutChangingMobileOrConsoleRoutes(t *testing.T) {
+	subFS, err := fs.Sub(portalFS, "portal_dist")
+	require.NoError(t, err)
+	content, err := fs.ReadFile(subFS, "app.js")
+	require.NoError(t, err)
+	script := string(content)
+
+	require.Contains(t, script, `new URL(mobile ? "/h5" : "/", state.alchemyBaseUrl)`)
+	require.NotContains(t, script, `"/go/v2"`)
+	require.Contains(t, script, `state.authenticated ? "/dashboard" : loginUrl(routeTargets["sub2api-console"])`)
+}
+
+func TestPortalMiddlewareServesAssetsWhenEnabled(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Use(PortalMiddleware(PortalConfig{Enabled: true, PortalEnabled: true}))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/_veyra/styles.css", nil)
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Header().Get("Content-Type"), "text/css")
+	require.Contains(t, rec.Body.String(), "--paper")
+}
+
+func TestPortalMiddlewareDoesNotCaptureAPIRoutes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Use(PortalMiddleware(PortalConfig{Enabled: true, PortalEnabled: true}))
+	router.GET("/api/v1/ping", func(c *gin.Context) {
+		c.String(http.StatusOK, "api ok")
+	})
+	router.GET("/v1/models", func(c *gin.Context) {
+		c.String(http.StatusOK, "models ok")
+	})
+
+	for path, expected := range map[string]string{
+		"/api/v1/ping": "api ok",
+		"/v1/models":   "models ok",
+	} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		router.ServeHTTP(rec, req)
+
+		require.Equal(t, http.StatusOK, rec.Code, path)
+		require.Equal(t, expected, rec.Body.String(), path)
+	}
+}
