@@ -33,7 +33,6 @@ jobs:
       GOFLAGS: -p=1
       GOMEMLIMIT: 3GiB
       GOTOOLCHAIN: local
-      PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/veyra-playwright-browsers
       PIP_DISABLE_PIP_VERSION_CHECK: '1'
     steps:
       - name: Check out exact PR head without stored credentials
@@ -68,6 +67,8 @@ jobs:
           python -m pip install --require-hashes --only-binary=:all:
           -r tools/veyra-browser/requirements-ci.txt
       - name: Install the pinned Playwright browser revision
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/veyra-playwright-browsers
         run: python -m playwright install --with-deps chromium
       - name: Download Go dependencies before the offline fixture phase
         working-directory: backend
@@ -80,6 +81,7 @@ jobs:
         run: pnpm run build
       - name: Run 22 source-bound local-only browser cases
         env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/veyra-playwright-browsers
           EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
           RECEIPT_DIR: ${{ runner.temp }}/veyra-browser-evidence
         run: >-
