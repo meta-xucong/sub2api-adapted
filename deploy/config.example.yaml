@@ -885,6 +885,18 @@ idempotency:
   cleanup_batch_size: 500
 
 # =============================================================================
+# Aiself / Veyra portal and billing bridge
+# =============================================================================
+veyra:
+  enabled: false
+  portal_enabled: false
+  alchemy_base_url: "https://alchemy.aiself.vip"
+  video_base_url: "https://video.aiself.vip"
+  # Shared only with the attached Aiself applications.
+  internal_token: ""
+  login_ticket_ttl_seconds: 120
+
+# =============================================================================
 # Concurrency Wait Configuration
 # 并发等待配置
 # =============================================================================
