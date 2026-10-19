@@ -1070,34 +1070,25 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 
 }
 
-// extractOpenAISSEDataLine 低开销提取 SSE `data:` 行内容。
-// 兼容 `data: xxx` 与 `data:xxx` 两种格式。
-func extractOpenAISSEDataLine(line string) (string, bool) {
-	if !strings.HasPrefix(line, "data:") {
+// SSE fields without a colon have an explicitly empty value. With a colon,
+// remove at most one ASCII space; tabs and further spaces belong to the value.
+func extractOpenAISSEField(line, field string) (string, bool) {
+	if line == field {
+		return "", true
+	}
+	value, ok := strings.CutPrefix(line, field+":")
+	if !ok {
 		return "", false
 	}
-	start := len("data:")
-	for start < len(line) {
-		if line[start] != ' ' && line[start] != '	' {
-			break
-		}
-		start++
-	}
-	return line[start:], true
+	return strings.TrimPrefix(value, " "), true
+}
+
+func extractOpenAISSEDataLine(line string) (string, bool) {
+	return extractOpenAISSEField(line, "data")
 }
 
 func extractOpenAISSEEventLine(line string) (string, bool) {
-	if !strings.HasPrefix(line, "event:") {
-		return "", false
-	}
-	start := len("event:")
-	for start < len(line) {
-		if line[start] != ' ' && line[start] != '	' {
-			break
-		}
-		start++
-	}
-	return strings.TrimSpace(line[start:]), true
+	return extractOpenAISSEField(line, "event")
 }
 
 type openAICompatSSEFrame struct {
@@ -1302,14 +1293,6 @@ func (s *OpenAIGatewayService) parseSSEUsageBytesWithType(data []byte, eventType
 	}
 	parsedUsage, ok := extractOpenAIUsageFromJSONBytes(data)
 	usageNode, imageUsageNode := openAIUsageNodesFromJSONBytes(data)
-	inputNode := usageNode.Get("input_tokens")
-	if !inputNode.Exists() {
-		inputNode = usageNode.Get("prompt_tokens")
-	}
-	outputNode := usageNode.Get("output_tokens")
-	if !outputNode.Exists() {
-		outputNode = usageNode.Get("completion_tokens")
-	}
 	if !ok {
 		return
 	}

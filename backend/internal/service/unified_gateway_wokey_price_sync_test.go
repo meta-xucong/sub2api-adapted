@@ -1028,7 +1028,8 @@ func TestWokeyStartLeavesNoWorkerForEmptyOrInvalidAccountScope(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			svc, _ := wokeyTestService(t, tt.config())
-			accountRepo := svc.routePricingAccountRepo.(*routePricingAccountRepoFake)
+			accountRepo, ok := svc.routePricingAccountRepo.(*routePricingAccountRepoFake)
+			require.True(t, ok)
 			if tt.accounts != nil {
 				tt.accounts(accountRepo)
 			}
@@ -1055,7 +1056,8 @@ func TestWokeyStartLeavesNoWorkerForEmptyOrInvalidAccountScope(t *testing.T) {
 
 func TestWokeyStartRejectsInvalidTargetGroupWithoutFetchOrTimer(t *testing.T) {
 	svc, _ := wokeyTestService(t, wokeyEnabledSyncConfig())
-	groupRepo := svc.routePricingGroupRepo.(*routePricingGroupRepoFake)
+	groupRepo, ok := svc.routePricingGroupRepo.(*routePricingGroupRepoFake)
+	require.True(t, ok)
 	groupRepo.groups = []Group{{ID: 8, Name: "wrong", Platform: PlatformComposite, Status: StatusActive}}
 	fetcher := &wokeyCountingFetcher{catalog: parseWokeyFixture(t), entered: make(chan int, 1)}
 	svc.wokeyCatalogFetcher = fetcher

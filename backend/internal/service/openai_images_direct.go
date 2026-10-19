@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -140,7 +141,7 @@ func parseCodexDirectImagesResponse(body []byte) ([]openAIResponsesImageResult, 
 	}
 	var results []openAIResponsesImageResult
 	for _, item := range root.Get("data").Array() {
-		result := strings.TrimSpace(item.Get("b64_json").String())
+		result := nonemptyImageArtifactString(item.Get("b64_json"))
 		if result == "" {
 			continue
 		}
@@ -212,11 +213,21 @@ func (s *OpenAIGatewayService) handleCodexDirectImagesNonStreamingResponse(resp 
 		}
 		return OpenAIUsage{}, 0, nil, err
 	}
+	var usage OpenAIUsage
+	// Only a complete, valid JSON body can supply terminal-failure metering.
+	// Semantic errors still use the forwarding path's existing classification.
+	if gjson.ValidBytes(body) {
+		usage, _ = codexDirectImagesUsage(body)
+	}
 	results, err := parseCodexDirectImagesResponse(body)
 	if err != nil {
-		return OpenAIUsage{}, 0, nil, err
+		var upstreamErr *OpenAIImagesUpstreamError
+		if errors.As(err, &upstreamErr) && !IsOpenAIImagesRetryableUpstreamError(upstreamErr) {
+			setOpsUpstreamError(c, upstreamErr.clientStatusCode(), upstreamErr.clientMessage(), "")
+			writeOpenAIImagesUpstreamErrorResponse(c, upstreamErr)
+		}
+		return usage, 0, nil, err
 	}
-	usage, _ := codexDirectImagesUsage(body)
 	if observer := upstreamResponseModelObserverFromContext(c); observer != nil {
 		observer.Observe(gjson.GetBytes(body, "model").String(), true)
 		for _, result := range results {

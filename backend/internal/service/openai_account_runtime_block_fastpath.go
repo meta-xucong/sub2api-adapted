@@ -122,6 +122,10 @@ func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Cont
 		return true
 	}
 
+	if s.smartRouterOwnsImageHealthForContext(ctx, account) && OpenAIImagesEndpointFromContext(ctx) && smartRouterOwnsImageHTTPFailure(statusCode, responseBody) {
+		return false
+	}
+
 	if account != nil && account.Platform == PlatformOpenAI && isOpenAIContextWindowError("", responseBody) {
 		return false
 	}

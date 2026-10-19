@@ -267,7 +267,7 @@ func TestWriteResponsesImageBridgeJSONAndPreserveStreaming(t *testing.T) {
 			events = append(events, event)
 		}
 		require.NoError(t, scanner.Err())
-		require.Equal(t, []string{"response.created", "response.in_progress", "response.output_item.added", "response.output_item.done", "response.completed"}, eventTypes(events))
+		require.Equal(t, []string{"response.created", "response.in_progress", "response.output_item.added", "response.output_item.done", "response.completed"}, eventTypes(t, events))
 		for i, event := range events {
 			require.Equal(t, float64(i), event["sequence_number"])
 		}
@@ -306,10 +306,13 @@ func TestForwardResponsesImageBridgeReturnsUsageWhenClientWriteFails(t *testing.
 	require.Equal(t, 1, result.ImageCount)
 }
 
-func eventTypes(events []map[string]any) []string {
+func eventTypes(t *testing.T, events []map[string]any) []string {
+	t.Helper()
 	types := make([]string, 0, len(events))
 	for _, event := range events {
-		types = append(types, event["type"].(string))
+		eventType, ok := event["type"].(string)
+		require.True(t, ok, "event type must be a string")
+		types = append(types, eventType)
 	}
 	return types
 }

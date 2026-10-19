@@ -1,6 +1,9 @@
 package proxyurl
 
 import (
+	"errors"
+	"fmt"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -211,5 +214,46 @@ func TestParse_无Scheme裸地址(t *testing.T) {
 	_, _, err := Parse("proxy.example.com:8080")
 	if err == nil {
 		t.Fatal("无 scheme 的裸地址应返回错误")
+	}
+}
+
+func TestParse_ErrorsNeverIncludeURLComponents(t *testing.T) {
+	for _, parse := range []func(string) (string, *url.URL, error){Parse, ParsePreservingScheme} {
+		for _, raw := range []string{
+			"http://fake-user:fake-password@proxy.invalid:fake-port?key=fake-query",
+			"http://fake-user:fake-password%zz@proxy.invalid?key=fake-query",
+			"http://fake-user:fake-password@/fake-path?key=fake-query#fake-fragment",
+			"fake-scheme://fake-user:fake-password@proxy.invalid?key=fake-query",
+			"http://fake-user:fake-password@[::1?key=fake-query",
+		} {
+			trimmed, parsed, err := parse(raw)
+			if err == nil || trimmed != "" || parsed != nil {
+				t.Fatal("invalid proxy must fail closed")
+			}
+			for _, formatted := range []string{err.Error(), fmt.Sprintf("%+v", err), fmt.Sprintf("%#v", err)} {
+				for _, secret := range []string{"fake-user", "fake-password", "fake-port", "fake-query", "fake-path", "fake-fragment", "fake-scheme", "proxy.invalid"} {
+					if strings.Contains(formatted, secret) {
+						t.Fatalf("error exposes URL component %q", secret)
+					}
+				}
+			}
+			if errors.Unwrap(err) != nil {
+				t.Fatal("safe parse error must not retain the raw URL error")
+			}
+		}
+	}
+}
+
+func TestParsePreservingScheme_PreservesTransportPolicy(t *testing.T) {
+	for _, scheme := range []string{"http", "https", "socks5", "socks5h"} {
+		raw := scheme + "://fake-user:fake-password@[2001:db8::1]:1080"
+		trimmed, parsed, err := ParsePreservingScheme(" \t" + raw + "\r\n")
+		if err != nil || trimmed != raw || parsed.Scheme != scheme || parsed.Hostname() != "2001:db8::1" {
+			t.Fatalf("valid %s proxy transport configuration changed", scheme)
+		}
+		password, ok := parsed.User.Password()
+		if parsed.User.Username() != "fake-user" || !ok || password != "fake-password" {
+			t.Fatal("valid proxy authentication must be preserved")
+		}
 	}
 }

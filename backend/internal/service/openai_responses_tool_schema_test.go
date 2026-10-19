@@ -1,9 +1,13 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
+	"os"
+	"os/exec"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -587,13 +591,32 @@ func buildToolSchemaNullTypeBody(t *testing.T, hits int) []byte {
 // 构造请求可以塞进百万级命中，会被放大成 TB 级 memcpy。这里用分配次数锁死该行为：
 // 命中数放大 500 倍，分配次数不得随之增长。
 func TestSanitizeOpenAIResponsesToolParameterTypes_RewriteCountIndependentOfHits(t *testing.T) {
+	// AllocsPerRun reads process-wide Mallocs. Run this exact test in a fresh
+	// process so background goroutines from other service tests cannot inflate it.
+	const childMarker = "SUB2API_TOOL_SCHEMA_ALLOCATION_TEST_CHILD"
+	if os.Getenv(childMarker) != "1" {
+		binary, err := os.Executable()
+		require.NoError(t, err)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, binary,
+			"-test.run=^TestSanitizeOpenAIResponsesToolParameterTypes_RewriteCountIndependentOfHits$",
+			"-test.count=1", "-test.timeout=20s")
+		// The isolated test needs no provider credentials or inherited settings.
+		cmd.Env = []string{childMarker + "=1", "GOMAXPROCS=2", "GOMEMLIMIT=2GiB"}
+		output, err := cmd.CombinedOutput()
+		require.NoError(t, err, "isolated allocation guard failed (context: %v):\n%s", ctx.Err(), output)
+		return
+	}
 	small := buildToolSchemaNullTypeBody(t, 4)
 	large := buildToolSchemaNullTypeBody(t, 2000)
 
-	smallAllocs := testing.AllocsPerRun(2, func() {
+	// Average background-allocation noise without relaxing the limit (Sub2API #6136).
+	// Follow Go's fix: https://go.googlesource.com/text/+/3115f89c4b99a620c7f1a4395a2b4405e95b82b6
+	smallAllocs := testing.AllocsPerRun(100, func() {
 		_, _, _ = sanitizeOpenAIResponsesToolParameterTypes(small)
 	})
-	largeAllocs := testing.AllocsPerRun(2, func() {
+	largeAllocs := testing.AllocsPerRun(100, func() {
 		_, _, _ = sanitizeOpenAIResponsesToolParameterTypes(large)
 	})
 

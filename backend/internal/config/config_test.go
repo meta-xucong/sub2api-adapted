@@ -2751,6 +2751,9 @@ func TestLoad_DefaultGatewayImageStreamConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() error: %v", err)
 	}
+	if cfg.Gateway.FailoverOn400 {
+		t.Fatal("failover_on_400 = true, want false by default")
+	}
 	if cfg.Gateway.StreamDataIntervalTimeout != 180 {
 		t.Fatalf("stream_data_interval_timeout = %d, want 180", cfg.Gateway.StreamDataIntervalTimeout)
 	}
@@ -2822,5 +2825,28 @@ func TestLoadSimpleModeAutoCreateDefaultGroups(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+// Removed keys remain tolerated by Viper's non-strict loader, but neither old
+// YAML nor old environment values can enable or disable Smart Router.
+func TestRemovedImagePollTimeoutSettingIsIgnored(t *testing.T) {
+	for _, oldYAML := range []bool{false, true} {
+		for _, oldEnv := range []bool{false, true} {
+			for _, smart := range []bool{false, true} {
+				t.Run(fmt.Sprintf("yaml=%t/env=%t/smart=%t", oldYAML, oldEnv, smart), func(t *testing.T) {
+					resetViperWithJWTSecret(t)
+					configFile := filepath.Join(t.TempDir(), "config.yaml")
+					contents := fmt.Sprintf("gateway:\n  image_poll_timeout_failover_enabled: %t\n  smart_router:\n    enabled: %t\n", oldYAML, smart)
+					require.NoError(t, os.WriteFile(configFile, []byte(contents), 0o600))
+					t.Setenv("CONFIG_FILE", configFile)
+					t.Setenv("GATEWAY_IMAGE_POLL_TIMEOUT_FAILOVER_ENABLED", fmt.Sprint(oldEnv))
+					cfg, err := Load()
+					require.NoError(t, err)
+					require.Equal(t, smart, cfg.Gateway.SmartRouter.Enabled)
+					require.False(t, cfg.Gateway.FailoverOn400)
+				})
+			}
+		}
 	}
 }

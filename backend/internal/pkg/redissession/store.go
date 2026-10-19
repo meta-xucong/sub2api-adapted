@@ -93,6 +93,22 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 	return s.rdb.Del(ctx, s.dataKey(id), s.usedKey(id)).Err()
 }
 
+// Keep the payload available for existing readers while atomically claiming it.
+// A full configured TTL is a bounded tombstone; PTTL also covers sessions written
+// by an instance with a longer TTL. Never let the marker expire before the data.
+// This store uses a standalone redis.Client; these keys are not cluster-tagged.
+var consumeScript = redis.NewScript(`
+local remaining = redis.call('PTTL', KEYS[1])
+if remaining <= 0 then
+  return 0
+end
+local ttl = math.max(remaining, tonumber(ARGV[1]))
+if redis.call('SET', KEYS[2], '1', 'NX', 'PX', ttl) then
+  return 1
+end
+return 0
+`)
+
 // TryConsume returns true only for the first claim while the session exists.
 func (s *Store) TryConsume(ctx context.Context, id string) (bool, error) {
 	if s == nil || s.rdb == nil {
@@ -105,21 +121,7 @@ func (s *Store) TryConsume(ctx context.Context, id string) (bool, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	ttl := s.ttl
-	if remaining, err := s.rdb.TTL(ctx, s.dataKey(id)).Result(); err == nil && remaining > 0 {
-		ttl = remaining
-	}
-	ok, err := s.rdb.SetNX(ctx, s.usedKey(id), "1", ttl).Result()
-	if err != nil || !ok {
-		return ok, err
-	}
-	exists, err := s.rdb.Exists(ctx, s.dataKey(id)).Result()
-	if err != nil {
-		return false, err
-	}
-	if exists == 0 {
-		_ = s.rdb.Del(ctx, s.usedKey(id)).Err()
-		return false, nil
-	}
-	return true, nil
+	claimed, err := consumeScript.Run(ctx, s.rdb,
+		[]string{s.dataKey(id), s.usedKey(id)}, max(s.ttl.Milliseconds(), 1)).Int64()
+	return err == nil && claimed == 1, err
 }

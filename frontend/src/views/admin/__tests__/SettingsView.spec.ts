@@ -13,6 +13,7 @@ const {
   updateSettings,
   getWebSearchEmulationConfig,
   updateWebSearchEmulationConfig,
+  testWebSearchEmulation,
   getAdminApiKey,
   getOverloadCooldownSettings,
   getRateLimit429CooldownSettings,
@@ -41,6 +42,7 @@ const {
   updateSettings: vi.fn(),
   getWebSearchEmulationConfig: vi.fn(),
   updateWebSearchEmulationConfig: vi.fn(),
+  testWebSearchEmulation: vi.fn(),
   getAdminApiKey: vi.fn(),
   getOverloadCooldownSettings: vi.fn(),
   getRateLimit429CooldownSettings: vi.fn(),
@@ -88,6 +90,7 @@ vi.mock("@/api", () => ({
       updateSettings,
       getWebSearchEmulationConfig,
       updateWebSearchEmulationConfig,
+      testWebSearchEmulation,
       getAdminApiKey,
       getOverloadCooldownSettings,
       getRateLimit429CooldownSettings,
@@ -722,6 +725,44 @@ describe("admin SettingsView payment visible method controls", () => {
     });
     fetchPublicSettings.mockResolvedValue(undefined);
     adminSettingsFetch.mockResolvedValue(undefined);
+  });
+
+  it("tests the selected web search card and ignores an older card's pending result", async () => {
+    getWebSearchEmulationConfig.mockResolvedValue({
+      enabled: true,
+      providers: [
+        { type: "brave", api_key_configured: true, quota_limit: null },
+        { type: "tavily", api_key_configured: true, quota_limit: null },
+      ],
+    });
+    let finishBrave!: (value: unknown) => void;
+    testWebSearchEmulation.mockReset();
+    testWebSearchEmulation.mockImplementation((_query, provider) => provider === "brave"
+      ? new Promise(resolve => { finishBrave = resolve; })
+      : Promise.resolve({ provider: "tavily", results: [], query: "test query" }));
+    const wrapper = mountView();
+    await flushPromises();
+    await openGatewayTab(wrapper);
+    await wrapper.get('[data-testid="web-search-provider-brave"]').trigger("click");
+    await wrapper.get('[data-testid="web-search-test-brave"]').trigger("click");
+    let dialog = wrapper.get('[data-testid="web-search-test-dialog"]');
+    await dialog.get("input").setValue("test query");
+    await dialog.get("button").trigger("click");
+    expect(testWebSearchEmulation).toHaveBeenLastCalledWith("test query", "brave");
+    await dialog.trigger("click");
+    await wrapper.get('[data-testid="web-search-provider-tavily"]').trigger("click");
+    await wrapper.get('[data-testid="web-search-test-tavily"]').trigger("click");
+    dialog = wrapper.get('[data-testid="web-search-test-dialog"]');
+    expect(dialog.get("h3").text()).toContain("tavily");
+    await dialog.get("button").trigger("click");
+    await flushPromises();
+    expect(testWebSearchEmulation).toHaveBeenLastCalledWith("test query", "tavily");
+    finishBrave({ provider: "brave", results: [], query: "old query" });
+    await flushPromises();
+    expect(dialog.text()).toContain("tavily");
+    expect(dialog.text()).not.toContain("brave");
+    expect(testWebSearchEmulation).toHaveBeenCalledTimes(2);
+    wrapper.unmount();
   });
 
   it("loads and saves the open button visibility for each custom menu", async () => {

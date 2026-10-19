@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -133,6 +134,9 @@ func ParseGrokMediaRequest(contentType string, body []byte) GrokMediaRequestInfo
 	info.Prompt = strings.TrimSpace(info.Prompt)
 	info.Size = strings.TrimSpace(info.Size)
 	info.SizeTier = NormalizeImageBillingTierOrDefault(info.Size)
+	if resolution := grokImagineImageResolution(info.ImageResolution); resolution != "" {
+		info.SizeTier = NormalizeImageBillingTierOrDefault(resolution)
+	}
 	info.AspectRatio = strings.TrimSpace(info.AspectRatio)
 	info.ImageResolution = grokImagineImageResolution(info.ImageResolution)
 	info.Resolution = NormalizeVideoBillingResolutionOrDefault(info.Resolution)
@@ -722,9 +726,13 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 		return nil, err
 	}
 
-	body, contentType, err = prepareGrokMediaForwardBody(endpoint, body, contentType)
+	body, contentType, err = prepareGrokMediaForwardBodyForAccount(account, endpoint, body, contentType)
 	if err != nil {
 		if isWokeyGrokImageEdit(account, endpoint) {
+			var inputErr *GrokImageEditInputValidationError
+			if errors.As(err, &inputErr) {
+				return nil, err
+			}
 			return nil, wokeyGrokImageEditInputErrorf("invalid Wokey Grok image edit multipart input")
 		}
 		return nil, err
@@ -884,6 +892,7 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 		}
 	}
 	return &OpenAIForwardResult{
+		ImageRequest:         endpoint == GrokMediaEndpointImagesGenerations || endpoint == GrokMediaEndpointImagesEdits,
 		RequestID:            requestIDHeader,
 		UpstreamHeaders:      resp.Header,
 		ResponseID:           usage.ResponseID,
@@ -1347,7 +1356,7 @@ func grokMediaUsageFromResponse(endpoint GrokMediaEndpoint, requestInfo GrokMedi
 	case GrokMediaEndpointImagesGenerations, GrokMediaEndpointImagesEdits:
 		meta.ImageCount = countOpenAIResponseImageOutputsFromJSONBytes(responseBody)
 		meta.ImageSize = requestInfo.SizeTier
-		meta.ImageInputSize = requestInfo.Size
+		meta.ImageInputSize = firstNonEmpty(requestInfo.ImageResolution, requestInfo.Size)
 		meta.ImageOutputSizes = collectOpenAIResponseImageOutputSizesFromJSONBytes(responseBody)
 	case GrokMediaEndpointVideosGenerations, GrokMediaEndpointVideosEdits, GrokMediaEndpointVideosExtensions:
 		// Async video: capture request_id + create-time pricing params only.

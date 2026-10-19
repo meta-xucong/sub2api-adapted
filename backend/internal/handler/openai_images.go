@@ -156,7 +156,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 	defer inflightDone()
 
 	sessionHash := h.gatewayService.GenerateExplicitSessionHash(c, body)
-	imageRequestContext := service.WithOpenAIImagesEndpoint(service.WithOpenAIImageGenerationIntent(c.Request.Context()))
+	imageRequestContext := service.WithSmartRouterImageRequest(service.WithOpenAIImagesEndpoint(service.WithOpenAIImageGenerationIntent(c.Request.Context())), routingModel, parsed.IsEdits())
 	requestCtx, cancelImageRequest := h.gatewayService.WithOpenAIImageRequestTimeout(imageRequestContext)
 	defer cancelImageRequest()
 
@@ -166,6 +166,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 	failedAccountIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
 	var lastFailoverErr *service.UpstreamFailoverError
+	var lastImageAdmissionErr error
 	imageEditCapacityWaited := false
 	stopJSONKeepalive := func() {}
 	jsonKeepaliveStarted := false
@@ -176,7 +177,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 		// The request-wide image budget covers account selection and failover,
 		// not only the upstream attempt. Do not schedule another account after it
 		// has expired.
-		if err := requestCtx.Err(); err != nil {
+		if err := service.OpenAIImageRequestContextErr(requestCtx); err != nil {
 			if errors.Is(err, context.DeadlineExceeded) {
 				reqLog.Warn("openai.images.total_timeout_exhausted",
 					zap.Int("switch_count", switchCount),
@@ -205,7 +206,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 				reqLog.Info("openai.images.account_select_aborted_client_disconnected", zap.Error(err))
 				return
 			}
-			if requestErr := requestCtx.Err(); requestErr != nil {
+			if requestErr := service.OpenAIImageRequestContextErr(requestCtx); requestErr != nil {
 				if errors.Is(requestErr, context.DeadlineExceeded) {
 					reqLog.Warn("openai.images.total_timeout_exhausted",
 						zap.Int("switch_count", switchCount),
@@ -217,6 +218,12 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 						h.handleFailoverExhaustedSimple(c, http.StatusGatewayTimeout, streamStarted)
 					}
 				}
+				return
+			}
+			if h.handleSmartRouterImageUnavailable(c, err, streamStarted) {
+				return
+			}
+			if errors.Is(err, service.ErrNoAvailableAccounts) && h.handleSmartRouterImageUnavailable(c, lastImageAdmissionErr, streamStarted) {
 				return
 			}
 			reqLog.Warn("openai.images.account_select_failed",
@@ -304,6 +311,26 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 			return
 		}
 
+		attemptCtx, releaseImageAdmission, admissionErr := h.gatewayService.AcquireSmartRouterImageAttempt(requestCtx, account, parsed, selection.SmartRouterImageLastResort)
+		if admissionErr != nil {
+			if accountReleaseFunc != nil {
+				accountReleaseFunc()
+			}
+			releaseImageAdmission()
+			if service.OpenAIImageRequestContextErr(requestCtx) != nil {
+				// Reuse the loop's existing 504/last-failure response for an internal
+				// budget expiry; caller cancellation still exits quietly there.
+				continue
+			}
+			lastImageAdmissionErr = admissionErr
+			failedAccountIDs[account.ID] = struct{}{}
+			if switchCount >= maxAccountSwitches {
+				h.handleSmartRouterImageUnavailable(c, admissionErr, streamStarted)
+				return
+			}
+			switchCount++
+			continue
+		}
 		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
 		if !parsed.Stream && !jsonKeepaliveStarted {
 			stopJSONKeepalive = service.StartOpenAIImagesJSONKeepalive(c, h.openAIImagesJSONKeepaliveInterval())
@@ -312,15 +339,17 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 		forwardStart := time.Now()
 		writerSizeBeforeForward := service.OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c)
 		result, err := func() (*service.OpenAIForwardResult, error) {
+			defer releaseImageAdmission()
 			defer func() {
 				if accountReleaseFunc != nil {
 					accountReleaseFunc()
 				}
 			}()
-			return h.gatewayService.ForwardImages(requestCtx, c, account, body, parsed, channelMapping.MappedModel)
+			result, err := h.gatewayService.ForwardImages(attemptCtx, c, account, body, parsed, channelMapping.MappedModel)
+			h.gatewayService.ReportSmartRouterImageResult(attemptCtx, account, parsed, result, err, time.Since(forwardStart).Milliseconds())
+			return result, err
 		}()
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
-		h.gatewayService.ReportSmartRouterImageResult(account, parsed, result, err, forwardDurationMs)
 		upstreamLatencyMs, _ := getContextInt64(c, service.OpsUpstreamLatencyMsKey)
 		responseLatencyMs := forwardDurationMs
 		if upstreamLatencyMs > 0 && forwardDurationMs > upstreamLatencyMs {
@@ -330,7 +359,58 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 		if result != nil && result.FirstTokenMs != nil {
 			service.SetOpsLatencyMs(c, service.OpsTimeToFirstTokenMsKey, int64(*result.FirstTokenMs))
 		}
+		submitImageUsage := func() {
+			userAgent := c.GetHeader("User-Agent")
+			clientIP := ip.GetClientIP(c)
+			requestPayloadHash := service.HashUsageRequestPayload(body)
+			if parsed.Multipart {
+				requestPayloadHash = service.HashUsageRequestPayload([]byte(parsed.StickySessionSeed()))
+			}
+			inboundEndpoint := GetInboundEndpoint(c)
+			upstreamEndpoint := GetUpstreamEndpoint(c, account.Platform)
+			quotaPlatform := service.QuotaPlatform(c.Request.Context(), apiKey)
+
+			upstreamModel := ""
+			if result != nil {
+				upstreamModel = result.UpstreamModel
+			}
+			sessionID := service.ExtractClientSessionID(c)
+			channelUsageFields := clientRequestedUsageFields(c, channelMapping, requestModel, upstreamModel)
+			h.submitMandatoryUsageRecordTask(c.Request.Context(), func(ctx context.Context) {
+				if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
+					Result:             result,
+					APIKey:             apiKey,
+					User:               apiKey.User,
+					Account:            account,
+					Subscription:       subscription,
+					InboundEndpoint:    inboundEndpoint,
+					UpstreamEndpoint:   upstreamEndpoint,
+					UserAgent:          userAgent,
+					IPAddress:          clientIP,
+					RequestPayloadHash: requestPayloadHash,
+					APIKeyService:      h.apiKeyService,
+					QuotaPlatform:      quotaPlatform,
+					SessionID:          sessionID,
+					ChannelUsageFields: channelUsageFields,
+				}); err != nil {
+					logger.L().With(
+						zap.String("component", "handler.openai_gateway.images"),
+						zap.Int64("user_id", subject.UserID),
+						zap.Int64("api_key_id", apiKey.ID),
+						zap.Any("group_id", apiKey.GroupID),
+						zap.String("model", clientRequestModel),
+						zap.Int64("account_id", account.ID),
+					).Error("openai.images.record_usage_failed", zap.Error(err))
+				}
+			})
+		}
 		if err != nil {
+			// Metered zero-artifact terminal failures retain their original error and
+			// scheduler handling. Retryable attempts never settle independently.
+			var usageFailover *service.UpstreamFailoverError
+			if result != nil && result.ImageCount == 0 && !errors.As(err, &usageFailover) {
+				submitImageUsage()
+			}
 			if result != nil && result.ImageCount > 0 {
 				reqLog.Warn("openai.images.forward_partial_error_with_image_result",
 					zap.Int64("account_id", account.ID),
@@ -342,9 +422,9 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 				if errors.As(err, &imageUpstreamErr) {
 					retryableServerError := service.IsOpenAIImagesRetryableUpstreamError(imageUpstreamErr)
 					if retryableServerError {
-						h.gatewayService.ReportOpenAIAccountScheduleResult(account, openAIAccountScheduleModel(c, account, requestModel, false, result), false, nil, err)
+						h.gatewayService.ReportOpenAIImageScheduleResult(requestCtx, account, openAIAccountScheduleModel(c, account, requestModel, false, result), false, nil, err)
 					} else {
-						h.gatewayService.ReportOpenAIAccountScheduleResult(account, openAIAccountScheduleModel(c, account, requestModel, false, result), true, nil)
+						h.gatewayService.ReportOpenAIImageScheduleResult(requestCtx, account, openAIAccountScheduleModel(c, account, requestModel, false, result), true, nil)
 					}
 					logEvent := "openai.images.upstream_user_error"
 					if retryableServerError {
@@ -361,7 +441,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 				}
 				var failoverErr *service.UpstreamFailoverError
 				if errors.As(err, &failoverErr) {
-					h.gatewayService.ReportOpenAIAccountScheduleResult(account, openAIAccountScheduleModel(c, account, requestModel, false, result), false, nil, err)
+					h.gatewayService.ReportOpenAIImageScheduleResult(requestCtx, account, openAIAccountScheduleModel(c, account, requestModel, false, result), false, nil, err)
 					if service.OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c) != writerSizeBeforeForward {
 						reqLog.Warn("openai.images.upstream_failover_skipped_after_flush",
 							zap.Int64("account_id", account.ID),
@@ -423,7 +503,12 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 					)
 					continue
 				}
-				h.gatewayService.ReportOpenAIAccountScheduleResult(account, openAIAccountScheduleModel(c, account, requestModel, false, result), false, nil, err)
+				// A request-wide budget/caller termination does not measure this
+				// account's health. Keep independent typed upstream failures above
+				// and successful/partial-result accounting below unchanged.
+				if service.OpenAIImageRequestContextErr(requestCtx) == nil {
+					h.gatewayService.ReportOpenAIImageScheduleResult(requestCtx, account, openAIAccountScheduleModel(c, account, requestModel, false, result), false, nil, err)
+				}
 				upstreamErrorAlreadyCommunicated := openAIForwardErrorAlreadyCommunicated(c, writerSizeBeforeForward, err)
 				wroteFallback := false
 				if !upstreamErrorAlreadyCommunicated {
@@ -448,53 +533,12 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 			if account.Type == service.AccountTypeOAuth && !account.IsShadow() {
 				h.gatewayService.UpdateCodexUsageSnapshotFromHeaders(c.Request.Context(), account.ID, result.ResponseHeaders)
 			}
-			h.gatewayService.ReportOpenAIAccountScheduleResult(account, openAIAccountScheduleModel(c, account, requestModel, false, result), true, result.FirstTokenMs)
+			h.gatewayService.ReportOpenAIImageScheduleResult(requestCtx, account, openAIAccountScheduleModel(c, account, requestModel, false, result), true, result.FirstTokenMs)
 		} else {
-			h.gatewayService.ReportOpenAIAccountScheduleResult(account, openAIAccountScheduleModel(c, account, requestModel, false, result), true, nil)
+			h.gatewayService.ReportOpenAIImageScheduleResult(requestCtx, account, openAIAccountScheduleModel(c, account, requestModel, false, result), true, nil)
 		}
 
-		userAgent := c.GetHeader("User-Agent")
-		clientIP := ip.GetClientIP(c)
-		requestPayloadHash := service.HashUsageRequestPayload(body)
-		if parsed.Multipart {
-			requestPayloadHash = service.HashUsageRequestPayload([]byte(parsed.StickySessionSeed()))
-		}
-		inboundEndpoint := GetInboundEndpoint(c)
-		upstreamEndpoint := GetUpstreamEndpoint(c, account.Platform)
-		quotaPlatform := service.QuotaPlatform(c.Request.Context(), apiKey)
-
-		upstreamModel := ""
-		if result != nil {
-			upstreamModel = result.UpstreamModel
-		}
-		sessionID := service.ExtractClientSessionID(c)
-		h.submitMandatoryUsageRecordTask(c.Request.Context(), func(ctx context.Context) {
-			if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
-				Result:             result,
-				APIKey:             apiKey,
-				User:               apiKey.User,
-				Account:            account,
-				Subscription:       subscription,
-				InboundEndpoint:    inboundEndpoint,
-				UpstreamEndpoint:   upstreamEndpoint,
-				UserAgent:          userAgent,
-				IPAddress:          clientIP,
-				RequestPayloadHash: requestPayloadHash,
-				APIKeyService:      h.apiKeyService,
-				QuotaPlatform:      quotaPlatform,
-				SessionID:          sessionID,
-				ChannelUsageFields: clientRequestedUsageFields(c, channelMapping, requestModel, upstreamModel),
-			}); err != nil {
-				logger.L().With(
-					zap.String("component", "handler.openai_gateway.images"),
-					zap.Int64("user_id", subject.UserID),
-					zap.Int64("api_key_id", apiKey.ID),
-					zap.Any("group_id", apiKey.GroupID),
-					zap.String("model", clientRequestModel),
-					zap.Int64("account_id", account.ID),
-				).Error("openai.images.record_usage_failed", zap.Error(err))
-			}
-		})
+		submitImageUsage()
 
 		reqLog.Debug("openai.images.request_completed",
 			zap.Int64("account_id", account.ID),
@@ -522,4 +566,15 @@ func (h *OpenAIGatewayHandler) setImageEditTransientRetryAfter(c *gin.Context, p
 
 func isMultipartImagesContentType(contentType string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(contentType)), "multipart/form-data")
+}
+
+func (h *OpenAIGatewayHandler) handleSmartRouterImageUnavailable(c *gin.Context, err error, streamStarted bool) bool {
+	var unavailable *service.SmartRouterImageUnavailableError
+	if !errors.As(err, &unavailable) || unavailable == nil {
+		return false
+	}
+	c.Header("Retry-After", strconv.Itoa(unavailable.RetryAfterSeconds()))
+	markOpsRoutingCapacityLimited(c)
+	h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "upstream_unavailable", "Image capacity is recovering; retry later", streamStarted)
+	return true
 }

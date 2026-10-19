@@ -178,6 +178,7 @@
 </template>
 
 <script setup lang="ts">
+import { completeLoginRedirect } from '@/router/veyraReturn'
 import { computed, ref, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
@@ -212,6 +213,14 @@ const { t, locale } = useI18n()
 // ==================== Router & Stores ====================
 
 const router = useRouter()
+
+function completeAuthRedirect(path: unknown): Promise<void> {
+  return completeLoginRedirect(
+    path,
+    (value) => router.push(value),
+    (value) => window.location.replace(value)
+  )
+}
 const authStore = useAuthStore()
 const appStore = useAppStore()
 
@@ -743,7 +752,7 @@ async function handleVerify(): Promise<void> {
     appStore.showSuccess(t('auth.accountCreatedSuccess', { siteName: siteName.value }))
 
     // Redirect to dashboard
-    await router.push(pendingRedirect.value || '/dashboard')
+    await completeAuthRedirect(pendingRedirect.value || '/dashboard')
   } catch (error: unknown) {
     errorMessage.value = buildRegistrationErrorMessage(error, t('auth.verifyFailed'))
 

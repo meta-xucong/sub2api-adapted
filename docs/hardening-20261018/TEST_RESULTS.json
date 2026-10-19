@@ -1,0 +1,243 @@
+{
+  "status": "REVIEW_CANDIDATE_NOT_READY_FOR_MERGE_OR_DEPLOY",
+  "baseline": "2bedb713b6b0b9cf968468decae36732f390574a",
+  "official_comparison": "b0a02a3304a0a78cdd003ddda1dd23ba02c03084",
+  "backend_source_sha256": "6ed871a34f835955b1415259b40dd3765b3fa4a3e25698405f53534b5894d67c",
+  "backend_source_files": 3273,
+  "unit": {
+    "exit": 0,
+    "counts": {
+      "pass_subcase": 10973,
+      "pass_top": 12024,
+      "skip_top": 18
+    },
+    "explicit_exclusions": [
+      "TestOfferPluginHostServices_BrokerRoundtrip",
+      "TestOfferPluginHostServices_UnimplementedIsGraceful",
+      "TestOfferPluginHostServices_NilHostServicesNoop"
+    ],
+    "skips": [
+      {
+        "package": "github.com/Wei-Shaw/sub2api/internal/handler",
+        "test": "TestDingTalkOAuthStart_Disabled"
+      },
+      {
+        "package": "github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint",
+        "test": "TestDialerBasicConnection"
+      },
+      {
+        "package": "github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint",
+        "test": "TestJA3Fingerprint"
+      },
+      {
+        "package": "github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint",
+        "test": "TestAllProfiles"
+      },
+      {
+        "package": "github.com/Wei-Shaw/sub2api/internal/securityaudit",
+        "test": "TestPromptAuditConfigCASSecretRoundTripInvalidationAndTTL"
+      },
+      {
+        "package": "github.com/Wei-Shaw/sub2api/internal/securityaudit",
+        "test": "TestRedisPayloadStoreRoundTripTTLNamespaceAndDelete"
+      },
+      {
+        "package": "github.com/Wei-Shaw/sub2api/internal/securityaudit",
+        "test": "TestPromptRuntimeAggregatesConfigWorkersQueueRedisEndpointsAndGuardMetrics"
+      },
+      {
+        "package": "github.com/Wei-Shaw/sub2api/internal/securityaudit",
+        "test": "TestPromptAuditMigrationSchemaAndLeakageGate"
+      },
+      {
+        "package": "github.com/Wei-Shaw/sub2api/internal/securityaudit",
+        "test": "TestPromptAuditDatabasePersistsFullPromptOnEventsOnly"
+      },
+      {
+        "package": "github.com/Wei-Shaw/sub2api/internal/securityaudit",
+        "test": "TestPromptAuditRepositoryAdmissionClaimFencingAndEventTransaction"
+      },
+      {
+        "package": "github.com/Wei-Shaw/sub2api/internal/securityaudit",
+        "test": "TestPromptAuditRepositoryForeignKeysFiltersAndStableIdentitySnapshots"
+      },
+      {
+        "package": "github.com/Wei-Shaw/sub2api/internal/securityaudit",
+        "test": "TestPromptAuditRepositoryHighWaterAndSafeDeletion"
+      },
+      {
+        "package": "github.com/Wei-Shaw/sub2api/internal/securityaudit",
+        "test": "TestPromptAuditServiceConfirmationKeepsPostPreviewEventsAndConcurrentDeletesAreSafe"
+      },
+      {
+        "package": "github.com/Wei-Shaw/sub2api/internal/service",
+        "test": "TestAuthPendingIdentityService_UpsertAdoptionDecision_ClearsLegacyNullSessionReference"
+      },
+      {
+        "package": "github.com/Wei-Shaw/sub2api/internal/service",
+        "test": "TestContentModerationTypeSafeLive"
+      },
+      {
+        "package": "github.com/Wei-Shaw/sub2api/internal/service",
+        "test": "TestEstimateOpenAIInputTokens_CompareWithOpenAIAPI"
+      },
+      {
+        "package": "github.com/Wei-Shaw/sub2api/internal/service",
+        "test": "TestPluginRuntimeIntegration"
+      },
+      {
+        "package": "github.com/Wei-Shaw/sub2api/internal/service",
+        "test": "TestResponsesCompatSessionExternalRedisSeparateProcesses"
+      }
+    ]
+  },
+  "integration": {
+    "exit": 0,
+    "counts": {
+      "pass_subcase": 6058,
+      "pass_top": 6753,
+      "skip_top": 20,
+      "skip_subcase": 2
+    },
+    "explicit_exclusions_same_as_unit": true,
+    "docker_database_verified": false,
+    "sampling_test_adjusted_after_aggregate": true,
+    "updated_scoped_sampling_repetitions_passed": 20,
+    "skips": [
+      {
+        "package": "github.com/Wei-Shaw/sub2api/internal/handler",
+        "test": "TestDingTalkOAuthStart_Disabled"
+      },
+      {
+        "package": "github.com/Wei-Shaw/sub2api/internal/middleware",
+        "test": "TestRateLimiterSetsTTLAndDoesNotRefresh"
+      },
+      {
+        "package": "github.com/Wei-Shaw/sub2api/internal/middleware",
+        "test": "TestRateLimiterFixesMissingTTL"
+      },
+      {
+        "package": "github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint",
+        "test": "TestDialerAgainstCaptureServer"
+      },
+      {
+        "package": "github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint",
+        "test": "TestJA3Fingerprint"
+      },
+      {
+        "package": "github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint",
+        "test": "TestAllProfiles/default_node_v24"
+      },
+      {
+        "package": "github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint",
+        "test": "TestAllProfiles/linux_x64_node_v22171"
+      },
+      {
+        "package": "github.com/Wei-Shaw/sub2api/internal/repository/upstreamrefreshprobe",
+        "test": "TestRefreshPersistenceChildProcess"
+      },
+      {
+        "package": "github.com/Wei-Shaw/sub2api/internal/securityaudit",
+        "test": "TestPromptAuditConfigCASSecretRoundTripInvalidationAndTTL"
+      },
+      {
+        "package": "github.com/Wei-Shaw/sub2api/internal/securityaudit",
+        "test": "TestRedisPayloadStoreRoundTripTTLNamespaceAndDelete"
+      },
+      {
+        "package": "github.com/Wei-Shaw/sub2api/internal/securityaudit",
+        "test": "TestPromptRuntimeAggregatesConfigWorkersQueueRedisEndpointsAndGuardMetrics"
+      },
+      {
+        "package": "github.com/Wei-Shaw/sub2api/internal/securityaudit",
+        "test": "TestPromptAuditMigrationSchemaAndLeakageGate"
+      },
+      {
+        "package": "github.com/Wei-Shaw/sub2api/internal/securityaudit",
+        "test": "TestPromptAuditDatabasePersistsFullPromptOnEventsOnly"
+      },
+      {
+        "package": "github.com/Wei-Shaw/sub2api/internal/securityaudit",
+        "test": "TestPromptAuditRepositoryAdmissionClaimFencingAndEventTransaction"
+      },
+      {
+        "package": "github.com/Wei-Shaw/sub2api/internal/securityaudit",
+        "test": "TestPromptAuditRepositoryForeignKeysFiltersAndStableIdentitySnapshots"
+      },
+      {
+        "package": "github.com/Wei-Shaw/sub2api/internal/securityaudit",
+        "test": "TestPromptAuditRepositoryHighWaterAndSafeDeletion"
+      },
+      {
+        "package": "github.com/Wei-Shaw/sub2api/internal/securityaudit",
+        "test": "TestPromptAuditServiceConfirmationKeepsPostPreviewEventsAndConcurrentDeletesAreSafe"
+      },
+      {
+        "package": "github.com/Wei-Shaw/sub2api/internal/server/routes",
+        "test": "TestAuthRegisterRateLimitThresholdHitReturns429"
+      },
+      {
+        "package": "github.com/Wei-Shaw/sub2api/internal/service",
+        "test": "TestContentModerationTypeSafeLive"
+      },
+      {
+        "package": "github.com/Wei-Shaw/sub2api/internal/service",
+        "test": "TestEstimateOpenAIInputTokens_CompareWithOpenAIAPI"
+      },
+      {
+        "package": "github.com/Wei-Shaw/sub2api/internal/service",
+        "test": "TestPluginRuntimeIntegration"
+      },
+      {
+        "package": "github.com/Wei-Shaw/sub2api/internal/smartrouter/core",
+        "test": "TestSmartRouterHealthRestoreThroughPostgresLedgerInChildProcess"
+      }
+    ],
+    "environment_notices": [
+      {
+        "package": "github.com/Wei-Shaw/sub2api/internal/repository",
+        "output": "2026/10/17 21:13:11 docker is not available; skipping integration tests (start Docker to enable)"
+      }
+    ]
+  },
+  "frontend": {
+    "full_tests_passed": 2657,
+    "critical_tests_passed": 311,
+    "groups_overlap": true,
+    "lint": 0,
+    "typecheck": 0,
+    "build": 0,
+    "frozen_install": 0
+  },
+  "audit_parser_tests_passed": 30,
+  "backend_lint": {
+    "exit": 1,
+    "reported_entries": 107,
+    "primary_locations": 106,
+    "related_information_locations": 1,
+    "introduced_findings_remaining": 0,
+    "baseline_attribution": "static source comparison, not a baseline lint rerun"
+  },
+  "backend_build_exit": 0,
+  "backend_symbol_vulnerability_scan_exit": 0,
+  "backend_module_only_advisory": [
+    "GO-2026-5932"
+  ],
+  "frontend_production_advisories": {
+    "critical": 0,
+    "high": 0,
+    "moderate": 1,
+    "low": 1
+  },
+  "frontend_full_advisories": {
+    "critical": 0,
+    "high": 1,
+    "moderate": 4,
+    "low": 1
+  },
+  "production_source_unchanged_since_build_and_symbol_scan": true,
+  "published": false,
+  "merged": false,
+  "deployed": false,
+  "real_generation_tested": false
+}

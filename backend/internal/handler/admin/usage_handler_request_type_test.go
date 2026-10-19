@@ -23,7 +23,6 @@ type adminUsageRepoCapture struct {
 	billingBreakdownAPIKeyID  int64
 	billingBreakdownStartTime time.Time
 	billingBreakdownEndTime   time.Time
-	billingBreakdownRows      []service.AccountBillingBreakdown
 	gatewayBillingGroupID     int64
 	gatewayBillingStartTime   time.Time
 	gatewayBillingEndTime     time.Time

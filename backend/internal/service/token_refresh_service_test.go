@@ -495,6 +495,7 @@ func TestTokenRefreshService_RefreshWithRetry_Antigravity(t *testing.T) {
 		ID:       8,
 		Platform: PlatformAntigravity,
 		Type:     AccountTypeOAuth,
+		Extra:    map[string]any{"privacy_mode": AntigravityPrivacySet},
 	}
 	refresher := &tokenRefresherStub{
 		credentials: map[string]any{

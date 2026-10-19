@@ -693,6 +693,15 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	))
 	requireCompact := legacyCompact
 
+	reportScheduleResult := func(account *service.Account, model string, success bool, firstTokenMs *int, observedErr ...error) bool {
+		if responsesImageParsed != nil {
+			return h.gatewayService.ReportOpenAIImageScheduleResult(c.Request.Context(), account, model, success, firstTokenMs, observedErr...)
+		}
+		return h.gatewayService.ReportOpenAIAccountScheduleResult(account, model, success, firstTokenMs, observedErr...)
+	}
+	if bridgeModel := responsesImageBridgeSelectionModel(responsesImageBridge, responsesImageParsed); bridgeModel != "" {
+		c.Request = c.Request.WithContext(service.WithSmartRouterImageRequest(c.Request.Context(), bridgeModel, responsesImageParsed.IsEdits()))
+	}
 	maxAccountSwitches := h.maxAccountSwitches
 	switchCount := 0
 	firstOutputTimeoutSwitchCount := 0
@@ -700,6 +709,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	failedAccountIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
 	var lastFailoverErr *service.UpstreamFailoverError
+	var lastImageAdmissionErr error
 	var oauth429FailoverState service.OpenAIOAuth429FailoverState
 	var passthroughFailoverState openAIPassthroughFailoverState
 
@@ -759,6 +769,12 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		if err != nil {
 			if failoverClientGone(c) {
 				reqLog.Info("openai.account_select_aborted_client_disconnected", zap.Error(err))
+				return
+			}
+			if h.handleSmartRouterImageUnavailable(c, err, streamStarted) {
+				return
+			}
+			if errors.Is(err, service.ErrNoAvailableAccounts) && h.handleSmartRouterImageUnavailable(c, lastImageAdmissionErr, streamStarted) {
 				return
 			}
 			reqLog.Warn("openai.account_select_failed",
@@ -848,6 +864,39 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			return
 		}
 
+		attemptCtx := c.Request.Context()
+		releaseImageAdmission := func() {}
+		if responsesImageParsed != nil {
+			if responsesImageBridgeDispatches(responsesImageBridge, account) && cancelImageBridgeRequest == nil {
+				cancelImageBridgeRequest = h.applyResponsesImageBridgeRequestTimeout(c)
+			}
+			var admissionErr error
+			attemptCtx, releaseImageAdmission, admissionErr = h.gatewayService.AcquireSmartRouterImageAttempt(c.Request.Context(), account, responsesImageParsed, selection.SmartRouterImageLastResort)
+			if admissionErr != nil {
+				if accountReleaseFunc != nil {
+					accountReleaseFunc()
+				}
+				releaseImageAdmission()
+				if requestErr := service.OpenAIImageRequestContextErr(c.Request.Context()); requestErr != nil {
+					if errors.Is(requestErr, context.DeadlineExceeded) {
+						if lastFailoverErr != nil {
+							h.handleFailoverExhausted(c, lastFailoverErr, streamStarted)
+						} else {
+							h.handleFailoverExhaustedSimple(c, http.StatusGatewayTimeout, streamStarted)
+						}
+					}
+					return
+				}
+				lastImageAdmissionErr = admissionErr
+				failedAccountIDs[account.ID] = struct{}{}
+				if switchCount >= maxAccountSwitches {
+					h.handleSmartRouterImageUnavailable(c, admissionErr, streamStarted)
+					return
+				}
+				switchCount++
+				continue
+			}
+		}
 		// Forward request
 		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
 		forwardStart := time.Now()
@@ -859,24 +908,28 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		// reasoning item（含耦合的 id/summary），避免非透传上游 400 拒绝 Kiro reasoning 形态。
 		attemptBody := h.deriveOpenAIForwardAttemptBody(reqLog, forwardBody, account, &passthroughFailoverState)
 		result, err := func() (*service.OpenAIForwardResult, error) {
+			defer releaseImageAdmission()
 			defer func() {
 				if accountReleaseFunc != nil {
 					accountReleaseFunc()
 				}
 			}()
 			if responsesImageBridgeDispatches(responsesImageBridge, account) {
-				if cancelImageBridgeRequest == nil {
-					cancelImageBridgeRequest = h.applyResponsesImageBridgeRequestTimeout(c)
-				}
-				return h.gatewayService.ForwardResponsesImageBridge(
-					c.Request.Context(),
+				result, err := h.gatewayService.ForwardResponsesImageBridge(
+					attemptCtx,
 					c,
 					account,
 					body,
 					h.cfg.Gateway.ResponsesImageBridge.PreserveStreaming,
 				)
+				h.gatewayService.ReportSmartRouterImageResult(attemptCtx, account, responsesImageParsed, result, err, time.Since(forwardStart).Milliseconds())
+				return result, err
 			}
-			return h.gatewayService.Forward(c.Request.Context(), c, account, attemptBody)
+			result, err := h.gatewayService.Forward(attemptCtx, c, account, attemptBody)
+			if responsesImageParsed != nil {
+				h.gatewayService.ReportSmartRouterImageResult(attemptCtx, account, responsesImageParsed, result, err, time.Since(forwardStart).Milliseconds())
+			}
+			return result, err
 		}()
 		var cyberBlockBodyHTTP []byte
 		if service.GetOpsCyberPolicy(c) != nil {
@@ -885,11 +938,11 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, err != nil, cyberBlockBodyHTTP, clientRequestedUsageFields(c, channelMapping, reqModel, ""), service.HashUsageRequestPayload(body))
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
 		if responsesImageParsed != nil {
-			h.gatewayService.ReportSmartRouterImageResult(account, responsesImageParsed, result, err, forwardDurationMs)
+			// Images were observed before releasing their admission above.
 		} else if requireCompact {
 			h.gatewayService.ReportSmartRouterCompactResult(account, reqModel, result, err, forwardDurationMs)
 		} else {
-			h.gatewayService.ReportSmartRouterTextResult(account, smartrouter.CapabilityResponses, reqModel, result, err, forwardDurationMs)
+			h.gatewayService.ReportSmartRouterTextResult(c.Request.Context(), account, smartrouter.CapabilityResponses, reqModel, result, err, forwardDurationMs)
 		}
 		upstreamLatencyMs, _ := getContextInt64(c, service.OpsUpstreamLatencyMsKey)
 		responseLatencyMs := forwardDurationMs
@@ -915,6 +968,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			quotaPlatform := service.QuotaPlatform(c.Request.Context(), apiKey)
 			sessionID := service.ExtractClientSessionID(c)
 			cyberBlocked := service.GetOpsCyberPolicy(c) != nil
+			channelUsageFields := clientRequestedUsageFields(c, channelMapping, reqModel, res.UpstreamModel)
 			h.submitOpenAIUsageRecordTask(c.Request.Context(), res, func(ctx context.Context) {
 				if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
 					Result:             res,
@@ -930,7 +984,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					APIKeyService:      h.apiKeyService,
 					QuotaPlatform:      quotaPlatform,
 					SessionID:          sessionID,
-					ChannelUsageFields: clientRequestedUsageFields(c, channelMapping, reqModel, res.UpstreamModel),
+					ChannelUsageFields: channelUsageFields,
 					PricingAt:          pricingAt,
 					CyberBlocked:       cyberBlocked,
 					NativeCompactionV2: nativeV2,
@@ -947,7 +1001,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			})
 		}
 		if err != nil {
-			if result != nil && result.ClientDisconnect {
+			if (result != nil && result.ClientDisconnect) || service.IsOpenAIStreamClientDisconnect(err) {
 				reqLog.Info("openai.client_disconnected",
 					zap.Int64("account_id", account.ID),
 					zap.Error(err),
@@ -980,7 +1034,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 						return
 					}
 					if !openAIForwardMayFailover(c, writerSizeBeforeForward, failoverErr) {
-						h.gatewayService.ObserveOpenAIAccountHealthFailure(c.Request.Context(), account, err)
+						if responsesImageParsed == nil {
+							h.gatewayService.ObserveOpenAIAccountHealthFailure(c.Request.Context(), account, err)
+						}
 						h.handleFailoverExhausted(c, failoverErr, true)
 						return
 					}
@@ -990,7 +1046,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 						streamStarted = true
 					}
 					if failoverErr.ShouldReportAccountScheduleFailure() {
-						h.gatewayService.ReportOpenAIAccountScheduleResult(account, openAIAccountScheduleModel(c, account, forwardModel, requireCompact, nil), false, nil, err)
+						reportScheduleResult(account, openAIAccountScheduleModel(c, account, forwardModel, requireCompact, nil), false, nil, err)
 					}
 					if !failoverErr.ShouldRetryNextAccount() {
 						h.handleFailoverExhausted(c, failoverErr, streamStarted)
@@ -1052,7 +1108,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					reqLog.Warn("openai.upstream_failover_switching", failoverSwitchFields...)
 					continue
 				}
-				h.gatewayService.ReportOpenAIAccountScheduleResult(account, openAIAccountScheduleModel(c, account, forwardModel, requireCompact, result), false, nil, err)
+				reportScheduleResult(account, openAIAccountScheduleModel(c, account, forwardModel, requireCompact, result), false, nil, err)
 				upstreamErrorAlreadyCommunicated := openAIForwardErrorAlreadyCommunicated(c, writerSizeBeforeForward, err)
 				wroteFallback := false
 				if !upstreamErrorAlreadyCommunicated {
@@ -1078,9 +1134,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			if account.Type == service.AccountTypeOAuth && !account.IsShadow() {
 				h.gatewayService.UpdateCodexUsageSnapshotFromHeaders(c.Request.Context(), account.ID, result.ResponseHeaders)
 			}
-			h.gatewayService.ReportOpenAIAccountScheduleResult(account, openAIAccountScheduleModel(c, account, forwardModel, requireCompact, result), openAIForwardSucceededForScheduling(result), result.FirstTokenMs)
+			reportScheduleResult(account, openAIAccountScheduleModel(c, account, forwardModel, requireCompact, result), openAIForwardSucceededForScheduling(result), result.FirstTokenMs)
 		} else {
-			h.gatewayService.ReportOpenAIAccountScheduleResult(account, openAIAccountScheduleModel(c, account, forwardModel, requireCompact, result), openAIForwardSucceededForScheduling(result), nil)
+			reportScheduleResult(account, openAIAccountScheduleModel(c, account, forwardModel, requireCompact, result), openAIForwardSucceededForScheduling(result), nil)
 		}
 
 		// 使用量记录通过有界 worker 池提交，避免请求热路径创建无界 goroutine。
@@ -1509,6 +1565,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			quotaPlatform := service.QuotaPlatform(c.Request.Context(), apiKey)
 			sessionID := service.ExtractClientSessionID(c)
 			cyberBlocked := service.GetOpsCyberPolicy(c) != nil
+			channelUsageFields := clientRequestedUsageFields(c, channelMappingMsg, reqModel, res.UpstreamModel)
 			h.submitOpenAIUsageRecordTask(c.Request.Context(), res, func(ctx context.Context) {
 				if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
 					Result:             res,
@@ -1524,7 +1581,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 					APIKeyService:      h.apiKeyService,
 					QuotaPlatform:      quotaPlatform,
 					SessionID:          sessionID,
-					ChannelUsageFields: clientRequestedUsageFields(c, channelMappingMsg, reqModel, res.UpstreamModel),
+					ChannelUsageFields: channelUsageFields,
 					PricingAt:          pricingAt,
 					CyberBlocked:       cyberBlocked,
 				}); err != nil {
@@ -1609,7 +1666,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 					)
 					continue
 				}
-				if result != nil && result.ClientDisconnect {
+				if (result != nil && result.ClientDisconnect) || service.IsOpenAIStreamClientDisconnect(err) || failoverClientGone(c) {
 					reqLog.Info("openai_messages.client_disconnected",
 						zap.Int64("account_id", account.ID),
 						zap.Error(err),

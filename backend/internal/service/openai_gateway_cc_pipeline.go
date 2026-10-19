@@ -187,10 +187,10 @@ func (s *OpenAIGatewayService) sendCCUpstreamRequest(
 	// 字段，上游 400 "The `reasoning_content` in the thinking mode must be
 	// passed back to the API"。在共用出站点补空格占位，真实明文不覆盖。
 	body = ensureDeepSeekChatReasoningPlaceholders(account, body)
-	upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
+	upstreamCtx, releaseUpstreamCtx := newUpstreamDrainContext(ctx, upstreamCancelDrainTimeout)
 	upstreamReq, err := http.NewRequestWithContext(upstreamCtx, http.MethodPost, targetURL, bytes.NewReader(body))
-	releaseUpstreamCtx()
 	if err != nil {
+		releaseUpstreamCtx()
 		return nil, fmt.Errorf("build upstream request: %w", err)
 	}
 	// 记录本次实际选择的协议端点，供错误日志和用量日志在没有
@@ -240,8 +240,10 @@ func (s *OpenAIGatewayService) sendCCUpstreamRequest(
 	}
 	resp, err := s.doOpenAIUpstream(upstreamReq, proxyURL, account)
 	if err != nil {
+		releaseUpstreamCtx()
 		return nil, s.handleOpenAIUpstreamTransportError(ctx, c, account, err, false)
 	}
+	resp.Body = &upstreamReleaseBody{ReadCloser: resp.Body, release: releaseUpstreamCtx}
 	return resp, nil
 }
 
@@ -254,6 +256,8 @@ type ccStreamScanState struct {
 	FirstTokenMs *int
 	// SawDone 表示上游发出了 [DONE] 哨兵。
 	SawDone bool
+	// SawFinish permits compatible providers that end cleanly after finish_reason.
+	SawFinish bool
 	// Err 为 scanner 读错误（客户端 context 取消不属于此类，会原样带出）。
 	// 非 nil 时调用方必须跳过 finalize 并返回 usage-incomplete 错误，避免
 	// 把上游截断伪装成正常收尾。
@@ -270,24 +274,34 @@ func (s *OpenAIGatewayService) scanCCStream(
 	logPrefix string,
 	requestID string,
 	startTime time.Time,
-	emit func(*apicompat.ChatCompletionsChunk),
+	emit func(*apicompat.ChatCompletionsChunk) bool,
 ) ccStreamScanState {
 	var st ccStreamScanState
+	var terminal openAIRawStreamTerminalState
+	frames := newBoundedGatewaySSEFrames(s.cfg)
 
-	scanner := s.newUpstreamSSEScanner(resp.Body)
-	for scanner.Scan() {
-		line := scanner.Text()
-		payload, ok := extractOpenAISSEDataLine(line)
-		if !ok {
-			continue
+	scanner := boundedGatewaySSEScanner(c, resp, s.cfg)
+	defer scanner.Close()
+	processFrame := func(frame openAICompatSSEFrame) bool {
+		payload := strings.TrimSpace(frame.Data)
+		// Keep legacy provider error matching separate from exact SSE field parsing.
+		if strings.TrimSpace(frame.EventType) == "error" {
+			if u := extractCCStreamUsage(payload); u != nil {
+				st.Usage = *u
+			}
+			st.Err = errors.New("upstream Chat Completions error event")
+			return false
 		}
-		payload = strings.TrimSpace(payload)
 		if payload == "" {
-			continue
+			return true
 		}
 		if payload == "[DONE]" {
+			if err := terminal.ObserveDataLine(payload); err != nil {
+				st.Err = err
+				return false
+			}
 			st.SawDone = true
-			break
+			return false
 		}
 		// 观察上游 CC chunk 回显的 model / service_tier（计费以回显为准）。
 		// CC chunk 无 type 字段，按 untyped payload 观察（上游约束：只有终止
@@ -300,19 +314,57 @@ func (s *OpenAIGatewayService) scanCCStream(
 			st.Usage = *u
 		}
 
+		if err := ccPayloadError(payload); err != nil {
+			st.Err = err
+			return false
+		}
 		var chunk apicompat.ChatCompletionsChunk
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
 			logger.L().Warn(logPrefix+": failed to parse chat stream chunk",
 				zap.Error(err),
 				zap.String("request_id", requestID),
 			)
-			continue
+			st.Err = err
+			return false
 		}
+		// Both target protocols represent one assistant response, not n choices.
+		if len(chunk.Choices) > 1 || (len(chunk.Choices) == 1 && chunk.Choices[0].Index != 0) {
+			st.Err = errors.New("multiple Chat Completions choices cannot be converted to a single response")
+			return false
+		}
+		if err := terminal.ObserveDataLine(payload); err != nil {
+			st.Err = err
+			return false
+		}
+		st.SawFinish = terminal.sawFinishReason
 		if st.FirstTokenMs == nil && !isOpenAIChatUsageOnlyStreamChunk(payload) && chatChunkStartsResponsesOutput(&chunk) {
 			ms := int(time.Since(startTime).Milliseconds())
 			st.FirstTokenMs = &ms
 		}
-		emit(&chunk)
+		if emit(&chunk) {
+			scanner.startDrain()
+		}
+		return true
+	}
+	for scanner.Scan() {
+		frame, ready, err := frames.AddLine(scanner.Text())
+		if err != nil {
+			st.Err = err
+			break
+		}
+		// Preserve the existing terminal-sentinel behavior even when an upstream
+		// leaves its body open without a trailing blank line.
+		if frames.standaloneDone() {
+			frame, ready = frames.Finish()
+		}
+		if ready && !processFrame(frame) {
+			break
+		}
+	}
+	if st.Err == nil && !st.SawDone {
+		if frame, ready := frames.Finish(); ready {
+			processFrame(frame)
+		}
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -323,6 +375,9 @@ func (s *OpenAIGatewayService) scanCCStream(
 			)
 		}
 		st.Err = err
+	}
+	if st.Err == nil && !terminal.Terminated() {
+		st.Err = errors.New("upstream Chat Completions stream ended before completion")
 	}
 	return st
 }

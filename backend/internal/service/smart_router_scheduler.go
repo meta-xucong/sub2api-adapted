@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net"
 	"net/url"
@@ -45,6 +47,8 @@ func (s *OpenAIGatewayService) smartRouterPolicy() core.Policy {
 	}
 	cfg := s.cfg.Gateway.SmartRouter
 	policy.Enabled = cfg.Enabled
+	policy.ImageResilienceEnabled = cfg.Enabled
+	policy.ImageHalfOpenEnabled = cfg.Enabled
 	policy.TopK = cfg.TopK
 	policy.SameSourceGroupAttempts = cfg.SameSourceGroupAttempts
 	policy.CostBiasMax = cfg.CostBiasMax
@@ -73,7 +77,25 @@ func (s *OpenAIGatewayService) smartRouterHealth() *core.HealthTracker {
 			if err != nil {
 				logger.LegacyPrintf("service.openai_gateway", "Smart Router ledger restore failed: %v", err)
 			} else {
+				// Once a qualified image row exists it supersedes its older raw
+				// custom-lane projection, irrespective of database row order.
+				qualifiedImages := make(map[core.HealthKey]bool)
 				for _, state := range states {
+					if state.AccountID > 0 && (state.Capability == core.CapabilityImageGeneration || state.Capability == core.CapabilityImageEdit) && state.LaneID == smartRouterImageLaneID(state.AccountID, state.LaneID) {
+						qualifiedImages[core.NewHealthKey(state.LaneID, state.Capability, state.ModelFamily)] = true
+					}
+				}
+				for _, state := range states {
+					if state.Capability == core.CapabilityImageGeneration || state.Capability == core.CapabilityImageEdit {
+						if state.AccountID <= 0 {
+							continue
+						}
+						qualified := smartRouterImageLaneID(state.AccountID, state.LaneID)
+						if qualified != state.LaneID && qualifiedImages[core.NewHealthKey(qualified, state.Capability, state.ModelFamily)] {
+							continue
+						}
+						state.LaneID = qualified
+					}
 					tracker.RestoreWithSourceGroup(
 						core.NewHealthKey(state.LaneID, state.Capability, state.ModelFamily),
 						state.Snapshot,
@@ -155,7 +177,7 @@ func (s *OpenAIGatewayService) reorderSmartRouterSelectionCandidatesNative(
 	req OpenAIAccountScheduleRequest,
 	candidates []openAIAccountCandidateScore,
 ) []openAIAccountCandidateScore {
-	if len(candidates) == 0 || s == nil || !s.isSmartRouterEnabled() || !s.isOpenAIAdvancedSchedulerEnabled(ctx) {
+	if len(candidates) == 0 || s == nil || !s.isSmartRouterEnabled() {
 		return candidates
 	}
 	capability := req.SmartRouterCapability
@@ -168,6 +190,10 @@ func (s *OpenAIGatewayService) reorderSmartRouterSelectionCandidatesNative(
 	if capability == "" {
 		return candidates
 	}
+	explicitImage := req.RequiredImageCapability != "" && (capability == core.CapabilityImageGeneration || capability == core.CapabilityImageEdit)
+	if !explicitImage && !s.isOpenAIAdvancedSchedulerEnabled(ctx) {
+		return candidates
+	}
 
 	policy := s.smartRouterPolicy()
 	lanes := make([]core.LaneSnapshot, 0, len(candidates))
@@ -176,6 +202,16 @@ func (s *OpenAIGatewayService) reorderSmartRouterSelectionCandidatesNative(
 	for _, candidate := range candidates {
 		if candidate.account == nil || !smartRouterAccountEligibleForSmartRouter(candidate.account, capability, req.RequestedModel, req.RequiredCapability) {
 			continue
+		}
+		if capability == core.CapabilityImageGeneration || capability == core.CapabilityImageEdit {
+			// Mixed native Responses keeps its existing optional-adapter
+			// eligibility; broader image ownership is for explicit Images only.
+			if !explicitImage && !smartRouterAccountHasChatGPTModel(candidate.account) {
+				continue
+			}
+			if _, managed := s.smartRouterImageLane(candidate.account, capability, req.RequestedModel); !managed {
+				continue
+			}
 		}
 		lane, ok := smartRouterLaneSnapshot(candidate.account, candidate.loadInfo, candidate.loadKnown, candidate.errorRate, candidate.ttft, candidate.hasTTFT, capability)
 		if !ok {
@@ -206,8 +242,45 @@ func (s *OpenAIGatewayService) reorderSmartRouterSelectionCandidatesNative(
 		return candidates
 	}
 
-	plan := core.Order(smartRouterRouteRequest(req, capability), lanes, policy)
-	return reorderSmartRouterCandidateSlots(candidates, laneByAccountID, candidateByLane, plan, capability)
+	routeRequest := smartRouterRouteRequest(req, capability)
+	routeRequest.ImageLastResort = explicitImage && smartRouterImageRequestScope(ctx, nil).LastResort
+	plan := core.Order(routeRequest, lanes, policy)
+	if capability == core.CapabilityImageGeneration || capability == core.CapabilityImageEdit {
+		// Core ranks the preferred tier and at most one recovering probe. Retain
+		// ordinary healthy overflow for native slot fallback, but never resurrect
+		// cooling lanes or extra recovering probes omitted by the core plan.
+		ranked := make(map[string]bool, len(plan.OrderedLaneIDs))
+		for _, id := range plan.OrderedLaneIDs {
+			ranked[id] = true
+		}
+		for _, lane := range lanes {
+			if !ranked[lane.LaneID] && lane.CooldownUntilUnix <= time.Now().Unix() &&
+				(lane.RecoveryStage == "" || lane.RecoveryStage == core.RecoveryNormal) {
+				plan.OrderedLaneIDs = append(plan.OrderedLaneIDs, lane.LaneID)
+			}
+		}
+	}
+	ordered := reorderSmartRouterCandidateSlots(candidates, laneByAccountID, candidateByLane, plan, capability, req.RequiredImageCapability != "")
+	if explicitImage {
+		// Core chooses at most one recovering probe. Native overflow and opted-out
+		// alternatives must still get a slot attempt before that probe. This stable
+		// projection preserves the order within the ordinary/native tier.
+		recovering := make(map[string]bool, len(lanes))
+		for _, lane := range lanes {
+			recovering[lane.LaneID] = lane.RecoveryStage != "" && lane.RecoveryStage != core.RecoveryNormal
+		}
+		ordinary := make([]openAIAccountCandidateScore, 0, len(ordered))
+		probes := make([]openAIAccountCandidateScore, 0, 1)
+		for _, candidate := range ordered {
+			if candidate.account != nil && recovering[laneByAccountID[candidate.account.ID]] {
+				probes = append(probes, candidate)
+			} else {
+				ordinary = append(ordinary, candidate)
+			}
+		}
+		return append(ordinary, probes...)
+	}
+	return ordered
 }
 
 func reorderSmartRouterCandidateSlots(
@@ -216,6 +289,7 @@ func reorderSmartRouterCandidateSlots(
 	candidateByLane map[string]openAIAccountCandidateScore,
 	plan core.RoutePlan,
 	capability core.Capability,
+	strictImage ...bool,
 ) []openAIAccountCandidateScore {
 	orderedLanes := make([]openAIAccountCandidateScore, 0, len(candidates))
 	seenLaneIDs := make(map[string]struct{}, len(candidateByLane))
@@ -229,6 +303,19 @@ func reorderSmartRouterCandidateSlots(
 		}
 		seenLaneIDs[laneID] = struct{}{}
 		orderedLanes = append(orderedLanes, candidate)
+	}
+	if len(strictImage) > 0 && strictImage[0] && (capability == core.CapabilityImageGeneration || capability == core.CapabilityImageEdit) {
+		// Non-admitted accounts retain native eligibility; admitted image lanes
+		// omitted by core (cooling or extra probes) cannot be failed open.
+		for _, candidate := range candidates {
+			if candidate.account == nil {
+				continue
+			}
+			if _, admitted := laneByAccountID[candidate.account.ID]; !admitted {
+				orderedLanes = append(orderedLanes, candidate)
+			}
+		}
+		return orderedLanes
 	}
 	orderedLaneIDs := seenLaneIDs
 	hardHealthSkips := make(map[string]struct{})
@@ -357,6 +444,7 @@ func smartRouterRouteRequest(req OpenAIAccountScheduleRequest, capability core.C
 		GroupID:            groupID,
 		Model:              req.RequestedModel,
 		Capability:         capability,
+		ImageResilience:    req.RequiredImageCapability != "" && (capability == core.CapabilityImageGeneration || capability == core.CapabilityImageEdit),
 		PreviousResponseID: req.PreviousResponseID,
 	}
 }
@@ -443,6 +531,9 @@ func isChatGPTModelIdentifier(model string) bool {
 }
 
 func smartRouterAccountEligibleForSmartRouter(account *Account, capability core.Capability, requestedModel string, requiredCapability OpenAIEndpointCapability) bool {
+	if capability == core.CapabilityImageGeneration || capability == core.CapabilityImageEdit {
+		return account != nil && account.IsOpenAI() && account.SupportsOpenAIImageCapability(OpenAIImagesCapabilityBasic)
+	}
 	if capability == core.CapabilityResponsesCompact {
 		if account == nil || openAICompactSupportTier(account) == 0 {
 			return false
@@ -507,6 +598,9 @@ func smartRouterLaneSnapshot(account *Account, loadInfo *AccountLoadInfo, loadKn
 	laneID := strings.TrimSpace(extra.LaneID)
 	if laneID == "" {
 		laneID = "account:" + strconv.FormatInt(account.ID, 10)
+	}
+	if capability == core.CapabilityImageGeneration || capability == core.CapabilityImageEdit {
+		laneID = smartRouterImageLaneID(account.ID, laneID)
 	}
 	sourceGroup := smartRouterSourceGroup(account)
 	baseWeight := extra.BaseWeight
@@ -607,7 +701,7 @@ func smartRouterLongNumericNameKey(name string) string {
 	}
 	for _, char := range name {
 		if char >= '0' && char <= '9' {
-			current.WriteRune(char)
+			_, _ = current.WriteRune(char)
 			continue
 		}
 		flush()
@@ -791,4 +885,24 @@ func smartRouterInt(value any) int {
 	default:
 		return 0
 	}
+}
+
+// User-supplied lane IDs are not globally unique. Image health is account-local
+// even when operators reuse a display/routing lane across groups. Existing
+// account:<id> keys stay stable; legacy custom states migrate using stored owner.
+func smartRouterImageLaneID(accountID int64, laneID string) string {
+	accountLane := "account:" + strconv.FormatInt(accountID, 10)
+	laneID = strings.TrimSpace(laneID)
+	if laneID == "" || laneID == accountLane {
+		return accountLane
+	}
+	prefix := accountLane + "/image/"
+	if len(laneID) <= 255 && strings.HasPrefix(laneID, prefix) {
+		return laneID
+	}
+	if len(prefix)+len(laneID) > 255 {
+		digest := sha256.Sum256([]byte(laneID))
+		return prefix + "sha256:" + hex.EncodeToString(digest[:])
+	}
+	return prefix + laneID
 }

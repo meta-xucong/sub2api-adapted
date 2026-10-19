@@ -1,0 +1,191 @@
+{
+  "code_commit": "ef5187a2f252302c80ea461b0df2060a0104b937",
+  "code_tree": "a8bda37336115cd103cff86412beb993bbca177a",
+  "milestone": "cloud_complete_preupload_user_acceptance",
+  "published": false,
+  "merged": false,
+  "deployed": false,
+  "gates": {
+    "unit": {
+      "command": "go test -json -tags=unit -count=1 -timeout=20m -skip \\^\\(TestOfferPluginHostServices_BrokerRoundtrip\\|TestOfferPluginHostServices_UnimplementedIsGraceful\\|TestOfferPluginHostServices_NilHostServicesNoop\\)\\$ ./...",
+      "environment": "GOMEMLIMIT=4GiB\nGOMAXPROCS=2\nGOFLAGS=-p=1",
+      "started": "2026-10-18T13:32:25Z",
+      "ended": "2026-10-18T13:47:45Z",
+      "exit": "0",
+      "source-start": "ef5187a2f252302c80ea461b0df2060a0104b937\na8bda37336115cd103cff86412beb993bbca177a",
+      "source-end": "ef5187a2f252302c80ea461b0df2060a0104b937\na8bda37336115cd103cff86412beb993bbca177a",
+      "worktree-end": "",
+      "log_sha256": "09dee2c45690dfed7c9fbe07c4be5f965d38fb0d0b782513577d84e1b94c5562",
+      "summary": {
+        "log": "unit.log",
+        "counts": {
+          "sub_pass": 11750,
+          "top_pass": 12155,
+          "top_skip": 18
+        },
+        "packages": {
+          "pass": 60,
+          "skip": 51
+        },
+        "failures": [],
+        "skipped": [
+          "github.com/Wei-Shaw/sub2api/internal/handler:TestDingTalkOAuthStart_Disabled",
+          "github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint:TestDialerBasicConnection",
+          "github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint:TestJA3Fingerprint",
+          "github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint:TestAllProfiles",
+          "github.com/Wei-Shaw/sub2api/internal/securityaudit:TestPromptAuditConfigCASSecretRoundTripInvalidationAndTTL",
+          "github.com/Wei-Shaw/sub2api/internal/securityaudit:TestRedisPayloadStoreRoundTripTTLNamespaceAndDelete",
+          "github.com/Wei-Shaw/sub2api/internal/securityaudit:TestPromptRuntimeAggregatesConfigWorkersQueueRedisEndpointsAndGuardMetrics",
+          "github.com/Wei-Shaw/sub2api/internal/securityaudit:TestPromptAuditMigrationSchemaAndLeakageGate",
+          "github.com/Wei-Shaw/sub2api/internal/securityaudit:TestPromptAuditDatabasePersistsFullPromptOnEventsOnly",
+          "github.com/Wei-Shaw/sub2api/internal/securityaudit:TestPromptAuditRepositoryAdmissionClaimFencingAndEventTransaction",
+          "github.com/Wei-Shaw/sub2api/internal/securityaudit:TestPromptAuditRepositoryForeignKeysFiltersAndStableIdentitySnapshots",
+          "github.com/Wei-Shaw/sub2api/internal/securityaudit:TestPromptAuditRepositoryHighWaterAndSafeDeletion",
+          "github.com/Wei-Shaw/sub2api/internal/securityaudit:TestPromptAuditServiceConfirmationKeepsPostPreviewEventsAndConcurrentDeletesAreSafe",
+          "github.com/Wei-Shaw/sub2api/internal/service:TestAuthPendingIdentityService_UpsertAdoptionDecision_ClearsLegacyNullSessionReference",
+          "github.com/Wei-Shaw/sub2api/internal/service:TestContentModerationTypeSafeLive",
+          "github.com/Wei-Shaw/sub2api/internal/service:TestEstimateOpenAIInputTokens_CompareWithOpenAIAPI",
+          "github.com/Wei-Shaw/sub2api/internal/service:TestPluginRuntimeIntegration",
+          "github.com/Wei-Shaw/sub2api/internal/service:TestResponsesCompatSessionExternalRedisSeparateProcesses"
+        ]
+      }
+    },
+    "integration": {
+      "command": "go test -json -tags=integration -count=1 -timeout=20m -skip \\^\\(TestOfferPluginHostServices_BrokerRoundtrip\\|TestOfferPluginHostServices_UnimplementedIsGraceful\\|TestOfferPluginHostServices_NilHostServicesNoop\\)\\$ ./...",
+      "environment": "GOMEMLIMIT=4GiB\nGOMAXPROCS=2\nGOFLAGS=-p=1",
+      "started": "2026-10-18T13:47:45Z",
+      "ended": "2026-10-18T14:06:31Z",
+      "exit": "0",
+      "source-start": "ef5187a2f252302c80ea461b0df2060a0104b937\na8bda37336115cd103cff86412beb993bbca177a",
+      "source-end": "ef5187a2f252302c80ea461b0df2060a0104b937\na8bda37336115cd103cff86412beb993bbca177a",
+      "worktree-end": "",
+      "log_sha256": "600161c2410be6d3a4bed365ce194993ba7c0f9ee509acf66619e84437a3469a",
+      "summary": {
+        "log": "integration.log",
+        "counts": {
+          "sub_pass": 6216,
+          "top_pass": 6819,
+          "top_skip": 20,
+          "sub_skip": 2
+        },
+        "packages": {
+          "pass": 55,
+          "skip": 57
+        },
+        "failures": [],
+        "skipped": [
+          "github.com/Wei-Shaw/sub2api/internal/handler:TestDingTalkOAuthStart_Disabled",
+          "github.com/Wei-Shaw/sub2api/internal/middleware:TestRateLimiterSetsTTLAndDoesNotRefresh",
+          "github.com/Wei-Shaw/sub2api/internal/middleware:TestRateLimiterFixesMissingTTL",
+          "github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint:TestDialerAgainstCaptureServer",
+          "github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint:TestJA3Fingerprint",
+          "github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint:TestAllProfiles/default_node_v24",
+          "github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint:TestAllProfiles/linux_x64_node_v22171",
+          "github.com/Wei-Shaw/sub2api/internal/repository/upstreamrefreshprobe:TestRefreshPersistenceChildProcess",
+          "github.com/Wei-Shaw/sub2api/internal/securityaudit:TestPromptAuditConfigCASSecretRoundTripInvalidationAndTTL",
+          "github.com/Wei-Shaw/sub2api/internal/securityaudit:TestRedisPayloadStoreRoundTripTTLNamespaceAndDelete",
+          "github.com/Wei-Shaw/sub2api/internal/securityaudit:TestPromptRuntimeAggregatesConfigWorkersQueueRedisEndpointsAndGuardMetrics",
+          "github.com/Wei-Shaw/sub2api/internal/securityaudit:TestPromptAuditMigrationSchemaAndLeakageGate",
+          "github.com/Wei-Shaw/sub2api/internal/securityaudit:TestPromptAuditDatabasePersistsFullPromptOnEventsOnly",
+          "github.com/Wei-Shaw/sub2api/internal/securityaudit:TestPromptAuditRepositoryAdmissionClaimFencingAndEventTransaction",
+          "github.com/Wei-Shaw/sub2api/internal/securityaudit:TestPromptAuditRepositoryForeignKeysFiltersAndStableIdentitySnapshots",
+          "github.com/Wei-Shaw/sub2api/internal/securityaudit:TestPromptAuditRepositoryHighWaterAndSafeDeletion",
+          "github.com/Wei-Shaw/sub2api/internal/securityaudit:TestPromptAuditServiceConfirmationKeepsPostPreviewEventsAndConcurrentDeletesAreSafe",
+          "github.com/Wei-Shaw/sub2api/internal/server/routes:TestAuthRegisterRateLimitThresholdHitReturns429",
+          "github.com/Wei-Shaw/sub2api/internal/service:TestContentModerationTypeSafeLive",
+          "github.com/Wei-Shaw/sub2api/internal/service:TestEstimateOpenAIInputTokens_CompareWithOpenAIAPI",
+          "github.com/Wei-Shaw/sub2api/internal/service:TestPluginRuntimeIntegration",
+          "github.com/Wei-Shaw/sub2api/internal/smartrouter/core:TestSmartRouterHealthRestoreThroughPostgresLedgerInChildProcess"
+        ]
+      }
+    },
+    "lint": {
+      "command": "golangci-lint run --timeout=45m --concurrency=1 --max-issues-per-linter=0 --max-same-issues=0 ./...",
+      "environment": "GOMEMLIMIT=3GiB\nGOMAXPROCS=2\nGOFLAGS=-p=1",
+      "started": "2026-10-18T14:06:31Z",
+      "ended": "2026-10-18T14:17:24Z",
+      "exit": "0",
+      "source-start": "ef5187a2f252302c80ea461b0df2060a0104b937\na8bda37336115cd103cff86412beb993bbca177a",
+      "source-end": "ef5187a2f252302c80ea461b0df2060a0104b937\na8bda37336115cd103cff86412beb993bbca177a",
+      "worktree-end": "",
+      "log_sha256": "e92606b0bf483111dff0a120c315ea165821348f31365020e2468a0059095c47"
+    },
+    "race": {
+      "command": "go test -json -race -tags=unit -count=1 -timeout=20m ./internal/service ./internal/handler ./internal/smartrouter/core -run TestGrokCustomVoice\\|TestGrokBuiltinVoice\\|TestGrokVoiceHandler\\|TestImagesFailedStreamObservedUsageBilling\\|TestImagesNonStreamingObservedUsageBilling\\|TestReserveInflightBalance_SubscriptionPreservesRouteDecision\\|TestHealthPersistence\\|TestSmartRouterPersistence",
+      "environment": "GOMEMLIMIT=4GiB\nGOMAXPROCS=2\nGOFLAGS=-p=1",
+      "started": "2026-10-18T14:17:24Z",
+      "ended": "2026-10-18T14:28:30Z",
+      "exit": "0",
+      "source-start": "ef5187a2f252302c80ea461b0df2060a0104b937\na8bda37336115cd103cff86412beb993bbca177a",
+      "source-end": "ef5187a2f252302c80ea461b0df2060a0104b937\na8bda37336115cd103cff86412beb993bbca177a",
+      "worktree-end": "",
+      "log_sha256": "6278bb67ebc77060494f1d4c90459093d2aa434c68dd6c0f54eb72c97e3a6b20",
+      "summary": {
+        "log": "race.log",
+        "counts": {
+          "sub_pass": 235,
+          "top_pass": 39
+        },
+        "packages": {
+          "pass": 3
+        },
+        "failures": [],
+        "skipped": []
+      }
+    },
+    "core-race": {
+      "command": "go test -json -race -tags=unit -count=1 -timeout=5m ./internal/smartrouter/core",
+      "started": "2026-10-18T14:33:22Z",
+      "ended": "2026-10-18T14:33:28Z",
+      "exit": "0",
+      "log_sha256": "485c1ca27d3351852cb0dbaa37a745ce745edfd4735756b241b67f8f859dc397",
+      "summary": {
+        "log": "core-race.log",
+        "counts": {
+          "top_pass": 69,
+          "sub_pass": 14
+        },
+        "packages": {
+          "pass": 1
+        },
+        "failures": [],
+        "skipped": []
+      }
+    },
+    "build": {
+      "command": "go build -trimpath -tags embed -ldflags -X\\ main.Version=0.2.12-cloud-review\\ -X\\ main.Commit=ef5187a2f252302c80ea461b0df2060a0104b937\\ -X\\ main.Date=2026-10-18T14:28:30Z -o /workspace/scratch/79ebac196883/phase3-evidence/ef5187a2f/sub2api-embedded ./cmd/server",
+      "environment": "GOMEMLIMIT=4GiB\nGOMAXPROCS=2\nGOFLAGS=-p=1",
+      "started": "2026-10-18T14:28:31Z",
+      "ended": "2026-10-18T14:32:17Z",
+      "exit": "0",
+      "source-start": "ef5187a2f252302c80ea461b0df2060a0104b937\na8bda37336115cd103cff86412beb993bbca177a",
+      "source-end": "ef5187a2f252302c80ea461b0df2060a0104b937\na8bda37336115cd103cff86412beb993bbca177a",
+      "worktree-end": "",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "version": {
+      "exit": "0",
+      "log_sha256": "9eaf093be9c187365a15f8f301c034571294bbc97dd0a5b5e50eb53bc18af43e"
+    }
+  },
+  "native_postgres": {
+    "executed_commit": "ef5187a2f252302c80ea461b0df2060a0104b937",
+    "top_pass": 15,
+    "sub_pass": 22,
+    "fail": 0,
+    "skip": 0,
+    "archive_sha256": "acbc697f091dcdf67a254b9c3a114410c53d11f1b5ff2fbc14a1876346cd8416",
+    "summary_sha256": "26e582e0a0c91a84ed61ecb1745ea50c7a10c0d792b3bd8a3a74614b9e80e8fb",
+    "engine": "PostgreSQL18.1 Debian/native; bootstrap-only overlay",
+    "owned_processes_cleaned": 62
+  },
+  "binary_sha256": "f815c5b08e1eb1d1519bee987ac020054037387ac6c2c8b6f2301d757aa5d4bf",
+  "excluded_parallel_commit": "9c638df774c22252ed1b7d25a9dcf9e930fdfe8c",
+  "remote_main_readonly_check": {
+    "checked_utc": "2026-10-18T14:39:28Z",
+    "repository": "meta-xucong/sub2api-adapted",
+    "ref": "main",
+    "sha": "2bedb713b6b0b9cf968468decae36732f390574a",
+    "url": "https://github.com/meta-xucong/sub2api-adapted/commit/2bedb713b6b0b9cf968468decae36732f390574a"
+  }
+}

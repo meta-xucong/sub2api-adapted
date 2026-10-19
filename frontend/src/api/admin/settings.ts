@@ -1565,10 +1565,11 @@ export async function updateWebSearchEmulationConfig(
 
 export async function testWebSearchEmulation(
   query: string,
+  providerType?: WebSearchProviderConfig["type"],
 ): Promise<WebSearchTestResult> {
   const { data } = await apiClient.post<WebSearchTestResult>(
     "/admin/settings/web-search-emulation/test",
-    { query },
+    { query, ...(providerType ? { provider_type: providerType } : {}) },
   );
   return data;
 }

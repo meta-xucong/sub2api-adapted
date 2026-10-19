@@ -330,9 +330,13 @@ func TestStream_ValidToolCallAtOutputLimitKeepsIncompleteResponse(t *testing.T) 
 		case "response.function_call_arguments.done":
 			sawArgsDone = true
 			require.Equal(t, `{}`, event.Arguments)
-		case "response.completed":
+		case "response.incomplete":
 			require.NotNil(t, event.Response)
 			sawIncomplete = event.Response.Status == "incomplete"
+			require.NotNil(t, event.Response.IncompleteDetails)
+			require.Equal(t, "max_output_tokens", event.Response.IncompleteDetails.Reason)
+		case "response.completed":
+			t.Fatal("length-limited response must not emit a completed event")
 		}
 	}
 	require.True(t, sawArgsDone)

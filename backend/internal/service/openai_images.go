@@ -610,6 +610,14 @@ func (s *OpenAIGatewayService) ForwardImages(
 	if parsed == nil {
 		return nil, fmt.Errorf("parsed images request is required")
 	}
+	ctx = WithOpenAIImagesEndpoint(ctx)
+	if _, scoped := ctx.Value(smartRouterImageScopeKey{}).(smartRouterImageScope); !scoped {
+		model := parsed.Model
+		if strings.TrimSpace(channelMappedModel) != "" {
+			model = channelMappedModel
+		}
+		ctx = WithSmartRouterImageRequest(ctx, model, parsed.IsEdits())
+	}
 	requestModel := strings.TrimSpace(parsed.Model)
 	if mapped := strings.TrimSpace(channelMappedModel); mapped != "" {
 		requestModel = mapped
@@ -750,6 +758,9 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 			s.coolOpenAIImagesInsufficientBalance(upstreamCtx, account)
 			return nil, newOpenAIImagesInsufficientBalanceFailoverError(resp.StatusCode, resp.Header, respBody)
 		}
+		if isOpenAIImagesPollTimeout(resp.StatusCode, respBody) {
+			return s.handleOpenAIImagesErrorResponse(upstreamCtx, resp, c, account, upstreamModel)
+		}
 		if s.shouldFailoverOpenAIImagesResponse(account, resp.StatusCode, upstreamMsg, respBody) {
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 				ProxyID:            opsUpstreamProxyID(account),
@@ -786,7 +797,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 	defer func() { _ = resp.Body.Close() }()
 
 	var usage OpenAIUsage
-	imageCount := parsed.N
+	imageCount := 0
 	var firstTokenMs *int
 	if parsed.Stream && isEventStreamResponse(resp.Header) {
 		streamUsage, streamCount, streamSizes, ttft, err := s.handleOpenAIImagesStreamingResponse(resp, c, startTime, nil)
@@ -794,8 +805,9 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 			if isOpenAIImageAttemptTimeout(err, attemptCtx, ctx) && OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c) <= 0 {
 				return nil, newOpenAIImageAttemptTimeoutFailover(resp)
 			}
-			if streamCount > 0 {
+			if streamCount > 0 || openAIStreamFailureHasBillableEvidence(streamUsage, false) {
 				return &OpenAIForwardResult{
+					ImageRequest:     true,
 					RequestID:        resp.Header.Get("x-request-id"),
 					UpstreamHeaders:  resp.Header,
 					Usage:            streamUsage,
@@ -819,6 +831,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 		imageOutputSizes := streamSizes
 		firstTokenMs = ttft
 		return &OpenAIForwardResult{
+			ImageRequest:     true,
 			RequestID:        resp.Header.Get("x-request-id"),
 			UpstreamHeaders:  resp.Header,
 			Usage:            usage,
@@ -843,10 +856,9 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 			return nil, err
 		}
 		usage = nonStreamUsage
-		if nonStreamCount > 0 {
-			imageCount = nonStreamCount
-		}
+		imageCount = nonStreamCount
 		return &OpenAIForwardResult{
+			ImageRequest:     true,
 			RequestID:        resp.Header.Get("x-request-id"),
 			UpstreamHeaders:  resp.Header,
 			Usage:            usage,
@@ -1361,21 +1373,7 @@ func mergeOpenAIUsage(dst *OpenAIUsage, body []byte) {
 		return
 	}
 	if parsed, ok := extractOpenAIUsageFromJSONBytes(body); ok {
-		if parsed.InputTokens > 0 {
-			dst.InputTokens = parsed.InputTokens
-		}
-		if parsed.OutputTokens > 0 {
-			dst.OutputTokens = parsed.OutputTokens
-		}
-		if parsed.CacheReadInputTokens > 0 {
-			dst.CacheReadInputTokens = parsed.CacheReadInputTokens
-		}
-		if parsed.ImageInputTokens > 0 {
-			dst.ImageInputTokens = parsed.ImageInputTokens
-		}
-		if parsed.ImageOutputTokens > 0 {
-			dst.ImageOutputTokens = parsed.ImageOutputTokens
-		}
+		mergeOpenAIUsageNonZero(dst, parsed)
 	}
 }
 

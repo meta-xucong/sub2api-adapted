@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -21,51 +22,84 @@ const openAIRawStreamTruncatedUpstreamMessage = "Upstream Chat Completions strea
 // `HTTP 200 + usage 0/0`：客户端拿到半截回答，网关既不报错也不计入 SLA，
 // Ops 侧完全不可见。
 //
-// 三种终止信号任一出现即认为上游"讲完了"，只是尾巴可能丢失，不作截断处理：
-//
-//   - [DONE]        —— OpenAI CC 协议标准哨兵
-//   - usage chunk   —— include_usage 生效时的末尾用量帧（网关强制打开）
-//   - finish_reason —— 生成正常结束（stop/length/tool_calls/...）
-//
-// 只认 [DONE] 会误伤那些跑完最后一帧就直接 EOF 的兼容上游；只认 usage 会误伤
-// 不支持 include_usage 的上游。三者取并集，把误判压到"上游确实在生成中途被切断"。
+// [DONE] or valid finish reasons for every observed choice establish completion. Usage is observed
+// independently: providers can report interim usage while generation is still
+// running, so usage alone must never turn a partial EOF into successful output.
 type openAIRawStreamTerminalState struct {
 	// sawDataLine 表示上游至少发过一行 `data:`，即响应确实是 SSE 语义流。
 	// 非 SSE 响应体（上游对 stream 请求返回裸 JSON）不参与截断判定，保持既有透传行为。
 	sawDataLine     bool
 	sawDone         bool
-	sawUsage        bool
 	sawFinishReason bool
+	choices         map[int64]bool
+	// The outbound request, rather than upstream-supplied indexes, bounds state.
+	// A zero value retains the protocol's default single-choice behavior.
+	expectedChoices   int64
+	unfinishedChoices int
+}
+
+func rawChatCompletionsRequestedChoices(body []byte) int64 {
+	n := gjson.GetBytes(body, "n")
+	if n.Type == gjson.Number {
+		if count, err := strconv.ParseInt(n.Raw, 10, 64); err == nil && count > 0 {
+			return count
+		}
+	}
+	return 1
 }
 
 // ObserveDataLine 从单行 SSE `data:` 载荷中提取终止信号。payload 需已 TrimSpace。
-func (t *openAIRawStreamTerminalState) ObserveDataLine(payload string) {
+func (t *openAIRawStreamTerminalState) ObserveDataLine(payload string) error {
 	if t == nil {
-		return
+		return nil
 	}
 	t.sawDataLine = true
 	if payload == "[DONE]" {
 		t.sawDone = true
-		return
+		return nil
 	}
-	if usage := gjson.Get(payload, "usage"); usage.Exists() && usage.IsObject() {
-		t.sawUsage = true
-	}
-	if t.sawFinishReason {
-		return
+	limit := t.expectedChoices
+	if limit <= 0 {
+		limit = 1
 	}
 	for _, choice := range gjson.Get(payload, "choices").Array() {
-		// finish_reason 为 null 时 String() 返回空串，不算终止。
-		if strings.TrimSpace(choice.Get("finish_reason").String()) != "" {
-			t.sawFinishReason = true
-			return
+		// Preserve omitted-index compatibility as choice zero, but do not let
+		// malformed or out-of-request indexes allocate terminal state.
+		idx := int64(0)
+		if index := choice.Get("index"); index.Exists() {
+			var err error
+			idx, err = strconv.ParseInt(index.Raw, 10, 64)
+			if index.Type != gjson.Number || err != nil {
+				return errors.New("invalid upstream Chat Completions choice index")
+			}
+		}
+		if idx < 0 || idx >= limit {
+			return errors.New("upstream Chat Completions choice index exceeds requested n")
+		}
+		if t.choices == nil {
+			t.choices = make(map[int64]bool)
+		}
+		finished := validCCFinishReason(choice.Get("finish_reason").String())
+		previouslyFinished, observed := t.choices[idx]
+		if !observed {
+			t.choices[idx] = finished
+			if !finished {
+				t.unfinishedChoices++
+			}
+		} else if !previouslyFinished && finished {
+			t.choices[idx] = true
+			t.unfinishedChoices--
 		}
 	}
+	t.sawFinishReason = len(t.choices) > 0 && t.unfinishedChoices == 0
+	return nil
 }
 
 // Terminated 表示上游给出过终止信号。
 func (t *openAIRawStreamTerminalState) Terminated() bool {
-	return t != nil && (t.sawDone || t.sawUsage || t.sawFinishReason)
+	// A global sentinel is sufficient for ordinary single-choice streams. For
+	// multi-choice streams, one finished choice must not hide another truncation.
+	return t != nil && (t.sawFinishReason || (t.sawDone && len(t.choices) <= 1))
 }
 
 // IsTruncated 判定上游是否在任何终止信号之前结束。clientOutputStarted 用于放行

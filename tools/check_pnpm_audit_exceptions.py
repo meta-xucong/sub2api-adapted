@@ -5,6 +5,7 @@ import sys
 from datetime import date
 
 
+SEVERITIES = ("info", "low", "moderate", "high", "critical")
 HIGH_SEVERITIES = {"high", "critical"}
 REQUIRED_FIELDS = {"package", "advisory", "severity", "mitigation", "expires_on"}
 
@@ -106,9 +107,126 @@ def iter_vulns(data: dict):
             elif isinstance(via, str):
                 advisories.append(via)
                 titles.append(via)
-            title = "; ".join([t for t in titles if t])
+            title = "; ".join(str(t) for t in titles if t)
             for advisory_id in [a for a in advisories if a]:
                 yield name, severity, advisory_id, title
+
+
+def is_nonempty_text(value) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def validate_advisory_fields(advisory, location: str) -> None:
+    if not isinstance(advisory, dict):
+        raise ValueError(f"{location} must be an object")
+    for field in (
+        "module_name",
+        "name",
+        "github_advisory_id",
+        "url",
+        "title",
+        "advisory",
+        "overview",
+    ):
+        value = advisory.get(field)
+        if value is not None and not isinstance(value, str):
+            raise ValueError(f"{location}.{field} must be a string")
+    for field in ("id", "source"):
+        value = advisory.get(field)
+        if value is not None and not (
+            is_nonempty_text(value) or (type(value) is int and value >= 0)
+        ):
+            raise ValueError(f"{location}.{field} must be a string or integer")
+    cves = advisory.get("cves")
+    if cves is not None and not (
+        isinstance(cves, list) and all(is_nonempty_text(cve) for cve in cves)
+    ):
+        raise ValueError(f"{location}.cves must be a list of nonempty strings")
+    if "severity" in advisory:
+        severity = advisory["severity"]
+        if (
+            not is_nonempty_text(severity)
+            or normalize_severity(severity) not in SEVERITIES
+        ):
+            raise ValueError(f"{location}.severity must be a recognized severity")
+
+
+def validate_audit_report(data) -> None:
+    # Local hardening of an uncovered upstream-origin checker gap, not an upstream
+    # port: pnpm 9 emits {"error": ...} on registry failure. See also
+    # https://github.com/pnpm/pnpm/issues/13033 for upstream audit failures.
+    # CI captures nonzero audit exits to allow exceptions, so validate the report
+    # before applying policy: https://pnpm.io/cli/audit
+    if not isinstance(data, dict):
+        raise ValueError("audit report must be an object")
+    if "error" in data or "errors" in data:
+        raise ValueError("audit command reported an error; no successful audit report")
+    report_fields = {"advisories", "vulnerabilities"}.intersection(data)
+    if not report_fields:
+        raise ValueError("audit report must contain advisories or vulnerabilities")
+    for field in report_fields:
+        if not isinstance(data[field], dict):
+            raise ValueError(f"{field} must be an object")
+
+    metadata = data.get("metadata")
+    counts = metadata.get("vulnerabilities") if isinstance(metadata, dict) else None
+    if not isinstance(counts, dict) or not set(SEVERITIES).issubset(counts):
+        raise ValueError("metadata.vulnerabilities must contain all severity counts")
+    for severity, count in counts.items():
+        if severity not in (*SEVERITIES, "total") or type(count) is not int or count < 0:
+            raise ValueError(f"invalid metadata.vulnerabilities count: {severity}")
+
+    for key, advisory in data.get("advisories", {}).items():
+        location = f"advisories[{key}]"
+        validate_advisory_fields(advisory, location)
+        if not is_nonempty_text(advisory.get("module_name") or advisory.get("name")):
+            raise ValueError(f"{location} missing package name")
+        if "severity" not in advisory:
+            raise ValueError(f"{location} missing severity")
+        if not is_nonempty_text(pick_advisory_id(advisory)):
+            raise ValueError(f"{location} missing advisory id")
+
+    for name, vuln in data.get("vulnerabilities", {}).items():
+        location = f"vulnerabilities[{name}]"
+        validate_advisory_fields(vuln, location)
+        if not is_nonempty_text(name):
+            raise ValueError(f"{location} missing package name")
+        if "severity" not in vuln:
+            raise ValueError(f"{location} missing severity")
+        via = vuln.get("via")
+        if isinstance(via, str):
+            via = [via]
+        if not isinstance(via, list) or not via:
+            raise ValueError(f"{location}.via must contain advisory data")
+        for item in via:
+            if isinstance(item, str):
+                if not is_nonempty_text(item):
+                    raise ValueError(f"{location}.via contains an empty advisory id")
+                continue
+            validate_advisory_fields(item, f"{location}.via")
+            advisory_id = (
+                item.get("github_advisory_id")
+                or item.get("url")
+                or item.get("source")
+                or item.get("title")
+                or item.get("name")
+            )
+            if not (is_nonempty_text(advisory_id) or type(advisory_id) is int):
+                raise ValueError(f"{location}.via missing advisory id")
+            if "severity" in item and (
+                SEVERITIES.index(normalize_severity(item["severity"]))
+                > SEVERITIES.index(normalize_severity(vuln["severity"]))
+            ):
+                raise ValueError(f"{location}.severity understates a via advisory")
+
+    # Counts may represent dependency paths rather than distinct advisories.
+    # Require evidence for positive severe counts, without requiring equal totals.
+    reported_severities = {normalize_severity(v[1]) for v in iter_vulns(data)}
+    for severity in HIGH_SEVERITIES:
+        if counts[severity] > 0 and severity not in reported_severities:
+            raise ValueError(
+                f"metadata reports {severity} vulnerabilities without advisory data"
+            )
 
 
 def normalize_severity(severity: str) -> str:
@@ -145,8 +263,13 @@ def main() -> int:
     parser.add_argument("--exceptions", required=True)
     args = parser.parse_args()
 
-    with open(args.audit, "r", encoding="utf-8") as handle:
-        audit = json.load(handle)
+    try:
+        with open(args.audit, "r", encoding="utf-8") as handle:
+            audit = json.load(handle)
+        validate_audit_report(audit)
+    except (OSError, ValueError, UnicodeError) as error:
+        sys.stderr.write(f"Invalid audit report: {error}\n")
+        return 1
 
     # 读取异常清单并建立索引，便于快速匹配包名 + advisory。
     exceptions = parse_exceptions(args.exceptions)

@@ -37,10 +37,10 @@ func writeResponsesAdapterFailure(
 	message string,
 ) error {
 	if c == nil || c.Writer == nil || sequence == nil || completedSent == nil {
-		return errors.New("Responses compatibility stream state is unavailable")
+		return errors.New("responses compatibility stream state is unavailable")
 	}
 	if *completedSent {
-		return errors.New("Responses compatibility stream already has a terminal event")
+		return errors.New("responses compatibility stream already has a terminal event")
 	}
 	if createdAt <= 0 {
 		createdAt = time.Now().Unix()

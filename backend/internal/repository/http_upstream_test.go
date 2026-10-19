@@ -1045,3 +1045,88 @@ func TestHTTPUpstreamPublicHostsOnlyValidatesEveryRedirectHop(t *testing.T) {
 	require.NoError(t, client.CheckRedirect(publicHop, via))
 	require.Error(t, client.CheckRedirect(publicHop, make([]*http.Request, 10)), "redirect chain stays capped")
 }
+
+func TestHTTPUpstreamPublicDownloadRefusesProxyWithoutLeakingCredentials(t *testing.T) {
+	var proxyCalls atomic.Int64
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		proxyCalls.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(proxy.Close)
+	proxyURL, err := url.Parse(proxy.URL)
+	require.NoError(t, err)
+	proxyURL.User = url.UserPassword("test-user", "synthetic-proxy-secret")
+	upstream, ok := NewHTTPUpstream(nil).(*httpUpstreamService)
+	require.True(t, ok)
+	req, err := http.NewRequestWithContext(service.WithHTTPUpstreamPublicHostsOnly(t.Context()), http.MethodGet, "https://public.invalid/image", nil)
+	require.NoError(t, err)
+	_, err = upstream.Do(req, proxyURL.String(), 1, 1)
+	require.ErrorContains(t, err, "through a proxy")
+	require.NotContains(t, err.Error(), "synthetic-proxy-secret")
+	_, err = upstream.DoWithTLS(req, proxyURL.String(), 1, 1, &tlsfingerprint.Profile{})
+	require.ErrorContains(t, err, "through a proxy")
+	require.NotContains(t, err.Error(), "synthetic-proxy-secret")
+	require.Zero(t, proxyCalls.Load(), "strict download must not connect through the proxy or fall back to direct")
+	require.Empty(t, upstream.clients, "strict downloads must not create ordinary provider pool entries")
+}
+
+func TestHTTPUpstreamPublicDownloadWithTLSRejectsPrivateDestination(t *testing.T) {
+	var calls atomic.Int64
+	target := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(target.Close)
+	upstream, ok := NewHTTPUpstream(nil).(*httpUpstreamService)
+	require.True(t, ok)
+	req, err := http.NewRequestWithContext(service.WithHTTPUpstreamPublicHostsOnly(t.Context()), http.MethodGet, target.URL, nil)
+	require.NoError(t, err)
+	_, err = upstream.DoWithTLS(req, "", 1, 1, &tlsfingerprint.Profile{})
+	require.ErrorContains(t, err, "not allowed")
+	require.Zero(t, calls.Load())
+	require.Empty(t, upstream.clients)
+}
+
+type publicDownloadRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f publicDownloadRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func TestHTTPUpstreamStrictDownloadRedirectValidationAndDisabledRedirects(t *testing.T) {
+	upstream, ok := NewHTTPUpstream(nil).(*httpUpstreamService)
+	require.True(t, ok)
+	for _, target := range []string{"http://127.0.0.1/private", "http://169.254.169.254/meta", "http://[::1]/private", "ftp://public.invalid/file", "https://user:password@public.invalid/image"} {
+		t.Run(target, func(t *testing.T) {
+			client, err := publicHostsOnlyDownloadClient("")
+			require.NoError(t, err)
+			calls := 0
+			client.Transport = publicDownloadRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+				calls++
+				return &http.Response{StatusCode: http.StatusFound, Header: http.Header{"Location": {target}}, Body: io.NopCloser(strings.NewReader("")), Request: req}, nil
+			})
+			req, err := http.NewRequestWithContext(service.WithHTTPUpstreamPublicHostsOnly(t.Context()), http.MethodGet, "https://public.invalid/image?signature=preserved", nil)
+			require.NoError(t, err)
+			_, err = client.Do(req)
+			require.Error(t, err)
+			require.Equal(t, 1, calls)
+			disabledReq := req.WithContext(service.WithHTTPUpstreamRedirectsDisabled(req.Context()))
+			disabled := upstream.httpClientForUpstreamRequest(client, disabledReq)
+			resp, err := disabled.Do(disabledReq)
+			require.NoError(t, err)
+			require.Equal(t, http.StatusFound, resp.StatusCode)
+			require.NoError(t, resp.Body.Close())
+			require.Equal(t, 2, calls, "disabled redirects must return the first response without connecting to its target")
+		})
+	}
+}
+
+func TestHTTPUpstreamStrictDownloadRejectsUnsafeInitialURL(t *testing.T) {
+	upstream := NewHTTPUpstream(nil)
+	for _, target := range []string{"file:///etc/passwd", "ftp://public.invalid/file", "https://user:password@public.invalid/image"} {
+		req, err := http.NewRequestWithContext(service.WithHTTPUpstreamPublicHostsOnly(t.Context()), http.MethodGet, target, nil)
+		require.NoError(t, err)
+		_, err = upstream.Do(req, "", 1, 1)
+		require.Error(t, err)
+	}
+}

@@ -1,13 +1,13 @@
 // Package proxyurl 提供代理 URL 的统一验证（fail-fast，无效代理不回退直连）
 //
-// 所有需要解析代理 URL 的地方必须通过此包的 Parse 函数。
+// 所有需要解析代理 URL 的地方必须通过此包的安全解析入口。
 // 直接使用 url.Parse 处理代理 URL 是被禁止的。
 // 这确保了 fail-fast 行为：无效代理配置在创建时立即失败，
 // 而不是在运行时静默回退到直连（产生 IP 关联风险）。
 package proxyurl
 
 import (
-	"fmt"
+	"errors"
 	"net/url"
 	"strings"
 )
@@ -30,10 +30,27 @@ var allowedSchemes = map[string]bool{
 // 验证规则:
 //   - TrimSpace 后为空视为直连
 //   - url.Parse 失败返回 error（不含原始 URL，防凭据泄露）
-//   - Host 为空返回 error（用 Redacted() 脱敏）
+//   - Host 为空返回安全分类 error（不含任何 URL 组成部分）
 //   - Scheme 必须为 http/https/socks5/socks5h
 //   - socks5:// 自动升级为 socks5h://（确保 DNS 由代理端解析，防止 DNS 泄漏）
 func Parse(raw string) (trimmed string, parsed *url.URL, err error) {
+	return parse(raw, true)
+}
+
+// ParsePreservingScheme applies the same fail-closed validation and safe errors as
+// Parse, without rewriting socks5 to socks5h. Existing callers whose transport
+// owns DNS semantics must use this entry point to preserve their routing policy.
+func ParsePreservingScheme(raw string) (trimmed string, parsed *url.URL, err error) {
+	return parse(raw, false)
+}
+
+var (
+	ErrInvalidURL        = errors.New("invalid proxy URL")
+	ErrMissingHost       = errors.New("proxy URL missing host")
+	ErrUnsupportedScheme = errors.New("unsupported proxy scheme (allowed: http, https, socks5, socks5h)")
+)
+
+func parse(raw string, upgradeSOCKS bool) (trimmed string, parsed *url.URL, err error) {
 	trimmed = strings.TrimSpace(raw)
 	if trimmed == "" {
 		return "", nil, nil
@@ -41,23 +58,22 @@ func Parse(raw string) (trimmed string, parsed *url.URL, err error) {
 
 	parsed, err = url.Parse(trimmed)
 	if err != nil {
-		// 不使用 %w 包装，避免 url.Parse 的底层错误消息泄漏原始 URL（可能含凭据）
-		return "", nil, fmt.Errorf("invalid proxy URL: %v", err)
+		// Neither wrap nor format url.Error: it retains the original URL, including secrets.
+		return "", nil, ErrInvalidURL
 	}
 
 	if parsed.Host == "" || parsed.Hostname() == "" {
-		return "", nil, fmt.Errorf("proxy URL missing host: %s", parsed.Redacted())
+		return "", nil, ErrMissingHost
 	}
 
 	scheme := strings.ToLower(parsed.Scheme)
 	if !allowedSchemes[scheme] {
-		return "", nil, fmt.Errorf("unsupported proxy scheme %q (allowed: http, https, socks5, socks5h)", scheme)
+		return "", nil, ErrUnsupportedScheme
 	}
 
-	// 自动升级 socks5 → socks5h，确保 DNS 由代理端解析，防止 DNS 泄漏。
-	// Go 的 golang.org/x/net/proxy 对 socks5:// 默认在客户端本地解析 DNS，
-	// 仅 socks5h:// 才将域名发送给代理端做远程 DNS 解析。
-	if scheme == "socks5" {
+	// 保留 Parse 既有的 socks5 → socks5h 规范化策略。
+	// DNS 行为取决于调用方的 transport/dialer；既有协议路径不应被无声改写。
+	if upgradeSOCKS && scheme == "socks5" {
 		parsed.Scheme = "socks5h"
 		trimmed = parsed.String()
 	}

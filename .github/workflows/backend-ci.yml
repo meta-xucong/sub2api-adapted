@@ -78,9 +78,15 @@ jobs:
           go version | grep -q 'go1.27.2'
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
+        # Match the validated cloud resource budget; keep all configured checks.
+        # GOMEMLIMIT is a soft Go runtime target, not a process RSS guarantee.
+        env:
+          GOMEMLIMIT: 3GiB
+          GOMAXPROCS: '2'
+          GOFLAGS: -p=1
         with:
-          version: v2.13
-          args: --timeout=30m
+          version: v2.15.0
+          args: --timeout=45m --concurrency=1 --max-issues-per-linter=0 --max-same-issues=0 ./...
           working-directory: backend
 
   release-helpers:

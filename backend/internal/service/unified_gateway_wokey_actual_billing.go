@@ -122,7 +122,7 @@ func (c *unifiedGatewayWokeyActualBillingClient) lookupOnce(ctx context.Context,
 		}
 		return decimal.Zero, errors.New("wokey_actual_api_unavailable")
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return decimal.Zero, errors.New("wokey_actual_api_status")
 	}

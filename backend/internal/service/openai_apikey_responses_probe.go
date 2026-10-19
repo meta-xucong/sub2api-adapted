@@ -319,7 +319,7 @@ func decideResponsesProbeSupport(status int, body []byte) bool {
 	if isResponsesProbeModelUnavailable(status, body) {
 		return true // The model error says nothing negative about the endpoint.
 	}
-	if status == http.StatusNotFound || status == http.StatusMethodNotAllowed {
+	if !isResponsesEndpointSupportedByStatus(status) {
 		return false
 	}
 	if status < 200 || status >= 300 {

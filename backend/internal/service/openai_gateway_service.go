@@ -280,16 +280,18 @@ type OpenAIForwardResult struct {
 	Duration              time.Duration
 	FirstTokenMs          *int
 	ClientDisconnect      bool
-	ImageCount            int
-	ImageSize             string
-	ImageQuality          string
-	ImageInputSize        string
-	ImageOutputSize       string
-	ImageOutputSizes      []string
-	ImageSizeSource       string
-	ImageSizeBreakdown    map[string]int
-	VideoCount            int
-	VideoResolution       string
+	// ImageRequest preserves image billing semantics even when no artifact was produced.
+	ImageRequest       bool `json:"-"`
+	ImageCount         int
+	ImageSize          string
+	ImageQuality       string
+	ImageInputSize     string
+	ImageOutputSize    string
+	ImageOutputSizes   []string
+	ImageSizeSource    string
+	ImageSizeBreakdown map[string]int
+	VideoCount         int
+	VideoResolution    string
 	// VideoDurationSeconds 是提交时请求的生成时长（xAI 按输出秒数计费），已归一化到 1-15 秒。
 	VideoDurationSeconds int
 	// RoutePricingDecision is the immutable request-level tariff snapshot carried
@@ -449,6 +451,7 @@ var ErrNoAvailableCompactAccounts = errors.New("no available accounts support /r
 
 // OpenAIGatewayService handles OpenAI API gateway operations
 type OpenAIGatewayService struct {
+	grokVoiceCatalogue       grokVoiceCatalogueCache
 	accountRepo              AccountRepository
 	usageLogRepo             UsageLogRepository
 	usageBillingRepo         UsageBillingRepository

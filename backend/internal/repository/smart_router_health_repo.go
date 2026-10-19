@@ -95,6 +95,24 @@ INSERT INTO smart_router_health_events (
 		return err
 	}
 
+	// Keep the full event history even when this tracker's newer observation
+	// reached persistence first. Only the materialized snapshot is superseded.
+	if !event.ShouldPersistStateProjection() {
+		// Success/failure timestamps are independent evidence used by calibration.
+		// Preserve them without restoring an obsolete health state or creating a
+		// row if the newer projection attempt failed before its first insert.
+		_, err = tx.ExecContext(ctx, `
+UPDATE smart_router_lane_state SET
+    last_success_at = CASE WHEN $4::boolean THEN GREATEST(last_success_at, $5::timestamptz) ELSE last_success_at END,
+    last_failure_at = CASE WHEN $4::boolean THEN last_failure_at ELSE GREATEST(last_failure_at, $5::timestamptz) END
+WHERE lane_id = $1 AND capability = $2 AND model_family = $3`,
+			event.Key.LaneID, event.Key.Capability, event.Key.Model, event.Success, occurredAt)
+		if err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
+
 	_, err = tx.ExecContext(ctx, `
 INSERT INTO smart_router_lane_state (
     lane_id, capability, model_family, account_id, source_group, health_penalty,
@@ -119,8 +137,8 @@ ON CONFLICT (lane_id, capability, model_family) DO UPDATE SET
     cooldown_until = EXCLUDED.cooldown_until,
     recovery_stage = EXCLUDED.recovery_stage,
     recovery_priority = EXCLUDED.recovery_priority,
-    last_success_at = CASE WHEN $14::boolean THEN EXCLUDED.last_success_at ELSE smart_router_lane_state.last_success_at END,
-    last_failure_at = CASE WHEN $14::boolean THEN smart_router_lane_state.last_failure_at ELSE EXCLUDED.last_failure_at END,
+    last_success_at = GREATEST(smart_router_lane_state.last_success_at, EXCLUDED.last_success_at),
+    last_failure_at = GREATEST(smart_router_lane_state.last_failure_at, EXCLUDED.last_failure_at),
     last_failure_unix = CASE WHEN $14::boolean THEN 0 ELSE EXCLUDED.last_failure_unix END,
     updated_at = NOW()`,
 		event.Key.LaneID, event.Key.Capability, event.Key.Model, event.AccountID, event.SourceGroup,

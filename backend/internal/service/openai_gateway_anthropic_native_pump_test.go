@@ -147,8 +147,8 @@ func TestCCStreamingFromNativeAnthropic_HangTimesOut(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "stream data interval timeout") {
 		t.Fatalf("expected stream timeout error, got %v", err)
 	}
-	if res == nil {
-		t.Fatalf("expected result carrying accumulated usage")
+	if res != nil {
+		t.Fatalf("unmetered timeout must not create a billing result")
 	}
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		t.Fatalf("handler did not respect interval bound: %v", elapsed)
@@ -337,4 +337,40 @@ func TestResponsesBufferedFromNativeAnthropic_ToolArgumentsAreValidJSON(t *testi
 	}
 }
 
-
+func TestCCStreamingFromNativeAnthropic_MeteredHangRetainsUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := newNativeAnthropicHangTestService(1)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+	resp, pr, pw := newHangingUpstreamResponse()
+	defer func() { _ = pr.Close() }()
+	defer func() { _ = pw.Close() }()
+	written := make(chan error, 1)
+	go func() {
+		_, err := io.WriteString(pw, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_metered\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"usage\":{\"input_tokens\":10,\"output_tokens\":1}}}\n\n")
+		written <- err
+	}()
+	start := time.Now()
+	result, err := svc.handleCCStreamingFromNativeAnthropic(resp, c, "m", "m", "m", nil, start)
+	if err == nil || !strings.Contains(err.Error(), "stream data interval timeout") {
+		t.Fatalf("expected stream timeout, got %v", err)
+	}
+	if result == nil || result.Usage.InputTokens != 10 || result.Usage.OutputTokens != 1 {
+		t.Fatalf("metered usage lost: %+v", result)
+	}
+	if time.Since(start) > 5*time.Second {
+		t.Fatal("metered hang exceeded idle bound")
+	}
+	if strings.Contains(rec.Body.String(), "[DONE]") {
+		t.Fatal("timeout must not synthesize completion")
+	}
+	select {
+	case err := <-written:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("fixture writer leaked")
+	}
+}

@@ -5977,6 +5977,7 @@
                   <!-- Collapsible header -->
                   <div
                     class="flex cursor-pointer items-center justify-between px-4 py-3"
+                    :data-testid="`web-search-provider-${provider.type}`"
                     @click="toggleProviderExpand(pIdx)"
                   >
                     <div class="flex items-center gap-3">
@@ -6259,7 +6260,8 @@
                       <button
                         type="button"
                         class="btn btn-secondary btn-sm whitespace-nowrap"
-                        @click="openTestDialog()"
+                        :data-testid="`web-search-test-${provider.type}`"
+                        @click="openTestDialog(provider.type)"
                       >
                         {{ t("admin.settings.webSearchEmulation.test") }}
                       </button>
@@ -6273,6 +6275,7 @@
           <!-- Web Search Test Dialog -->
           <div
             v-if="wsTestDialogOpen"
+            data-testid="web-search-test-dialog"
             class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
             @click.self="wsTestDialogOpen = false"
           >
@@ -6282,7 +6285,7 @@
               <h3
                 class="mb-4 text-lg font-semibold text-gray-900 dark:text-white"
               >
-                {{ t("admin.settings.webSearchEmulation.testResultTitle") }}
+                {{ t("admin.settings.webSearchEmulation.testResultTitle") }}: {{ wsTestProviderType }}
               </h3>
               <div class="flex items-center gap-2">
                 <input
@@ -10301,8 +10304,13 @@ const wsTestQuery = ref("");
 const wsTestLoading = ref(false);
 const wsTestResult = ref<WebSearchTestResult | null>(null);
 const wsTestDialogOpen = ref(false);
+const wsTestProviderType = ref<WebSearchProviderConfig["type"] | null>(null);
+let wsTestRequestId = 0;
 
-function openTestDialog() {
+function openTestDialog(providerType: WebSearchProviderConfig["type"]) {
+  wsTestRequestId++;
+  wsTestProviderType.value = providerType;
+  wsTestLoading.value = false;
   wsTestResult.value = null;
   wsTestDialogOpen.value = true;
 }
@@ -10399,17 +10407,23 @@ async function copyApiKey(idx: number) {
 }
 
 async function testWebSearchProvider() {
+  if (wsTestLoading.value || !wsTestProviderType.value) return;
+  const requestId = ++wsTestRequestId;
+  const providerType = wsTestProviderType.value;
   wsTestLoading.value = true;
   wsTestResult.value = null;
   try {
     const query =
       wsTestQuery.value.trim() ||
       t("admin.settings.webSearchEmulation.testDefaultQuery");
-    wsTestResult.value = await adminAPI.settings.testWebSearchEmulation(query);
+    const result = await adminAPI.settings.testWebSearchEmulation(query, providerType);
+    if (requestId === wsTestRequestId) wsTestResult.value = result;
   } catch (err: unknown) {
-    appStore.showError(extractApiErrorMessage(err, t("common.error")));
+    if (requestId === wsTestRequestId) {
+      appStore.showError(extractApiErrorMessage(err, t("common.error")));
+    }
   } finally {
-    wsTestLoading.value = false;
+    if (requestId === wsTestRequestId) wsTestLoading.value = false;
   }
 }
 

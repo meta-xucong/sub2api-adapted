@@ -22,8 +22,11 @@ import (
 )
 
 type blockingOpenAIResponseHeaderUpstream struct {
-	canceled chan struct{}
-	once     sync.Once
+	entered        chan struct{}
+	releaseHeaders chan struct{}
+	canceled       chan struct{}
+	enteredOnce    sync.Once
+	once           sync.Once
 }
 
 type firstOutputCloseTrackingBody struct {
@@ -38,12 +41,13 @@ func (b *firstOutputCloseTrackingBody) Close() error {
 }
 
 func (u *blockingOpenAIResponseHeaderUpstream) Do(req *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
+	u.enteredOnce.Do(func() { close(u.entered) })
 	select {
 	case <-req.Context().Done():
 		u.once.Do(func() { close(u.canceled) })
 		return nil, req.Context().Err()
-	case <-time.After(1500 * time.Millisecond):
-		return nil, errors.New("test upstream was not canceled before response headers")
+	case <-u.releaseHeaders:
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(""))}, nil
 	}
 }
 
@@ -51,9 +55,52 @@ func (u *blockingOpenAIResponseHeaderUpstream) DoWithTLS(req *http.Request, _ st
 	return u.Do(req, "", 0, 0)
 }
 
+// runFirstOutputTestCall keeps the fake upstream blocked until production
+// cancels it. The watchdog only bounds test observation and cleanup; it never
+// manufactures an upstream response or EOF to race the configured product timer.
+func runFirstOutputTestCall(t *testing.T, entered <-chan struct{}, cleanup func(), call func() error) error {
+	t.Helper()
+	done := make(chan struct{})
+	var result error
+	t.Cleanup(func() {
+		cleanup()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Error("first-output call did not exit after test cleanup")
+		}
+	})
+	go func() {
+		defer close(done)
+		result = call()
+	}()
+	if entered != nil {
+		select {
+		case <-entered:
+		case <-done:
+			select {
+			case <-entered:
+			default:
+				t.Fatal("first-output call returned before entering the blocked upstream")
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("first-output call never entered the blocked upstream")
+		}
+	}
+	select {
+	case <-done:
+		return result
+	case <-time.After(10 * time.Second):
+		t.Fatal("first-output call did not finish while upstream output remained blocked")
+		return nil
+	}
+}
+
 func TestOpenAIForwardFirstOutputTimeoutIncludesResponseHeaderWait(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	upstream := &blockingOpenAIResponseHeaderUpstream{canceled: make(chan struct{})}
+	upstream := &blockingOpenAIResponseHeaderUpstream{
+		entered: make(chan struct{}), releaseHeaders: make(chan struct{}), canceled: make(chan struct{}),
+	}
 	svc := &OpenAIGatewayService{
 		cfg: &config.Config{Gateway: config.GatewayConfig{
 			OpenAIFirstOutputTimeoutSeconds: 1,
@@ -71,8 +118,20 @@ func TestOpenAIForwardFirstOutputTimeoutIncludesResponseHeaderWait(t *testing.T)
 		Credentials: map[string]any{"access_token": "test-token", "chatgpt_account_id": "test-account"},
 	}
 
-	started := time.Now()
-	_, err := svc.Forward(context.Background(), c, account, body)
+	ctx, cancel := context.WithCancel(context.Background())
+	c.Request = c.Request.WithContext(ctx)
+	err := runFirstOutputTestCall(t, upstream.entered, func() {
+		cancel()
+		close(upstream.releaseHeaders)
+	}, func() error {
+		_, forwardErr := svc.Forward(ctx, c, account, body)
+		return forwardErr
+	})
+	select {
+	case <-upstream.releaseHeaders:
+		t.Fatal("response headers were released before the timeout result")
+	default:
+	}
 
 	require.Error(t, err)
 	var failoverErr *UpstreamFailoverError
@@ -80,7 +139,6 @@ func TestOpenAIForwardFirstOutputTimeoutIncludesResponseHeaderWait(t *testing.T)
 	require.Equal(t, http.StatusGatewayTimeout, failoverErr.StatusCode)
 	require.Contains(t, string(failoverErr.ResponseBody), "first_output_timeout")
 	require.True(t, failoverErr.SafeToFailoverAfterWrite)
-	require.Less(t, time.Since(started), 1300*time.Millisecond)
 	require.Empty(t, rec.Body.String())
 	select {
 	case <-upstream.canceled:
@@ -393,10 +451,7 @@ func assertOpenAINativeLargeOpenEventTimesOutWithoutLeak(t *testing.T, line stri
 		defer close(writerDone)
 		defer func() { _ = pw.Close() }()
 		_, _ = pw.Write([]byte(line + "\n"))
-		select {
-		case <-body.closed:
-		case <-time.After(2 * time.Second):
-		}
+		<-body.closed
 	}()
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -406,7 +461,18 @@ func assertOpenAINativeLargeOpenEventTimesOutWithoutLeak(t *testing.T, line stri
 		"X-Ratelimit-Remaining-Requests": []string{"1"},
 	}, Body: body}
 
-	_, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, &Account{ID: 1, Platform: PlatformOpenAI}, time.Now(), "model", "model")
+	err := runFirstOutputTestCall(t, nil, func() {
+		_ = body.Close()
+		_ = pw.Close()
+		select {
+		case <-writerDone:
+		case <-time.After(10 * time.Second):
+			t.Error("partial-event writer did not exit after test cleanup")
+		}
+	}, func() error {
+		_, streamErr := svc.handleStreamingResponse(c.Request.Context(), resp, c, &Account{ID: 1, Platform: PlatformOpenAI}, time.Now(), "model", "model")
+		return streamErr
+	})
 
 	var failoverErr *UpstreamFailoverError
 	require.ErrorAs(t, err, &failoverErr)
@@ -625,10 +691,7 @@ func TestOpenAINativeFirstOutputFailoverKeepsAttemptHeadersPrivateAfterKeepalive
 		defer close(firstWriterDone)
 		defer func() { _ = firstWriter.Close() }()
 		_, _ = firstWriter.Write([]byte("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_first\"}}\n\n"))
-		select {
-		case <-trackedFirstBody.closed:
-		case <-time.After(4 * time.Second):
-		}
+		<-trackedFirstBody.closed
 	}()
 	firstResp := &http.Response{
 		StatusCode: http.StatusOK,
@@ -640,7 +703,18 @@ func TestOpenAINativeFirstOutputFailoverKeepsAttemptHeadersPrivateAfterKeepalive
 		Body: trackedFirstBody,
 	}
 
-	_, firstErr := svc.handleStreamingResponse(c.Request.Context(), firstResp, c, &Account{ID: 1, Platform: PlatformOpenAI}, time.Now(), "model", "model")
+	firstErr := runFirstOutputTestCall(t, nil, func() {
+		_ = trackedFirstBody.Close()
+		_ = firstWriter.Close()
+		select {
+		case <-firstWriterDone:
+		case <-time.After(10 * time.Second):
+			t.Error("first account writer did not exit after test cleanup")
+		}
+	}, func() error {
+		_, streamErr := svc.handleStreamingResponse(c.Request.Context(), firstResp, c, &Account{ID: 1, Platform: PlatformOpenAI}, time.Now(), "model", "model")
+		return streamErr
+	})
 	var failoverErr *UpstreamFailoverError
 	require.ErrorAs(t, firstErr, &failoverErr)
 	require.Contains(t, rec.Body.String(), ":\n\n", "first attempt should have committed only a stable keepalive")

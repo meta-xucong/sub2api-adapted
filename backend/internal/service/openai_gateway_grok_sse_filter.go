@@ -161,7 +161,7 @@ func filterGrokResponsesBillingPings(
 
 		// Frame start: only `event: ping` opens a buffered candidate.
 		if !isBlank {
-			if value, ok := extractOpenAISSEEventLine(string(trimSSELineEnding(line))); ok && value == "ping" {
+			if value, ok := extractOpenAISSEEventLine(string(trimSSELineEnding(line))); ok && strings.TrimSpace(value) == "ping" {
 				pingFrame = append(pingFrame, append([]byte(nil), line...))
 				pingFrameBytes = len(line)
 				continue

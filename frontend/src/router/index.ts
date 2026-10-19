@@ -51,6 +51,32 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/veyra-launch',
+    name: 'VeyraLaunch',
+    component: () => import('@/views/auth/VeyraLaunchView.vue'),
+    meta: {
+      requiresAuth: false,
+      title: 'Opening Alchemy'
+    }
+  },
+  {
+    // The backend normally serves this callback; this keeps a stale SPA shell
+    // from turning an Alchemy return into a 404.
+    path: '/_veyra/return',
+    name: 'VeyraReturnFallback',
+    redirect: (to) => {
+      const target = to.query.target
+      if (target === 'alchemy' || target === 'alchemy-mobile') {
+        return { path: '/veyra-launch', query: { target } }
+      }
+      return '/home'
+    },
+    meta: {
+      requiresAuth: false,
+      title: 'Opening Alchemy'
+    }
+  },
+  {
     path: '/register',
     name: 'Register',
     component: () => import('@/views/auth/RegisterView.vue'),

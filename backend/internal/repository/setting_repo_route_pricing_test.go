@@ -14,10 +14,14 @@ import (
 func TestSettingRepositoryCompareAndSetValueUsesAtomicPredicates(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
 	client := dbent.NewClient(dbent.Driver(entsql.OpenDB(dialect.Postgres, db)))
-	defer client.Close()
-	repo := NewSettingRepository(client).(*settingRepository)
+	t.Cleanup(func() {
+		mock.ExpectClose()
+		require.NoError(t, client.Close())
+		require.NoError(t, mock.ExpectationsWereMet())
+	})
+	repo, ok := NewSettingRepository(client).(*settingRepository)
+	require.True(t, ok)
 
 	mock.ExpectExec(`UPDATE .*settings.*`).
 		WithArgs("new", sqlmock.AnyArg(), "route-pricing", "old").

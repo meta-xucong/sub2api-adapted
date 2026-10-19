@@ -9,12 +9,12 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
-	"net/url"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/proxyurl"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/proxyutil"
 	"github.com/redis/go-redis/v9"
 )
@@ -77,6 +77,9 @@ return val
 func NewManager(configs []ProviderConfig, redisClient *redis.Client) *Manager {
 	copied := make([]ProviderConfig, len(configs))
 	copy(copied, configs)
+	for i := range copied {
+		copied[i].APIKey = strings.TrimSpace(copied[i].APIKey)
+	}
 	return &Manager{
 		configs:     copied,
 		redis:       redisClient,
@@ -281,6 +284,10 @@ func isProxyError(err error) bool {
 	if err == nil {
 		return false
 	}
+	var providerErr *ProviderError
+	if errors.As(err, &providerErr) {
+		return providerErr.proxyFailure
+	}
 	// Network-level errors (timeout, connection refused, DNS failure)
 	var netErr net.Error
 	if errors.As(err, &netErr) {
@@ -349,23 +356,63 @@ func (m *Manager) rollbackQuota(ctx context.Context, cfg ProviderConfig) {
 
 // --- Search execution ---
 
-// TestSearch executes a search using the first available provider without reserving quota.
-// Intended for admin test functionality only.
+// TestSearch preserves the legacy first-successful-provider behavior and bypasses
+// quota tracking. A card-specific admin test must use TestSearchProvider instead.
 func (m *Manager) TestSearch(ctx context.Context, req SearchRequest) (*SearchResponse, string, error) {
-	if strings.TrimSpace(req.Query) == "" {
-		return nil, "", fmt.Errorf("websearch: empty search query")
+	return m.testSearch(ctx, req, "")
+}
+
+// TestSearchProvider tests exactly one configured provider type. Config validation
+// forbids duplicates; detect invalid legacy configurations instead of guessing.
+// An empty target retains the legacy no-target behavior.
+func (m *Manager) TestSearchProvider(ctx context.Context, req SearchRequest, providerType string) (*SearchResponse, string, error) {
+	if providerType != "" && providerType != ProviderTypeBrave && providerType != ProviderTypeTavily {
+		return nil, "", ErrInvalidTestProvider
 	}
+	return m.testSearch(ctx, req, providerType)
+}
+
+func (m *Manager) testSearch(ctx context.Context, req SearchRequest, providerType string) (*SearchResponse, string, error) {
+	if strings.TrimSpace(req.Query) == "" {
+		return nil, "", ErrEmptyTestQuery
+	}
+	if providerType != "" {
+		matches := 0
+		for _, cfg := range m.configs {
+			if cfg.Type == providerType {
+				matches++
+			}
+		}
+		if matches > 1 {
+			return nil, "", ErrAmbiguousTestProvider
+		}
+	}
+	var failures []*ProviderError
 	for _, cfg := range m.configs {
+		if providerType != "" && cfg.Type != providerType {
+			continue
+		}
 		if !m.isProviderAvailable(cfg) {
 			continue
 		}
 		resp, err := m.executeSearch(ctx, cfg, req)
 		if err != nil {
+			var failure *ProviderError
+			if !errors.As(err, &failure) {
+				failure = providerRequestError(cfg.Type, err)
+			}
+			if providerType != "" {
+				return nil, "", failure
+			}
+			failures = append(failures, failure)
 			continue
 		}
 		return resp, cfg.Type, nil
 	}
-	return nil, "", fmt.Errorf("websearch: no available provider")
+	if len(failures) > 0 {
+		return nil, "", &TestSearchError{Failures: failures}
+	}
+	return nil, "", ErrNoTestProvider
 }
 
 func (m *Manager) executeSearch(ctx context.Context, cfg ProviderConfig, req SearchRequest) (*SearchResponse, error) {
@@ -413,12 +460,15 @@ func newHTTPClient(proxyURL string) (*http.Client, error) {
 		ResponseHeaderTimeout: searchDataTimeout,
 	}
 	if proxyURL != "" {
-		parsed, err := url.Parse(proxyURL)
+		if strings.TrimSpace(proxyURL) == "" {
+			return nil, proxyurl.ErrMissingHost
+		}
+		_, parsed, err := proxyurl.ParsePreservingScheme(proxyURL)
 		if err != nil {
-			return nil, fmt.Errorf("invalid proxy URL %q: %w", proxyURL, err)
+			return nil, err
 		}
 		if err := proxyutil.ConfigureTransportProxy(transport, parsed); err != nil {
-			return nil, fmt.Errorf("configure proxy: %w", err)
+			return nil, errors.New("configure proxy failed")
 		}
 	}
 	return &http.Client{Transport: transport, Timeout: searchRequestTimeout}, nil

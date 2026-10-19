@@ -122,6 +122,20 @@ func snapshotOAuthRefreshAccount(account *Account) *Account {
 	return &snapshot
 }
 
+// oauthRefreshAttemptContextErr also checks the absolute deadline: its timer
+// callback may not yet have published ctx.Err when a provider returns. This is
+// the post-Refresh admission check; persistence still uses its existing context
+// and CAS boundaries.
+func oauthRefreshAttemptContextErr(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+		return context.DeadlineExceeded
+	}
+	return nil
+}
+
 // OAuthRefreshAPI 统一的 OAuth Token 刷新入口
 // 封装分布式锁、进程内互斥锁、DB 重读、已刷新检查、竞争恢复等通用逻辑
 type OAuthRefreshAPI struct {
@@ -256,7 +270,7 @@ func (api *OAuthRefreshAPI) RefreshIfNeeded(
 	// 4. 执行平台特定刷新逻辑
 	attemptedAccount := snapshotOAuthRefreshAccount(freshAccount)
 	newCredentials, refreshErr := executor.Refresh(ctx, freshAccount)
-	if ctxErr := ctx.Err(); ctxErr != nil {
+	if ctxErr := oauthRefreshAttemptContextErr(ctx); ctxErr != nil {
 		// A provider implementation may ignore cancellation and return late
 		// credentials. Never persist them after the attempt/cycle boundary.
 		return nil, ctxErr

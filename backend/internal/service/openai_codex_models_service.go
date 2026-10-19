@@ -1546,6 +1546,7 @@ func isRetryableCodexModelsManifestTransportError(err error) bool {
 	if errors.As(err, &dnsErr) {
 		return true
 	}
+	//nolint:staticcheck // SA1019: Retain typed legacy transport errors, including wrappers whose Error hides the cause.
 	var goAwayErr http2.GoAwayError
 	if errors.As(err, &goAwayErr) {
 		return true

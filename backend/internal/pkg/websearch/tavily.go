@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
+	"strings"
 )
 
 const (
@@ -27,19 +27,21 @@ func NewTavilyProvider(apiKey string, httpClient *http.Client) *TavilyProvider {
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
-	return &TavilyProvider{apiKey: apiKey, httpClient: httpClient}
+	return &TavilyProvider{apiKey: strings.TrimSpace(apiKey), httpClient: httpClient}
 }
 
 func (t *TavilyProvider) Name() string { return tavilyProviderName }
 
 func (t *TavilyProvider) Search(ctx context.Context, req SearchRequest) (*SearchResponse, error) {
+	if !ValidAPIKey(t.apiKey) {
+		return nil, &ProviderError{Provider: tavilyProviderName, Kind: FailureInvalidKey}
+	}
 	maxResults := req.MaxResults
 	if maxResults <= 0 {
 		maxResults = defaultMaxResults
 	}
 
 	payload := tavilyRequest{
-		APIKey:      t.apiKey,
 		Query:       req.Query,
 		MaxResults:  maxResults,
 		SearchDepth: tavilySearchDepthBasic,
@@ -47,33 +49,35 @@ func (t *TavilyProvider) Search(ctx context.Context, req SearchRequest) (*Search
 
 	bodyBytes, err := json.Marshal(payload)
 	if err != nil {
-		return nil, fmt.Errorf("tavily: encode request: %w", err)
+		return nil, providerRequestError(tavilyProviderName, err)
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, tavilySearchEndpoint, bytes.NewReader(bodyBytes))
 	if err != nil {
-		return nil, fmt.Errorf("tavily: build request: %w", err)
+		return nil, providerRequestError(tavilyProviderName, err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	// https://docs.tavily.com/documentation/api-reference/endpoint/search
+	httpReq.Header.Set("Authorization", "Bearer "+t.apiKey)
 
 	resp, err := t.httpClient.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("tavily: request failed: %w", err)
+		return nil, providerRequestError(tavilyProviderName, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
 	if err != nil {
-		return nil, fmt.Errorf("tavily: read body: %w", err)
+		return nil, providerRequestError(tavilyProviderName, err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("tavily: status %d: %s", resp.StatusCode, truncateBody(body))
+		return nil, providerStatusError(tavilyProviderName, resp.StatusCode, body)
 	}
 
 	var raw tavilyResponse
 	if err := json.Unmarshal(body, &raw); err != nil {
-		return nil, fmt.Errorf("tavily: decode response: %w", err)
+		return nil, &ProviderError{Provider: tavilyProviderName, Kind: FailureResponse}
 	}
 
 	results := make([]SearchResult, 0, len(raw.Results))
@@ -89,7 +93,6 @@ func (t *TavilyProvider) Search(ctx context.Context, req SearchRequest) (*Search
 }
 
 type tavilyRequest struct {
-	APIKey      string `json:"api_key"`
 	Query       string `json:"query"`
 	MaxResults  int    `json:"max_results"`
 	SearchDepth string `json:"search_depth"`

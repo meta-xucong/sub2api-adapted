@@ -537,6 +537,9 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 	if !s.isAccountRequestCompatible(ctx, account, req) {
 		return nil, false, nil
 	}
+	if s.isRecoveringSmartRouterImageAccount(req, account) {
+		return nil, true, nil
+	}
 	if !s.isAccountTransportCompatible(account, req.RequiredTransport) {
 		clearBinding()
 		return nil, false, nil
@@ -1123,6 +1126,9 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAISelectionOrder(
 				}
 			}
 		}
+		if req.RequiredImageCapability != "" && s.service.isSmartRouterEnabled() && (req.SmartRouterCapability == smartrouter.CapabilityImageGeneration || req.SmartRouterCapability == smartrouter.CapabilityImageEdit) {
+			return s.service.reorderSmartRouterSelectionCandidates(ctx, req, pool)
+		}
 		groupTopK := plan.topK
 		if groupTopK > len(pool) {
 			groupTopK = len(pool)
@@ -1372,6 +1378,10 @@ func (s *defaultOpenAIAccountScheduler) tryFallbackToWeightedSticky(
 		if !s.isAccountRequestCompatible(ctx, account, req) || !s.isAccountTransportCompatible(account, req.RequiredTransport) {
 			continue
 		}
+		// A recovering sticky lane may not bypass core's single probe choice.
+		if s.isRecoveringSmartRouterImageAccount(req, account) {
+			continue
+		}
 		if req.RequireCompact && openAICompactSupportTier(account) == 0 {
 			continue
 		}
@@ -1469,6 +1479,12 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	req OpenAIAccountScheduleRequest,
 ) (*AccountSelectionResult, int, int, float64, error) {
 	budget := newOpenAISelectionProbeBudget()
+	if s.service.isSmartRouterEnabled() && req.RequiredImageCapability != "" {
+		if state, ok := ctx.Value(smartRouterImageSelectionKey{}).(*smartRouterImageSelectionState); ok && state != nil && state.ProbeBudget != nil {
+			budget = state.ProbeBudget
+		}
+		budget.enableLimit()
+	}
 	accounts, err := s.service.listSchedulableAccounts(ctx, req.GroupID, req.Platform)
 	if err != nil {
 		return nil, 0, 0, 0, err
@@ -1562,6 +1578,19 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 
 	if req.SubscriptionPriority {
 		subscriptionAccounts, regularAccounts := partitionOpenAIChatGPTSubscriptionAccounts(filtered)
+		if req.RequiredImageCapability != "" && s.service.isSmartRouterEnabled() {
+			// Preserve subscription preference among ordinary lanes, but defer
+			// recovering subscriptions to the same fallback pool as other probes.
+			healthySubscriptions := make([]*Account, 0, len(subscriptionAccounts))
+			for _, account := range subscriptionAccounts {
+				if s.isRecoveringSmartRouterImageAccount(req, account) {
+					regularAccounts = append(regularAccounts, account)
+				} else {
+					healthySubscriptions = append(healthySubscriptions, account)
+				}
+			}
+			subscriptionAccounts = healthySubscriptions
+		}
 		if len(subscriptionAccounts) > 0 {
 			attempt := s.trySelectByLoadBalancePool(ctx, req, subscriptionAccounts, loadMap, budget)
 			if attempt.err != nil && (!attempt.noCompactCandidates || len(regularAccounts) <= 0) {
@@ -1608,6 +1637,18 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		return attempt.result, attempt.candidateCount, attempt.topK, attempt.loadSkew, nil
 	}
 	return s.finishLoadBalanceSelectionFallback(ctx, req, attempt, budget, filterStats)
+}
+
+func (s *defaultOpenAIAccountScheduler) isRecoveringSmartRouterImageAccount(req OpenAIAccountScheduleRequest, account *Account) bool {
+	if s == nil || s.service == nil || req.RequiredImageCapability == "" {
+		return false
+	}
+	lane, managed := s.service.smartRouterImageLane(account, req.SmartRouterCapability, req.RequestedModel)
+	if !managed {
+		return false
+	}
+	health := s.service.smartRouterHealth().Snapshot(lane, req.SmartRouterCapability, req.RequestedModel, time.Now().Unix())
+	return health.RecoveryStage != "" && health.RecoveryStage != smartrouter.RecoveryNormal
 }
 
 func partitionOpenAIChatGPTSubscriptionAccounts(accounts []*Account) ([]*Account, []*Account) {
@@ -1893,6 +1934,9 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleReason(ctx con
 	if !accountSupportsOpenAICapabilities(account, req.RequiredCapability, req.RequiredImageCapability) {
 		return false, "capability_mismatch"
 	}
+	if s != nil && s.service != nil && !s.service.smartRouterImageAccountAvailable(ctx, account, req.SmartRouterCapability, req.RequestedModel) {
+		return false, "smart_router_image_recovering"
+	}
 	// 分组利润控制：不合格账号在候选过滤与抢槽后终检阶段即被排除，
 	// 排序/评分/粘性/熔断只在合格账号之间工作；named reason 进入 filter stats。
 	if vetoed, reason := openAIProfitControlVetoReason(ctx, account); vetoed {
@@ -2148,7 +2192,8 @@ func (s *OpenAIGatewayService) getOpenAIAccountScheduler(ctx context.Context) Op
 	if s == nil {
 		return nil
 	}
-	if !s.isOpenAIAdvancedSchedulerEnabled(ctx) {
+	_, imageRequest := ctx.Value(smartRouterImageScopeKey{}).(smartRouterImageScope)
+	if !s.isOpenAIAdvancedSchedulerEnabled(ctx) && (!s.isSmartRouterEnabled() || !imageRequest) {
 		return nil
 	}
 	s.openaiSchedulerOnce.Do(func() {
@@ -2227,18 +2272,46 @@ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForImageOperation(
 	excludedIDs map[int64]struct{},
 	requiredCapability OpenAIImagesCapability,
 	isEdit bool,
-) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
+) (selection *AccountSelectionResult, decision OpenAIAccountScheduleDecision, err error) {
+	ctx = WithSmartRouterImageRequest(ctx, requestedModel, isEdit)
+	state := &smartRouterImageSelectionState{ProbeBudget: newOpenAISelectionProbeBudget()}
+	ctx = context.WithValue(ctx, smartRouterImageSelectionKey{}, state)
+	defer func() {
+		if (selection == nil || selection.Account == nil) && state.RetryAtUnix > 0 && (err == nil || errors.Is(err, ErrNoAvailableAccounts)) {
+			err = &SmartRouterImageUnavailableError{RetryAtUnix: state.RetryAtUnix}
+		}
+	}()
 	smartRouterCapability := smartrouter.CapabilityImageGeneration
 	if isEdit {
 		smartRouterCapability = smartrouter.CapabilityImageEdit
 	}
-	selection, decision, err := s.selectAccountWithScheduler(ctx, groupID, "", sessionHash, requestedModel, excludedIDs, OpenAIUpstreamTransportHTTPSSE, "", requiredCapability, false, PlatformOpenAI, false, false, smartRouterCapability)
-	if err == nil && selection != nil && selection.Account != nil {
-		return selection, decision, nil
+	selectNativeTiers := func(selectionCtx context.Context) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
+		selected, selectedDecision, selectionErr := s.selectAccountWithScheduler(selectionCtx, groupID, "", sessionHash, requestedModel, excludedIDs, OpenAIUpstreamTransportHTTPSSE, "", requiredCapability, false, PlatformOpenAI, false, false, smartRouterCapability)
+		if selectionErr == nil && selected != nil && selected.Account != nil {
+			return selected, selectedDecision, nil
+		}
+		// Exhaust native then basic/OAuth availability before considering cooling.
+		if requiredCapability == OpenAIImagesCapabilityNative {
+			return s.selectAccountWithScheduler(selectionCtx, groupID, "", sessionHash, requestedModel, excludedIDs, OpenAIUpstreamTransportHTTPSSE, "", OpenAIImagesCapabilityBasic, false, PlatformOpenAI, false, false, smartRouterCapability)
+		}
+		return selected, selectedDecision, selectionErr
 	}
-	// 如果要求 native 能力（如指定了模型）但没有可用的 APIKey 账号，回退到 basic（OAuth 账号）
-	if requiredCapability == OpenAIImagesCapabilityNative {
-		return s.selectAccountWithScheduler(ctx, groupID, "", sessionHash, requestedModel, excludedIDs, OpenAIUpstreamTransportHTTPSSE, "", OpenAIImagesCapabilityBasic, false, PlatformOpenAI, false, false, smartRouterCapability)
+	selection, decision, err = selectNativeTiers(ctx)
+	if err == nil && selection != nil && selection.Account != nil {
+		return selection, decision, nil // Acquired or existing bounded WaitPlan.
+	}
+	if s.isSmartRouterEnabled() && state.RetryAtUnix > 0 && (err == nil || errors.Is(err, ErrNoAvailableAccounts)) &&
+		OpenAIImageRequestContextErr(ctx) == nil && !state.ProbeBudget.acquireExhausted() {
+		// One final pass shares native filters, exclusions and the same slot/DB
+		// probe budget. Permission remains local to this selection, not the outer
+		// request, so a later normal queued attempt cannot bypass health.
+		scope := smartRouterImageRequestScope(ctx, nil)
+		scope.LastResort = true
+		lastResortCtx := context.WithValue(ctx, smartRouterImageScopeKey{}, scope)
+		selection, decision, err = selectNativeTiers(lastResortCtx)
+		if err == nil && selection != nil && selection.Account != nil {
+			selection.SmartRouterImageLastResort = true
+		}
 	}
 	return selection, decision, err
 }

@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -33,25 +34,29 @@ func newPassthroughKeepaliveTestContext(t *testing.T) (*gin.Context, *httptest.R
 // startOpenAISSEKeepalive 必须在【没有】compact 标记时也能启动 ——
 // 否则普通透传请求依旧静默。
 func TestStartOpenAISSEKeepalive_WorksWithoutCompactMarker(t *testing.T) {
-	c, rec := newPassthroughKeepaliveTestContext(t)
+	// Virtual time waits for the keepalive goroutine to run before advancing.
+	// A wall-clock sleep can finish first when a busy runner delays that goroutine.
+	synctest.Test(t, func(t *testing.T) {
+		c, rec := newPassthroughKeepaliveTestContext(t)
 
-	// 对照:带 compact 标记检查的入口在这里应当直接 no-op。
-	stop := StartOpenAICompactSSEKeepalive(c, keepaliveTestInterval)
-	waitForKeepaliveBeats()
-	stop()
-	require.Zero(t, rec.Body.Len(), "无 compact 标记时 StartOpenAICompactSSEKeepalive 应当 no-op")
+		// 对照:带 compact 标记检查的入口在这里应当直接 no-op。
+		stop := StartOpenAICompactSSEKeepalive(c, keepaliveTestInterval)
+		waitForKeepaliveBeats()
+		stop()
+		require.Zero(t, rec.Body.Len(), "无 compact 标记时 StartOpenAICompactSSEKeepalive 应当 no-op")
 
-	// 内部入口不检查标记,应当真的开始打拍。
-	c, rec = newPassthroughKeepaliveTestContext(t)
-	stop = startOpenAISSEKeepalive(c, keepaliveTestInterval)
-	defer stop()
-	waitForKeepaliveBeats()
+		// 内部入口不检查标记,应当真的开始打拍。
+		c, rec = newPassthroughKeepaliveTestContext(t)
+		stop = startOpenAISSEKeepalive(c, keepaliveTestInterval)
+		defer stop()
+		waitForKeepaliveBeats()
 
-	require.True(t, StopOpenAICompactSSEKeepaliveCommitted(c), "心跳应当提交响应头")
-	require.Equal(t, http.StatusOK, rec.Code)
-	require.Equal(t, "text/event-stream", rec.Header().Get("Content-Type"))
-	require.Equal(t, "no", rec.Header().Get("X-Accel-Buffering"))
-	require.Contains(t, rec.Body.String(), ": keepalive\n\n")
+		require.True(t, StopOpenAICompactSSEKeepaliveCommitted(c), "心跳应当提交响应头")
+		require.Equal(t, http.StatusOK, rec.Code)
+		require.Equal(t, "text/event-stream", rec.Header().Get("Content-Type"))
+		require.Equal(t, "no", rec.Header().Get("X-Accel-Buffering"))
+		require.Contains(t, rec.Body.String(), ": keepalive\n\n")
+	})
 }
 
 // 🔴 最要紧的一条:心跳字节【不得】把请求判成「已向客户端写出语义响应」，

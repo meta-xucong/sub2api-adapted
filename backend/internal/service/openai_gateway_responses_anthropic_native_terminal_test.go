@@ -28,7 +28,7 @@ func (r *terminalErrorReader) Read(p []byte) (int, error) {
 	return 0, r.err
 }
 
-func runNativeAnthropicResponsesStream(t *testing.T, body io.Reader, writer http.ResponseWriter) (*OpenAIForwardResult, error, *httptest.ResponseRecorder) {
+func runNativeAnthropicResponsesStream(t *testing.T, body io.Reader, writer http.ResponseWriter) (*OpenAIForwardResult, *httptest.ResponseRecorder, error) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	svc := newNativeAnthropicHangTestService(5)
@@ -44,7 +44,7 @@ func runNativeAnthropicResponsesStream(t *testing.T, body io.Reader, writer http
 	resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(body)}
 	result, err := svc.handleResponsesStreamingFromNativeAnthropic(
 		resp, c, "claude-test", "claude-test", "claude-test", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
-	return result, err, rec
+	return result, rec, err
 }
 
 func responsesNativeStreamEvents(t *testing.T, body string) []apicompat.ResponsesStreamEvent {
@@ -66,7 +66,7 @@ func responsesNativeStreamEvents(t *testing.T, body string) []apicompat.Response
 func TestResponsesStreamingFromNativeAnthropic_RequiresMessageStop(t *testing.T) {
 	t.Run("normal text", func(t *testing.T) {
 		body := miniAnthropicSSEStream() + "event: error\ndata: {bad trailing event}\n\n"
-		result, err, rec := runNativeAnthropicResponsesStream(t, strings.NewReader(body), nil)
+		result, rec, err := runNativeAnthropicResponsesStream(t, strings.NewReader(body), nil)
 		if err != nil || result == nil {
 			t.Fatalf("expected successful result, got result=%v err=%v", result, err)
 		}
@@ -77,7 +77,7 @@ func TestResponsesStreamingFromNativeAnthropic_RequiresMessageStop(t *testing.T)
 	})
 
 	t.Run("tool use is a successful response", func(t *testing.T) {
-		result, err, rec := runNativeAnthropicResponsesStream(t, strings.NewReader(toolAnthropicSSEStream()), nil)
+		result, rec, err := runNativeAnthropicResponsesStream(t, strings.NewReader(toolAnthropicSSEStream()), nil)
 		if err != nil || result == nil {
 			t.Fatalf("expected successful tool response, got result=%v err=%v", result, err)
 		}
@@ -118,7 +118,7 @@ func TestResponsesStreamingFromNativeAnthropic_FailsInsteadOfFinalizingAbnormalS
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			result, err, rec := runNativeAnthropicResponsesStream(t, tc.body, nil)
+			result, rec, err := runNativeAnthropicResponsesStream(t, tc.body, nil)
 			if err == nil || !strings.Contains(err.Error(), "upstream response failed:") {
 				t.Fatalf("expected handled upstream stream failure, got %v", err)
 			}

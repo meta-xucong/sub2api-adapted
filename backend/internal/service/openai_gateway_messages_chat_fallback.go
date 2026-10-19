@@ -196,14 +196,18 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsAnthropic(
 
 	anthropicState := apicompat.NewChatCompletionsToAnthropicStreamState(originalModel)
 	clientDisconnected := false
+	deliveredModelOutput := false
 
 	// 与 responses 兄弟不同：客户端断开后仍继续做事件转换（喂 anthropicState），
 	// 仅跳过写出，保证 finalize 阶段的 usage 汇总不受断开影响。
-	emitChunk := func(chunk *apicompat.ChatCompletionsChunk) {
+	emitChunk := func(chunk *apicompat.ChatCompletionsChunk) bool {
+		if c.Request != nil && c.Request.Context().Err() != nil {
+			clientDisconnected = true
+		}
 		// CC chunk → Anthropic events (direct, single state machine)
 		anthropicEvents := apicompat.ChatCompletionsChunkToAnthropicEvents(chunk, anthropicState)
 		if clientDisconnected {
-			return
+			return true
 		}
 		for _, aEvt := range anthropicEvents {
 			sse, err := apicompat.ResponsesAnthropicEventToSSE(aEvt)
@@ -211,20 +215,37 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsAnthropic(
 				continue
 			}
 			writeStreamHeaders()
-			if _, err := fmt.Fprint(c.Writer, sse); err != nil {
+			if n, err := fmt.Fprint(c.Writer, sse); err != nil || n != len(sse) {
 				clientDisconnected = true
 				break
 			}
+			deliveredModelOutput = deliveredModelOutput || anthropicCCEventHasModelOutput(aEvt)
 		}
 		if !clientDisconnected && len(anthropicEvents) > 0 {
 			c.Writer.Flush()
 		}
+		return clientDisconnected
 	}
 
 	scan := s.scanCCStream(c, resp, "openai messages chat fallback", requestID, startTime, emitChunk)
+	clientDisconnected = clientDisconnected || gatewayClientDisconnected(c)
 	usage := scan.Usage
 
 	if scan.Err != nil {
+		// Decide before writing an error: those bytes are not model output.
+		billable := openAIStreamFailureHasBillableEvidence(usage, deliveredModelOutput)
+		if !clientDisconnected && (c.Request == nil || c.Request.Context().Err() == nil) {
+			if !anthropicState.MessageStartSent {
+				writeAnthropicError(c, http.StatusBadGateway, "api_error", "Upstream response stream was interrupted")
+			} else {
+				MarkResponseCommitted(c)
+				_, _ = fmt.Fprint(c.Writer, buildAnthropicStreamErrorSSE("api_error", "Upstream response stream was interrupted"))
+				c.Writer.Flush()
+			}
+		}
+		if !billable {
+			return nil, openAIUnbillableStreamError(fmt.Errorf("stream usage incomplete: %w", scan.Err), clientDisconnected)
+		}
 		// Broken upstream read: skip finalization so no synthetic message_stop
 		// masks the truncation, and surface the error to flag usage incomplete
 		// (mirrors forwardResponsesViaRawChatCompletions).

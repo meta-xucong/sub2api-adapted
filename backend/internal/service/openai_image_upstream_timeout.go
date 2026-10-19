@@ -69,6 +69,22 @@ func detachOpenAIImageUpstreamContext(ctx context.Context) (context.Context, con
 	return detached, func() {}
 }
 
+// OpenAIImageRequestContextErr checks the absolute budget as well as cancellation.
+// Detached attempts have an independent timer at the same deadline; that timer
+// can fire before the request context's timer publishes DeadlineExceeded.
+func OpenAIImageRequestContextErr(ctx context.Context) error {
+	if ctx == nil {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+		return context.DeadlineExceeded
+	}
+	return nil
+}
+
 // isOpenAIImageAttemptTimeout distinguishes an attempt-owned timeout from a
 // caller cancellation or the request-wide budget expiring. Only attempt-owned
 // timeouts may be translated into a cross-account failover.
@@ -76,7 +92,7 @@ func isOpenAIImageAttemptTimeout(err error, attemptCtx context.Context, requestC
 	if err == nil || !errors.Is(err, context.DeadlineExceeded) || attemptCtx == nil {
 		return false
 	}
-	if requestCtx != nil && requestCtx.Err() != nil {
+	if OpenAIImageRequestContextErr(requestCtx) != nil {
 		return false
 	}
 	return errors.Is(attemptCtx.Err(), context.DeadlineExceeded)

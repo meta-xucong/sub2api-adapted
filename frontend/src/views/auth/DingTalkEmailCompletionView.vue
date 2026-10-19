@@ -23,6 +23,7 @@
 </template>
 
 <script setup lang="ts">
+import { completeLoginRedirect } from '@/router/veyraReturn'
 import { ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
@@ -40,6 +41,14 @@ import { clearAllAffiliateReferralCodes } from '@/utils/oauthAffiliate'
 
 const route = useRoute()
 const router = useRouter()
+
+function completeAuthRedirect(path: unknown): Promise<void> {
+  return completeLoginRedirect(
+    path,
+    (value) => router.replace(value),
+    (value) => window.location.replace(value)
+  )
+}
 const { t } = useI18n()
 
 const authStore = useAuthStore()
@@ -100,7 +109,7 @@ async function handleCreateAccount(payload: PendingOAuthCreateAccountPayload) {
       await authStore.setToken(data.access_token)
       clearAllAffiliateReferralCodes()
       appStore.showSuccess(t('auth.loginSuccess'))
-      await router.replace(redirect)
+      await completeAuthRedirect(redirect)
       return
     }
 

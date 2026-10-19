@@ -241,7 +241,7 @@ func convertResponsesInputToAnthropic(instructions string, inputRaw json.RawMess
 			}
 			summary := strings.TrimSpace(strings.Join(summaryParts, "\n"))
 			if summary == "" {
-				return nil, nil, fmt.Errorf("Responses compaction item has no portable summary for Anthropic compatibility")
+				return nil, nil, fmt.Errorf("responses compaction item has no portable summary for Anthropic compatibility")
 			}
 			content, _ := json.Marshal([]AnthropicContentBlock{{
 				Type: "text",

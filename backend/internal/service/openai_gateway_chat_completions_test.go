@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -296,13 +297,19 @@ func TestForwardAsChatCompletions_APIKeyAutoStreamingPreservesChatToolProtocol(t
 	upstreamBody := strings.Join([]string{
 		`data: {"id":"chatcmpl_auto_stream","object":"chat.completion.chunk","model":"glm-5.3","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}`,
 		"",
-		`data: {"id":"chatcmpl_auto_stream","object":"chat.completion.chunk","model":"glm-5.3","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_auto_1","type":"function","function":{"name":"unified_exec","arguments":"{\\"cmd\\":\\"Get-Date\\"}"}}]},"finish_reason":null}]}`,
+		`data: {"id":"chatcmpl_auto_stream","object":"chat.completion.chunk","model":"glm-5.3","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_auto_1","type":"function","function":{"name":"unified_exec","arguments":"{\"cmd\":\"Get-Date\"}"}}]},"finish_reason":null}]}`,
 		"",
 		`data: {"id":"chatcmpl_auto_stream","object":"chat.completion.chunk","model":"glm-5.3","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
 		"",
 		"data: [DONE]",
 		"",
 	}, "\n")
+	for _, line := range strings.Split(upstreamBody, "\n") {
+		if data, ok := extractOpenAISSEDataLine(line); ok && data != "[DONE]" {
+			require.True(t, json.Valid([]byte(data)), "positive fixture must contain valid JSON: %s", data)
+		}
+	}
+
 	upstream := &httpUpstreamRecorder{resp: &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},

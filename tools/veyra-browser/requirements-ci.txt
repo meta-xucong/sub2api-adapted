@@ -1,0 +1,6 @@
+# Python 3.12, Linux x86_64 wheels. Verified on official PyPI 2026-10-19.
+# Installing with --require-hashes --only-binary=:all: forbids unpinned sdists.
+playwright==1.62.0 --hash=sha256:ba33bae6a13b3d9d354c751cb618af357d20fe1d57767cbcce52079bbef17ad3
+pyee==13.0.1 --hash=sha256:af2f8fede4171ef667dfded53f96e2ed0d6e6bd7ee3bb46437f77e3b57689228
+greenlet==3.5.5 --hash=sha256:147b25a42e5ca5be3d42356e8f608b37af715a1c196e9bf9d1627f3341adfe1d
+typing_extensions==4.16.0 --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8

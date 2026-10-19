@@ -224,7 +224,7 @@ func prepareWokeyVideoImageMultipartBody(
 		return body, contentType, nil
 	}
 	if len(imageURLs) > maxImages {
-		return nil, "", fmt.Errorf("Wokey %s accepts at most %d images", mode, maxImages)
+		return nil, "", fmt.Errorf("wokey %s accepts at most %d images", mode, maxImages)
 	}
 
 	images := make([]wokeyVideoReferenceImage, 0, len(imageURLs))
@@ -277,7 +277,7 @@ func buildWokeyVideoMultipartBody(body []byte, images []wokeyVideoReferenceImage
 
 	for _, image := range images {
 		if len(image.Data) == 0 {
-			return nil, "", errors.New("Wokey reference image is empty")
+			return nil, "", errors.New("wokey reference image is empty")
 		}
 		filename := safeWokeyVideoFileName(image.FileName, image.ContentType)
 		header := make(textproto.MIMEHeader)
@@ -324,11 +324,12 @@ func downloadWokeyVideoReferenceImage(ctx context.Context, rawURL string) (wokey
 	}
 
 	client, err := httpclient.GetClient(httpclient.Options{
-		Timeout:               30 * time.Second,
-		ResponseHeaderTimeout: 10 * time.Second,
-		ValidateResolvedIP:    true,
-		AllowPrivateHosts:     false,
-		MaxConnsPerHost:       2,
+		Timeout:                  30 * time.Second,
+		ResponseHeaderTimeout:    10 * time.Second,
+		ValidateResolvedIP:       true,
+		RequirePinnedDestination: true,
+		AllowPrivateHosts:        false,
+		MaxConnsPerHost:          2,
 	})
 	if err != nil {
 		return wokeyVideoReferenceImage{}, fmt.Errorf("build reference image client: %w", err)
@@ -355,7 +356,7 @@ func downloadWokeyVideoReferenceImage(ctx context.Context, rawURL string) (wokey
 	if err != nil {
 		return wokeyVideoReferenceImage{}, fmt.Errorf("download reference image: %w", err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return wokeyVideoReferenceImage{}, fmt.Errorf("download reference image: HTTP %d", response.StatusCode)
 	}
@@ -389,8 +390,39 @@ func decodeWokeyVideoDataURL(rawURL string) (wokeyVideoReferenceImage, error) {
 	var data []byte
 	var err error
 	if strings.Contains(strings.ToLower(meta), ";base64") {
-		data, err = base64.StdEncoding.DecodeString(strings.TrimSpace(encoded))
+		encoded = strings.TrimSpace(encoded)
+		// DecodeString allocates from the encoded length, including ignored CR/LF.
+		// Reject oversized payloads before decoding, then bound the decoded reader
+		// so heavily line-wrapped input cannot cause an oversized allocation either.
+		encodedBytes := 0
+		for i := 0; i < len(encoded); i++ {
+			if encoded[i] != '\r' && encoded[i] != '\n' {
+				encodedBytes++
+				if encodedBytes > base64.StdEncoding.EncodedLen(wokeyVideoReferenceImageMaxBytes) {
+					return wokeyVideoReferenceImage{}, fmt.Errorf("reference image exceeds %d bytes", wokeyVideoReferenceImageMaxBytes)
+				}
+			}
+		}
+		if encodedBytes == len(encoded) {
+			// The precheck bounds this allocation; preserve the ordinary fast path.
+			data, err = base64.StdEncoding.DecodeString(encoded)
+		} else {
+			decoder := base64.NewDecoder(base64.StdEncoding, strings.NewReader(encoded))
+			data, err = io.ReadAll(io.LimitReader(decoder, wokeyVideoReferenceImageMaxBytes+1))
+		}
 	} else {
+		// Count the unescaped bytes without allocating the full decoded string.
+		// PathUnescape still validates the escapes below for in-limit input.
+		decodedBytes := 0
+		for i := 0; i < len(encoded); i++ {
+			if encoded[i] == '%' && i+2 < len(encoded) {
+				i += 2
+			}
+			decodedBytes++
+			if decodedBytes > wokeyVideoReferenceImageMaxBytes {
+				return wokeyVideoReferenceImage{}, fmt.Errorf("reference image exceeds %d bytes", wokeyVideoReferenceImageMaxBytes)
+			}
+		}
 		decoded, decodeErr := url.PathUnescape(encoded)
 		err = decodeErr
 		data = []byte(decoded)

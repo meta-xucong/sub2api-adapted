@@ -157,6 +157,12 @@ type HealthEvent struct {
 	RecoveryStage         RecoveryStage
 	LatencyMs             int64
 	ErrorSummary          string
+
+	// Internal ordering metadata is deliberately absent from JSON and the
+	// database schema. Each tracker/state owns its own publication token.
+	persistence         *healthEventPersistence
+	persistenceSequence uint64
+	skipStateProjection bool
 }
 
 // Restore seeds a tracker from durable state after a process restart. The
@@ -177,6 +183,14 @@ func (t *HealthTracker) RestoreWithSourceGroup(key HealthKey, snapshot HealthSna
 		lastFailureUnix: lastFailureUnix,
 		sourceGroup:     normalizeRecoverySourceGroup(sourceGroup, key),
 	}
+	if previous := t.states[key]; previous != nil {
+		// Preserve ordering with observations already handed to the sink, and
+		// do not invalidate an in-flight local recovery attempt on refresh.
+		state.persistence = previous.persistence
+		state.imageProbeToken = previous.imageProbeToken
+		state.imageProbeUntilUnix = previous.imageProbeUntilUnix
+		state.imageHealthGeneration = previous.imageHealthGeneration + 1
+	}
 	t.states[key] = state
 	if snapshot.RecoveryPriority >= firstRecoveryPriority {
 		state.RecoveryPriority = t.registerRecoverySlotLocked(key, snapshot.RecoveryPriority)
@@ -194,6 +208,11 @@ type healthState struct {
 	sourceGroup               string
 	recoveryFailuresSinceStep int
 	basePriority              int
+	persistence               *healthEventPersistence
+	// Recovery admission is local to this tracker, not a durable/global lease.
+	imageProbeToken       uint64
+	imageProbeUntilUnix   int64
+	imageHealthGeneration uint64
 }
 
 type recoverySlotKey struct {
@@ -263,15 +282,7 @@ func (t *HealthTracker) Snapshot(lane LaneSnapshot, capability Capability, model
 	if nowUnix <= 0 {
 		nowUnix = t.now().Unix()
 	}
-	if state.CooldownUntilUnix > 0 && state.CooldownUntilUnix <= nowUnix {
-		state.CooldownUntilUnix = 0
-		if state.RecoveryStage == RecoveryCooling || state.RecoveryStage == RecoveryModelUnavailable {
-			state.RecoveryStage = RecoveryProbeDue
-		}
-	}
-	if state.PolicyRejectUntilUnix > 0 && state.PolicyRejectUntilUnix <= nowUnix {
-		state.PolicyRejectUntilUnix = 0
-	}
+	advanceHealthTimeLocked(state, nowUnix)
 	snapshot := state.HealthSnapshot
 	t.mu.Unlock()
 
@@ -304,6 +315,30 @@ func (t *HealthTracker) Observe(result RouteResult) HealthSnapshot {
 	key := NewHealthKey(result.LaneID, result.Capability, result.Model)
 	t.mu.Lock()
 	state := t.states[key]
+	if isImageCapability(result.Capability) && result.ImageProbeToken != 0 &&
+		(state == nil || state.imageProbeToken != result.ImageProbeToken || state.imageProbeUntilUnix == 0 ||
+			(result.Success && state.imageProbeUntilUnix <= now.Unix())) {
+		// A released/superseded attempt cannot overwrite newer health. An
+		// expired success is stale, but the current unreleased probe's own
+		// timeout must still count until a replacement probe is admitted.
+		var snapshot HealthSnapshot
+		if state != nil {
+			snapshot = state.HealthSnapshot
+		}
+		t.mu.Unlock()
+		return snapshot
+	}
+	if isImageCapability(result.Capability) && result.Success && result.ImageHealthGeneration != 0 &&
+		(state == nil || state.imageHealthGeneration != result.ImageHealthGeneration) {
+		// Ordinary requests can overlap too. Delivering their late successful
+		// output must not erase a failure observed after they were admitted.
+		var snapshot HealthSnapshot
+		if state != nil {
+			snapshot = state.HealthSnapshot
+		}
+		t.mu.Unlock()
+		return snapshot
+	}
 	if state == nil {
 		state = &healthState{HealthSnapshot: HealthSnapshot{HealthScore: 1, RecoveryStage: RecoveryNormal}, sourceGroup: normalizeRecoverySourceGroup(result.SourceGroup, key)}
 		t.states[key] = state
@@ -380,7 +415,7 @@ func (t *HealthTracker) Observe(result RouteResult) HealthSnapshot {
 		state.lastFailureUnix = now.Unix()
 	} else if result.Capability == CapabilityResponsesCompact &&
 		shouldStrictCompactQuarantine(class) &&
-		!(class == FailureCapabilityError && isVolatileGPT56Model(result.Model)) {
+		(class != FailureCapabilityError || !isVolatileGPT56Model(result.Model)) {
 		state.ConsecutiveFailures++
 		state.ConsecutiveSuccesses = 0
 		state.ErrorRateEWMA = state.ErrorRateEWMA*(1-t.policy.ErrorRateAlpha) + t.policy.ErrorRateAlpha
@@ -494,6 +529,13 @@ func (t *HealthTracker) Observe(result RouteResult) HealthSnapshot {
 		}
 		state.lastFailureUnix = now.Unix()
 	}
+	if isImageCapability(result.Capability) && !result.Success &&
+		action != "no_penalty" && action != "rate_limit_backoff" && action != "policy_reject_soft_skip" {
+		state.imageHealthGeneration++
+		if state.imageHealthGeneration == 0 {
+			state.imageHealthGeneration++
+		}
+	}
 	snapshot := state.HealthSnapshot
 	event := HealthEvent{
 		OccurredAtUnix:        now.Unix(),
@@ -516,6 +558,14 @@ func (t *HealthTracker) Observe(result RouteResult) HealthSnapshot {
 		RecoveryStage:         snapshot.RecoveryStage,
 		LatencyMs:             result.TotalLatencyMs,
 		ErrorSummary:          truncateSummary(result.ErrorSummary, 256),
+	}
+	if t.sink != nil {
+		if state.persistence == nil {
+			state.persistence = newHealthEventPersistence()
+		}
+		state.persistence.nextSequence++
+		event.persistence = state.persistence
+		event.persistenceSequence = state.persistence.nextSequence
 	}
 	t.events = append(t.events, event)
 	if len(t.events) > t.maxEvents {

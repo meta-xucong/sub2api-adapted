@@ -70,6 +70,10 @@ type RouteRequest struct {
 	ImageInputMode ImageInputMode
 	// ImageResilience enables image-only probe fallback and source isolation.
 	ImageResilience bool
+	// ImageLastResort permits one cooling fallback only in the caller's
+	// explicit second pass after normally eligible accounts and waits fail.
+	// It never overrides capability/model/account eligibility or exclusions.
+	ImageLastResort bool
 	// PreferLowLatency is an internal hint for client fast/priority tier. It
 	// changes ranking weights for chat/responses only; it is not an upstream API field.
 	PreferLowLatency bool
@@ -121,6 +125,12 @@ type RouteResult struct {
 	FirstTokenMs   *int
 	TotalLatencyMs int64
 	ErrorSummary   string
+	// ImageProbeToken identifies a process-local recovering image attempt.
+	// Zero means this observation was not admitted as a recovery probe.
+	ImageProbeToken uint64
+	// ImageHealthGeneration fences an admitted image success against failures
+	// observed after dispatch. Zero preserves non-admitted/calibration results.
+	ImageHealthGeneration uint64
 }
 
 type CandidateDecision struct {

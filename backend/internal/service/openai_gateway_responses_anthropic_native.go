@@ -227,6 +227,8 @@ func (s *OpenAIGatewayService) handleResponsesBufferedFromNativeAnthropic(
 		if !ok {
 			continue
 		}
+		// Preserve established provider-name matching after lexical field parsing.
+		eventName = strings.TrimSpace(eventName)
 
 		dataLine, rerr := pump.next()
 		if rerr != nil {
@@ -239,7 +241,7 @@ func (s *OpenAIGatewayService) handleResponsesBufferedFromNativeAnthropic(
 		}
 		payload, ok := extractOpenAISSEDataLine(dataLine)
 		if !ok {
-			streamErr = fmt.Errorf("Anthropic SSE event is missing a data field")
+			streamErr = fmt.Errorf("anthropic SSE event is missing a data field")
 			break
 		}
 
@@ -249,11 +251,11 @@ func (s *OpenAIGatewayService) handleResponsesBufferedFromNativeAnthropic(
 			break
 		}
 		if event.Type != eventName {
-			streamErr = fmt.Errorf("Anthropic SSE event name %q does not match payload type %q", eventName, event.Type)
+			streamErr = fmt.Errorf("anthropic SSE event name %q does not match payload type %q", eventName, event.Type)
 			break
 		}
 		if eventName == "error" || event.Type == "error" {
-			streamErr = fmt.Errorf("Anthropic upstream emitted an error event")
+			streamErr = fmt.Errorf("anthropic upstream emitted an error event")
 			logger.L().Warn("openai responses via native anthropic buffered: upstream error event",
 				zap.String("request_id", requestID),
 				zap.String("error_type", gjson.Get(payload, "error.type").String()),
@@ -263,7 +265,7 @@ func (s *OpenAIGatewayService) handleResponsesBufferedFromNativeAnthropic(
 
 		if event.Type == "message_start" {
 			if event.Message == nil || strings.TrimSpace(event.Message.ID) == "" {
-				streamErr = fmt.Errorf("Anthropic message_start is missing an id")
+				streamErr = fmt.Errorf("anthropic message_start is missing an id")
 				break
 			}
 			sawMessageStart = true
@@ -298,7 +300,7 @@ func (s *OpenAIGatewayService) handleResponsesBufferedFromNativeAnthropic(
 		}
 		if event.Type == "message_stop" {
 			if !sawMessageStart || finalResp == nil || strings.TrimSpace(finalResp.ID) == "" {
-				streamErr = fmt.Errorf("Anthropic message_stop arrived without a valid message_start")
+				streamErr = fmt.Errorf("anthropic message_stop arrived without a valid message_start")
 				break
 			}
 			sawMessageStop = true
@@ -522,6 +524,8 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 		if !ok {
 			continue
 		}
+		// Preserve established provider-name matching after lexical field parsing.
+		eventName = strings.TrimSpace(eventName)
 
 		dataLine, rerr := pump.next()
 		if rerr != nil {
@@ -534,7 +538,7 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 		}
 		payload, ok := extractOpenAISSEDataLine(dataLine)
 		if !ok {
-			streamErr = fmt.Errorf("Anthropic SSE event is missing a data field")
+			streamErr = fmt.Errorf("anthropic SSE event is missing a data field")
 			break
 		}
 
@@ -544,19 +548,19 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 			break
 		}
 		if event.Type != eventName {
-			streamErr = fmt.Errorf("Anthropic SSE event name %q does not match payload type %q", eventName, event.Type)
+			streamErr = fmt.Errorf("anthropic SSE event name %q does not match payload type %q", eventName, event.Type)
 			return failStream("event_type_mismatch", "Upstream Anthropic stream was invalid", streamErr)
 		}
 		if eventName == "error" || event.Type == "error" {
-			streamErr = fmt.Errorf("Anthropic upstream emitted an error event")
+			streamErr = fmt.Errorf("anthropic upstream emitted an error event")
 			return failStream("upstream_error_event", "Upstream Anthropic stream failed", streamErr)
 		}
 		if event.Type == "message_start" && (event.Message == nil || strings.TrimSpace(event.Message.ID) == "") {
-			streamErr = fmt.Errorf("Anthropic message_start is missing an id")
+			streamErr = fmt.Errorf("anthropic message_start is missing an id")
 			return failStream("invalid_message_start", "Upstream Anthropic stream was invalid", streamErr)
 		}
 		if event.Type == "message_stop" && (!state.CreatedSent || strings.TrimSpace(state.ResponseID) == "") {
-			streamErr = fmt.Errorf("Anthropic message_stop arrived without a valid message_start")
+			streamErr = fmt.Errorf("anthropic message_stop arrived without a valid message_start")
 			return failStream("invalid_message_stop", "Upstream Anthropic stream was invalid", streamErr)
 		}
 

@@ -823,6 +823,17 @@ func (s *TokenRefreshService) maxRetries() int {
 	return defaultTokenRefreshMaxRetries
 }
 
+// tokenRefreshAttemptContextState gives the parent cycle cancellation precedence
+// over an attempt timeout. Absolute deadlines matter even before timer callbacks
+// publish Err; this is a checkpoint, not an atomic guarantee around persistence.
+func tokenRefreshAttemptContextState(parent, attempt context.Context) (error, bool) {
+	if err := oauthRefreshAttemptContextErr(parent); err != nil {
+		return err, false
+	}
+	err := oauthRefreshAttemptContextErr(attempt)
+	return err, errors.Is(err, context.DeadlineExceeded)
+}
+
 // refreshWithRetry 带重试的刷新
 func (s *TokenRefreshService) refreshWithRetry(ctx context.Context, account *Account, refresher TokenRefresher, executor OAuthRefreshExecutor, refreshWindow time.Duration) error {
 	return s.refreshWithRetryWithRateGate(ctx, account, refresher, executor, refreshWindow, nil)
@@ -840,7 +851,7 @@ func (s *TokenRefreshService) refreshWithRetryWithRateGate(
 	maxRetries := s.maxRetries()
 
 	for attempt := 1; attempt <= maxRetries; attempt++ {
-		if err := ctx.Err(); err != nil {
+		if err := oauthRefreshAttemptContextErr(ctx); err != nil {
 			return err
 		}
 		releaseAttempt := func() {}
@@ -904,8 +915,10 @@ func (s *TokenRefreshService) refreshWithRetryWithRateGate(
 			if releaseRate != nil {
 				releaseRate()
 			}
-			attemptTimedOut := errors.Is(attemptCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil
-			if err == nil && newCredentials != nil && !attemptTimedOut {
+			if err == nil {
+				err, _ = tokenRefreshAttemptContextState(ctx, attemptCtx)
+			}
+			if err == nil && newCredentials != nil {
 				newCredentials["_token_version"] = time.Now().UnixMilli()
 				if saveErr := persistAccountCredentials(attemptCtx, s.accountRepo, account, newCredentials); saveErr != nil {
 					err = fmt.Errorf("failed to save credentials: %w", saveErr)
@@ -914,7 +927,7 @@ func (s *TokenRefreshService) refreshWithRetryWithRateGate(
 				}
 			}
 		}
-		attemptTimedOut := errors.Is(attemptCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil
+		_, attemptTimedOut := tokenRefreshAttemptContextState(ctx, attemptCtx)
 		cancelAttempt()
 		releaseAttempt()
 		persistedAfterAttemptDeadline := attemptTimedOut && credentialsPersisted && err == nil
@@ -934,7 +947,7 @@ func (s *TokenRefreshService) refreshWithRetryWithRateGate(
 		}
 
 		if err == nil {
-			if ctxErr := ctx.Err(); ctxErr != nil {
+			if ctxErr := oauthRefreshAttemptContextErr(ctx); ctxErr != nil {
 				if credentialsPersisted {
 					s.postRefreshStateSyncWithCleanup(ctx, account)
 				}
@@ -951,7 +964,7 @@ func (s *TokenRefreshService) refreshWithRetryWithRateGate(
 			s.postRefreshActions(ctx, account)
 			return nil
 		}
-		if ctxErr := ctx.Err(); ctxErr != nil {
+		if ctxErr := oauthRefreshAttemptContextErr(ctx); ctxErr != nil {
 			if credentialsPersisted {
 				s.postRefreshStateSyncWithCleanup(ctx, account)
 			}
@@ -1069,7 +1082,7 @@ func (s *TokenRefreshService) refreshWithRetryWithRateGate(
 			}
 		}
 	}
-	if err := ctx.Err(); err != nil {
+	if err := oauthRefreshAttemptContextErr(ctx); err != nil {
 		return err
 	}
 

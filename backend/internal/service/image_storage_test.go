@@ -1,21 +1,34 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"hash/crc32"
+	"image"
+	"image/png"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 )
 
-// pngBytes is a minimal payload whose signature makes http.DetectContentType
-// report image/png.
-var pngBytes = []byte("\x89PNG\r\n\x1a\nfake-png-payload")
+// A real image header is required; a MIME signature alone is not an image.
+var pngBytes = func() []byte {
+	var out bytes.Buffer
+	if err := png.Encode(&out, image.NewNRGBA(image.Rect(0, 0, 2, 2))); err != nil {
+		panic(err)
+	}
+	return out.Bytes()
+}()
 
 type savedImage struct {
 	key         string
@@ -80,7 +93,7 @@ func TestImageResultUploaderRewritesURL(t *testing.T) {
 	defer upstream.Close()
 
 	storage := &fakeImageStorage{}
-	uploader := NewImageResultUploader(storage, "images/", 0, nil)
+	uploader := NewImageResultUploader(storage, "images/", 0, upstream.Client())
 
 	result := json.RawMessage(`{"created":1,"data":[{"url":"` + upstream.URL + `/pic.png"}]}`)
 	out, err := uploader.Rewrite(context.Background(), "imgtask_xyz", result)
@@ -243,4 +256,145 @@ func TestImageTaskServiceCompleteOffloadFailureMarksFailed(t *testing.T) {
 	require.Equal(t, http.StatusBadGateway, got.HTTPStatus)
 	require.Contains(t, string(got.Error), "object storage")
 	require.NotContains(t, string(got.Result), "b64_json", "failed offload must not persist base64 to Redis")
+}
+
+func TestImageResultUploaderDefaultRejectsPrivateDestinations(t *testing.T) {
+	var reached atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reached.Add(1)
+		_, _ = w.Write(pngBytes)
+	}))
+	defer server.Close()
+	for _, target := range []string{server.URL, "http://localhost/image", "http://10.1.2.3/image", "http://169.254.169.254/latest/meta-data", "http://[::1]/image", "http://[fe80::1]/image", "file:///etc/passwd", "ftp://example.invalid/image", "https://user:password@example.invalid/image"} {
+		t.Run(target, func(t *testing.T) {
+			storage := &fakeImageStorage{}
+			uploader := NewImageResultUploader(storage, "images/", 0, nil)
+			_, _, err := uploader.download(context.Background(), target)
+			require.Error(t, err)
+			require.Empty(t, storage.saved)
+		})
+	}
+	require.Zero(t, reached.Load(), "private requests must never reach the local server")
+}
+
+func TestImageResultUploaderDefaultValidatesEveryRedirect(t *testing.T) {
+	clearImageDownloadProxyEnvironment(t)
+	for _, target := range []string{"http://127.0.0.1/image", "http://169.254.169.254/meta", "http://[::1]/image", "https://user:password@example.invalid/image", "file:///etc/passwd"} {
+		t.Run(target, func(t *testing.T) {
+			client := defaultImageDownloadHTTPClient()
+			guard, ok := client.Transport.(*imageDownloadTransport)
+			require.True(t, ok)
+			calls := 0
+			guard.base = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				calls++
+				require.Equal(t, "https://public.invalid/signed?token=unchanged", req.URL.String())
+				return &http.Response{StatusCode: http.StatusFound, Header: http.Header{"Location": {target}}, Body: io.NopCloser(strings.NewReader("")), Request: req}, nil
+			})
+			_, err := client.Get("https://public.invalid/signed?token=unchanged")
+			require.Error(t, err)
+			require.Equal(t, 1, calls, "redirect must be rejected before reaching the base transport")
+		})
+	}
+}
+
+func TestImageResultUploaderRejectsNonImagesInEveryEncoding(t *testing.T) {
+	for _, data := range [][]byte{[]byte("SYNTHETIC_INTERNAL_CANARY"), []byte("<html>error</html>"), []byte("\x89PNG\r\n\x1a\nfake-png-payload"), nil} {
+		b64 := base64.StdEncoding.EncodeToString(data)
+		for _, item := range []map[string]string{{"b64_json": b64}, {"url": "data:image/png;base64," + b64}, {"url": "https://public.invalid/image"}} {
+			storage := &fakeImageStorage{}
+			client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"image/png"}}, Body: io.NopCloser(bytes.NewReader(data)), Request: req}, nil
+			})}
+			uploader := NewImageResultUploader(storage, "images/", 0, client)
+			result, err := json.Marshal(map[string]any{"data": []map[string]string{item}})
+			require.NoError(t, err)
+			_, err = uploader.Rewrite(context.Background(), "unsafe", result)
+			require.Error(t, err)
+			require.Empty(t, storage.saved)
+		}
+	}
+}
+
+func TestImageResultUploaderBoundsEveryEncoding(t *testing.T) {
+	b64 := base64.StdEncoding.EncodeToString(pngBytes)
+	for _, item := range []map[string]string{{"b64_json": b64}, {"url": "data:image/png;base64," + b64}, {"url": "https://public.invalid/image"}} {
+		storage := &fakeImageStorage{}
+		client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(pngBytes)), Request: req}, nil
+		})}
+		uploader := NewImageResultUploader(storage, "images/", int64(len(pngBytes)-1), client)
+		result, err := json.Marshal(map[string]any{"data": []map[string]string{item}})
+		require.NoError(t, err)
+		_, err = uploader.Rewrite(context.Background(), "oversized", result)
+		require.ErrorContains(t, err, "exceeds")
+		require.Empty(t, storage.saved)
+	}
+}
+
+func TestImageResultUploaderUsesImageBytesInsteadOfMIME(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"image/jpeg"}}, Body: io.NopCloser(bytes.NewReader(pngBytes)), Request: req}, nil
+	})}
+	uploader := NewImageResultUploader(&fakeImageStorage{}, "", int64(len(pngBytes)), client)
+	data, contentType, err := uploader.download(context.Background(), "https://public.invalid/image")
+	require.NoError(t, err)
+	require.Equal(t, "image/png", contentType)
+	require.Equal(t, pngBytes, data)
+}
+
+func TestImageResultUploaderRejectsHugeGeometryWithoutPixelDecode(t *testing.T) {
+	for _, dimensions := range [][2]uint32{{32768, 1}, {8192, 8192}} {
+		data := bytes.Clone(pngBytes)
+		binary.BigEndian.PutUint32(data[16:20], dimensions[0])
+		binary.BigEndian.PutUint32(data[20:24], dimensions[1])
+		binary.BigEndian.PutUint32(data[29:33], crc32.ChecksumIEEE(data[12:29]))
+		_, err := validatedStorageImageContentType(data)
+		require.ErrorContains(t, err, "dimensions exceed")
+	}
+}
+
+func clearImageDownloadProxyEnvironment(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "NO_PROXY", "no_proxy", "REQUEST_METHOD"} {
+		t.Setenv(key, "")
+	}
+}
+
+func TestImageResultUploaderEnvironmentProxyFailsClosed(t *testing.T) {
+	clearImageDownloadProxyEnvironment(t)
+	t.Setenv("HTTPS_PROXY", "http://proxy-user:synthetic-proxy-secret@proxy.invalid:8080")
+	client := defaultImageDownloadHTTPClient()
+	guard, ok := client.Transport.(*imageDownloadTransport)
+	require.True(t, ok)
+	calls := 0
+	guard.base = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(pngBytes)), Request: req}, nil
+	})
+	_, err := client.Get("https://public.invalid/image")
+	require.ErrorContains(t, err, "environment proxy")
+	require.NotContains(t, err.Error(), "synthetic-proxy-secret")
+	require.Zero(t, calls, "strict downloader must not silently switch to direct")
+	t.Setenv("NO_PROXY", "public.invalid")
+	resp, err := client.Get("https://public.invalid/image")
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+	require.Equal(t, 1, calls, "explicit NO_PROXY destinations may use the pinned direct transport")
+}
+
+func TestImageResultUploaderRedirectRechecksEnvironmentProxy(t *testing.T) {
+	clearImageDownloadProxyEnvironment(t)
+	t.Setenv("HTTPS_PROXY", "http://proxy.invalid:8080")
+	t.Setenv("NO_PROXY", "first.invalid")
+	client := defaultImageDownloadHTTPClient()
+	guard, ok := client.Transport.(*imageDownloadTransport)
+	require.True(t, ok)
+	calls := 0
+	guard.base = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{StatusCode: http.StatusFound, Header: http.Header{"Location": {"https://second.invalid/image"}}, Body: io.NopCloser(strings.NewReader("")), Request: req}, nil
+	})
+	_, err := client.Get("https://first.invalid/image")
+	require.ErrorContains(t, err, "environment proxy")
+	require.Equal(t, 1, calls)
 }

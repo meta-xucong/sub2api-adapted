@@ -548,13 +548,6 @@ func digestJSON(value any) string {
 	return "sha256:" + hex.EncodeToString(digest[:])
 }
 
-func snapshotPublicModels(account *Account) []string {
-	if snapshot := account.GetUpstreamModelAvailabilitySnapshot(); snapshot != nil {
-		return snapshot.PublicModels
-	}
-	return nil
-}
-
 func uniqueInt64s(values []int64) []int64 {
 	if len(values) < 2 {
 		return values

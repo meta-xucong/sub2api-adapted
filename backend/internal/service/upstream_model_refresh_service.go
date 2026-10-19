@@ -363,10 +363,6 @@ func upstreamModelRefreshBatchStatus(refreshed bool, err error) (status, errorKi
 	return "succeeded", ""
 }
 
-func latestModelRefreshAt(now time.Time) time.Time {
-	return latestModelRefreshAtForSchedule(now, 4, 0)
-}
-
 func latestModelRefreshAtForSchedule(now time.Time, hour, minute int) time.Time {
 	location, err := time.LoadLocation("Asia/Shanghai")
 	if err != nil {
@@ -510,14 +506,14 @@ func (s *UpstreamModelRefreshService) refreshAccountWithCatalog(
 			return nil
 		}
 		refreshed = true
-		err := s.refreshAccountUnderLease(leaseCtx, current, profile, catalogOut)
+		err := s.refreshAccountUnderLease(leaseCtx, current, catalogOut)
 		*account = *current
 		return err
 	})
 	return refreshed, err
 }
 
-func (s *UpstreamModelRefreshService) refreshAccountUnderLease(ctx context.Context, account *Account, profile UpstreamModelSourceProfile, catalogOut **UpstreamModelCatalog) error {
+func (s *UpstreamModelRefreshService) refreshAccountUnderLease(ctx context.Context, account *Account, catalogOut **UpstreamModelCatalog) error {
 	token, err := s.fences.IssueUpstreamModelRefreshToken(ctx, account.ID)
 	if err != nil {
 		return fmt.Errorf("issue account refresh fence: %w", err)

@@ -276,7 +276,10 @@ func testPassthroughIngressFreezesSubsequentTurnBeforeRequestPolicy(t *testing.T
 	_ = clientConn.CloseNow()
 	cancelControl(context.Canceled)
 	select {
-	case <-serverErr:
+	case shutdownErr := <-serverErr:
+		if shutdownErr != nil {
+			t.Logf("server terminated after shutdown: %v", shutdownErr)
+		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("passthrough ingress did not exit")
 	}

@@ -111,7 +111,7 @@ func normalizeKIEJobsVideoStatusResponse(body []byte, requestID string) ([]byte,
 	}
 
 	state := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "data.state").String()))
-	status := "pending"
+	var status string
 	switch state {
 	case "success":
 		status = "done"
