@@ -172,12 +172,26 @@ def main():
             expect_external(page, record, "video.aiself.vip", "/auth/veyra/callback", "POST")
         run_case("desktop-video-exact-callback-post", desktop_video)
 
+        def expect_form_action_block(page, record):
+            # Observe the existing browser event binding from Python. Playwright's
+            # wait_for_function uses eval, which the production CSP forbids.
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                if any(item["effectiveDirective"] == "form-action" and
+                       item["disposition"] == "enforce"
+                       for item in record["csp_violations"]):
+                    return
+                # Pump Playwright events without evaluating script in the page.
+                page.wait_for_timeout(25)
+            raise AssertionError("No enforced form-action violation: " +
+                                 repr(record["csp_violations"]))
+
         def negative_csp_control(page, record):
             response = page.goto(manifest["urls"]["enabled"] + "/?desktop=1", wait_until="networkidle")
             policy_check(response, record, portal=False)
             page.locator('#sessionState[data-authenticated="true"]').wait_for()
             page.locator('[data-route="video"]').click()
-            page.wait_for_function("window.__auditViolations.some(item => item.effectiveDirective === 'form-action')")
+            expect_form_action_block(page, record)
             assert not record["intercepted_external"], record["intercepted_external"]
             assert any(item["url"].endswith("/api/veyra/login-ticket") and item["method"] == "POST" for item in record["local_requests"])
             record["expected_negative_observed"] = "The real portal issued a local synthetic Video ticket, then Chromium blocked its callback form under the unmodified self-only policy."
@@ -199,7 +213,7 @@ def main():
                     form.innerHTML = '<input name="ticket" value="synthetic-attacker-probe">';
                     document.body.appendChild(form); form.submit();
                 }""", destination)
-                page.wait_for_function("window.__auditViolations.some(item => item.effectiveDirective === 'form-action')")
+                expect_form_action_block(page, record)
                 assert not record["intercepted_external"], record["intercepted_external"]
                 assert urlsplit(page.url).hostname == "127.0.0.1", page.url
             run_case("csp-blocks-" + suffix, blocked_form)
@@ -208,7 +222,7 @@ def main():
             response = page.goto(manifest["urls"]["enabled"] + "/dashboard", wait_until="networkidle")
             policy_check(response, record, portal=False)
             page.evaluate("""destination => {const f = document.createElement('form'); f.method='POST'; f.action=destination; document.body.appendChild(f); f.submit();}""", TRUSTED_CALLBACK)
-            page.wait_for_function("window.__auditViolations.some(item => item.effectiveDirective === 'form-action')")
+            expect_form_action_block(page, record)
             assert not record["intercepted_external"], record["intercepted_external"]
         run_case("nonportal-csp-stays-self-only", nonportal_callback_blocked)
 
