@@ -426,6 +426,29 @@ func TestWokeyHighPrecisionJSONImagePriceFlowsThroughToCard(t *testing.T) {
 	require.Equal(t, precise, card.SourceSKUs[0].PriceUSD)
 }
 
+func TestWokeyFlatPerImageCatalogSKUBuildsFlatImageCard(t *testing.T) {
+	pricing := strings.Replace(wokeyPricingFixture,
+		`{"sku_id":"gpt-image-2.5:1k","meter":"output_images","unit":"image","quantity":1,"price_usd":"0.010000","constraints":{"tier":"1K"}},
+{"sku_id":"gpt-image-2.5:2k","meter":"output_images","unit":"image","quantity":1,"price_usd":"0.010000","constraints":{"tier":"2K"}}`,
+		`{"sku_id":"gpt-image-2.5:flat","meter":"output_images","unit":"image","quantity":1,"price_usd":"0.010000"}`, 1)
+	images := `{"object":"list","data":[{"id":"gpt-image-2.5","pricing_skus":[{"price_usd_per_image":0.01}]}]}`
+	catalog, err := parseWokeyCatalog([]byte(pricing), []byte(images), []byte(wokeyVideosFixture))
+	require.NoError(t, err)
+	candidates, unsupported := buildWokeyPriceCards(catalog, decimal.RequireFromString("6.9"))
+	require.Empty(t, unsupported["gpt-image-2.5"])
+	require.Len(t, candidates["gpt-image-2.5"].Cards, 1)
+	card := candidates["gpt-image-2.5"].Cards[0]
+	require.Equal(t, UnifiedGatewayImagePricingFlatPerImage, card.ImagePricingMode)
+	require.InDelta(t, 0.069, *card.UnitPrice, 1e-12)
+	require.Len(t, card.SourceSKUs, 1)
+}
+
+func TestParseWokeyCatalogRejectsAmbiguousFlatImageSKUs(t *testing.T) {
+	images := `{"object":"list","data":[{"id":"gpt-image-2.5","pricing_skus":[{"price_usd_per_image":0.01},{"price_usd_per_image":0.02}]}]}`
+	_, err := parseWokeyCatalog([]byte(wokeyPricingFixture), []byte(images), []byte(wokeyVideosFixture))
+	require.ErrorContains(t, err, "invalid_image_sku_schema")
+}
+
 func TestWokeyOptionalCacheWriteMeterCanRemainUnconfigured(t *testing.T) {
 	pricing := strings.Replace(wokeyPricingFixture, `,
 {"sku_id":"haiku:cache-write-1h","meter":"cache_write_1h_tokens","unit":"token","quantity":1000000,"price_usd":"0.160000"}`, "", 1)

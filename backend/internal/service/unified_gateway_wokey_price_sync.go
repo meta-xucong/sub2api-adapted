@@ -788,7 +788,7 @@ func parseWokeyCatalog(pricingBody, imageBody, videoBody []byte) (*wokeyCatalog,
 		model := wokeyImageModel{ID: raw.ID}
 		seen := make(map[string]struct{}, len(raw.PricingSKUs))
 		for _, sku := range raw.PricingSKUs {
-			if sku.Tier == "" || sku.PriceUSD == "" {
+			if sku.PriceUSD == "" || (sku.Tier == "" && len(raw.PricingSKUs) != 1) {
 				return nil, &wokeyPriceSyncFailure{Code: "invalid_image_sku_schema"}
 			}
 			if _, exists := seen[sku.Tier]; exists {
@@ -1185,6 +1185,37 @@ func wokeyBuildImageCard(catalog *wokeyCatalog, model wokeyImageModel, fx decima
 	}
 	if len(model.SKUs) == 0 {
 		return nil, "image_skus_missing"
+	}
+	if len(model.SKUs) == 1 && model.SKUs[0].Tier == "" {
+		imageSKU := model.SKUs[0]
+		var normalized *wokeyCatalogSKU
+		for i := range priced.SKUs {
+			sku := &priced.SKUs[i]
+			if sku.Meter != "output_images" || sku.Unit != "image" || sku.Constraints.Tier != "" {
+				continue
+			}
+			if normalized != nil || sku.ConstraintsUnsupported {
+				return nil, "duplicate_normalized_image_tier"
+			}
+			normalized = sku
+		}
+		if normalized == nil {
+			return nil, "image_catalog_price_mismatch"
+		}
+		imagePrice, err := decimal.NewFromString(imageSKU.PriceUSD.String())
+		if err != nil || imagePrice.IsNegative() {
+			return nil, "invalid_image_price"
+		}
+		normalizedPrice, err := wokeyUnitPrice(*normalized, "image")
+		if err != nil || !normalizedPrice.Equal(imagePrice) {
+			return nil, "image_catalog_price_mismatch"
+		}
+		perImage := imagePrice.Mul(fx)
+		value, err := quantizedWokeyPrice(perImage)
+		if err != nil {
+			return nil, "unsupported_precision"
+		}
+		return &UnifiedGatewayRoutePricingEntry{Model: model.ID, Kind: UnifiedGatewayRoutePricingImage, UnitPrice: &value, ImagePricingMode: UnifiedGatewayImagePricingFlatPerImage, Source: UnifiedGatewayWokeySource, SourceFX: fx.String(), SourceFetchedAt: wokeyTimePtr(time.Now().UTC()), SourceSKUs: []UnifiedGatewayWokeySourceSKU{sourceSKU(*normalized)}, SyncState: "current"}, ""
 	}
 	for _, imageSKU := range model.SKUs {
 		for _, size := range imageSKU.Sizes {
