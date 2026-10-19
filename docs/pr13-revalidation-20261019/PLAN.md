@@ -38,3 +38,17 @@
 - 仅新增 integration 测试文件，复用现有 PostgreSQL harness、生产 ledger repository 及 service 构造/惰性恢复路径，不修改产品代码或 schema。
 - 持久化 generation/edit 的精确模型、账号限定自定义 lane、Cooling/ModelUnavailable/健康对照；由独立 Go 测试进程验证普通准入、LastResort 的 Cooling 限定、同进程有界 lease 与释放不清除冷却，及新观察继续累加既有状态。
 - 从数据库加载的快照另验证冷却截止前与截止时的准入边界。证明范围仅为持久化健康状态和进程内恢复准入，不宣称跨进程 lease 或分布式互斥。冻结后统一运行真实 PostgreSQL 专项并保留命令、退出码和 skip 证据。
+
+## 新增确认：完整 race 门禁暴露既有测试夹具竞态（修改前记录）
+
+- 冻结候选 `f0f9758a2312d83794e891320bbf50fcbd9802b7` 的新跑 `race-related/stdout.log` 中有 5 份独立 race 报告，归并为两个测试代码原因。19 个顶层测试失败均记录 race detector failure；6 个测试直接出现在冲突调用栈中，其余 13 个并发测试受 race 归因传播影响，未见额外断言失败。完整原始失败收据保留在 `pr13-revalidation-evidence/20261019T123026Z-f0f9758a2312/race-related/`（工作树外），不覆盖或改写。
+- **原因一：** `backend/internal/service/usage_cleanup_service_test.go:68` 的 `dashboardRepoStub.recomputeCalls++` 与 `:583,611` 的异步 `require.Eventually` 裸读竞态。最小修复仅把该测试夹具计数改为 `atomic.Int64`，写入用 `Add(1)`、两处读取用 `Load()`，保留恰好一次的断言和原有超时。
+- **原因二：** `backend/internal/service/openai_compat_model_test.go:1316,374,477` 在 `t.Parallel()` 之后调用 `gin.SetMode`，与另一并行用例的 `gin.CreateTestContext`（`:1520`）读 Gin 全局模式，以及彼此对两个全局变量的写入竞态。同文件共 27 处相邻的 `t.Parallel(); gin.SetMode(gin.TestMode)`；最小修复统一把模式写入移到 `t.Parallel()` 前的顺序 setup 阶段。保留全部 `t.Parallel()`、子用例、请求行为和断言；其余 14 个非并行模式设置不改。不引入全局串行化、race suppression 或测试排除。
+- 两个文件在修复前均与 `origin/main` 的 `2bedb713b6b0b9cf968468decae36732f390574a` 完全相同（Git blobs 分别 `17f21bef36957d7a9ebf89c9e4042cb60e6cbf08`、`7bd000b4b890d5fd1d5f1ff808d8297b3e9d4bbb`）。属于既有测试数据同步缺陷；不据此豁免本轮失败，也不更改业务实现。
+- 修改范围仅上述两个 `_test.go` 文件与本记录。先独立复审 diff，冻结新组合 SHA，再新跑相关专项和完整 race 门禁；所有旧失败仍为失败，不以筛选、跳过或旧成功收据代替新验证。
+
+### 同一 race 选集中的同类静态补漏（修改前记录）
+
+- 为避免仅修本次调度碰巧暴露的写入点，检查同一 service 包后确认三个由原 race 正则选中的 unit 文件也有相同的 setup 顺序问题：`gateway_forward_as_responses_test.go` 7 对、`gateway_forward_as_chat_completions_test.go` 5 对、`account_test_service_gemini_test.go:42–43` 1 对。这是静态同模式确认，不伪称原始日志已报告这三个文件的竞态。
+- 授权范围补充为以上三个 `_test.go` 文件中的局部顺序调整，仍保留所有并行调用、断言和用例。Gemini 用例还在 `newTestContext()` 内调用同一个全局模式写入（既有 helper 定义于 `account_test_service_openai_test.go:57`），因此把该用例现有 context setup 一起移到 `t.Parallel()` 之前，不改 helper 或其他文件。不修改原 race 选集外的测试，也不以扩大串行执行掩盖冲突。
+- **未在本轮扩展修复的完整套件测试卫生问题：** `openai_fast_service_tier_test.go:784–812` 的 `TestResolvedOpenAIUpstreamServiceTier` 在并行父测试的三个子用例内调用 `gin.SetMode`，静态上仍属相同风险，但该测试名不匹配本轮原 race 正则。按范围约束保留原样；本轮结果不得描述为全原生套件 race-clean，完整 suite 的该项仍待另行处理与验证。

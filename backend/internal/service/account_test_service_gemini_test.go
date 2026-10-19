@@ -39,10 +39,9 @@ func TestCreateGeminiTestPayload_ImageModel(t *testing.T) {
 }
 
 func TestProcessGeminiStream_EmitsImageEvent(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
-
 	ctx, recorder := newTestContext()
+	t.Parallel()
 	svc := &AccountTestService{}
 
 	stream := strings.NewReader("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ok\"},{\"inlineData\":{\"mimeType\":\"image/png\",\"data\":\"QUJD\"}}]}}]}\n\ndata: [DONE]\n\n")
