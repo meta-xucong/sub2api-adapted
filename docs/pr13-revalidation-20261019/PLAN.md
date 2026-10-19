@@ -52,3 +52,29 @@
 - 为避免仅修本次调度碰巧暴露的写入点，检查同一 service 包后确认三个由原 race 正则选中的 unit 文件也有相同的 setup 顺序问题：`gateway_forward_as_responses_test.go` 7 对、`gateway_forward_as_chat_completions_test.go` 5 对、`account_test_service_gemini_test.go:42–43` 1 对。这是静态同模式确认，不伪称原始日志已报告这三个文件的竞态。
 - 授权范围补充为以上三个 `_test.go` 文件中的局部顺序调整，仍保留所有并行调用、断言和用例。Gemini 用例还在 `newTestContext()` 内调用同一个全局模式写入（既有 helper 定义于 `account_test_service_openai_test.go:57`），因此把该用例现有 context setup 一起移到 `t.Parallel()` 之前，不改 helper 或其他文件。不修改原 race 选集外的测试，也不以扩大串行执行掩盖冲突。
 - **未在本轮扩展修复的完整套件测试卫生问题：** `openai_fast_service_tier_test.go:784–812` 的 `TestResolvedOpenAIUpstreamServiceTier` 在并行父测试的三个子用例内调用 `gin.SetMode`，静态上仍属相同风险，但该测试名不匹配本轮原 race 正则。按范围约束保留原样；本轮结果不得描述为全原生套件 race-clean，完整 suite 的该项仍待另行处理与验证。
+
+## 新增确认：首输出超时与 keepalive 测试边界重合（修改前记录）
+
+- 冻结候选 `a517cced76fca8260917b349c943b777fc90af64` 的新 race 门禁仅剩 `TestOpenAINativeFirstOutputFailoverKeepsAttemptHeadersPrivateAfterKeepaliveCommit` 在 `openai_first_output_timeout_test.go:720` 失败：2 秒首输出超时按预期触发，但响应体仍为空，尚未提交测试假定存在的 keepalive。原始失败收据保留于工作树外 `pr13-revalidation-evidence/20261019T134803Z-a517cced76fc/race-related/`。
+- 原因是测试设置的边界重合：生产 keepalive ticker 在 `openai_gateway_response_handling.go:233` 创建，而 downstream idle 起点在 `:268` 稍后创建；首个 1 秒 tick 可在 `:1040` 因尚不足 1 秒而跳过。首输出 deadline 在 `:244` 绑定更早的请求起点，2 秒超时可以先于第二次 tick 返回。这份日志没有显示产品头部泄漏或错误重试；它显示夹具把尚未成立的“已经提交 keepalive”当作前提。
+- **限定最小修复：** 只修改该 `_test.go` 文件及本计划。post-commit 头部隐私用例的测试专用首输出 deadline 调为 4 秒，keepalive 仍为 1 秒；保持上游 pipe 阻塞直至真实产品超时关闭，不替换成 EOF，不改产品超时或时间函数。新增仅观察的 recorder：调用真实 `Flush` 后且实际缓冲区已有稳定 `:\n\n` 字节时发出 channel 信号，不生成字节。断言真实 Flush、504/first_output_timeout、`SafeToFailoverAfterWrite` 为真、实际语义输出为假，保留第一次前导数据不泄漏、第二账号成功及 wire/live 响应头隐私检查。
+- 相邻 `TestOpenAINativeFirstOutputTimeoutDisabledKeepsPreamblePrivateAcrossKeepalive` 原本已关闭首输出超时并用 2100ms sleep 后 EOF。仅把该 sleep 改为等待上述真实 Flush 信号后再 EOF；仍验证真实 keepalive 与前导数据私有，不改变其 EOF 失败语义。两例共用现有 10 秒观察/清理边界，明确 watchdog 不制造成功或触发被测超时。
+- 既有 1 秒响应头 deadline、未完成语义事件/大前导事件 deadline、超时关闭 reader 与输出后 timer disarm 测试均不修改。严格限于本轮流式输出/切换审计的两个已识别夹具；不扩展原生套件卫生清理。独立复审后冻结新 SHA，再新跑相关完整验证；旧失败不覆盖、不豁免。
+
+## 范围收回决定（用户要求避免过度开发）
+
+2026-10-19 14:05 UTC：用户明确只看指定审计范围。前述五个原生测试文件的计数器/Gin 初始化卫生修复从本 PR 撤回，恢复到 `f0f9758a` 中的原始内容；不回退该文件此前已有的业务测试。撤回通过新增提交保存历史，不改写旧失败证据。它们没有生产行为修改，但不应作为本轮顺带治理项目。
+
+已观察的两类基线测试竞态和19个受影响测试仍记录为 FAIL，不能称全仓 race 通过。最终定向 race 必须按本轮实际修改/自定义路径列明测试清单，不再使用泛化 Usage/Stream/Grok 等词扫入无关原生测试。不得排除目标范围内失败来制造通过。完整原生普通 unit/integration 继续由最终提交 CI 实际运行。
+
+保留的生产修改限四项：票据原子过期、兑换当前账号状态、图片 sticky 共用预算、合法4K尺寸边界。图片 PostgreSQL 恢复及对应队列/身份/输出/计量验证属于用户指定验收项。当前 SSE 测试准备条件修正仅对应本 PR 已修改的 first-output/流式重试行为，不改变生产超时、协议或断言标准。后续不再治理范围外原生测试。
+
+## 最终定向验证范围（不再扩展）
+
+- 核心：SmartRouter core、Veyra、Redis session 的本轮实际代码与兼容测试。
+- Service：`smart_router_image_recovery`、`smart_router_scheduler`、`smart_router_calibration_service`、`smart_router_persistence_order`、`smart_router_runtime`；`openai_image_poll_timeout_failover/compatibility`；`image_storage`、`image_storage_settings`、`image_task`；`openai_first_output_timeout` 测试文件中的命名用例。
+- Handler：`openai_images_smartrouter_recovery`、`openai_images_poll_timeout_integration`、`openai_gateway_first_output_timeout` 中的命名用例。
+- Repository unit：Veyra debit、幂等回执、SmartRouter health repo/order；隔离 PostgreSQL 仅3项既有健康状态持久化/迁移/顺序、6项桥接扣费和1项图片新进程恢复。语音库、上游模型管理等其他专项不纳入此次定向执行。
+- SSRF/代理：共享 httpclient、proxyurl、urlvalidator；前端 lint/typecheck/关键用例由最终提交 CI 运行，云端只保留必要的新鲜前端/嵌入式后端构建。
+- 从上述文件明确提取测试名并核对终止事件，不以泛词扩张范围。最终回归必须包括15项新测试和2项 SSE 测试；已撤回的19项原生夹具失败作为范围外基线问题记录，不声称已经解决。
+- 完整原生 ordinary unit/integration 和安全检查仍运行现有 CI，不改动原生工作流来隐藏失败。定向 race 的通过不代表全仓 race 通过。后续范围外发现只记录，需用户明确批准才扩展实现。

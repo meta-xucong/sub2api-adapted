@@ -40,6 +40,28 @@ func (b *firstOutputCloseTrackingBody) Close() error {
 	return b.ReadCloser.Close()
 }
 
+// firstOutputKeepaliveRecorder observes a real committed keepalive without
+// writing any bytes or affecting the production timer.
+type firstOutputKeepaliveRecorder struct {
+	*httptest.ResponseRecorder
+	keepaliveFlushed chan struct{}
+	once             sync.Once
+}
+
+func newFirstOutputKeepaliveRecorder() *firstOutputKeepaliveRecorder {
+	return &firstOutputKeepaliveRecorder{
+		ResponseRecorder: httptest.NewRecorder(),
+		keepaliveFlushed: make(chan struct{}),
+	}
+}
+
+func (r *firstOutputKeepaliveRecorder) Flush() {
+	r.ResponseRecorder.Flush()
+	if strings.Contains(r.Body.String(), ":\n\n") {
+		r.once.Do(func() { close(r.keepaliveFlushed) })
+	}
+}
+
 func (u *blockingOpenAIResponseHeaderUpstream) Do(req *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
 	u.enteredOnce.Do(func() { close(u.entered) })
 	select {
@@ -55,9 +77,10 @@ func (u *blockingOpenAIResponseHeaderUpstream) DoWithTLS(req *http.Request, _ st
 	return u.Do(req, "", 0, 0)
 }
 
-// runFirstOutputTestCall keeps the fake upstream blocked until production
-// cancels it. The watchdog only bounds test observation and cleanup; it never
-// manufactures an upstream response or EOF to race the configured product timer.
+// runFirstOutputTestCall bounds observation and cleanup of a controlled upstream.
+// Timeout fixtures stay blocked until production cancellation; keepalive-only
+// fixtures may end after observing a real flush. The watchdog never manufactures
+// upstream completion to race the configured product timer.
 func runFirstOutputTestCall(t *testing.T, entered <-chan struct{}, cleanup func(), call func() error) error {
 	t.Helper()
 	done := make(chan struct{})
@@ -650,22 +673,44 @@ func TestOpenAINativeFirstOutputTimeoutDisabledKeepsPreamblePrivateAcrossKeepali
 		StreamKeepaliveInterval: 1,
 		MaxLineSize:             defaultMaxLineSize,
 	}}}
+	rec := newFirstOutputKeepaliveRecorder()
 	pr, pw := io.Pipe()
+	body := &firstOutputCloseTrackingBody{ReadCloser: pr, closed: make(chan struct{})}
+	writerDone := make(chan struct{})
 	go func() {
+		defer close(writerDone)
 		defer func() { _ = pw.Close() }()
 		_, _ = pw.Write([]byte("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_stalled\"}}\n\n"))
 		_, _ = pw.Write([]byte("data: {\"type\":\"response.in_progress\",\"response\":{\"id\":\"resp_stalled\"}}\n\n"))
-		time.Sleep(2100 * time.Millisecond)
+		select {
+		case <-rec.keepaliveFlushed:
+		case <-body.closed:
+		}
 	}()
-	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
-	resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: pr}
+	resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: body}
 
-	_, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, &Account{ID: 1, Platform: PlatformOpenAI}, time.Now(), "model", "model")
+	err := runFirstOutputTestCall(t, nil, func() {
+		_ = body.Close()
+		_ = pw.Close()
+		select {
+		case <-writerDone:
+		case <-time.After(10 * time.Second):
+			t.Error("keepalive-gated writer did not exit after test cleanup")
+		}
+	}, func() error {
+		_, streamErr := svc.handleStreamingResponse(c.Request.Context(), resp, c, &Account{ID: 1, Platform: PlatformOpenAI}, time.Now(), "model", "model")
+		return streamErr
+	})
 
 	var failoverErr *UpstreamFailoverError
 	require.ErrorAs(t, err, &failoverErr)
+	select {
+	case <-rec.keepaliveFlushed:
+	default:
+		t.Fatal("upstream EOF preceded a real keepalive flush")
+	}
 	require.Contains(t, rec.Body.String(), ":\n\n")
 	require.NotContains(t, rec.Body.String(), "response.created")
 	require.NotContains(t, rec.Body.String(), "response.in_progress")
@@ -673,7 +718,7 @@ func TestOpenAINativeFirstOutputTimeoutDisabledKeepsPreamblePrivateAcrossKeepali
 
 func TestOpenAINativeFirstOutputFailoverKeepsAttemptHeadersPrivateAfterKeepaliveCommit(t *testing.T) {
 	cfg := &config.Config{Gateway: config.GatewayConfig{
-		OpenAIFirstOutputTimeoutSeconds: 2,
+		OpenAIFirstOutputTimeoutSeconds: 4,
 		StreamKeepaliveInterval:         1,
 		MaxLineSize:                     defaultMaxLineSize,
 	}}
@@ -681,7 +726,7 @@ func TestOpenAINativeFirstOutputFailoverKeepsAttemptHeadersPrivateAfterKeepalive
 		cfg:                  cfg,
 		responseHeaderFilter: compileResponseHeaderFilter(cfg),
 	}
-	rec := httptest.NewRecorder()
+	rec := newFirstOutputKeepaliveRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 	firstBody, firstWriter := io.Pipe()
@@ -717,6 +762,16 @@ func TestOpenAINativeFirstOutputFailoverKeepsAttemptHeadersPrivateAfterKeepalive
 	})
 	var failoverErr *UpstreamFailoverError
 	require.ErrorAs(t, firstErr, &failoverErr)
+	require.Equal(t, http.StatusGatewayTimeout, failoverErr.StatusCode)
+	require.Contains(t, string(failoverErr.ResponseBody), "first_output_timeout")
+	require.True(t, failoverErr.SafeToFailoverAfterWrite)
+	select {
+	case <-rec.keepaliveFlushed:
+	default:
+		t.Fatal("first-output timeout preceded a real keepalive flush")
+	}
+	require.False(t, openAIStreamClientOutputStarted(c, false))
+	require.Equal(t, -1, OpenAICompactKeepaliveAdjustedWrittenSize(c))
 	require.Contains(t, rec.Body.String(), ":\n\n", "first attempt should have committed only a stable keepalive")
 	require.NotContains(t, rec.Body.String(), "resp_first")
 
