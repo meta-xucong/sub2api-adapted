@@ -864,16 +864,6 @@ func isWokeyNativeClaudeModelID(modelID string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(modelID)), "claude-")
 }
 
-func filterWokeyNativeClaudeModelIDs(models []string) []string {
-	filtered := make([]string, 0, len(models))
-	for _, modelID := range models {
-		if !isWokeyNativeClaudeModelID(modelID) {
-			filtered = append(filtered, modelID)
-		}
-	}
-	return filtered
-}
-
 func (s *AccountTestService) buildUpstreamModelsRequest(ctx context.Context, account *Account) (*http.Request, error) {
 	switch {
 	case account.Platform == PlatformAntigravity:

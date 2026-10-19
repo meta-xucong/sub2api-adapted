@@ -81,8 +81,13 @@ func (c *openAIImageOutputCounter) AddSSEData(data []byte) {
 		c.hasResponsesImageGenerationCall = true
 	}
 	root := gjson.ParseBytes(data)
-	c.addDataArray(root.Get("data"))
 	eventType := strings.TrimSpace(root.Get("type").String())
+	switch eventType {
+	case "response.image_generation_call.partial_image", "image_generation.partial_image", "image_edit.partial_image":
+		return
+	}
+	c.addDataArray(root.Get("data"))
+
 	switch eventType {
 	case "response.output_item.done":
 		c.addImageOutputItem(root.Get("item"))
@@ -188,9 +193,9 @@ func openAIResponsesImageItemHasResult(item gjson.Result) bool {
 	if itemType != "image_generation_call" && itemType != "image_generation.completed" && itemType != "image_edit.completed" {
 		return false
 	}
-	return strings.TrimSpace(item.Get("result").String()) != "" ||
-		strings.TrimSpace(item.Get("b64_json").String()) != "" ||
-		strings.TrimSpace(item.Get("url").String()) != ""
+	return nonemptyImageArtifactString(item.Get("result")) != "" ||
+		nonemptyImageArtifactString(item.Get("b64_json")) != "" ||
+		nonemptyImageArtifactString(item.Get("url")) != ""
 }
 
 func hasOpenAIResponsesImageResultSSEData(data []byte) bool {
@@ -245,8 +250,8 @@ func (c *openAIImageOutputCounter) addDataArray(data gjson.Result) {
 		if !item.IsObject() {
 			continue
 		}
-		hasImageOutput := strings.TrimSpace(item.Get("url").String()) != "" ||
-			strings.TrimSpace(item.Get("b64_json").String()) != ""
+		hasImageOutput := nonemptyImageArtifactString(item.Get("url")) != "" ||
+			nonemptyImageArtifactString(item.Get("b64_json")) != ""
 		if !hasImageOutput {
 			continue
 		}
@@ -281,15 +286,18 @@ func (c *openAIImageOutputCounter) addImageOutputItem(item gjson.Result) {
 	if itemType != "" && itemType != "image_generation_call" && itemType != "image_generation.completed" && itemType != "image_edit.completed" {
 		return
 	}
-	if strings.Contains(strings.ToLower(item.Raw), "partial_image") {
+	// Partial identity comes from protocol fields, never arbitrary prompt,
+	// artifact URL, or ID text in an otherwise completed image item.
+	switch strings.ToLower(strings.TrimSpace(item.Get("status").String())) {
+	case "partial_image", "partial", "in_progress", "generating":
 		return
 	}
-	result := strings.TrimSpace(item.Get("result").String())
+	result := nonemptyImageArtifactString(item.Get("result"))
 	if result == "" {
-		result = strings.TrimSpace(item.Get("b64_json").String())
+		result = nonemptyImageArtifactString(item.Get("b64_json"))
 	}
 	if result == "" {
-		result = strings.TrimSpace(item.Get("url").String())
+		result = nonemptyImageArtifactString(item.Get("url"))
 	}
 	if result == "" {
 		return
@@ -350,4 +358,12 @@ func collectOpenAIImageOutputSizesFromSSEBody(body string) []string {
 	counter := newOpenAIImageOutputCounter()
 	counter.AddSSEBody(body)
 	return counter.Sizes()
+}
+
+// Artifact payloads are strings; numbers, booleans and objects are not images.
+func nonemptyImageArtifactString(value gjson.Result) string {
+	if value.Type != gjson.String {
+		return ""
+	}
+	return strings.TrimSpace(value.String())
 }

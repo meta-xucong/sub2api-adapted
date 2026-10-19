@@ -17,6 +17,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/net/http2"
 )
 
 func ingressTestConfig() *config.Config {
@@ -173,4 +174,57 @@ func serveIngressTestServer(t *testing.T, srv *http.Server) (string, func()) {
 		defer cancel()
 		_ = srv.Shutdown(ctx)
 	}
+}
+
+// Keep the legacy wrapper until the standard API exposes a separate HTTP/2
+// idle timeout. Migrating both protocols to Server.IdleTimeout loses this split.
+func TestHTTPServerPreservesSeparateHTTP2IdleTimeout(t *testing.T) {
+	cfg := ingressTestConfig()
+	cfg.Server.IdleTimeout = 1
+	cfg.Server.H2C = config.H2CConfig{Enabled: true, IdleTimeout: 3, MaxConcurrentStreams: 25}
+	r := gin.New()
+	r.GET("/", func(c *gin.Context) { c.String(http.StatusOK, "ok") })
+	srv := ProvideHTTPServer(cfg, r)
+	require.Equal(t, time.Second, srv.IdleTimeout)
+	addr, stop := serveIngressTestServer(t, srv)
+	defer stop()
+
+	t.Run("HTTP1 closes at its own timeout", func(t *testing.T) {
+		conn, err := net.DialTimeout("tcp", addr, time.Second)
+		require.NoError(t, err)
+		defer func() { _ = conn.Close() }()
+		require.NoError(t, conn.SetDeadline(time.Now().Add(2500*time.Millisecond)))
+		_, err = io.WriteString(conn, "GET / HTTP/1.1\r\nHost: test\r\n\r\n")
+		require.NoError(t, err)
+		reader := bufio.NewReader(conn)
+		resp, err := http.ReadResponse(reader, nil)
+		require.NoError(t, err)
+		_, err = io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		require.NoError(t, resp.Body.Close())
+		_, err = reader.ReadByte()
+		require.ErrorIs(t, err, io.EOF)
+	})
+	t.Run("HTTP2 stays open beyond HTTP1 timeout", func(t *testing.T) {
+		conn, err := net.DialTimeout("tcp", addr, time.Second)
+		require.NoError(t, err)
+		defer func() { _ = conn.Close() }()
+		require.NoError(t, conn.SetDeadline(time.Now().Add(6*time.Second)))
+		_, err = io.WriteString(conn, http2.ClientPreface)
+		require.NoError(t, err)
+		framer := http2.NewFramer(conn, conn)
+		require.NoError(t, framer.WriteSettings())
+		started := time.Now()
+		for {
+			frame, err := framer.ReadFrame()
+			require.NoError(t, err)
+			if settings, ok := frame.(*http2.SettingsFrame); ok && !settings.IsAck() {
+				require.NoError(t, framer.WriteSettingsAck())
+			}
+			if _, ok := frame.(*http2.GoAwayFrame); ok {
+				require.GreaterOrEqual(t, time.Since(started), 2*time.Second)
+				break
+			}
+		}
+	})
 }

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -569,101 +570,88 @@ func TestTokenRefreshService_ProviderConcurrencyGateIsSharedAcrossBackgroundAndC
 }
 
 func TestTokenRefreshService_SaturatedProviderPreservesConcurrencyAndActualQPSStartSpacing(t *testing.T) {
-	const (
-		providerConcurrency = 2
-		providerQPS         = 20
-		attemptCount        = 8
-	)
-	repo := &poolHealthAccountRepo{}
-	refresher := &poolHealthRefresher{
-		// The first two QPS-spaced attempts finish together. If queued callers
-		// reserve QPS slots before acquiring provider capacity, two expired
-		// reservations can then burst upstream at the same time.
-		startDelays: []time.Duration{
-			220 * time.Millisecond,
-			170 * time.Millisecond,
-			20 * time.Millisecond,
-			20 * time.Millisecond,
-			20 * time.Millisecond,
-			20 * time.Millisecond,
-			20 * time.Millisecond,
-			20 * time.Millisecond,
-		},
-	}
-	svc := newPoolHealthService(repo, refresher, config.TokenRefreshConfig{
-		MaxRetries:            1,
-		ProviderConcurrency:   providerConcurrency,
-		ProviderQPS:           providerQPS,
-		AttemptTimeoutSeconds: 1,
+	synctest.Test(t, func(t *testing.T) {
+		const (
+			providerConcurrency = 2
+			providerQPS         = 20
+			attemptCount        = 8
+		)
+		repo := &poolHealthAccountRepo{}
+		refresher := &poolHealthRefresher{
+			// The first two QPS-spaced attempts finish together. If queued callers
+			// reserve QPS slots before acquiring provider capacity, two expired
+			// reservations can then burst upstream at the same time.
+			startDelays: []time.Duration{
+				220 * time.Millisecond,
+				170 * time.Millisecond,
+				20 * time.Millisecond,
+				20 * time.Millisecond,
+				20 * time.Millisecond,
+				20 * time.Millisecond,
+				20 * time.Millisecond,
+				20 * time.Millisecond,
+			},
+		}
+		svc := newPoolHealthService(repo, refresher, config.TokenRefreshConfig{
+			MaxRetries:            1,
+			ProviderConcurrency:   providerConcurrency,
+			ProviderQPS:           providerQPS,
+			AttemptTimeoutSeconds: 1,
+		})
+		registration := svc.registrations[0]
+		sharedRateGate := svc.providerRateGate(PlatformGrok)
+		sharedPoolGate := svc.providerConcurrencyGate(PlatformGrok)
+
+		start := make(chan struct{})
+		errorsCh := make(chan error, attemptCount)
+		var wg sync.WaitGroup
+		for i := 0; i < attemptCount; i++ {
+			account := grokPoolAccount(int64(i + 1))
+			state := &tokenRefreshProviderState{
+				service:      svc,
+				registration: registration,
+				rateGate:     sharedRateGate,
+				poolGate:     sharedPoolGate,
+			}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				errorsCh <- svc.refreshWithRetryWithRateGate(context.Background(), &account, refresher, nil, time.Hour, state)
+			}()
+		}
+		close(start)
+		wg.Wait()
+		close(errorsCh)
+
+		for err := range errorsCh {
+			require.NoError(t, err)
+		}
+		require.Equal(t, int64(providerConcurrency), refresher.maxActive.Load(),
+			"the scripted attempts must actually saturate the provider semaphore")
+		starts := refresher.startsSnapshot()
+		require.Len(t, starts, attemptCount)
+		configuredSpacing := time.Second / time.Duration(providerQPS)
+
+		// Virtual time advances only when every goroutine in the bubble is blocked.
+		// A rate-admitted caller therefore records its actual Refresh start before
+		// a later reservation can become ready, independently of host scheduling.
+		// Assert the full configured interval: disabled pacing and acquiring rate
+		// admission before provider capacity both produce simultaneous starts.
+		// This proves admission ordering under a controlled scheduler, not exact
+		// network-send spacing under arbitrary operating-system scheduling delay.
+		actualMinimumSpacing := starts[1].Sub(starts[0])
+		for i := 1; i < len(starts); i++ {
+			spacing := starts[i].Sub(starts[i-1])
+			if spacing < actualMinimumSpacing {
+				actualMinimumSpacing = spacing
+			}
+			require.GreaterOrEqualf(t, spacing, configuredSpacing,
+				"upstream starts %d and %d violated configured QPS spacing", i-1, i)
+		}
+		t.Logf("max_active=%d configured_concurrency=%d minimum_start_spacing=%s configured_spacing=%s",
+			refresher.maxActive.Load(), providerConcurrency, actualMinimumSpacing, configuredSpacing)
 	})
-	registration := svc.registrations[0]
-	sharedRateGate := svc.providerRateGate(PlatformGrok)
-	sharedPoolGate := svc.providerConcurrencyGate(PlatformGrok)
-
-	start := make(chan struct{})
-	errorsCh := make(chan error, attemptCount)
-	var wg sync.WaitGroup
-	for i := 0; i < attemptCount; i++ {
-		account := grokPoolAccount(int64(i + 1))
-		state := &tokenRefreshProviderState{
-			service:      svc,
-			registration: registration,
-			rateGate:     sharedRateGate,
-			poolGate:     sharedPoolGate,
-		}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			<-start
-			errorsCh <- svc.refreshWithRetryWithRateGate(context.Background(), &account, refresher, nil, time.Hour, state)
-		}()
-	}
-	close(start)
-	wg.Wait()
-	close(errorsCh)
-
-	for err := range errorsCh {
-		require.NoError(t, err)
-	}
-	require.Equal(t, int64(providerConcurrency), refresher.maxActive.Load(),
-		"the scripted attempts must actually saturate the provider semaphore")
-	starts := refresher.startsSnapshot()
-	require.Len(t, starts, attemptCount)
-	configuredSpacing := time.Second / time.Duration(providerQPS)
-
-	// The floor is a tenth of the configured spacing, not spacing minus a few
-	// milliseconds. Each start timestamp is taken after the rate gate releases
-	// the goroutine, so scheduler delay can compress one observed gap without
-	// the gate having done anything wrong: this assertion failed on a loaded
-	// machine at 13ms and again at 37ms against a 40ms floor, both times with
-	// the gate pacing correctly.
-	//
-	// A tenth still separates the two cases by a wide margin. Measured with
-	// providerQPS=20 (50ms spacing), 8 attempts, providerConcurrency=2:
-	//
-	//	gate at 50ms  -> minimum observed gap 49.97ms
-	//	gate at 0     -> minimum observed gap 22µs
-	//
-	// So an unpaced gate lands three orders of magnitude below the 5ms floor
-	// and is still caught, while jitter on a busy machine has room to move.
-	//
-	// Do not swap this for an assertion on the total span of the starts: the
-	// span is dominated by how long each attempt takes under
-	// providerConcurrency, not by the gate. Same measurement — 471ms paced
-	// against 241ms unpaced — so a span check passes with the gate disabled and
-	// tests nothing.
-	minimumObservedSpacing := configuredSpacing / 10
-	actualMinimumSpacing := starts[1].Sub(starts[0])
-	for i := 1; i < len(starts); i++ {
-		spacing := starts[i].Sub(starts[i-1])
-		if spacing < actualMinimumSpacing {
-			actualMinimumSpacing = spacing
-		}
-		require.GreaterOrEqualf(t, spacing, minimumObservedSpacing,
-			"upstream starts %d and %d violated configured QPS spacing", i-1, i)
-	}
-	t.Logf("max_active=%d configured_concurrency=%d minimum_start_spacing=%s configured_spacing=%s",
-		refresher.maxActive.Load(), providerConcurrency, actualMinimumSpacing, configuredSpacing)
 }
 
 func TestTokenRefreshService_ProductionPathRatesOnlyActualRefreshAfterSameAccountContention(t *testing.T) {
@@ -968,4 +956,144 @@ func TestTokenRefreshService_NonRetryableGrokFailureInvalidatesTokenCache(t *tes
 	require.Equal(t, 1, setErrorCalls)
 	require.Zero(t, setTempUnschedCalls)
 	require.Equal(t, 1, invalidator.count())
+}
+
+// tokenRefreshLaggingDeadlineContext models an expired absolute deadline whose
+// cancellation callback has not published Err yet. The deadline stays fixed.
+type tokenRefreshLaggingDeadlineContext struct {
+	context.Context
+	deadline time.Time
+}
+
+func (c tokenRefreshLaggingDeadlineContext) Deadline() (time.Time, bool) {
+	return c.deadline, true
+}
+
+func TestTokenRefreshAttemptContextState(t *testing.T) {
+	background := context.Background()
+	past := tokenRefreshLaggingDeadlineContext{Context: background, deadline: time.Now().Add(-time.Hour)}
+	future := tokenRefreshLaggingDeadlineContext{Context: background, deadline: time.Now().Add(time.Hour)}
+	canceled, cancel := context.WithCancel(background)
+	cancel()
+	canceledPast := tokenRefreshLaggingDeadlineContext{Context: canceled, deadline: past.deadline}
+	tests := []struct {
+		name               string
+		parent, attempt    context.Context
+		wantErr            error
+		wantAttemptTimeout bool
+	}{
+		{name: "active without deadline", parent: background, attempt: background},
+		{name: "active future deadlines", parent: future, attempt: future},
+		{name: "attempt deadline before timer publication", parent: background, attempt: past, wantErr: context.DeadlineExceeded, wantAttemptTimeout: true},
+		{name: "parent deadline before timer publication", parent: past, attempt: future, wantErr: context.DeadlineExceeded},
+		{name: "parent and attempt expired", parent: past, attempt: past, wantErr: context.DeadlineExceeded},
+		{name: "parent cancellation takes precedence", parent: canceledPast, attempt: past, wantErr: context.Canceled},
+		{name: "published attempt cancellation", parent: background, attempt: canceled, wantErr: context.Canceled},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err, attemptTimedOut := tokenRefreshAttemptContextState(tt.parent, tt.attempt)
+			require.ErrorIs(t, err, tt.wantErr)
+			require.Equal(t, tt.wantAttemptTimeout, attemptTimedOut)
+		})
+	}
+}
+
+// This repository records persistence even when a caller passes an expired
+// context, so the service admission guard cannot be masked by a mock DB error.
+type tokenRefreshDeadlineRepo struct {
+	*poolHealthAccountRepo
+	account *Account
+}
+
+func (r *tokenRefreshDeadlineRepo) GetByID(context.Context, int64) (*Account, error) {
+	return snapshotOAuthRefreshAccount(r.account), nil
+}
+
+func (r *tokenRefreshDeadlineRepo) UpdateGrokOAuthCredentialsIfUnchanged(ctx context.Context, id int64, expected map[string]any, proxyID *int64, credentials map[string]any) (bool, error) {
+	updated, err := r.poolHealthAccountRepo.UpdateGrokOAuthCredentialsIfUnchanged(ctx, id, expected, proxyID, credentials)
+	if updated && err == nil {
+		r.account.Credentials = shallowCopyMap(credentials)
+	}
+	return updated, err
+}
+
+func TestTokenRefreshService_ContextBoundaryPaths(t *testing.T) {
+	for _, unified := range []bool{false, true} {
+		path := "legacy nil executor"
+		if unified {
+			path = "unified executor"
+		}
+		for _, scenario := range []string{"active success", "expired before start", "parent canceled during refresh", "parent expired during success", "parent expired during provider error", "attempt expired during success"} {
+			t.Run(path+"/"+scenario, func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					account := grokPoolAccount(143)
+					originalCredentials := shallowCopyMap(account.Credentials)
+					repo := &tokenRefreshDeadlineRepo{poolHealthAccountRepo: &poolHealthAccountRepo{}, account: &account}
+					refresher := &poolHealthRefresher{delay: 30 * time.Millisecond, ignoreContext: true}
+					svc := newPoolHealthService(repo.poolHealthAccountRepo, refresher, config.TokenRefreshConfig{MaxRetries: 1, ProviderFailureThreshold: 1})
+					svc.accountRepo = repo
+					svc.attemptTimeoutOverride = time.Hour
+					var executor OAuthRefreshExecutor
+					if unified {
+						svc.SetRefreshAPI(NewOAuthRefreshAPI(repo, nil))
+						executor = refresher
+					}
+					ctx := context.Background()
+					var wantErr error
+					wantCalls := int64(1)
+					wantAttemptTimeout := false
+					switch scenario {
+					case "active success":
+						ctx = tokenRefreshLaggingDeadlineContext{Context: ctx, deadline: time.Now().Add(2 * time.Hour)}
+					case "expired before start":
+						ctx = tokenRefreshLaggingDeadlineContext{Context: ctx, deadline: time.Now().Add(-time.Hour)}
+						wantErr, wantCalls = context.DeadlineExceeded, 0
+					case "parent canceled during refresh":
+						var cancel context.CancelFunc
+						ctx, cancel = context.WithCancel(ctx)
+						defer cancel()
+						refresher.cancel = cancel
+						wantErr = context.Canceled
+					case "parent expired during success", "parent expired during provider error":
+						ctx = tokenRefreshLaggingDeadlineContext{Context: ctx, deadline: time.Now().Add(10 * time.Millisecond)}
+						wantErr = context.DeadlineExceeded
+						if scenario == "parent expired during provider error" {
+							refresher.err = errors.New("invalid_grant: revoked")
+						}
+					case "attempt expired during success":
+						svc.attemptTimeoutOverride = 10 * time.Millisecond
+						wantErr, wantAttemptTimeout = context.DeadlineExceeded, true
+					}
+
+					err := svc.refreshWithRetry(ctx, &account, refresher, executor, time.Hour)
+					require.ErrorIs(t, err, wantErr)
+					var attemptErr *refreshAttemptTimeoutError
+					require.Equal(t, wantAttemptTimeout, errors.As(err, &attemptErr), "parent boundaries must not be classified as provider attempt timeouts")
+					require.Equal(t, wantCalls, refresher.calls.Load())
+					_, updatedIDs, setErrorCalls, setTempCalls := repo.snapshot()
+					require.Zero(t, setErrorCalls, "context expiry must not permanently quarantine an account")
+					state := &tokenRefreshProviderState{service: svc}
+					state.recordResult(err)
+					require.Equal(t, wantAttemptTimeout, state.isTripped(), "only an independent attempt timeout should count against the provider breaker")
+					if wantErr == nil {
+						require.Equal(t, []int64{account.ID}, updatedIDs)
+						require.Equal(t, "new-refresh-token", account.GetGrokRefreshToken())
+						require.Contains(t, account.Credentials, "_token_version")
+					} else {
+						require.Empty(t, updatedIDs, "credentials returned after a context boundary must not be persisted")
+						require.Equal(t, originalCredentials, account.Credentials)
+					}
+					if wantAttemptTimeout {
+						require.Equal(t, 1, setTempCalls)
+					} else {
+						require.Zero(t, setTempCalls, "parent cancellation/expiry must not penalize the account")
+					}
+					if scenario == "expired before start" || scenario == "parent expired during success" || scenario == "parent expired during provider error" {
+						require.NoError(t, ctx.Err(), "this control must exercise absolute expiry before Err publication")
+					}
+				})
+			})
+		}
+	}
 }

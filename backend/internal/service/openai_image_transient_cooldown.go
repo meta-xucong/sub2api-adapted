@@ -9,6 +9,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/smartrouter/core"
 	"github.com/tidwall/gjson"
 	"go.uber.org/zap"
 )
@@ -52,6 +53,11 @@ func (s *OpenAIGatewayService) TempUnscheduleImageGenerationTransientError(ctx c
 	if s == nil || account == nil || failoverErr == nil || !isOpenAIImageGenerationTransientError(failoverErr) {
 		return
 	}
+	// Scoped Smart Router health owns image recovery. A poll timeout never
+	// becomes an account-wide ban, even when Smart Router is disabled.
+	if isOpenAIImagesPollTimeout(failoverErr.StatusCode, failoverErr.ResponseBody) || s.smartRouterOwnsImageHealth(account, core.CapabilityImageGeneration) {
+		return
+	}
 	cooldown := s.openAIImageTransientCooldownForAccount(account, s.openAIImageGenerationTransientCooldown())
 	if cooldown <= 0 {
 		return
@@ -73,6 +79,9 @@ func (s *OpenAIGatewayService) openAIImageGenerationTransientCooldown() time.Dur
 func isOpenAIImageGenerationTransientError(failoverErr *UpstreamFailoverError) bool {
 	if failoverErr == nil {
 		return false
+	}
+	if isOpenAIImagesPollTimeout(failoverErr.StatusCode, failoverErr.ResponseBody) {
+		return true
 	}
 	if isOpenAIImageTransientStatus(failoverErr.StatusCode) {
 		return true
@@ -106,7 +115,12 @@ func openAIImageGenerationTransientCooldownReason(failoverErr *UpstreamFailoverE
 }
 
 func (s *OpenAIGatewayService) TempUnscheduleImageEditTransientError(ctx context.Context, account *Account, failoverErr *UpstreamFailoverError) {
-	if s == nil || account == nil || failoverErr == nil || !isOpenAIImageTransientStatus(failoverErr.StatusCode) {
+	if s == nil || account == nil || failoverErr == nil || (!isOpenAIImageTransientStatus(failoverErr.StatusCode) && !isOpenAIImagesPollTimeout(failoverErr.StatusCode, failoverErr.ResponseBody)) {
+		return
+	}
+	// Scoped Smart Router health owns image recovery. A poll timeout never
+	// becomes an account-wide ban, even when Smart Router is disabled.
+	if isOpenAIImagesPollTimeout(failoverErr.StatusCode, failoverErr.ResponseBody) || s.smartRouterOwnsImageHealth(account, core.CapabilityImageEdit) {
 		return
 	}
 	cooldown := s.openAIImageTransientCooldownForAccount(account, s.openAIImageEditTransientCooldown())
@@ -263,6 +277,9 @@ func openAIImageTransientCooldownReason(prefix string, failoverErr *UpstreamFail
 	statusCode := 0
 	if failoverErr != nil {
 		statusCode = failoverErr.StatusCode
+	}
+	if failoverErr != nil && isOpenAIImagesPollTimeout(failoverErr.StatusCode, failoverErr.ResponseBody) {
+		return fmt.Sprintf("%s: status=%d: code=image_poll_timeout", prefix, statusCode)
 	}
 	reason := fmt.Sprintf("%s: status=%d", prefix, statusCode)
 	if failoverErr == nil || len(failoverErr.ResponseBody) == 0 {

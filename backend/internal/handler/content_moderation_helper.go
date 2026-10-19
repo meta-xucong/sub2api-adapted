@@ -34,6 +34,8 @@ func clientRequestedModel(c *gin.Context, fallback string) string {
 	return fallback
 }
 
+// Resolve these fields before queuing usage work: Gin may reuse c for another
+// request as soon as the handler returns.
 func clientRequestedUsageFields(c *gin.Context, mapping service.ChannelMappingResult, fallbackModel, upstreamModel string) service.ChannelUsageFields {
 	return mapping.ToUsageFields(clientRequestedModel(c, fallbackModel), upstreamModel)
 }

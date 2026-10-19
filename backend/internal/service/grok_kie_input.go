@@ -125,11 +125,12 @@ func probeKIEJobsVideoImageURL(ctx context.Context, normalizedURL string) (kieJo
 		return kieJobsVideoImageURLProbe{}, err
 	}
 	client, err := httpclient.GetClient(httpclient.Options{
-		Timeout:               kieJobsVideoImageProbeTimeout,
-		ResponseHeaderTimeout: kieJobsVideoImageProbeHeaderTimeout,
-		ValidateResolvedIP:    true,
-		AllowPrivateHosts:     false,
-		MaxConnsPerHost:       2,
+		Timeout:                  kieJobsVideoImageProbeTimeout,
+		ResponseHeaderTimeout:    kieJobsVideoImageProbeHeaderTimeout,
+		ValidateResolvedIP:       true,
+		RequirePinnedDestination: true,
+		AllowPrivateHosts:        false,
+		MaxConnsPerHost:          2,
 	})
 	if err != nil {
 		return kieJobsVideoImageURLProbe{}, err
@@ -163,7 +164,7 @@ func probeKIEJobsVideoImageURL(ctx context.Context, normalizedURL string) (kieJo
 	if err != nil {
 		return kieJobsVideoImageURLProbe{}, err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 
 	contentLength := response.ContentLength
 	if contentRange := strings.TrimSpace(response.Header.Get("Content-Range")); contentRange != "" {

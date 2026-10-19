@@ -1,0 +1,223 @@
+{
+  "schema_version": 1,
+  "tested_code_commit": "528820ea5e8f1694fc2a54ef3d3b1045869ff212",
+  "tested_code_tree": "b31518278953eff35cdc154882cc1d57ce7417f0",
+  "baseline": "4a137bbf05bb192e488c79ab9954027e05c9bc50",
+  "integrated_source": "9c638df774c22252ed1b7d25a9dcf9e930fdfe8c",
+  "state": "cloud-validation-completed-upload-not-performed",
+  "gates": {
+    "unit": {
+      "state": "passed",
+      "exit_code": 0,
+      "started_utc": "2026-10-18T16:41:58Z",
+      "ended_utc": "2026-10-18T16:52:36Z",
+      "command": [
+        "go",
+        "test",
+        "-json",
+        "-count=1",
+        "-timeout=20m",
+        "-tags=unit",
+        "-skip",
+        "^(TestOfferPluginHostServices_BrokerRoundtrip|TestOfferPluginHostServices_UnimplementedIsGraceful|TestOfferPluginHostServices_NilHostServicesNoop)$",
+        "./..."
+      ],
+      "log_sha256": "8d5b9650b60e3eff8bc42bcfa2fbf4d8cf9925b8fc3ee986e4d00c548232bfd5",
+      "counts": {
+        "sub_pass": 12207,
+        "top_pass": 12162,
+        "top_skip": 18
+      }
+    },
+    "integration": {
+      "state": "passed",
+      "exit_code": 0,
+      "started_utc": "2026-10-18T16:52:39Z",
+      "ended_utc": "2026-10-18T17:11:33Z",
+      "command": [
+        "go",
+        "test",
+        "-json",
+        "-count=1",
+        "-timeout=20m",
+        "-tags=integration",
+        "-skip",
+        "^(TestOfferPluginHostServices_BrokerRoundtrip|TestOfferPluginHostServices_UnimplementedIsGraceful|TestOfferPluginHostServices_NilHostServicesNoop)$",
+        "./..."
+      ],
+      "log_sha256": "34610acc1b7d68a31d372fe6faf3fb80c354b89dc942fe30ef44bd1af9831075",
+      "counts": {
+        "sub_pass": 6216,
+        "sub_skip": 2,
+        "top_pass": 6821,
+        "top_skip": 20
+      }
+    },
+    "lint": {
+      "state": "passed",
+      "exit_code": 0,
+      "started_utc": "2026-10-18T17:11:36Z",
+      "ended_utc": "2026-10-18T17:26:20Z",
+      "command": [
+        "golangci-lint",
+        "run",
+        "--timeout=45m",
+        "--concurrency=1",
+        "--max-issues-per-linter=0",
+        "--max-same-issues=0",
+        "./..."
+      ],
+      "log_sha256": "e92606b0bf483111dff0a120c315ea165821348f31365020e2468a0059095c47"
+    },
+    "race": {
+      "state": "passed",
+      "exit_code": 0,
+      "started_utc": "2026-10-18T17:26:22Z",
+      "ended_utc": "2026-10-18T17:38:15Z",
+      "command": [
+        "go",
+        "test",
+        "-json",
+        "-count=1",
+        "-timeout=20m",
+        "-race",
+        "-tags=unit",
+        "-run",
+        "^(Test.*[Ii]mage.*([Ff]ailover|[Tt]imeout)|TestImages(FailedStream|NonStreaming)ObservedUsageBilling|TestHealthPersistence|TestSmartRouterPersistence|TestHealthTracker|TestSmartRouterClassifiesImagePollTimeout|TestTokenRefreshService_SaturatedProviderPreservesConcurrencyAndActualQPSStartSpacing$|TestDecodeWokeyVideoDataURL(RejectsOversizeBeforeLargeAllocation|LineWrappingDoesNotInflateAllocation)$)",
+        "./internal/config",
+        "./internal/service",
+        "./internal/handler",
+        "./internal/smartrouter/core"
+      ],
+      "log_sha256": "543925e1f78cc8ff9dc74e412b221dd1d22690c15183713838fe16eefb09035e",
+      "counts": {
+        "sub_pass": 649,
+        "top_pass": 70
+      }
+    },
+    "build": {
+      "state": "passed",
+      "exit_code": 0,
+      "started_utc": "2026-10-18T17:38:15Z",
+      "ended_utc": "2026-10-18T17:40:56Z",
+      "command": [
+        "go",
+        "build",
+        "-trimpath",
+        "-tags",
+        "embed",
+        "-ldflags",
+        "-X main.Version=0.2.12-cloud-integration -X main.Commit=528820ea5e8f1694fc2a54ef3d3b1045869ff212 -X main.Date=2026-10-18T16:41:58Z",
+        "-o",
+        "/workspace/scratch/79ebac196883/phase4-evidence/528820ea5e8f1694fc2a54ef3d3b1045869ff212/sub2api-embedded",
+        "./cmd/server"
+      ],
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "core_full_race": {
+    "exit_code": 0,
+    "top_pass": 69,
+    "sub_pass": 14,
+    "skip": 0,
+    "log_sha256": "891497f722e018f4cb4417eb31aa6c85cb7f4e86e7a1f32067321bcbf4cb7e7c"
+  },
+  "native_postgres_manifest": {
+    "schema_version": 1,
+    "kind": "native-postgresql-selected-integration",
+    "status": "passed",
+    "commit": "528820ea5e8f1694fc2a54ef3d3b1045869ff212",
+    "tree": "b31518278953eff35cdc154882cc1d57ce7417f0",
+    "test_exit_code": 0,
+    "archive": {
+      "name": "native-postgres-528820e-evidence.tar.gz",
+      "bytes": 362442,
+      "sha256": "76cb8b20b158e1c1339875bb3a0f8eb351d46ca4bf45578d1926f205828a4e8d"
+    },
+    "summary": {
+      "path": "native-postgres-528820e/summary.json",
+      "sha256": "915bd565038d4bc8e8e0767d98fa11ccb28b2498b43142fb7ea2c3046a9d07fe"
+    },
+    "raw_receipt": {
+      "path": "native-postgres-528820e/execution/raw-receipt.json",
+      "sha256": "4c47de026fb27cef4f444c58b0e45fe4c71c1f8d304df710906a1a3159731dfc"
+    },
+    "checksum_manifest": {
+      "path": "native-postgres-528820e/SHA256SUMS",
+      "sha256": "8a5c5c50994c8b698fb740e37b2e7dc0b44e77e463200c81af0a3ae8baeec9c1"
+    },
+    "counts": {
+      "top_level": {
+        "pass": 15,
+        "fail": 0,
+        "skip": 0
+      },
+      "nested": {
+        "pass": 22,
+        "fail": 0,
+        "skip": 0
+      }
+    },
+    "cleanup": {
+      "tracked_pid_count": 56,
+      "surviving_same_identity_pids": [],
+      "complete": true
+    },
+    "binding": {
+      "source_binding_verified": true,
+      "frozen_source_files_unchanged": 4493,
+      "git_status_start": "",
+      "git_status_end": ""
+    },
+    "scope": {
+      "engine": "PostgreSQL18.1 Debian18.1-1.pgdg13+2",
+      "selected_top_level": 15,
+      "docker_bootstrap_validated": false,
+      "redis_validated": false,
+      "live_provider_used": false
+    },
+    "git_tree": "b31518278953eff35cdc154882cc1d57ce7417f0",
+    "archive_file": "native-postgres-528820e-evidence.tar.gz",
+    "archive_bytes": 362442,
+    "archive_sha256": "76cb8b20b158e1c1339875bb3a0f8eb351d46ca4bf45578d1926f205828a4e8d",
+    "summary_sha256": "915bd565038d4bc8e8e0767d98fa11ccb28b2498b43142fb7ea2c3046a9d07fe",
+    "raw_receipt_sha256": "4c47de026fb27cef4f444c58b0e45fe4c71c1f8d304df710906a1a3159731dfc",
+    "tests_log_sha256": "1283f771366cc4bebdb23399332c793097fe2568b4393e3985d9aefbc36a4203",
+    "top_level_counts": {
+      "pass": 15,
+      "fail": 0,
+      "skip": 0
+    },
+    "nested_counts": {
+      "pass": 22,
+      "fail": 0,
+      "skip": 0
+    }
+  },
+  "binary": {
+    "name": "sub2api-embedded",
+    "bytes": 166870050,
+    "sha256": "969892512e9d9d84a2dddf3e631017d371ef1df14fe3cb202743a1c015610afb"
+  },
+  "exclusions": {
+    "unit": [
+      "TestOfferPluginHostServices_BrokerRoundtrip",
+      "TestOfferPluginHostServices_UnimplementedIsGraceful",
+      "TestOfferPluginHostServices_NilHostServicesNoop"
+    ],
+    "integration": [
+      "TestOfferPluginHostServices_BrokerRoundtrip",
+      "TestOfferPluginHostServices_UnimplementedIsGraceful",
+      "TestOfferPluginHostServices_NilHostServicesNoop"
+    ]
+  },
+  "limits": [
+    "Suites overlap; do not sum top/subtest counts.",
+    "Missing Docker repository TestMain is not actual SQL execution; separate native PG evidence supplies selected15 tests only.",
+    "Frontend validation is historical unchanged-source reuse, no new browser/provider/Redis/production testing.",
+    "Default-off image-poll-timeout flag; no upstream exactly-once assurance; cooldown is account-wide."
+  ],
+  "published": false,
+  "merged": false,
+  "deployed": false
+}

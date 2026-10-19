@@ -15,7 +15,6 @@ func TestTavilyProvider_Name(t *testing.T) {
 func TestTavilyProvider_Search_RequestConstruction(t *testing.T) {
 	// Verify tavilyRequest struct fields map correctly
 	req := tavilyRequest{
-		APIKey:      "test-key",
 		Query:       "golang",
 		MaxResults:  3,
 		SearchDepth: tavilySearchDepthBasic,
@@ -25,7 +24,7 @@ func TestTavilyProvider_Search_RequestConstruction(t *testing.T) {
 
 	var parsed map[string]any
 	require.NoError(t, json.Unmarshal(data, &parsed))
-	require.Equal(t, "test-key", parsed["api_key"])
+	require.NotContains(t, parsed, "api_key")
 	require.Equal(t, "golang", parsed["query"])
 	require.Equal(t, float64(3), parsed["max_results"])
 	require.Equal(t, "basic", parsed["search_depth"])

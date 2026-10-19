@@ -32,7 +32,7 @@ const (
 )
 
 type smartRouterCalibrationProbeGateway interface {
-	RunSmartRouterImageCalibrationProbe(context.Context, *Account, smartrouter.Capability) (int, int64, error)
+	RunSmartRouterImageCalibrationProbeForModel(context.Context, *Account, smartrouter.Capability, string) (int, int64, error)
 	RunSmartRouterResponsesCalibrationProbe(context.Context, *Account, string) (int, int64, error)
 	RunSmartRouterChatCalibrationProbe(context.Context, *Account, string) (int, int64, error)
 	RunSmartRouterEmbeddingCalibrationProbe(context.Context, *Account, string) (int, int64, error)
@@ -248,7 +248,7 @@ func smartRouterAutoEnrollmentEligible(account *Account) bool {
 		return false
 	}
 	if !smartRouterAccountHasChatGPTModel(account) &&
-		!(smartRouterAccountHasEmbeddingMapping(account) && account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityEmbeddings)) {
+		(!smartRouterAccountHasEmbeddingMapping(account) || !account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityEmbeddings)) {
 		return false
 	}
 	if account.TempUnschedulableUntil != nil && time.Now().Before(*account.TempUnschedulableUntil) {
@@ -294,13 +294,17 @@ func smartRouterAutoEnrollmentProbes(account *Account) []smartrouter.Calibration
 	probes := make([]smartrouter.CalibrationProbe, 0, len(capabilities))
 	for _, capability := range ordered {
 		if capabilities[capability] {
+			laneID := lane.LaneID
+			if capability == smartrouter.CapabilityImageGeneration || capability == smartrouter.CapabilityImageEdit {
+				laneID = smartRouterImageLaneID(account.ID, laneID)
+			}
 			if capability == smartrouter.CapabilityResponsesCompact {
 				for _, model := range smartRouterCompactProbeModelsForAccount(account, "gpt-5.4") {
-					probes = append(probes, smartrouter.CalibrationProbe{LaneID: lane.LaneID, Capability: capability, Model: model, Reason: "new_or_changed_lane"})
+					probes = append(probes, smartrouter.CalibrationProbe{LaneID: laneID, Capability: capability, Model: model, Reason: "new_or_changed_lane"})
 				}
 				continue
 			}
-			probes = append(probes, smartrouter.CalibrationProbe{LaneID: lane.LaneID, Capability: capability, Reason: "new_or_changed_lane"})
+			probes = append(probes, smartrouter.CalibrationProbe{LaneID: laneID, Capability: capability, Reason: "new_or_changed_lane"})
 		}
 	}
 	return probes
@@ -396,12 +400,15 @@ func (s *SmartRouterCalibrationService) runCalibration() {
 		logger.LegacyPrintf("service.smart_router_calibration", "%s: %v", summary, err)
 		return
 	}
+	recoveryAccounts := accounts
 	accounts = filterSmartRouterAccountsByModel(accounts)
 	lanes, accountsByLane := s.ordinaryCalibrationLanes(accounts)
 	imageLanes, imageAccounts := s.imageCalibrationLanes(accounts)
-	lanes, accountsByLane = mergeSmartRouterCalibrationLanes(lanes, accountsByLane, imageLanes, imageAccounts)
 	compactLanes, compactAccounts := s.compactCalibrationLanes(accounts)
 	lanes, accountsByLane = mergeSmartRouterCalibrationLanes(lanes, accountsByLane, compactLanes, compactAccounts)
+	// Images use account-qualified lane IDs and a separate account map. A raw
+	// custom text lane ID must never overwrite an image account with that ID.
+	lanes = append(lanes, imageLanes...)
 	evidenceRows, err := s.ledger.ListCapabilityEvidence(ctx)
 	if err != nil {
 		success = false
@@ -416,6 +423,11 @@ func (s *SmartRouterCalibrationService) runCalibration() {
 		logger.LegacyPrintf("service.smart_router_calibration", "%s: %v", summary, err)
 		return
 	}
+	// Recovery must discover the exact production-owned image account even
+	// when its model is outside the representative GPT calibration cohort.
+	for laneID, account := range s.imageRecoveryAccountsByLane(recoveryAccounts, states) {
+		imageAccounts[laneID] = account
+	}
 	probes := smartrouter.BuildCalibrationPlan(now, lanes, toCoreCapabilityEvidence(evidenceRows), smartrouter.CalibrationPolicy{
 		Location:            smartRouterCalibrationLocation(),
 		Hour:                s.cfg.Gateway.SmartRouter.Calibration.Hour,
@@ -423,7 +435,7 @@ func (s *SmartRouterCalibrationService) runCalibration() {
 		FreshEvidenceWindow: 24 * time.Hour,
 	})
 	probes = s.ensureCompactModelCalibrationProbes(probes, compactLanes, accountsByLane)
-	probes = ensureSmartRouterModelRecoveryProbes(probes, states, accountsByLane)
+	probes = ensureSmartRouterModelRecoveryProbes(probes, states, accountsByLane, imageAccounts)
 	if len(probes) == 0 {
 		return
 	}
@@ -436,6 +448,9 @@ func (s *SmartRouterCalibrationService) runCalibration() {
 			return
 		}
 		account := accountsByLane[probe.LaneID]
+		if probe.Capability == smartrouter.CapabilityImageGeneration || probe.Capability == smartrouter.CapabilityImageEdit {
+			account = imageAccounts[probe.LaneID]
+		}
 		if account == nil {
 			continue
 		}
@@ -488,11 +503,42 @@ func (s *SmartRouterCalibrationService) imageCalibrationLanes(accounts []Account
 				smartrouter.CapabilityImageGeneration: true,
 				smartrouter.CapabilityImageEdit:       true,
 			}
+		} else {
+			lane.Capabilities = map[smartrouter.Capability]bool{
+				smartrouter.CapabilityImageGeneration: lane.Capabilities[smartrouter.CapabilityImageGeneration],
+				smartrouter.CapabilityImageEdit:       lane.Capabilities[smartrouter.CapabilityImageEdit],
+			}
 		}
 		lanes = append(lanes, lane)
 		accountsByLane[lane.LaneID] = account
 	}
 	return lanes, accountsByLane
+}
+
+func (s *SmartRouterCalibrationService) imageRecoveryAccountsByLane(accounts []Account, states []SmartRouterHealthState) map[string]*Account {
+	accountsByLane := make(map[string]*Account)
+	if s == nil || s.gateway == nil {
+		return accountsByLane
+	}
+	accountsByID := make(map[int64]*Account, len(accounts))
+	for index := range accounts {
+		accountsByID[accounts[index].ID] = &accounts[index]
+	}
+	for _, state := range states {
+		if state.AccountID <= 0 || (state.Capability != smartrouter.CapabilityImageGeneration && state.Capability != smartrouter.CapabilityImageEdit) {
+			continue
+		}
+		account := accountsByID[state.AccountID]
+		if account == nil || !smartRouterAccountSupportsRecoveryModel(account, state.Capability, state.ModelFamily) {
+			continue
+		}
+		lane, ok := s.gateway.smartRouterImageLane(account, state.Capability, state.ModelFamily)
+		if !ok || lane.LaneID != smartRouterImageLaneID(state.AccountID, state.LaneID) {
+			continue
+		}
+		accountsByLane[lane.LaneID] = account
+	}
+	return accountsByLane
 }
 
 func (s *SmartRouterCalibrationService) ordinaryCalibrationLanes(accounts []Account) ([]smartrouter.LaneSnapshot, map[string]*Account) {
@@ -514,6 +560,8 @@ func (s *SmartRouterCalibrationService) ordinaryCalibrationLanes(accounts []Acco
 		if lane.Capabilities == nil {
 			lane.Capabilities = make(map[smartrouter.Capability]bool)
 		}
+		delete(lane.Capabilities, smartrouter.CapabilityImageGeneration)
+		delete(lane.Capabilities, smartrouter.CapabilityImageEdit)
 		for capability := range capabilities {
 			lane.Capabilities[capability] = true
 		}
@@ -579,7 +627,7 @@ func (s *SmartRouterCalibrationService) compactCalibrationLanes(accounts []Accou
 	accountsByLane := make(map[string]*Account)
 	for index := range accounts {
 		account := &accounts[index]
-		if !account.IsOpenAI() || !account.AllowsOpenAICompact() || !(len(smartRouterCalibrationTextCapabilities(account)) > 0) {
+		if !account.IsOpenAI() || !account.AllowsOpenAICompact() || len(smartRouterCalibrationTextCapabilities(account)) == 0 {
 			continue
 		}
 		lane, ok := smartRouterLaneSnapshot(account, nil, false, 0, 0, false, smartrouter.CapabilityResponsesCompact)
@@ -589,6 +637,8 @@ func (s *SmartRouterCalibrationService) compactCalibrationLanes(accounts []Accou
 		if lane.Capabilities == nil {
 			lane.Capabilities = map[smartrouter.Capability]bool{}
 		}
+		delete(lane.Capabilities, smartrouter.CapabilityImageGeneration)
+		delete(lane.Capabilities, smartrouter.CapabilityImageEdit)
 		lane.Capabilities[smartrouter.CapabilityResponsesCompact] = true
 		lanes = append(lanes, lane)
 		accountsByLane[lane.LaneID] = account
@@ -631,6 +681,9 @@ func mergeSmartRouterCalibrationLanes(
 }
 
 func (s *SmartRouterCalibrationService) runProbe(ctx context.Context, account *Account, probe smartrouter.CalibrationProbe) SmartRouterCalibrationResult {
+	if probe.Capability == smartrouter.CapabilityImageGeneration || probe.Capability == smartrouter.CapabilityImageEdit {
+		probe.LaneID = smartRouterImageLaneID(account.ID, probe.LaneID)
+	}
 	model := strings.TrimSpace(probe.Model)
 	if model == "" {
 		model = s.calibrationModelForCapability(account, probe.Capability)
@@ -673,7 +726,7 @@ func (s *SmartRouterCalibrationService) runProbe(ctx context.Context, account *A
 		case smartrouter.CapabilityEmbedding:
 			statusCode, latencyMs, err = runner.RunSmartRouterEmbeddingCalibrationProbe(probeCtx, account, model)
 		default:
-			statusCode, latencyMs, err = runner.RunSmartRouterImageCalibrationProbe(probeCtx, account, probe.Capability)
+			statusCode, latencyMs, err = runner.RunSmartRouterImageCalibrationProbeForModel(probeCtx, account, probe.Capability, model)
 		}
 	}
 	result.StatusCode = statusCode
@@ -806,10 +859,18 @@ func ensureSmartRouterModelRecoveryProbes(
 	probes []smartrouter.CalibrationProbe,
 	states []SmartRouterHealthState,
 	accountsByLane map[string]*Account,
+	imageAccountsByLane map[string]*Account,
 ) []smartrouter.CalibrationProbe {
 	seen := make(map[string]struct{}, len(probes))
 	for _, probe := range probes {
 		seen[smartRouterCalibrationProbeKey(probe)] = struct{}{}
+	}
+	canonicalImageStates := make(map[smartrouter.HealthKey]struct{})
+	for _, state := range states {
+		if state.AccountID > 0 && (state.Capability == smartrouter.CapabilityImageGeneration || state.Capability == smartrouter.CapabilityImageEdit) &&
+			strings.TrimSpace(state.LaneID) == smartRouterImageLaneID(state.AccountID, state.LaneID) {
+			canonicalImageStates[smartrouter.NewHealthKey(state.LaneID, state.Capability, state.ModelFamily)] = struct{}{}
+		}
 	}
 	for _, state := range states {
 		if strings.TrimSpace(state.LaneID) == "" || strings.TrimSpace(state.ModelFamily) == "" {
@@ -821,7 +882,25 @@ func ensureSmartRouterModelRecoveryProbes(
 		if !isSmartRouterExactRecoveryModel(state.ModelFamily) {
 			continue
 		}
-		account := accountsByLane[state.LaneID]
+		laneID := state.LaneID
+		account := accountsByLane[laneID]
+		if state.Capability == smartrouter.CapabilityImageGeneration || state.Capability == smartrouter.CapabilityImageEdit {
+			// Legacy image states used unqualified custom IDs. Only their
+			// persisted account identity can safely attribute a recovery probe.
+			if state.AccountID <= 0 {
+				continue
+			}
+			laneID = smartRouterImageLaneID(state.AccountID, laneID)
+			if laneID != strings.TrimSpace(state.LaneID) {
+				if _, superseded := canonicalImageStates[smartrouter.NewHealthKey(laneID, state.Capability, state.ModelFamily)]; superseded {
+					continue
+				}
+			}
+			account = imageAccountsByLane[laneID]
+			if account == nil || account.ID != state.AccountID {
+				continue
+			}
+		}
 		if account == nil || !smartRouterAccountSupportsRecoveryModel(account, state.Capability, state.ModelFamily) {
 			continue
 		}
@@ -832,7 +911,7 @@ func ensureSmartRouterModelRecoveryProbes(
 			continue
 		}
 		probe := smartrouter.CalibrationProbe{
-			LaneID:     state.LaneID,
+			LaneID:     laneID,
 			Capability: state.Capability,
 			Model:      state.ModelFamily,
 			Reason:     "model_recovery_due",
@@ -858,6 +937,13 @@ func isSmartRouterExactRecoveryModel(model string) bool {
 func smartRouterAccountSupportsRecoveryModel(account *Account, capability smartrouter.Capability, model string) bool {
 	if account == nil || !isSmartRouterExactRecoveryModel(model) {
 		return false
+	}
+	if capability == smartrouter.CapabilityImageGeneration || capability == smartrouter.CapabilityImageEdit {
+		extra := parseSmartRouterAccountExtra(account)
+		if !smartRouterAccountEligibleForSmartRouter(account, capability, model, "") ||
+			(extra.EnabledSet && !extra.Enabled) || (extra.CapabilitiesSet && !extra.Capabilities[capability]) {
+			return false
+		}
 	}
 	patterns := make([]string, 0)
 	for pattern := range account.GetModelMapping() {
@@ -950,13 +1036,20 @@ func smartRouterCompactModelPatterns(account *Account) []string {
 	return patterns
 }
 
-// RunSmartRouterImageCalibrationProbe directly tests one account so a daily
-// probe cannot recursively enter normal account selection or consume user quota.
+// RunSmartRouterImageCalibrationProbe retains the default image-model probe for
+// callers that do not have a model-scoped calibration plan.
 func (s *OpenAIGatewayService) RunSmartRouterImageCalibrationProbe(ctx context.Context, account *Account, capability smartrouter.Capability) (int, int64, error) {
+	return s.RunSmartRouterImageCalibrationProbeForModel(ctx, account, capability, smartRouterCalibrationModel)
+}
+
+// RunSmartRouterImageCalibrationProbeForModel directly tests the planned model
+// on one account, without re-entering account selection or consuming user quota.
+// The parsed request also carries this model into the health report.
+func (s *OpenAIGatewayService) RunSmartRouterImageCalibrationProbeForModel(ctx context.Context, account *Account, capability smartrouter.Capability, model string) (int, int64, error) {
 	if s == nil || account == nil {
 		return 0, 0, errors.New("smart router image calibration account is required")
 	}
-	body, contentType, endpoint, err := smartRouterCalibrationRequest(capability)
+	body, contentType, endpoint, err := smartRouterCalibrationRequestForModel(capability, model)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -1155,9 +1248,17 @@ func buildSmartRouterCompactProbeExtraUpdates(result SmartRouterCalibrationResul
 }
 
 func smartRouterCalibrationRequest(capability smartrouter.Capability) ([]byte, string, string, error) {
+	return smartRouterCalibrationRequestForModel(capability, smartRouterCalibrationModel)
+}
+
+func smartRouterCalibrationRequestForModel(capability smartrouter.Capability, model string) ([]byte, string, string, error) {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		model = smartRouterCalibrationModel
+	}
 	if capability == smartrouter.CapabilityImageGeneration {
 		body, err := json.Marshal(map[string]any{
-			"model":  smartRouterCalibrationModel,
+			"model":  model,
 			"prompt": "A single small red circle on a plain white background. No text.",
 			"n":      1,
 		})
@@ -1172,7 +1273,7 @@ func smartRouterCalibrationRequest(capability smartrouter.Capability) ([]byte, s
 	}
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
-	if err := writer.WriteField("model", smartRouterCalibrationModel); err != nil {
+	if err := writer.WriteField("model", model); err != nil {
 		return nil, "", "", err
 	}
 	if err := writer.WriteField("prompt", "Keep the image unchanged except make the red circle blue. No text."); err != nil {

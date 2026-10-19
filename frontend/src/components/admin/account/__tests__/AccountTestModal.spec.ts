@@ -187,6 +187,55 @@ describe('AccountTestModal', () => {
     })
   })
 
+  // This checks the real SSE -> media element path. CSP enforcement/playback is
+  // covered separately by tools/check_media_preview_csp.cjs in a real browser.
+  it.each([
+    { type: 'audio', url: 'data:audio/mpeg;base64,QUJD', mimeType: 'audio/mpeg' },
+    { type: 'video', url: 'data:video/mp4;base64,QUJD', mimeType: 'video/mp4' },
+    { type: 'video', url: 'https://vidgen.x.ai/preview/video.mp4', mimeType: 'video/mp4' },
+    { type: 'video', url: '/v1/videos/test/content', mimeType: 'video/mp4' }
+  ])('renders $type preview from $url and clears it on retry', async ({ type, url, mimeType }) => {
+    getAvailableModels.mockResolvedValue([{ id: 'grok-4.3', display_name: 'Grok 4.3' }])
+    global.fetch = vi.fn()
+      .mockResolvedValueOnce(createStreamResponse([
+        `data: ${JSON.stringify({ type, [`${type}_url`]: url, mime_type: mimeType })}\n`,
+        'data: {"type":"test_complete","success":true}\n'
+      ]))
+      .mockResolvedValueOnce(createStreamResponse([
+        'data: {"type":"test_complete","success":true}\n'
+      ])) as any
+
+    const wrapper = mountModal({
+      id: 13,
+      name: 'Grok Preview',
+      platform: 'grok',
+      type: 'apikey',
+      status: 'active'
+    })
+    await wrapper.setProps({ show: true })
+    await flushPromises()
+    const startButton = wrapper.findAll('button')
+      .find((button) => button.text().includes('admin.accounts.startTest'))
+    expect(startButton).toBeTruthy()
+    await startButton!.trigger('click')
+    await flushPromises()
+
+    const preview = wrapper.find(type)
+    expect(preview.exists()).toBe(true)
+    expect(preview.attributes('src')).toBe(url)
+    expect(preview.attributes('type')).toBe(mimeType)
+    expect(preview.attributes()).toHaveProperty('controls')
+
+    const retryButton = wrapper.findAll('button')
+      .find((button) => button.text().includes('admin.accounts.retry'))
+    expect(retryButton).toBeTruthy()
+    await retryButton!.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('audio').exists()).toBe(false)
+    expect(wrapper.find('video').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
   it('OpenAI Compact 探测会携带 compact 测试模式', async () => {
     getAvailableModels.mockResolvedValue([
       { id: 'gpt-5.4', display_name: 'GPT-5.4' }

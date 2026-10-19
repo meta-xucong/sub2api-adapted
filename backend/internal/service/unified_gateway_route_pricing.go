@@ -650,7 +650,7 @@ func (s *SettingService) UpdateUnifiedGatewayRoutePricing(ctx context.Context, u
 		manualEntries := cloneUnifiedGatewayRoutePricingEntries(update.Entries)
 		for _, entry := range manualEntries {
 			if entry.Source != "" || entry.SourceFX != "" || entry.SourceFetchedAt != nil || entry.SourceCatalogSHA256 != "" || len(entry.SourceSKUs) != 0 || entry.SyncState != "" || entry.SyncReason != "" {
-				return errors.New("Wokey managed entries cannot be submitted through the general route pricing update")
+				return errors.New("wokey managed entries cannot be submitted through the general route pricing update")
 			}
 			if _, ok := allowed[entry.AccountID]; !ok {
 				return fmt.Errorf("account %d is not schedulable in the target group", entry.AccountID)
@@ -778,7 +778,7 @@ func (s *SettingService) ManualizeUnifiedGatewayWokeyPriceCard(ctx context.Conte
 		break
 	}
 	if !found {
-		return nil, errors.New("Wokey managed route pricing card was not found")
+		return nil, errors.New("wokey managed route pricing card was not found")
 	}
 	cfg.Revision++
 	if cfg.WokeySync != nil {
@@ -943,18 +943,6 @@ func flatUnifiedGatewayServiceTier(tier *string) bool {
 	}
 }
 
-func (s *SettingService) unifiedGatewayRoutePricingEntry(groupID, accountID int64, model string, kind UnifiedGatewayRoutePricingKind, imageSize, imageQuality, videoResolution string, videoDuration int) (UnifiedGatewayRoutePricingEntry, bool) {
-	snapshot := s.getActiveUnifiedGatewayRoutePricingSnapshot()
-	if snapshot == nil || snapshot.config.TargetGroupID != groupID {
-		return UnifiedGatewayRoutePricingEntry{}, false
-	}
-	entry, ok := snapshot.entries[unifiedGatewayRoutePricingKey(groupID, accountID, model, kind, "", imageSize, imageQuality, videoResolution, videoDuration)]
-	if !ok && kind == UnifiedGatewayRoutePricingImage {
-		entry, ok = snapshot.entries[unifiedGatewayRoutePricingKey(groupID, accountID, model, kind, UnifiedGatewayImagePricingFlatPerImage, "", "", "", 0)]
-	}
-	return entry, ok
-}
-
 func unifiedGatewayRoutePricingMaxEntries(snapshot *unifiedGatewayRoutePricingSnapshot, model string, kind UnifiedGatewayRoutePricingKind, imageSize, imageQuality, videoResolution string, videoDuration int) []UnifiedGatewayRoutePricingEntry {
 	if snapshot == nil {
 		return nil
@@ -986,7 +974,7 @@ func (s *SettingService) prepareUnifiedGatewayRoutePricingDecision(ctx context.C
 		return ctx, 0, false
 	}
 	groupID := *apiKey.GroupID
-	kind := UnifiedGatewayRoutePricingToken
+	var kind UnifiedGatewayRoutePricingKind
 	imageSize, imageQuality, videoResolution, videoDuration := "", "", "", 0
 	switch req.Kind {
 	case InflightEstimateToken:

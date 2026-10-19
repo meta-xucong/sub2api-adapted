@@ -22,6 +22,7 @@ func Order(req RouteRequest, lanes []LaneSnapshot, policy Policy) RoutePlan {
 		nowUnix = time.Now().Unix()
 	}
 
+	imageResilience := isImageCapability(req.Capability) && policy.ImageResilienceEnabled && req.ImageResilience
 	groupCurrent := make(map[string]int)
 	for _, lane := range lanes {
 		group := normalizeSourceGroup(lane)
@@ -29,6 +30,7 @@ func Order(req RouteRequest, lanes []LaneSnapshot, policy Policy) RoutePlan {
 	}
 
 	filtered := make([]LaneSnapshot, 0, len(lanes))
+	coolingFallbacks := make([]LaneSnapshot, 0)
 	for _, lane := range lanes {
 		lane = normalizeLane(lane)
 		if _, excluded := req.ExcludedLaneIDs[lane.LaneID]; excluded {
@@ -56,9 +58,6 @@ func Order(req RouteRequest, lanes []LaneSnapshot, policy Policy) RoutePlan {
 			plan.SkipReasons[lane.LaneID] = "model_unavailable_until_calibration"
 			continue
 		}
-		// Health cooldown is normally a soft penalty. The GPT image model admission
-		// guard below skips cooling lanes only when a healthy same-capability
-		// alternative exists; otherwise they remain last-resort candidates.
 		if lane.MaxConcurrency > 0 && lane.CurrentConcurrency >= lane.MaxConcurrency {
 			plan.SkipReasons[lane.LaneID] = "lane_concurrency_full"
 			continue
@@ -67,7 +66,23 @@ func Order(req RouteRequest, lanes []LaneSnapshot, policy Policy) RoutePlan {
 			plan.SkipReasons[lane.LaneID] = "source_group_concurrency_full"
 			continue
 		}
+		// A cooling lane is considered only after every normal eligibility
+		// check, and only in an explicit last-resort pass with no usable
+		// non-cooling candidates. Ordinary/sticky routing remains healthy-first.
+		if imageResilience && lane.CooldownUntilUnix > nowUnix {
+			plan.SkipReasons[lane.LaneID] = "image_health_cooldown"
+			if req.ImageLastResort && lane.RecoveryStage == RecoveryCooling {
+				coolingFallbacks = append(coolingFallbacks, lane)
+			}
+			continue
+		}
 		filtered = append(filtered, lane)
+	}
+	if len(filtered) == 0 && len(coolingFallbacks) > 0 {
+		filtered = selectHalfOpenProbe(preferExplicitImageSizeTier(coolingFallbacks, req.ImageSizeTier), nil)
+		for _, lane := range filtered {
+			delete(plan.SkipReasons, lane.LaneID)
+		}
 	}
 	if len(filtered) == 0 {
 		return plan
@@ -85,25 +100,25 @@ func Order(req RouteRequest, lanes []LaneSnapshot, policy Policy) RoutePlan {
 	filtered = preferExplicitImageSizeTier(filtered, req.ImageSizeTier)
 	primaryLanes := filtered
 	probeLanes := []LaneSnapshot(nil)
-	imageResilience := isImageCapability(req.Capability) && policy.ImageResilienceEnabled && req.ImageResilience
 	if imageResilience && policy.ImageHalfOpenEnabled {
 		regularLanes := make([]LaneSnapshot, 0, len(filtered))
 		for _, lane := range filtered {
-			if lane.RecoveryStage == RecoveryProbeDue {
+			if isImageRecoveryStage(lane.RecoveryStage) {
 				probeLanes = append(probeLanes, lane)
 				continue
 			}
 			regularLanes = append(regularLanes, lane)
 		}
-		if len(regularLanes) > 0 {
-			primaryLanes = regularLanes
-		}
+		primaryLanes = regularLanes
 	}
 	primaryLanes = filterLowestPriorityLayer(primaryLanes)
-	if imageResilience && policy.ImageHalfOpenEnabled && len(primaryLanes) > 0 && len(probeLanes) > 0 {
+	if imageResilience && policy.ImageHalfOpenEnabled && len(probeLanes) > 0 {
 		probeLanes = selectHalfOpenProbe(probeLanes, primaryLanes)
 	}
 	candidateLanes := append(append([]LaneSnapshot(nil), primaryLanes...), probeLanes...)
+	if len(candidateLanes) == 0 {
+		return plan
+	}
 
 	minPriority, maxPriority := effectivePriority(candidateLanes[0]), effectivePriority(candidateLanes[0])
 	minLatency, maxLatency := 0.0, 0.0
@@ -164,21 +179,23 @@ func Order(req RouteRequest, lanes []LaneSnapshot, policy Policy) RoutePlan {
 		for _, lane := range primaryLanes {
 			primaryIDs[lane.LaneID] = struct{}{}
 		}
-		primaryCandidates := make([]CandidateDecision, 0, len(orderedCandidates))
-		probeCandidates := make([]CandidateDecision, 0, len(orderedCandidates))
-		for _, candidate := range orderedCandidates {
+		// Select healthy primaries before applying TopK. A high-scoring probe
+		// must not displace the only healthy candidate when TopK is small.
+		primaryCandidates := make([]CandidateDecision, 0, len(candidates))
+		probeCandidates := make([]CandidateDecision, 0, len(probeLanes))
+		for _, candidate := range candidates {
 			if _, ok := primaryIDs[candidate.LaneID]; ok {
 				primaryCandidates = append(primaryCandidates, candidate)
 			} else {
 				probeCandidates = append(probeCandidates, candidate)
 			}
 		}
+		primaryCandidates = primaryCandidates[:minInt(len(primaryCandidates), topK)]
 		ordered := weightedOrder(primaryCandidates, req)
 		if len(ordered) < topK {
 			ordered = append(ordered, probeCandidates...)
 		}
 		ordered = ordered[:minInt(len(ordered), topK)]
-		orderedCandidates = nil
 		orderedCandidates = ordered
 	}
 	ordered := orderedCandidates
@@ -265,6 +282,18 @@ func selectHalfOpenProbe(probes []LaneSnapshot, primary []LaneSnapshot) []LaneSn
 	if len(probes) == 0 {
 		return nil
 	}
+	// Recovery slots form a FIFO priority order. Do not let repository/map
+	// iteration order choose which degraded lane gets the single fallback.
+	probes = append([]LaneSnapshot(nil), probes...)
+	sort.SliceStable(probes, func(i, j int) bool {
+		if effectivePriority(probes[i]) != effectivePriority(probes[j]) {
+			return effectivePriority(probes[i]) < effectivePriority(probes[j])
+		}
+		if probes[i].AccountID != probes[j].AccountID {
+			return probes[i].AccountID < probes[j].AccountID
+		}
+		return probes[i].LaneID < probes[j].LaneID
+	})
 	primaryGroups := make(map[string]struct{}, len(primary))
 	for _, lane := range primary {
 		primaryGroups[normalizeSourceGroup(lane)] = struct{}{}

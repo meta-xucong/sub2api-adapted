@@ -426,7 +426,7 @@ func TestSmartRouterEmptyLaneOrderFallsBackToNativeCandidates(t *testing.T) {
 	})
 }
 
-func TestSmartRouterGPTImageCooldownUsesLastResortOnlyWhenAllLanesCool(t *testing.T) {
+func TestSmartRouterGPTImageCooldownUsesExplicitBoundedLastResort(t *testing.T) {
 	for _, model := range []string{"gpt-image-2", "gpt-image-2.5"} {
 		t.Run(model, func(t *testing.T) {
 			makeService := func(ids []int64, stages map[int64]core.RecoveryStage) (*OpenAIGatewayService, []openAIAccountCandidateScore) {
@@ -453,7 +453,12 @@ func TestSmartRouterGPTImageCooldownUsesLastResortOnlyWhenAllLanesCool(t *testin
 				162: core.RecoveryCooling,
 			})
 			lastResort := coolingService.reorderSmartRouterSelectionCandidates(context.Background(), request, coolingCandidates)
-			require.Len(t, lastResort, 2, "all-cooling GPT image lanes remain as last-resort candidates")
+			require.Empty(t, lastResort, "ordinary Images selection must not prefer cooling lanes")
+			scope := smartRouterImageScope{Model: model, Capability: core.CapabilityImageGeneration, LastResort: true}
+			fallback := coolingService.reorderSmartRouterSelectionCandidates(context.WithValue(context.Background(), smartRouterImageScopeKey{}, scope), request, coolingCandidates)
+			require.Len(t, fallback, 1, "explicit final pass chooses one cooling probe")
+			coolingService.cfg.Gateway.SmartRouter.Enabled = false
+			require.Len(t, coolingService.reorderSmartRouterSelectionCandidates(context.Background(), request, coolingCandidates), 2, "Smart Router disabled retains native candidates")
 
 			mixedService, mixedCandidates := makeService([]int64{163, 164}, map[int64]core.RecoveryStage{
 				163: core.RecoveryCooling,

@@ -89,7 +89,7 @@ func TestOpenAISmartRouterPostOrderCannotCrossRouteLayers(t *testing.T) {
 		{account: &Account{ID: 3}, routePrioritySet: true, routeHealthLayer: 1, routePriceLayer: 0},
 	}
 	var service *OpenAIGatewayService
-	ordered := service.reorderSmartRouterSelectionCandidates(nil, OpenAIAccountScheduleRequest{}, candidates)
+	ordered := service.reorderSmartRouterSelectionCandidates(context.Background(), OpenAIAccountScheduleRequest{}, candidates)
 	require.Equal(t, []int64{1, 2, 3}, []int64{ordered[0].account.ID, ordered[1].account.ID, ordered[2].account.ID})
 }
 

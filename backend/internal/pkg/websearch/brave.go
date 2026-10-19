@@ -3,11 +3,11 @@ package websearch
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 )
 
 const (
@@ -31,12 +31,15 @@ func NewBraveProvider(apiKey string, httpClient *http.Client) *BraveProvider {
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
-	return &BraveProvider{apiKey: apiKey, httpClient: httpClient}
+	return &BraveProvider{apiKey: strings.TrimSpace(apiKey), httpClient: httpClient}
 }
 
 func (b *BraveProvider) Name() string { return braveProviderName }
 
 func (b *BraveProvider) Search(ctx context.Context, req SearchRequest) (*SearchResponse, error) {
+	if !ValidAPIKey(b.apiKey) {
+		return nil, &ProviderError{Provider: braveProviderName, Kind: FailureInvalidKey}
+	}
 	count := req.MaxResults
 	if count <= 0 {
 		count = defaultMaxResults
@@ -53,29 +56,29 @@ func (b *BraveProvider) Search(ctx context.Context, req SearchRequest) (*SearchR
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
-		return nil, fmt.Errorf("brave: build request: %w", err)
+		return nil, providerRequestError(braveProviderName, err)
 	}
 	httpReq.Header.Set("X-Subscription-Token", b.apiKey)
 	httpReq.Header.Set("Accept", "application/json")
 
 	resp, err := b.httpClient.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("brave: request failed: %w", err)
+		return nil, providerRequestError(braveProviderName, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
 	if err != nil {
-		return nil, fmt.Errorf("brave: read body: %w", err)
+		return nil, providerRequestError(braveProviderName, err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("brave: status %d: %s", resp.StatusCode, truncateBody(body))
+		return nil, providerStatusError(braveProviderName, resp.StatusCode, body)
 	}
 
 	var raw braveResponse
 	if err := json.Unmarshal(body, &raw); err != nil {
-		return nil, fmt.Errorf("brave: decode response: %w", err)
+		return nil, &ProviderError{Provider: braveProviderName, Kind: FailureResponse}
 	}
 
 	results := make([]SearchResult, 0, len(raw.Web.Results))

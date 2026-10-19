@@ -243,6 +243,7 @@
 </template>
 
 <script setup lang="ts">
+import { completeLoginRedirect } from '@/router/veyraReturn'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
@@ -272,6 +273,14 @@ import {
 
 const route = useRoute()
 const router = useRouter()
+
+function completeAuthRedirect(path: unknown): Promise<void> {
+  return completeLoginRedirect(
+    path,
+    (value) => router.replace(value),
+    (value) => window.location.replace(value)
+  )
+}
 const { t } = useI18n()
 
 const authStore = useAuthStore()
@@ -611,7 +620,7 @@ async function finalizeCompletion(completion: PendingOAuthExchangeResponse, redi
   await authStore.setToken(completion.access_token)
   clearAllAffiliateReferralCodes()
   appStore.showSuccess(t('auth.loginSuccess'))
-  await router.replace(redirect)
+  await completeAuthRedirect(redirect)
 }
 
 async function finalizePendingAccountResponse(completion: PendingOidcCompletion) {
@@ -763,7 +772,7 @@ async function handleSubmitTotpChallenge() {
     await authStore.setToken(completion.access_token)
     clearAllAffiliateReferralCodes()
     appStore.showSuccess(t('auth.loginSuccess'))
-    await router.replace(redirectTo.value)
+    await completeAuthRedirect(redirectTo.value)
   } catch (e: unknown) {
     totpError.value = getRequestErrorMessage(e, t('auth.loginFailed'))
   } finally {
@@ -789,7 +798,7 @@ onMounted(async () => {
       await authStore.setToken(legacyLogin.access_token)
       clearAllAffiliateReferralCodes()
       appStore.showSuccess(t('auth.loginSuccess'))
-      await router.replace(redirect)
+      await completeAuthRedirect(redirect)
       return
     }
 

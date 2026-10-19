@@ -2,6 +2,17 @@ import { describe, expect, it, vi } from 'vitest'
 import { completeLoginRedirect, resolveVeyraReturnPath } from '../veyraReturn'
 
 describe('Veyra login return navigation', () => {
+  it.each(['home', 'alchemy', 'alchemy-mobile', 'sub2api-console', 'video'])(
+    'hard-navigates the exact %s return target', async (target) => {
+      const routerPush = vi.fn().mockResolvedValue(undefined)
+      const hardNavigate = vi.fn()
+      const path = `/_veyra/return?target=${target}`
+      await completeLoginRedirect(path, routerPush, hardNavigate)
+      expect(hardNavigate).toHaveBeenCalledTimes(1)
+      expect(hardNavigate).toHaveBeenCalledWith(path)
+      expect(routerPush).not.toHaveBeenCalled()
+    }
+  )
   it('normalizes the Alchemy portal callback for full-page navigation', async () => {
     const routerPush = vi.fn().mockResolvedValue(undefined)
     const hardNavigate = vi.fn()
@@ -9,6 +20,16 @@ describe('Veyra login return navigation', () => {
     await completeLoginRedirect('/_veyra/return?target=alchemy', routerPush, hardNavigate)
 
     expect(hardNavigate).toHaveBeenCalledWith('/_veyra/return?target=alchemy')
+    expect(routerPush).not.toHaveBeenCalled()
+  })
+
+  it('preserves the Video OS portal intent through reauthentication', async () => {
+    const routerPush = vi.fn().mockResolvedValue(undefined)
+    const hardNavigate = vi.fn()
+
+    await completeLoginRedirect('/_veyra/return?target=video', routerPush, hardNavigate)
+
+    expect(hardNavigate).toHaveBeenCalledWith('/_veyra/return?target=video')
     expect(routerPush).not.toHaveBeenCalled()
   })
 
@@ -31,7 +52,11 @@ describe('Veyra login return navigation', () => {
     '/_veyra/return?target=alchemy&target=home',
     '/_veyra/return?target=alchemy&extra=1',
     '/dashboard?target=alchemy',
-  ])('does not treat an untrusted or malformed redirect as a Veyra callback: %s', (value) => {
+  ])('does not treat an untrusted or malformed redirect as a Veyra callback: %s', async (value) => {
     expect(resolveVeyraReturnPath(value)).toBeNull()
+    const routerPush = vi.fn().mockResolvedValue(undefined)
+    const hardNavigate = vi.fn()
+    await completeLoginRedirect(value, routerPush, hardNavigate)
+    expect(hardNavigate).not.toHaveBeenCalled()
   })
 })

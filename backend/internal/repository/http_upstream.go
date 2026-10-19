@@ -24,9 +24,9 @@ import (
 	"github.com/andybalholm/brotli"
 	"github.com/klauspost/compress/zstd"
 	"golang.org/x/mod/semver"
-	"golang.org/x/net/http2"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	sharedhttpclient "github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/proxyurl"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/proxyutil"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/servertiming"
@@ -201,6 +201,9 @@ func NewHTTPUpstream(cfg *config.Config) service.HTTPUpstream {
 //   - 调用方必须关闭 resp.Body，否则会导致 inFlight 计数泄漏
 //   - inFlight > 0 的客户端不会被淘汰，确保活跃请求不被中断
 func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
+	if req != nil && service.HTTPUpstreamPublicHostsOnly(req.Context()) {
+		return s.doPublicHostsOnlyRequest(req, proxyURL)
+	}
 	applyGrokCLIProxyHeaders(req)
 	if err := s.validateRequestHost(req); err != nil {
 		return nil, err
@@ -244,6 +247,9 @@ func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID i
 // profile 为 nil 时不启用 TLS 指纹，行为与 Do 方法相同。
 // profile 非 nil 时使用指定的 Profile 进行 TLS 指纹伪装。
 func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, accountID int64, accountConcurrency int, profile *tlsfingerprint.Profile) (*http.Response, error) {
+	if req != nil && service.HTTPUpstreamPublicHostsOnly(req.Context()) {
+		return s.doPublicHostsOnlyRequest(req, proxyURL)
+	}
 	if profile == nil {
 		return s.Do(req, proxyURL, accountID, accountConcurrency)
 	}
@@ -294,6 +300,62 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 	})
 
 	return resp, nil
+}
+
+// Untrusted response URLs use a separate strict transport, never the provider
+// pool or its TLS-fingerprint/fallback paths. The ordinary provider path retains
+// its existing proxy and isolation behavior. Explicit proxies fail closed here:
+// their target resolution cannot be bound by the strict destination dialer.
+func (s *httpUpstreamService) doPublicHostsOnlyRequest(req *http.Request, proxyURL string) (*http.Response, error) {
+	client, err := publicHostsOnlyDownloadClient(proxyURL)
+	if err != nil {
+		return nil, err
+	}
+	if err := validatePublicDownloadRequest(req); err != nil {
+		return nil, err
+	}
+	client = s.httpClientForUpstreamRequest(client, req)
+	return doUpstreamRequest(client, req)
+}
+
+func publicHostsOnlyDownloadClient(proxyURL string) (*http.Client, error) {
+	if strings.TrimSpace(proxyURL) != "" {
+		return nil, errors.New("public-host-only downloads cannot enforce destination IP validation through a proxy")
+	}
+	client, err := sharedhttpclient.GetClient(sharedhttpclient.Options{
+		RequirePinnedDestination: true,
+		ResponseHeaderTimeout:    10 * time.Second,
+		MaxIdleConns:             defaultMaxIdleConns,
+		MaxIdleConnsPerHost:      defaultMaxIdleConnsPerHost,
+		MaxConnsPerHost:          defaultMaxConnsPerHost,
+	})
+	if err != nil {
+		return nil, err
+	}
+	clone := *client
+	clone.CheckRedirect = publicHostsOnlyRedirectChecker
+	return &clone, nil
+}
+
+func validatePublicDownloadRequest(req *http.Request) error {
+	if req == nil || req.URL == nil {
+		return errors.New("public download request URL is missing")
+	}
+	if req.URL.User != nil {
+		return errors.New("public download URL credentials are not allowed")
+	}
+	if _, err := urlvalidator.ValidateHTTPURL(req.URL.String(), true, urlvalidator.ValidationOptions{}); err != nil {
+		return fmt.Errorf("public download URL rejected: %w", err)
+	}
+	return nil
+}
+
+func publicHostsOnlyRedirectChecker(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return errors.New("stopped after 10 redirects")
+	}
+	// DNS is checked and pinned by the dialer, not prechecked and resolved again.
+	return validatePublicDownloadRequest(req)
 }
 
 // doUpstreamRequest owns cancellation for one attempt, without cancelling the
@@ -362,7 +424,7 @@ func (s *httpUpstreamService) httpClientForUpstreamRequest(client *http.Client, 
 		return &clone
 	case service.HTTPUpstreamPublicHostsOnly(ctx) && client.CheckRedirect == nil:
 		clone := *client
-		clone.CheckRedirect = s.redirectChecker
+		clone.CheckRedirect = publicHostsOnlyRedirectChecker
 		return &clone
 	default:
 		return client
@@ -1392,9 +1454,7 @@ func buildUpstreamTransport(settings poolSettings, proxyURL *url.URL, protocolMo
 		transport.ForceAttemptHTTP2 = true
 		// 显式配置 http2 并启用 PING 健康探测，剔除代理/NAT 静默掐断的死连接，
 		// 避免请求挂在死连接上直到 TCP 重传超时（分钟级）。
-		if _, err := enableHTTP2KeepAlive(transport, protocolMode); err != nil {
-			return nil, err
-		}
+		enableHTTP2KeepAlive(transport, protocolMode)
 	case upstreamProtocolModeOpenAIH1:
 		transport.ForceAttemptHTTP2 = false
 		transport.TLSNextProto = make(map[string]func(string, *tls.Conn) http.RoundTripper)
@@ -1409,24 +1469,25 @@ func buildUpstreamTransport(settings poolSettings, proxyURL *url.URL, protocolMo
 	return transport, nil
 }
 
-// enableHTTP2KeepAlive 在 http.Transport 上显式配置 HTTP/2 并启用连接健康探测。
-// Go 默认惰性配置 http2 且 ReadIdleTimeout=0（不发健康 PING），无法检测被代理/NAT
-// 静默掐断的死连接。此处主动设置 ReadIdleTimeout/PingTimeout，让死连接被提前 PING
-// 出并关闭，请求得以重建连接而非挂到 TCP 重传超时。返回底层 *http2.Transport 便于测试。
-func enableHTTP2KeepAlive(transport *http.Transport, protocolMode string) (*http2.Transport, error) {
-	h2, err := http2.ConfigureTransports(transport)
-	if err != nil {
-		return nil, err
+// enableHTTP2KeepAlive configures the Go 1.27 standard transport directly.
+// These are the same fields mapped by x/net/http2's Go 1.27 wrapper. HTTP/1
+// fallback and the mode-specific idle PING deadlines remain unchanged.
+func enableHTTP2KeepAlive(transport *http.Transport, protocolMode string) *http.HTTP2Config {
+	if transport.Protocols == nil {
+		transport.Protocols = new(http.Protocols)
+		transport.Protocols.SetHTTP1(true)
 	}
-	if h2 != nil {
-		h2.ReadIdleTimeout = longStreamHTTP2ReadIdleTimeout
-		h2.PingTimeout = longStreamHTTP2PingTimeout
-		if protocolMode == upstreamProtocolModeOpenAIH2 {
-			h2.ReadIdleTimeout = openAIHTTP2ReadIdleTimeout
-			h2.PingTimeout = openAIHTTP2PingTimeout
-		}
+	transport.Protocols.SetHTTP2(true)
+	if transport.HTTP2 == nil {
+		transport.HTTP2 = new(http.HTTP2Config)
 	}
-	return h2, nil
+	transport.HTTP2.SendPingTimeout = longStreamHTTP2ReadIdleTimeout
+	transport.HTTP2.PingTimeout = longStreamHTTP2PingTimeout
+	if protocolMode == upstreamProtocolModeOpenAIH2 {
+		transport.HTTP2.SendPingTimeout = openAIHTTP2ReadIdleTimeout
+		transport.HTTP2.PingTimeout = openAIHTTP2PingTimeout
+	}
+	return transport.HTTP2
 }
 
 // buildUpstreamTransportWithTLSFingerprint 构建带 TLS 指纹伪装的 Transport

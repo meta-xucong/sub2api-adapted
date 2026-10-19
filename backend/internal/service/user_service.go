@@ -15,6 +15,7 @@ import (
 	_ "image/gif"
 	"image/jpeg"
 	_ "image/png"
+	"io"
 	"log/slog"
 	"net/url"
 	"sort"
@@ -35,6 +36,7 @@ var (
 	ErrNotifyCodeUserRateLimit  = infraerrors.TooManyRequests("NOTIFY_CODE_USER_RATE_LIMIT", "too many verification codes requested, please try again later")
 	ErrAvatarInvalid            = infraerrors.BadRequest("AVATAR_INVALID", "avatar must be a valid image data URL or http(s) URL")
 	ErrAvatarTooLarge           = infraerrors.BadRequest("AVATAR_TOO_LARGE", "avatar image must be 100KB or smaller")
+	ErrAvatarDimensions         = infraerrors.BadRequest("AVATAR_DIMENSIONS", "avatar must be at most 4096 pixels per side and 4 megapixels")
 	ErrAvatarNotImage           = infraerrors.BadRequest("AVATAR_NOT_IMAGE", "avatar content must be an image")
 	ErrIdentityProviderInvalid  = infraerrors.BadRequest("IDENTITY_PROVIDER_INVALID", "identity provider is invalid")
 	ErrIdentityRedirectInvalid  = infraerrors.BadRequest("IDENTITY_REDIRECT_INVALID", "identity redirect path is invalid")
@@ -48,6 +50,8 @@ const (
 	maxNotifyEmails      = 3 // Maximum number of notification emails per user
 	maxInlineAvatarBytes = 100 * 1024
 	targetAvatarBytes    = 20 * 1024
+	maxAvatarPixels      = 4 * 1024 * 1024
+	maxAvatarSide        = 4096
 
 	// User-level rate limiting for notify email verification codes
 	notifyCodeUserRateLimit  = 5
@@ -195,6 +199,26 @@ type RegistrationEmailDomainRepository interface {
 type RedeemUserAdjustmentRepository interface {
 	ApplyRedeemBalanceAdjustment(ctx context.Context, id int64, delta float64) error
 	ApplyRedeemConcurrencyAdjustment(ctx context.Context, id int64, delta int) error
+}
+
+// UserBalanceDebitInput describes the idempotent atomic debit used by the
+// optional Veyra portal integration.
+type UserBalanceDebitInput struct {
+	UserID             int64
+	Amount             float64
+	IdempotencyKey     string
+	RequestFingerprint string
+}
+
+type UserBalanceDebitResult struct {
+	UserID       int64
+	Amount       float64
+	BalanceAfter float64
+	Replayed     bool
+}
+
+type userBalanceDebitRepository interface {
+	DebitBalanceIfSufficient(ctx context.Context, input UserBalanceDebitInput) (*UserBalanceDebitResult, error)
 }
 
 type UserAuthIdentityRecord struct {
@@ -646,7 +670,11 @@ func normalizeInlineUserAvatarInput(raw string) (UpsertUserAvatarInput, error) {
 		return UpsertUserAvatarInput{}, ErrAvatarNotImage
 	}
 
-	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	// Bound decoded allocation while retaining the decoder's existing CR/LF
+	// wrapping compatibility. Checking encoded length alone either rejects
+	// valid wrapping or lets a large newline-only input drive preallocation.
+	decoder := base64.NewDecoder(base64.StdEncoding, strings.NewReader(encoded))
+	decoded, err := io.ReadAll(io.LimitReader(decoder, maxInlineAvatarBytes+1))
 	if err != nil {
 		return UpsertUserAvatarInput{}, ErrAvatarInvalid
 	}
@@ -673,6 +701,19 @@ func normalizeInlineUserAvatarInput(raw string) (UpsertUserAvatarInput, error) {
 }
 
 func compressInlineAvatar(decoded []byte) ([]byte, string, error) {
+	// Go image's Decode(Untrusted) guidance requires caller-side geometry
+	// checks before allocating decoded pixels. A compressed byte cap alone
+	// does not constrain the resulting image allocation.
+	if len(decoded) > maxInlineAvatarBytes {
+		return nil, "", ErrAvatarTooLarge
+	}
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(decoded))
+	if err != nil {
+		return nil, "", ErrAvatarInvalid
+	}
+	if cfg.Width <= 0 || cfg.Height <= 0 || cfg.Width > maxAvatarSide || cfg.Height > maxAvatarSide || int64(cfg.Width)*int64(cfg.Height) > maxAvatarPixels {
+		return nil, "", ErrAvatarDimensions
+	}
 	src, _, err := image.Decode(bytes.NewReader(decoded))
 	if err != nil {
 		return nil, "", ErrAvatarInvalid
@@ -1172,6 +1213,30 @@ func (s *UserService) UpdateBalance(ctx context.Context, userID int64, amount fl
 		}()
 	}
 	return nil
+}
+
+func (s *UserService) DebitBalanceIfSufficient(ctx context.Context, input UserBalanceDebitInput) (*UserBalanceDebitResult, error) {
+	repo, ok := s.userRepo.(userBalanceDebitRepository)
+	if !ok || repo == nil {
+		return nil, fmt.Errorf("user repository does not support atomic debit")
+	}
+	result, err := repo.DebitBalanceIfSufficient(ctx, input)
+	if err != nil {
+		return nil, err
+	}
+	if s.authCacheInvalidator != nil {
+		s.authCacheInvalidator.InvalidateAuthCacheByUserID(ctx, result.UserID)
+	}
+	if s.billingCache != nil {
+		go func(userID int64) {
+			cacheCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := s.billingCache.InvalidateUserBalance(cacheCtx, userID); err != nil {
+				slog.Error("invalidate user balance cache failed", "user_id", userID, "error", err)
+			}
+		}(result.UserID)
+	}
+	return result, nil
 }
 
 // UpdateConcurrency 更新用户并发数（管理员功能）

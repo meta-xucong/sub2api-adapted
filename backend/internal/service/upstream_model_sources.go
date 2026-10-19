@@ -173,9 +173,7 @@ func (s *AccountTestService) fetchUnpaginatedModelSource(ctx context.Context, ac
 	baseURL := profile.BaseURL
 	if profile.Kind == "deepseek" {
 		baseURL = strings.TrimRight(baseURL, "/")
-		if strings.HasSuffix(baseURL, "/v1") {
-			baseURL = strings.TrimSuffix(baseURL, "/v1")
-		}
+		baseURL = strings.TrimSuffix(baseURL, "/v1")
 		baseURL += modelSourceDeepseekPath
 	} else {
 		baseURL = buildOpenAIModelsURL(baseURL)
@@ -300,20 +298,20 @@ func parseModelSourcePage(kind string, body []byte, parsedIDs []string) (upstrea
 			return upstreamModelPage{}, err
 		}
 		if len(result.Data) == 0 || bytes.Equal(bytes.TrimSpace(result.Data), []byte("null")) {
-			return upstreamModelPage{}, fmt.Errorf("Anthropic model list response omitted its data array")
+			return upstreamModelPage{}, fmt.Errorf("anthropic model list response omitted its data array")
 		}
 		if len(result.HasMore) == 0 || bytes.Equal(bytes.TrimSpace(result.HasMore), []byte("null")) {
-			return upstreamModelPage{}, fmt.Errorf("Anthropic model list response omitted has_more")
+			return upstreamModelPage{}, fmt.Errorf("anthropic model list response omitted has_more")
 		}
 		var data []struct {
 			ID string `json:"id"`
 		}
 		if err := json.Unmarshal(result.Data, &data); err != nil {
-			return upstreamModelPage{}, fmt.Errorf("Anthropic model list response data must be an array: %w", err)
+			return upstreamModelPage{}, fmt.Errorf("anthropic model list response data must be an array: %w", err)
 		}
 		var hasMore bool
 		if err := json.Unmarshal(result.HasMore, &hasMore); err != nil {
-			return upstreamModelPage{}, fmt.Errorf("Anthropic model list response has_more must be a boolean: %w", err)
+			return upstreamModelPage{}, fmt.Errorf("anthropic model list response has_more must be a boolean: %w", err)
 		}
 		ids := make([]string, 0, len(data))
 		for _, item := range data {

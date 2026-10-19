@@ -218,18 +218,23 @@ func (r *idempotencyRepository) DeleteExpired(ctx context.Context, now time.Time
 	if limit <= 0 {
 		limit = 500
 	}
+	// Veyra debit receipts are durable monetary deduplication records, not
+	// expiring response caches. Their intentional growth must be retained until
+	// an archive preserving replay semantics exists. Exclude them before LIMIT
+	// so old receipts cannot starve cleanup of ordinary expiring records.
 	query := `
 		WITH victims AS (
 			SELECT id
 			FROM idempotency_records
 			WHERE expires_at <= $1
+				AND scope <> $3
 			ORDER BY expires_at ASC
 			LIMIT $2
 		)
 		DELETE FROM idempotency_records
 		WHERE id IN (SELECT id FROM victims)
 	`
-	res, err := r.sql.ExecContext(ctx, query, now, limit)
+	res, err := r.sql.ExecContext(ctx, query, now, limit, veyraDebitIdempotencyScope)
 	if err != nil {
 		return 0, err
 	}

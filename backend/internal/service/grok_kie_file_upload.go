@@ -187,7 +187,7 @@ func (s *OpenAIGatewayService) uploadKIEJobsReferenceImage(
 	if response == nil {
 		return "", errors.New("KIE file upload returned no response")
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	responseBody, readErr := io.ReadAll(io.LimitReader(response.Body, kieJobsVideoUploadResponseLimit))
 	if readErr != nil {
 		return "", readErr
@@ -237,11 +237,12 @@ func downloadKIEJobsVideoReferenceImage(ctx context.Context, rawURL string) (kie
 		return kieJobsVideoReferenceImage{}, err
 	}
 	client, err := httpclient.GetClient(httpclient.Options{
-		Timeout:               kieJobsVideoImageDownloadTimeout,
-		ResponseHeaderTimeout: 10 * time.Second,
-		ValidateResolvedIP:    true,
-		AllowPrivateHosts:     false,
-		MaxConnsPerHost:       2,
+		Timeout:                  kieJobsVideoImageDownloadTimeout,
+		ResponseHeaderTimeout:    10 * time.Second,
+		ValidateResolvedIP:       true,
+		RequirePinnedDestination: true,
+		AllowPrivateHosts:        false,
+		MaxConnsPerHost:          2,
 	})
 	if err != nil {
 		return kieJobsVideoReferenceImage{}, err
@@ -267,7 +268,7 @@ func downloadKIEJobsVideoReferenceImage(ctx context.Context, rawURL string) (kie
 	if err != nil {
 		return kieJobsVideoReferenceImage{}, err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return kieJobsVideoReferenceImage{}, fmt.Errorf("reference image returned HTTP %d", response.StatusCode)
 	}

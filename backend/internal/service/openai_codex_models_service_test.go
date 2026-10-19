@@ -1658,7 +1658,8 @@ func TestIsRetryableCodexModelsManifestTransportError(t *testing.T) {
 			retryable: true,
 		},
 		{
-			name:      "typed HTTP2 GOAWAY",
+			name: "typed HTTP2 GOAWAY",
+			//nolint:staticcheck // SA1019: Exercise the legacy error still handled for transport compatibility.
 			err:       http2.GoAwayError{ErrCode: http2.ErrCodeNo},
 			retryable: true,
 		},
@@ -3898,4 +3899,19 @@ func TestGPT61SolAPIKeyCatalogUsesFullResponses(t *testing.T) {
 	require.NoError(t, json.Unmarshal(body, &catalog))
 	require.Equal(t, false, catalog.Models[0]["use_responses_lite"])
 	require.Equal(t, "low", catalog.Models[0]["default_reasoning_level"])
+}
+
+// Hiding the text does not erase the legacy transport's retryable cause.
+type opaqueCodexManifestError struct{ cause error }
+
+func (e opaqueCodexManifestError) Error() string { return "opaque transport failure" }
+func (e opaqueCodexManifestError) Unwrap() error { return e.cause }
+
+func TestCodexManifestOpaqueGoAwayCompatibility(t *testing.T) {
+	//nolint:staticcheck // SA1019: A legacy transport can still return this typed error; keep compatibility coverage.
+	cause := http2.GoAwayError{ErrCode: http2.ErrCodeNo}
+	require.True(t, isRetryableCodexModelsManifestTransportError(opaqueCodexManifestError{cause}))
+	require.True(t, isRetryableCodexModelsManifestTransportError(&url.Error{Op: "Get", URL: "https://example.invalid", Err: opaqueCodexManifestError{cause}}))
+	require.False(t, isRetryableCodexModelsManifestTransportError(opaqueCodexManifestError{context.Canceled}))
+	require.False(t, isRetryableCodexModelsManifestTransportError(opaqueCodexManifestError{errors.New("invalid config")}))
 }

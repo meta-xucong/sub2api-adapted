@@ -31,6 +31,7 @@ func (h *OpenAIGatewayHandler) GrokRealtime(c *gin.Context) {
 		h.errorResponse(c, http.StatusNotFound, "not_found_error", "Realtime API is not supported for this platform")
 		return
 	}
+	c.Request = c.Request.WithContext(service.WithGrokVoiceIdentity(c.Request.Context(), apiKey.UserID, apiKey.GroupID))
 	if !h.ensureResponsesDependencies(c, nil) {
 		return
 	}
@@ -188,6 +189,7 @@ func (h *OpenAIGatewayHandler) GrokVoice(c *gin.Context, endpoint string) {
 		h.errorResponse(c, http.StatusNotFound, "not_found_error", "Voice API is not supported for this platform")
 		return
 	}
+	c.Request = c.Request.WithContext(service.WithGrokVoiceIdentity(c.Request.Context(), apiKey.UserID, apiKey.GroupID))
 	if !h.ensureResponsesDependencies(c, nil) {
 		return
 	}
@@ -204,6 +206,17 @@ func (h *OpenAIGatewayHandler) GrokVoice(c *gin.Context, endpoint string) {
 	body, err := readGrokVoiceGatewayBody(c)
 	if err != nil {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+	if endpoint == "custom-voices" && c.Request.Method == http.MethodGet {
+		if err := h.gatewayService.ListGrokCustomVoices(c.Request.Context(), c); err != nil {
+			h.grokVoiceError(c, err)
+		}
+		return
+	}
+	pinnedAccountID, err := h.gatewayService.GrokVoicePinnedAccount(c.Request.Context(), endpoint, body)
+	if err != nil {
+		h.grokVoiceError(c, err)
 		return
 	}
 	if endpoint == "tts" {
@@ -247,20 +260,26 @@ func (h *OpenAIGatewayHandler) GrokVoice(c *gin.Context, endpoint string) {
 	selectionModel := "grok-4.5"
 
 	for attempts := 0; attempts < 4; attempts++ {
-		selection, _, selectErr := h.gatewayService.SelectAccountWithSchedulerForCapability(
-			c.Request.Context(),
-			apiKey.GroupID,
-			"",
-			"",
-			selectionModel,
-			failed,
-			service.OpenAIUpstreamTransportHTTPSSE,
-			service.OpenAIEndpointCapabilityChatCompletions,
-			false,
-			false,
-			false,
-			service.PlatformGrok,
-		)
+		var selection *service.AccountSelectionResult
+		var selectErr error
+		if pinnedAccountID > 0 {
+			selection, _, selectErr = h.gatewayService.SelectGrokMediaVideoRequestAccount(c.Request.Context(), apiKey.GroupID, "grok-voice", pinnedAccountID, "")
+		} else {
+			selection, _, selectErr = h.gatewayService.SelectAccountWithSchedulerForCapability(
+				c.Request.Context(),
+				apiKey.GroupID,
+				"",
+				"",
+				selectionModel,
+				failed,
+				service.OpenAIUpstreamTransportHTTPSSE,
+				service.OpenAIEndpointCapabilityChatCompletions,
+				false,
+				false,
+				false,
+				service.PlatformGrok,
+			)
+		}
 		if selectErr != nil || selection == nil || selection.Account == nil {
 			if last != nil {
 				h.handleFailoverExhausted(c, last, false)
@@ -294,12 +313,18 @@ func (h *OpenAIGatewayHandler) GrokVoice(c *gin.Context, endpoint string) {
 			return
 		}
 		var failoverErr *service.UpstreamFailoverError
-		if errors.As(forwardErr, &failoverErr) && failoverErr.ShouldRetryNextAccount() {
+		if errors.As(forwardErr, &failoverErr) && failoverErr.ShouldRetryNextAccount() && pinnedAccountID == 0 && endpoint != "custom-voices" {
 			failed[account.ID] = struct{}{}
 			last = failoverErr
 			continue
 		}
-		// Non-failover errors: handleGrokMediaErrorResponse / transport already wrote response.
+		if !c.Writer.Written() {
+			if failoverErr != nil {
+				h.handleFailoverExhausted(c, failoverErr, false)
+			} else {
+				h.grokVoiceError(c, forwardErr)
+			}
+		}
 		return
 	}
 	if last != nil {
@@ -344,6 +369,7 @@ func (h *OpenAIGatewayHandler) recordGrokVoiceUsage(
 		model = endpoint
 	}
 
+	channelUsageFields := clientRequestedUsageFields(c, service.ChannelMappingResult{}, model, result.UpstreamModel)
 	h.submitMandatoryUsageRecordTask(c.Request.Context(), func(ctx context.Context) {
 		if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
 			Result:             result,
@@ -359,7 +385,7 @@ func (h *OpenAIGatewayHandler) recordGrokVoiceUsage(
 			APIKeyService:      h.apiKeyService,
 			QuotaPlatform:      quotaPlatform,
 			SessionID:          sessionID,
-			ChannelUsageFields: clientRequestedUsageFields(c, service.ChannelMappingResult{}, model, result.UpstreamModel),
+			ChannelUsageFields: channelUsageFields,
 		}); err != nil {
 			logger.L().With(
 				zap.String("component", "handler.openai_gateway.grok_voice"),
@@ -403,4 +429,16 @@ func extractGrokTTSInputText(body []byte) string {
 		}
 	}
 	return ""
+}
+
+func (h *OpenAIGatewayHandler) grokVoiceError(c *gin.Context, err error) {
+	if errors.Is(err, service.ErrGrokVoiceInvalidRequest) {
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Invalid voice request")
+		return
+	}
+	if errors.Is(err, service.ErrGrokVoiceNotFound) {
+		h.errorResponse(c, http.StatusNotFound, "not_found_error", "Voice not found")
+		return
+	}
+	h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "Voice request could not be completed safely")
 }

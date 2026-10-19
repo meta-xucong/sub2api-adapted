@@ -1,0 +1,274 @@
+{
+  "input_candidate": "2c756fbef09e130c525528600f5420076d8785b2",
+  "baseline": "2bedb713b6b0b9cf968468decae36732f390574a",
+  "date_utc": "2026-10-18",
+  "status": "SCOPED_REPAIRS_PASS_NOT_READY_FOR_PRODUCTION",
+  "source_fingerprint": "dd555d43d8f1931245f30d026da8e2039c02baf31a264227c8accf5ec7847f0a",
+  "source_files": 3277,
+  "source_unchanged_after_gates": true,
+  "gates": {
+    "focused": {
+      "exit_code": 0,
+      "started_utc": "2026-10-18T01:46:34Z",
+      "ended_utc": "2026-10-18T01:52:26Z",
+      "command": "go test -json -tags=unit -count=1 -timeout=20m ./internal/service ./internal/handler -run GatewayStreamIntegrity\\|BoundedSSE\\|UpstreamDrainContext\\|GrokWokeyMultipart\\|GrokWokeyJSON\\|WokeyMultipartImages\\|GatewayChatHandlerPreservesPartialUsage\\|OpenAIChatHandlerCancellation\\|OpenAIChatWithheldParserFailure\\|AlphaSearchQueuedUsage\\|RawChatCompletionsRequestedChoices\\|OpenAIRawStreamChoice\\|SmartRouterImageRequestBudget",
+      "test_summary": {
+        "log": "focused.log",
+        "counts": {
+          "sub_pass": 174,
+          "top_pass": 34
+        },
+        "packages": {
+          "pass": 2
+        },
+        "failures": [],
+        "skipped": []
+      }
+    },
+    "unit": {
+      "exit_code": 0,
+      "started_utc": "2026-10-18T01:52:46Z",
+      "ended_utc": "2026-10-18T01:59:15Z",
+      "command": "go test -json -tags=unit -count=1 -timeout=20m -skip \\^\\(TestOfferPluginHostServices_BrokerRoundtrip\\|TestOfferPluginHostServices_UnimplementedIsGraceful\\|TestOfferPluginHostServices_NilHostServicesNoop\\)\\$ ./...",
+      "test_summary": {
+        "log": "unit.log",
+        "counts": {
+          "sub_pass": 11040,
+          "top_pass": 12038,
+          "top_skip": 18
+        },
+        "packages": {
+          "pass": 60,
+          "skip": 51
+        },
+        "failures": [],
+        "skipped": [
+          "github.com/Wei-Shaw/sub2api/internal/handler:TestDingTalkOAuthStart_Disabled",
+          "github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint:TestDialerBasicConnection",
+          "github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint:TestJA3Fingerprint",
+          "github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint:TestAllProfiles",
+          "github.com/Wei-Shaw/sub2api/internal/securityaudit:TestPromptAuditConfigCASSecretRoundTripInvalidationAndTTL",
+          "github.com/Wei-Shaw/sub2api/internal/securityaudit:TestRedisPayloadStoreRoundTripTTLNamespaceAndDelete",
+          "github.com/Wei-Shaw/sub2api/internal/securityaudit:TestPromptRuntimeAggregatesConfigWorkersQueueRedisEndpointsAndGuardMetrics",
+          "github.com/Wei-Shaw/sub2api/internal/securityaudit:TestPromptAuditMigrationSchemaAndLeakageGate",
+          "github.com/Wei-Shaw/sub2api/internal/securityaudit:TestPromptAuditDatabasePersistsFullPromptOnEventsOnly",
+          "github.com/Wei-Shaw/sub2api/internal/securityaudit:TestPromptAuditRepositoryAdmissionClaimFencingAndEventTransaction",
+          "github.com/Wei-Shaw/sub2api/internal/securityaudit:TestPromptAuditRepositoryForeignKeysFiltersAndStableIdentitySnapshots",
+          "github.com/Wei-Shaw/sub2api/internal/securityaudit:TestPromptAuditRepositoryHighWaterAndSafeDeletion",
+          "github.com/Wei-Shaw/sub2api/internal/securityaudit:TestPromptAuditServiceConfirmationKeepsPostPreviewEventsAndConcurrentDeletesAreSafe",
+          "github.com/Wei-Shaw/sub2api/internal/service:TestAuthPendingIdentityService_UpsertAdoptionDecision_ClearsLegacyNullSessionReference",
+          "github.com/Wei-Shaw/sub2api/internal/service:TestContentModerationTypeSafeLive",
+          "github.com/Wei-Shaw/sub2api/internal/service:TestEstimateOpenAIInputTokens_CompareWithOpenAIAPI",
+          "github.com/Wei-Shaw/sub2api/internal/service:TestPluginRuntimeIntegration",
+          "github.com/Wei-Shaw/sub2api/internal/service:TestResponsesCompatSessionExternalRedisSeparateProcesses"
+        ]
+      }
+    },
+    "integration": {
+      "exit_code": 0,
+      "started_utc": "2026-10-18T01:59:42Z",
+      "ended_utc": "2026-10-18T02:05:23Z",
+      "command": "go test -json -tags=integration -count=1 -timeout=20m -skip \\^\\(TestOfferPluginHostServices_BrokerRoundtrip\\|TestOfferPluginHostServices_UnimplementedIsGraceful\\|TestOfferPluginHostServices_NilHostServicesNoop\\)\\$ ./...",
+      "test_summary": {
+        "log": "integration.log",
+        "counts": {
+          "sub_pass": 6058,
+          "top_pass": 6753,
+          "top_skip": 20,
+          "sub_skip": 2
+        },
+        "packages": {
+          "pass": 55,
+          "skip": 57
+        },
+        "failures": [],
+        "skipped": [
+          "github.com/Wei-Shaw/sub2api/internal/handler:TestDingTalkOAuthStart_Disabled",
+          "github.com/Wei-Shaw/sub2api/internal/middleware:TestRateLimiterSetsTTLAndDoesNotRefresh",
+          "github.com/Wei-Shaw/sub2api/internal/middleware:TestRateLimiterFixesMissingTTL",
+          "github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint:TestDialerAgainstCaptureServer",
+          "github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint:TestJA3Fingerprint",
+          "github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint:TestAllProfiles/default_node_v24",
+          "github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint:TestAllProfiles/linux_x64_node_v22171",
+          "github.com/Wei-Shaw/sub2api/internal/repository/upstreamrefreshprobe:TestRefreshPersistenceChildProcess",
+          "github.com/Wei-Shaw/sub2api/internal/securityaudit:TestPromptAuditConfigCASSecretRoundTripInvalidationAndTTL",
+          "github.com/Wei-Shaw/sub2api/internal/securityaudit:TestRedisPayloadStoreRoundTripTTLNamespaceAndDelete",
+          "github.com/Wei-Shaw/sub2api/internal/securityaudit:TestPromptRuntimeAggregatesConfigWorkersQueueRedisEndpointsAndGuardMetrics",
+          "github.com/Wei-Shaw/sub2api/internal/securityaudit:TestPromptAuditMigrationSchemaAndLeakageGate",
+          "github.com/Wei-Shaw/sub2api/internal/securityaudit:TestPromptAuditDatabasePersistsFullPromptOnEventsOnly",
+          "github.com/Wei-Shaw/sub2api/internal/securityaudit:TestPromptAuditRepositoryAdmissionClaimFencingAndEventTransaction",
+          "github.com/Wei-Shaw/sub2api/internal/securityaudit:TestPromptAuditRepositoryForeignKeysFiltersAndStableIdentitySnapshots",
+          "github.com/Wei-Shaw/sub2api/internal/securityaudit:TestPromptAuditRepositoryHighWaterAndSafeDeletion",
+          "github.com/Wei-Shaw/sub2api/internal/securityaudit:TestPromptAuditServiceConfirmationKeepsPostPreviewEventsAndConcurrentDeletesAreSafe",
+          "github.com/Wei-Shaw/sub2api/internal/server/routes:TestAuthRegisterRateLimitThresholdHitReturns429",
+          "github.com/Wei-Shaw/sub2api/internal/service:TestContentModerationTypeSafeLive",
+          "github.com/Wei-Shaw/sub2api/internal/service:TestEstimateOpenAIInputTokens_CompareWithOpenAIAPI",
+          "github.com/Wei-Shaw/sub2api/internal/service:TestPluginRuntimeIntegration",
+          "github.com/Wei-Shaw/sub2api/internal/smartrouter/core:TestSmartRouterHealthRestoreThroughPostgresLedgerInChildProcess"
+        ]
+      }
+    },
+    "race": {
+      "exit_code": 0,
+      "started_utc": "2026-10-18T01:59:00Z",
+      "ended_utc": "2026-10-18T02:07:21Z",
+      "command": "go test -race -json -tags=unit -count=1 -timeout=20m ./internal/service ./internal/handler -run 'GatewayStreamIntegrity|BoundedSSE|UpstreamDrainContext|GatewayChatHandlerPreservesPartialUsage|OpenAIChatHandlerCancellation|AlphaSearchQueuedUsage|OpenAIChatWithheldParserFailure|OpenAIRawStreamChoice|SmartRouterImageRequestBudget'",
+      "test_summary": {
+        "log": "race.log",
+        "counts": {
+          "sub_pass": 172,
+          "top_pass": 29
+        },
+        "packages": {
+          "pass": 2
+        },
+        "failures": [],
+        "skipped": []
+      }
+    },
+    "lint": {
+      "exit_code": 1,
+      "started_utc": "2026-10-18T01:52:47Z",
+      "ended_utc": "2026-10-18T01:58:18Z",
+      "command": "golangci-lint run --timeout=30m --concurrency=2 --max-issues-per-linter=0 --max-same-issues=0 ./..."
+    },
+    "build": {
+      "exit_code": 0,
+      "started_utc": "2026-10-18T02:05:43Z",
+      "ended_utc": "2026-10-18T02:09:25Z",
+      "command": "go build -trimpath -o /workspace/scratch/79ebac196883/sub2api-reaudit-evidence/backend/sub2api-server ./cmd/server"
+    },
+    "vuln": {
+      "exit_code": 0,
+      "started_utc": "2026-10-18T02:09:25Z",
+      "ended_utc": "2026-10-18T02:09:47Z",
+      "command": "govulncheck -format=json ./..."
+    },
+    "httpclient": {
+      "log": "httpclient.jsonl",
+      "counts": {
+        "top_pass": 12,
+        "sub_pass": 43
+      },
+      "packages": {
+        "pass": 1
+      },
+      "failures": [],
+      "skipped": []
+    }
+  },
+  "environment_exclusions": [
+    "TestOfferPluginHostServices_BrokerRoundtrip",
+    "TestOfferPluginHostServices_UnimplementedIsGraceful",
+    "TestOfferPluginHostServices_NilHostServicesNoop"
+  ],
+  "database_integration": "NOT_RUN_DOCKER_UNAVAILABLE",
+  "real_provider": "NOT_RUN",
+  "publication": "NOT_PUSHED_PENDING_APPROVAL",
+  "lint_comparison": {
+    "old": 107,
+    "new": 107,
+    "added": [],
+    "removed": [],
+    "comparison": "filename + exact diagnostic text, ignoring shifted line/column; historical baseline attribution remains static"
+  },
+  "vulnerability": {
+    "findings": [
+      {
+        "osv": "GO-2026-5932",
+        "trace": [
+          {
+            "module": "golang.org/x/crypto",
+            "version": "v0.57.0"
+          }
+        ]
+      }
+    ],
+    "exit": 0
+  },
+  "frontend": {
+    "utc_completed": "2026-10-18T01:50:57.263960+00:00",
+    "candidate_head": "2c756fbef09e130c525528600f5420076d8785b2",
+    "scope": "Fresh frontend and audit-parser validation only; backend repairs have separate review and validation.",
+    "runtime": {
+      "node": "20.20.2",
+      "pnpm": "9.15.9",
+      "python": "3.12.14",
+      "vitest": "3.2.6",
+      "tinypool": "2.1.2",
+      "max_node_workers": 2
+    },
+    "gates": {
+      "parser": {
+        "tests": 30,
+        "exit": 0
+      },
+      "dependency_security": {
+        "files": 1,
+        "tests": 3,
+        "exit": 0,
+        "overlaps_full_vitest": true
+      },
+      "tinypool": {
+        "runtimes": [
+          "worker_threads",
+          "child_process"
+        ],
+        "successes_per_runtime": 14,
+        "expected_error_rejections_per_runtime": 1,
+        "exit": 0,
+        "scope": "Vitest-relevant worker APIs; not all public APIs"
+      },
+      "lint_check": {
+        "exit": 0,
+        "autofix": false
+      },
+      "typecheck": {
+        "exit": 0
+      },
+      "full_vitest": {
+        "files": 344,
+        "tests_passed": 2657,
+        "tests_skipped": 0,
+        "exit": 0
+      },
+      "production_build": {
+        "exit": 0,
+        "prebuild_i18n_tests": 3,
+        "prebuild_tests_overlap_full_vitest": true,
+        "warning": "Vite chunk-size warning (>500 kB), not a failed build"
+      }
+    },
+    "audit": {
+      "production": {
+        "critical": 0,
+        "high": 0,
+        "moderate": 1,
+        "low": 1,
+        "audit_exit": 1,
+        "policy_exit": 0
+      },
+      "full_development": {
+        "critical": 0,
+        "high": 1,
+        "moderate": 4,
+        "low": 1,
+        "audit_exit": 1,
+        "policy_exit": 1,
+        "blocking_high": "braces GHSA-vfj7-8cjw-p6xm"
+      },
+      "network_error_control": {
+        "code": "ECONNREFUSED",
+        "audit_exit": 1,
+        "policy_exit": 1
+      }
+    },
+    "sheetjs": {
+      "sha256": "8dc73fc3b00203e72d176e85b50938627c7b086e607c682e8d3c22c02bb99fe8",
+      "sri_matches_lock": true,
+      "installed_archive_files_identical": 26
+    },
+    "package_lock_unchanged": true,
+    "known_limitation": "Tinypool.version native-ESM accessor references undefined __dirname. Candidate runtime failure recorded; identical unused accessor statically attributed to baseline 1.1.1 published source. This is not a new candidate regression."
+  }
+}

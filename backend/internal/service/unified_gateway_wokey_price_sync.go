@@ -212,11 +212,6 @@ func (n *wokeyJSONNumber) UnmarshalJSON(raw []byte) error {
 
 func (n wokeyJSONNumber) String() string { return string(n) }
 
-type wokeyPriceCard struct {
-	Entry       UnifiedGatewayRoutePricingEntry
-	Unsupported string
-}
-
 type wokeyCardCandidates struct {
 	Cards       []UnifiedGatewayRoutePricingEntry
 	Unsupported []string
@@ -245,21 +240,21 @@ func normalizeUnifiedGatewayWokeySyncConfig(cfg UnifiedGatewayWokeySyncConfig) (
 	}
 	fx, err := decimal.NewFromString(cfg.FX)
 	if err != nil || !fx.GreaterThan(decimal.Zero) {
-		return cfg, errors.New("Wokey FX must be a positive decimal number")
+		return cfg, errors.New("wokey FX must be a positive decimal number")
 	}
 	cfg.FX = fx.String()
 	if cfg.IntervalMinutes == 0 {
 		cfg.IntervalMinutes = UnifiedGatewayWokeyDefaultEvery
 	}
 	if cfg.IntervalMinutes < UnifiedGatewayWokeyMinInterval || cfg.IntervalMinutes > UnifiedGatewayWokeyMaxInterval {
-		return cfg, fmt.Errorf("Wokey sync interval must be between %d and %d minutes", UnifiedGatewayWokeyMinInterval, UnifiedGatewayWokeyMaxInterval)
+		return cfg, fmt.Errorf("wokey sync interval must be between %d and %d minutes", UnifiedGatewayWokeyMinInterval, UnifiedGatewayWokeyMaxInterval)
 	}
 	ids := append([]int64(nil), cfg.AccountIDs...)
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 	unique := ids[:0]
 	for _, id := range ids {
 		if id <= 0 {
-			return cfg, errors.New("Wokey account IDs must be positive")
+			return cfg, errors.New("wokey account IDs must be positive")
 		}
 		if len(unique) == 0 || unique[len(unique)-1] != id {
 			unique = append(unique, id)
@@ -317,7 +312,7 @@ func validateUnifiedGatewayWokeyEntryMetadata(entry UnifiedGatewayRoutePricingEn
 	}
 	if entry.TimeOfDayTokenPrice != nil {
 		if entry.Kind != UnifiedGatewayRoutePricingToken || !isSupportedWokeyTimeOfDayModel(entry.Model) || entry.TokenBasePrice != nil || entry.LongContextTokenBasePrice != nil {
-			return errors.New("Wokey time-of-day price is outside its supported model scope")
+			return errors.New("wokey time-of-day price is outside its supported model scope")
 		}
 		current := entry.TimeOfDayTokenPrice.Peak
 		if entry.TimeOfDayTokenPrice.CurrentTier == "off_peak" {
@@ -336,7 +331,7 @@ func validateUnifiedGatewayWokeyEntryMetadata(entry UnifiedGatewayRoutePricingEn
 			priceDecimal, priceErr := decimal.NewFromString(price)
 			sourceDecimal, sourceErr := decimal.NewFromString(source.PriceUSD)
 			if !exists || priceErr != nil || sourceErr != nil || !priceDecimal.Equal(sourceDecimal) {
-				return errors.New("Wokey time-of-day source SKU does not match current tier")
+				return errors.New("wokey time-of-day source SKU does not match current tier")
 			}
 		}
 		if len(seenMeters) != len(current.SourcePricesUSD) {
@@ -459,7 +454,7 @@ func (f *wokeyHTTPFetcher) get(ctx context.Context, path string) ([]byte, error)
 	if err != nil {
 		return nil, &wokeyPriceSyncFailure{Code: "upstream_unavailable"}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, &wokeyPriceSyncFailure{Code: "upstream_http_error", HTTPStatus: resp.StatusCode}
 	}
@@ -793,7 +788,7 @@ func parseWokeyCatalog(pricingBody, imageBody, videoBody []byte) (*wokeyCatalog,
 		model := wokeyImageModel{ID: raw.ID}
 		seen := make(map[string]struct{}, len(raw.PricingSKUs))
 		for _, sku := range raw.PricingSKUs {
-			if sku.Tier == "" || sku.PriceUSD == "" {
+			if sku.PriceUSD == "" || (sku.Tier == "" && len(raw.PricingSKUs) != 1) {
 				return nil, &wokeyPriceSyncFailure{Code: "invalid_image_sku_schema"}
 			}
 			if _, exists := seen[sku.Tier]; exists {
@@ -1190,6 +1185,37 @@ func wokeyBuildImageCard(catalog *wokeyCatalog, model wokeyImageModel, fx decima
 	}
 	if len(model.SKUs) == 0 {
 		return nil, "image_skus_missing"
+	}
+	if len(model.SKUs) == 1 && model.SKUs[0].Tier == "" {
+		imageSKU := model.SKUs[0]
+		var normalized *wokeyCatalogSKU
+		for i := range priced.SKUs {
+			sku := &priced.SKUs[i]
+			if sku.Meter != "output_images" || sku.Unit != "image" || sku.Constraints.Tier != "" {
+				continue
+			}
+			if normalized != nil || sku.ConstraintsUnsupported {
+				return nil, "duplicate_normalized_image_tier"
+			}
+			normalized = sku
+		}
+		if normalized == nil {
+			return nil, "image_catalog_price_mismatch"
+		}
+		imagePrice, err := decimal.NewFromString(imageSKU.PriceUSD.String())
+		if err != nil || imagePrice.IsNegative() {
+			return nil, "invalid_image_price"
+		}
+		normalizedPrice, err := wokeyUnitPrice(*normalized, "image")
+		if err != nil || !normalizedPrice.Equal(imagePrice) {
+			return nil, "image_catalog_price_mismatch"
+		}
+		perImage := imagePrice.Mul(fx)
+		value, err := quantizedWokeyPrice(perImage)
+		if err != nil {
+			return nil, "unsupported_precision"
+		}
+		return &UnifiedGatewayRoutePricingEntry{Model: model.ID, Kind: UnifiedGatewayRoutePricingImage, UnitPrice: &value, ImagePricingMode: UnifiedGatewayImagePricingFlatPerImage, Source: UnifiedGatewayWokeySource, SourceFX: fx.String(), SourceFetchedAt: wokeyTimePtr(time.Now().UTC()), SourceSKUs: []UnifiedGatewayWokeySourceSKU{sourceSKU(*normalized)}, SyncState: "current"}, ""
 	}
 	for _, imageSKU := range model.SKUs {
 		for _, size := range imageSKU.Sizes {

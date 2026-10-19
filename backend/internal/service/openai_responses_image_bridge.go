@@ -124,7 +124,7 @@ func IsResponsesImageBridgeRequest(body []byte) bool {
 // routing and billing.
 func BuildOpenAIResponsesImageBridgeRequest(body []byte) ([]byte, *OpenAIImagesRequest, error) {
 	if !IsResponsesImageBridgeRequest(body) {
-		return nil, nil, fmt.Errorf("Responses image_generation tool is required")
+		return nil, nil, fmt.Errorf("responses image_generation tool is required")
 	}
 
 	var tool gjson.Result
@@ -137,7 +137,7 @@ func BuildOpenAIResponsesImageBridgeRequest(body []byte) ([]byte, *OpenAIImagesR
 
 	prompt, imageURLs, hasFileID := collectResponsesImageInputs(gjson.GetBytes(body, "input"))
 	if hasFileID {
-		return nil, nil, fmt.Errorf("Responses input_image file_id is not supported by the Images API bridge")
+		return nil, nil, fmt.Errorf("responses input_image file_id is not supported by the Images API bridge")
 	}
 	if prompt == "" {
 		prompt = strings.TrimSpace(gjson.GetBytes(body, "instructions").String())
@@ -232,7 +232,7 @@ func collectResponsesImageInputs(value gjson.Result) (string, []string, bool) {
 		}
 		if !current.IsObject() {
 			if current.Type == gjson.String && prompt.Len() == 0 {
-				prompt.WriteString(strings.TrimSpace(current.String()))
+				_, _ = prompt.WriteString(strings.TrimSpace(current.String()))
 			}
 			return
 		}
@@ -265,9 +265,9 @@ func appendResponsesImageText(prompt *strings.Builder, value string) {
 		return
 	}
 	if prompt.Len() > 0 {
-		prompt.WriteByte('\n')
+		_ = prompt.WriteByte('\n')
 	}
-	prompt.WriteString(value)
+	_, _ = prompt.WriteString(value)
 }
 
 // ForwardResponsesImageBridge executes one Images API attempt and writes the
@@ -475,7 +475,7 @@ func responsesImageToolField(body []byte, field string) string {
 func writeResponsesImageBridgeStream(c *gin.Context, responseID string, created int64, output []map[string]any, completed map[string]any) error {
 	flusher, ok := c.Writer.(http.Flusher)
 	if !ok {
-		return fmt.Errorf("Responses image bridge requires a streaming response writer")
+		return fmt.Errorf("responses image bridge requires a streaming response writer")
 	}
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")

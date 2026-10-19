@@ -2209,6 +2209,7 @@ func TestOpenAIWSConnPool_TargetConnCountAndPrewarmBranches(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Gateway.OpenAIWS.MaxConnsPerAccount = 1
 	pool := newOpenAIWSConnPool(cfg)
+	t.Cleanup(pool.Close)
 
 	require.Equal(t, 0, pool.targetConnCountLocked(nil, 1))
 	ap := &openAIWSAccountPool{conns: map[string]*openAIWSConn{}}
@@ -2228,15 +2229,21 @@ func TestOpenAIWSConnPool_TargetConnCountAndPrewarmBranches(t *testing.T) {
 	require.GreaterOrEqual(t, target, len(ap.conns)+1)
 
 	// prewarm: account pool 缺失时，拨号后的连接应被关闭并提前返回
+	prewarmDialer := &openAIWSReaderLoopFakeDialer{}
+	pool.setClientDialerForTest(prewarmDialer)
 	req := openAIWSAcquireRequest{
 		Account: &Account{ID: 999, Platform: PlatformOpenAI, Type: AccountTypeAPIKey},
 		WSURL:   "wss://example.com/v1/responses",
 	}
 	pool.prewarmConns(999, req, 1)
+	prewarmed := prewarmDialer.dialed()
+	require.Len(t, prewarmed, 1)
+	require.True(t, prewarmed[0].isClosed(), "a connection dialed for a missing account pool must be closed")
 
 	// prewarm: 拨号失败分支（prewarmFails 累加）
 	accountID := int64(1000)
 	failPool := newOpenAIWSConnPool(cfg)
+	t.Cleanup(failPool.Close)
 	failPool.setClientDialerForTest(&openAIWSAlwaysFailDialer{})
 	apFail := failPool.getOrCreateAccountPool(accountID)
 	apFail.mu.Lock()

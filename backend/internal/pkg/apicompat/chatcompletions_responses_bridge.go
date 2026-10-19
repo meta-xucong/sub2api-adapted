@@ -1372,9 +1372,9 @@ func ChatCompletionsResponseToResponses(resp *ChatCompletionsResponse, model str
 	if len(resp.Choices) > 0 {
 		choice := resp.Choices[0]
 		out.Output = chatMessageToResponsesOutput(choice.Message, customTools, functionTools, toolSearch, namespaceTools)
-		if choice.FinishReason == "length" {
+		if reason := chatFinishReasonToResponsesIncompleteReason(choice.FinishReason); reason != "" {
 			out.Status = "incomplete"
-			out.IncompleteDetails = &ResponsesIncompleteDetails{Reason: "max_output_tokens"}
+			out.IncompleteDetails = &ResponsesIncompleteDetails{Reason: reason}
 		}
 	}
 	if len(out.Output) == 0 {
@@ -1384,6 +1384,17 @@ func ChatCompletionsResponseToResponses(resp *ChatCompletionsResponse, model str
 		out.Usage = ChatUsageToResponsesUsage(resp.Usage)
 	}
 	return out
+}
+
+func chatFinishReasonToResponsesIncompleteReason(finishReason string) string {
+	switch finishReason {
+	case "length":
+		return "max_output_tokens"
+	case "content_filter":
+		return "content_filter"
+	default:
+		return ""
+	}
 }
 
 func chatServiceTier(resp *ChatCompletionsResponse) string {
@@ -1843,14 +1854,16 @@ func FinalizeChatCompletionsResponsesStream(state *ChatCompletionsToResponsesStr
 	events = append(events, closeChatToolItems(state)...)
 
 	status := "completed"
+	terminalType := "response.completed"
 	var incompleteDetails *ResponsesIncompleteDetails
-	if state.FinishReason == "length" {
+	if reason := chatFinishReasonToResponsesIncompleteReason(state.FinishReason); reason != "" {
 		status = "incomplete"
-		incompleteDetails = &ResponsesIncompleteDetails{Reason: "max_output_tokens"}
+		terminalType = "response.incomplete"
+		incompleteDetails = &ResponsesIncompleteDetails{Reason: reason}
 	}
 
 	state.CompletedSent = true
-	events = append(events, chatToResponsesEvent(state, "response.completed", &ResponsesStreamEvent{
+	events = append(events, chatToResponsesEvent(state, terminalType, &ResponsesStreamEvent{
 		Response: &ResponsesResponse{
 			ID:                state.ResponseID,
 			Object:            "response",

@@ -23,14 +23,12 @@ func http2KeepAliveTestPoolSettings() poolSettings {
 	}
 }
 
-// requireHTTP2Configured 断言 http2 已显式挂到 http.Transport 上。
-// x/net/http2 在 go1.27 && !http2legacy 下是标准库 HTTP/2 的包装：ConfigureTransports 通过
-// Transport.RegisterProtocol("http/2") 注册配置并打开 Protocols.HTTP2（TLSNextProto 不承载 h2 入口），
-// ReadIdleTimeout/PingTimeout 在建连时映射为 http.HTTP2Config.SendPingTimeout/PingTimeout。
+// requireHTTP2Configured verifies explicit standard-library protocol selection.
 func requireHTTP2Configured(t *testing.T, tr *http.Transport, msg string) {
 	t.Helper()
 	require.NotNil(t, tr.Protocols, msg)
 	require.True(t, tr.Protocols.HTTP2(), msg)
+	require.True(t, tr.Protocols.HTTP1(), "HTTP/1 fallback must remain enabled")
 }
 
 // 长流 / OpenAI 上游改走 HTTP/2 后，池化连接被代理/NAT 静默掐断会成为“死连接”：
@@ -49,10 +47,9 @@ func TestEnableHTTP2KeepAlive_EnablesPingHealthCheck(t *testing.T) {
 	} {
 		t.Run(tc.mode, func(t *testing.T) {
 			tr := &http.Transport{}
-			h2, err := enableHTTP2KeepAlive(tr, tc.mode)
-			require.NoError(t, err)
-			require.NotNil(t, h2, "必须返回已配置的 *http2.Transport")
-			require.Equal(t, tc.readIdleTimeout, h2.ReadIdleTimeout)
+			h2 := enableHTTP2KeepAlive(tr, tc.mode)
+			require.NotNil(t, h2, "必须返回已配置的 *http.HTTP2Config")
+			require.Equal(t, tc.readIdleTimeout, h2.SendPingTimeout)
 			require.Equal(t, tc.pingTimeout, h2.PingTimeout, "各模式应使用独立的 PING 应答期限")
 			requireHTTP2Configured(t, tr, "http2 必须已挂到底层 http.Transport 上")
 		})
@@ -133,4 +130,19 @@ func TestBuildUpstreamTransport_HTTP2_WithHTTPProxy_EnablesKeepAlive(t *testing.
 			require.NotNil(t, tr.Proxy, "HTTP 代理仍须通过 Transport.Proxy 生效")
 		})
 	}
+}
+
+func TestEnableHTTP2KeepAlivePreservesOtherConfiguration(t *testing.T) {
+	protocols := new(http.Protocols)
+	protocols.SetHTTP1(true)
+	protocols.SetUnencryptedHTTP2(true)
+	settings := &http.HTTP2Config{StrictMaxConcurrentRequests: true, MaxReadFrameSize: 32768}
+	tr := &http.Transport{Protocols: protocols, HTTP2: settings}
+	enableHTTP2KeepAlive(tr, upstreamProtocolModeLongStreamH2)
+	require.Same(t, settings, tr.HTTP2)
+	require.True(t, tr.Protocols.HTTP1())
+	require.True(t, tr.Protocols.HTTP2())
+	require.True(t, tr.Protocols.UnencryptedHTTP2())
+	require.True(t, tr.HTTP2.StrictMaxConcurrentRequests)
+	require.Equal(t, 32768, tr.HTTP2.MaxReadFrameSize)
 }

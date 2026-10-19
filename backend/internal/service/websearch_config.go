@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -51,7 +53,10 @@ func validateWebSearchConfig(cfg *WebSearchEmulationConfig) error {
 	seen := make(map[string]bool, len(cfg.Providers))
 	for i, p := range cfg.Providers {
 		if !validProviderTypes[p.Type] {
-			return fmt.Errorf("provider[%d]: invalid type %q", i, p.Type)
+			return fmt.Errorf("provider[%d]: invalid type", i)
+		}
+		if p.APIKey != "" && !websearch.ValidAPIKey(strings.TrimSpace(p.APIKey)) {
+			return fmt.Errorf("provider[%d]: API key contains invalid characters", i)
 		}
 		if p.QuotaLimit != nil && *p.QuotaLimit < 0 {
 			return fmt.Errorf("provider[%d]: quota_limit must be > 0 or null", i)
@@ -136,19 +141,36 @@ func parseWebSearchConfigJSON(raw string) *WebSearchEmulationConfig {
 		return cfg
 	}
 	if err := json.Unmarshal([]byte(raw), cfg); err != nil {
-		slog.Warn("websearch: failed to parse config JSON", "error", err)
+		slog.Warn("websearch: failed to parse config JSON")
 		return &WebSearchEmulationConfig{}
 	}
+	normalizeWebSearchAPIKeys(cfg)
 	return cfg
+}
+
+func normalizeWebSearchAPIKeys(cfg *WebSearchEmulationConfig) {
+	if cfg == nil {
+		return
+	}
+	for i := range cfg.Providers {
+		cfg.Providers[i].APIKey = strings.TrimSpace(cfg.Providers[i].APIKey)
+	}
 }
 
 // SaveWebSearchEmulationConfig validates and persists the configuration.
 // Empty API keys in the input are preserved from the existing config.
 func (s *SettingService) SaveWebSearchEmulationConfig(ctx context.Context, cfg *WebSearchEmulationConfig) error {
+	if cfg == nil {
+		return infraerrors.BadRequest("INVALID_WEB_SEARCH_CONFIG", "configuration is required")
+	}
+	normalizeWebSearchAPIKeys(cfg)
 	if err := validateWebSearchConfig(cfg); err != nil {
 		return infraerrors.BadRequest("INVALID_WEB_SEARCH_CONFIG", err.Error())
 	}
 	s.mergeExistingAPIKeys(ctx, cfg)
+	if err := validateWebSearchConfig(cfg); err != nil {
+		return infraerrors.BadRequest("INVALID_WEB_SEARCH_CONFIG", err.Error())
+	}
 
 	// After merge, validate all enabled providers have API keys
 	if cfg.Enabled {
@@ -277,24 +299,62 @@ type WebSearchTestResult struct {
 const testSearchTimeout = 15 * time.Second
 
 func TestWebSearch(ctx context.Context, query string) (*WebSearchTestResult, error) {
+	return TestWebSearchProvider(ctx, query, "")
+}
+
+// TestWebSearchProvider accepts only a configured provider type, never an endpoint
+// or credentials supplied by the test request. Upstream auth errors stay local
+// diagnostics rather than triggering the application's login/refresh handling.
+func TestWebSearchProvider(ctx context.Context, query, providerType string) (*WebSearchTestResult, error) {
 	mgr := getWebSearchManager()
 	if mgr == nil {
-		return nil, fmt.Errorf("web search: manager not initialized, save config first")
+		return nil, infraerrors.New(http.StatusServiceUnavailable, "WEB_SEARCH_NOT_CONFIGURED", "web search manager not initialized, save config first")
 	}
 	testCtx, cancel := context.WithTimeout(ctx, testSearchTimeout)
 	defer cancel()
-	resp, providerName, err := mgr.TestSearch(testCtx, websearch.SearchRequest{
+	resp, providerName, err := mgr.TestSearchProvider(testCtx, websearch.SearchRequest{
 		Query:      query,
 		MaxResults: webSearchDefaultMaxResults,
-	})
+	}, providerType)
 	if err != nil {
-		return nil, err
+		return nil, webSearchTestError(err)
 	}
 	return &WebSearchTestResult{
 		Provider: providerName,
 		Results:  resp.Results,
 		Query:    resp.Query,
 	}, nil
+}
+
+// webSearchTestError maps only local safe types; never forward raw upstream
+// status as the application's HTTP auth status or expose an arbitrary error.
+func webSearchTestError(err error) error {
+	switch {
+	case errors.Is(err, websearch.ErrInvalidTestProvider):
+		return infraerrors.BadRequest("WEB_SEARCH_INVALID_TEST", websearch.ErrInvalidTestProvider.Error())
+	case errors.Is(err, websearch.ErrAmbiguousTestProvider):
+		return infraerrors.BadRequest("WEB_SEARCH_INVALID_TEST", websearch.ErrAmbiguousTestProvider.Error())
+	case errors.Is(err, websearch.ErrEmptyTestQuery):
+		return infraerrors.BadRequest("WEB_SEARCH_INVALID_TEST", websearch.ErrEmptyTestQuery.Error())
+	case errors.Is(err, websearch.ErrNoTestProvider):
+		return infraerrors.New(http.StatusServiceUnavailable, "WEB_SEARCH_NO_PROVIDER", websearch.ErrNoTestProvider.Error())
+	}
+	var failure *websearch.ProviderError
+	if errors.As(err, &failure) {
+		status := http.StatusBadGateway
+		if failure.Kind == websearch.FailureTimeout {
+			status = http.StatusGatewayTimeout
+		}
+		if failure.Kind == websearch.FailureInvalidKey {
+			status = http.StatusBadRequest
+		}
+		return infraerrors.New(status, "WEB_SEARCH_"+strings.ToUpper(string(failure.Kind)), failure.Error())
+	}
+	var allFailed *websearch.TestSearchError
+	if errors.As(err, &allFailed) {
+		return infraerrors.New(http.StatusBadGateway, "WEB_SEARCH_ALL_PROVIDERS_FAILED", allFailed.Error())
+	}
+	return infraerrors.New(http.StatusBadGateway, "WEB_SEARCH_TEST_FAILED", "web search test failed")
 }
 
 // PopulateWebSearchUsage returns a copy with quota usage populated from Redis (api_key kept as-is).

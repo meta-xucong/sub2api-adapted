@@ -61,8 +61,8 @@ func (g *smartRouterCalibrationProbeGatewayStub) record(capability smartrouter.C
 	return http.StatusOK, 12, err
 }
 
-func (g *smartRouterCalibrationProbeGatewayStub) RunSmartRouterImageCalibrationProbe(_ context.Context, _ *Account, capability smartrouter.Capability) (int, int64, error) {
-	return g.record(capability, smartRouterCalibrationModel)
+func (g *smartRouterCalibrationProbeGatewayStub) RunSmartRouterImageCalibrationProbeForModel(_ context.Context, _ *Account, capability smartrouter.Capability, model string) (int, int64, error) {
+	return g.record(capability, model)
 }
 
 func (g *smartRouterCalibrationProbeGatewayStub) RunSmartRouterResponsesCalibrationProbe(_ context.Context, _ *Account, model string) (int, int64, error) {
@@ -220,6 +220,295 @@ func TestSmartRouterCalibrationEditRequestContainsTinyImageFixture(t *testing.T)
 	require.Equal(t, []string{"1"}, form.Value["n"])
 	require.Len(t, form.File["image"], 1)
 	require.Equal(t, "smart-router-probe.png", form.File["image"][0].Filename)
+}
+
+func TestSmartRouterCalibrationRequestsUsePlannedImageModel(t *testing.T) {
+	for _, capability := range []smartrouter.Capability{smartrouter.CapabilityImageGeneration, smartrouter.CapabilityImageEdit} {
+		for _, tc := range []struct {
+			name  string
+			model string
+			want  string
+		}{
+			{name: "exact model", model: "gpt-image-1-mini", want: "gpt-image-1-mini"},
+			{name: "trimmed model", model: " gpt-image-1 ", want: "gpt-image-1"},
+			{name: "default model", want: smartRouterCalibrationModel},
+		} {
+			t.Run(string(capability)+"/"+tc.name, func(t *testing.T) {
+				body, contentType, endpoint, err := smartRouterCalibrationRequestForModel(capability, tc.model)
+				require.NoError(t, err)
+				if capability == smartrouter.CapabilityImageGeneration {
+					require.Equal(t, openAIImagesGenerationsEndpoint, endpoint)
+					require.Equal(t, "application/json", contentType)
+					require.Equal(t, tc.want, gjson.GetBytes(body, "model").String())
+					return
+				}
+				require.Equal(t, openAIImagesEditsEndpoint, endpoint)
+				_, params, err := mime.ParseMediaType(contentType)
+				require.NoError(t, err)
+				form, err := multipart.NewReader(strings.NewReader(string(body)), params["boundary"]).ReadForm(128 * 1024)
+				require.NoError(t, err)
+				defer func() {
+					if err := form.RemoveAll(); err != nil {
+						t.Errorf("remove multipart form: %v", err)
+					}
+				}()
+				require.Equal(t, []string{tc.want}, form.Value["model"])
+				require.Len(t, form.File["image"], 1)
+			})
+		}
+	}
+}
+
+func TestSmartRouterImageCalibrationProbeUsesExactModelForRequestAndReport(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, tc := range []struct {
+		capability smartrouter.Capability
+		model      string
+		endpoint   string
+	}{
+		{capability: smartrouter.CapabilityImageGeneration, model: "gpt-image-1", endpoint: openAIImagesGenerationsEndpoint},
+		{capability: smartrouter.CapabilityImageEdit, model: "gpt-image-1-mini", endpoint: openAIImagesEditsEndpoint},
+	} {
+		t.Run(string(tc.capability), func(t *testing.T) {
+			cfg := &config.Config{}
+			cfg.Security.URLAllowlist.Enabled = false
+			cfg.Gateway.SmartRouter.Enabled = true
+			upstream := &httpUpstreamRecorder{resp: &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"created":1710000007,"data":[{"b64_json":"aGVsbG8="}]}`)),
+			}}
+			ledger := &smartRouterRuntimeTestLedger{}
+			gateway := &OpenAIGatewayService{cfg: cfg, httpUpstream: upstream, smartRouterHealthLedger: ledger}
+			service := NewSmartRouterCalibrationService(nil, gateway, nil, cfg)
+			account := smartRouterCalibrationTestAccount(730080)
+			account.Credentials["model_mapping"] = map[string]any{tc.model: tc.model}
+			account.Extra[smartRouterExtraKey] = map[string]any{"capabilities": []any{string(tc.capability)}}
+
+			result := service.runProbe(context.Background(), &account, smartrouter.CalibrationProbe{
+				LaneID: "account:730080", Capability: tc.capability, Model: tc.model, Reason: "model_recovery",
+			})
+
+			require.True(t, result.Success, result.ErrorSummary)
+			require.Equal(t, http.StatusOK, result.StatusCode)
+			require.Equal(t, tc.model, result.ModelFamily)
+			require.Len(t, upstream.requests, 1)
+			require.Equal(t, tc.endpoint, upstream.lastReq.URL.Path)
+			if tc.capability == smartrouter.CapabilityImageGeneration {
+				require.Equal(t, tc.model, gjson.GetBytes(upstream.lastBody, "model").String())
+			} else {
+				_, params, err := mime.ParseMediaType(upstream.lastReq.Header.Get("Content-Type"))
+				require.NoError(t, err)
+				form, err := multipart.NewReader(strings.NewReader(string(upstream.lastBody)), params["boundary"]).ReadForm(128 * 1024)
+				require.NoError(t, err)
+				defer func() {
+					if err := form.RemoveAll(); err != nil {
+						t.Errorf("remove multipart form: %v", err)
+					}
+				}()
+				require.Equal(t, []string{tc.model}, form.Value["model"])
+			}
+			require.Len(t, ledger.events, 1)
+			require.Equal(t, "calibration", ledger.events[0].Source)
+			require.Equal(t, tc.capability, ledger.events[0].Key.Capability)
+			require.Equal(t, tc.model, ledger.events[0].Key.Model)
+			require.True(t, ledger.events[0].Success)
+		})
+	}
+}
+
+func TestSmartRouterCalibrationKeepsCustomImageLanesAccountScoped(t *testing.T) {
+	service := &SmartRouterCalibrationService{}
+	accounts := []Account{smartRouterCalibrationTestAccount(730081), smartRouterCalibrationTestAccount(730082)}
+	for index := range accounts {
+		accounts[index].Credentials["model_mapping"] = map[string]any{"gpt-5.5": "gpt-5.5", "gpt-image-1": "gpt-image-1"}
+		accounts[index].Extra[smartRouterExtraKey] = map[string]any{
+			"lane_id": "shared", "capabilities": []any{"responses", "image_generation", "image_edit"},
+		}
+	}
+	imageLanes, imageAccounts := service.imageCalibrationLanes(accounts)
+	require.Len(t, imageLanes, 2)
+	require.Len(t, imageAccounts, 2)
+	require.Equal(t, "account:730081/image/shared", imageLanes[0].LaneID)
+	require.Equal(t, "account:730082/image/shared", imageLanes[1].LaneID)
+	for index, lane := range imageLanes {
+		require.Equal(t, accounts[index].ID, imageAccounts[lane.LaneID].ID)
+		require.True(t, lane.Capabilities[smartrouter.CapabilityImageGeneration])
+		require.True(t, lane.Capabilities[smartrouter.CapabilityImageEdit])
+		require.False(t, lane.Capabilities[smartrouter.CapabilityResponses])
+		require.False(t, lane.Capabilities[smartrouter.CapabilityResponsesCompact])
+		for _, probe := range smartRouterAutoEnrollmentProbes(&accounts[index]) {
+			if probe.Capability == smartrouter.CapabilityImageGeneration || probe.Capability == smartrouter.CapabilityImageEdit {
+				require.Equal(t, lane.LaneID, probe.LaneID)
+			} else {
+				require.Equal(t, "shared", probe.LaneID)
+			}
+		}
+	}
+	ordinaryLanes, _ := service.ordinaryCalibrationLanes(accounts)
+	compactLanes, _ := service.compactCalibrationLanes(accounts)
+	for _, lane := range append(ordinaryLanes, compactLanes...) {
+		require.Equal(t, "shared", lane.LaneID)
+		require.False(t, lane.Capabilities[smartrouter.CapabilityImageGeneration])
+		require.False(t, lane.Capabilities[smartrouter.CapabilityImageEdit])
+	}
+}
+
+func TestSmartRouterDailyImageCalibrationResolvesDuplicateCustomLanesByAccount(t *testing.T) {
+	accounts := []Account{smartRouterCalibrationTestAccount(730081), smartRouterCalibrationTestAccount(730082)}
+	for index := range accounts {
+		accounts[index].Credentials["model_mapping"] = map[string]any{"gpt-5.5": "gpt-5.5", "gpt-image-1": "gpt-image-1"}
+		accounts[index].Extra["openai_compact_supported"] = false
+		accounts[index].Extra[smartRouterExtraKey] = map[string]any{
+			"lane_id": "shared", "capabilities": []any{"responses", "image_generation", "image_edit"},
+		}
+	}
+	// A nonimage custom ID may even match another account's qualified image
+	// ID. Its account entry must not take over the image calibration probe.
+	textAccount := smartRouterCalibrationTestAccount(730083)
+	textAccount.Extra["openai_compact_supported"] = false
+	textAccount.Extra[smartRouterExtraKey] = map[string]any{
+		"lane_id": "account:730081/image/shared", "capabilities": []any{"responses"},
+	}
+	accounts = append(accounts, textAccount)
+	now := time.Now()
+	ledger := &smartRouterCalibrationLedgerStub{evidence: []SmartRouterCapabilityEvidence{{
+		LaneID: "shared", GenerationKnown: true, EditKnown: true,
+		GenerationLastSuccess: now, EditLastSuccess: now,
+	}}}
+	for _, account := range accounts[:2] {
+		for _, capability := range []smartrouter.Capability{smartrouter.CapabilityImageGeneration, smartrouter.CapabilityImageEdit} {
+			ledger.states = append(ledger.states, SmartRouterHealthState{
+				LaneID: "shared", AccountID: account.ID, Capability: capability, ModelFamily: "gpt-image-1",
+				Snapshot: smartrouter.HealthSnapshot{RecoveryStage: smartrouter.RecoveryCooling},
+			})
+		}
+	}
+	cfg := &config.Config{}
+	service := &SmartRouterCalibrationService{
+		cfg: cfg, gateway: &OpenAIGatewayService{cfg: cfg}, probeGateway: &smartRouterCalibrationProbeGatewayStub{},
+		accountRepo: &smartRouterCalibrationAccountRepoStub{accounts: accounts}, ledger: ledger,
+	}
+	service.runCalibration()
+
+	results, finished, success := ledger.resultsSnapshot()
+	require.Equal(t, 1, finished)
+	require.True(t, success)
+	imageResults := make(map[int64][]SmartRouterCalibrationResult)
+	for _, result := range results {
+		if result.Capability == smartrouter.CapabilityImageGeneration || result.Capability == smartrouter.CapabilityImageEdit {
+			imageResults[result.AccountID] = append(imageResults[result.AccountID], result)
+		}
+	}
+	require.Len(t, imageResults, 2)
+	for _, account := range accounts[:2] {
+		accountResults := imageResults[account.ID]
+		require.Len(t, accountResults, 4, "each account needs its own baseline and exact-model recovery probes")
+		modelsByCapability := make(map[smartrouter.Capability][]string)
+		for _, result := range accountResults {
+			require.Equal(t, smartRouterImageLaneID(account.ID, "shared"), result.LaneID)
+			modelsByCapability[result.Capability] = append(modelsByCapability[result.Capability], result.ModelFamily)
+		}
+		for _, capability := range []smartrouter.Capability{smartrouter.CapabilityImageGeneration, smartrouter.CapabilityImageEdit} {
+			require.ElementsMatch(t, []string{smartRouterCalibrationModel, "gpt-image-1"}, modelsByCapability[capability])
+		}
+	}
+}
+
+func TestSmartRouterImageRecoveryProbeRequiresMatchingPersistedAccount(t *testing.T) {
+	account := smartRouterCalibrationTestAccount(730081)
+	account.Credentials["model_mapping"] = map[string]any{"gpt-image-1": "gpt-image-1"}
+	account.Extra[smartRouterExtraKey] = map[string]any{"capabilities": []any{"image_edit"}}
+	state := SmartRouterHealthState{
+		LaneID: "shared", AccountID: account.ID, Capability: smartrouter.CapabilityImageEdit, ModelFamily: "gpt-image-1",
+		Snapshot: smartrouter.HealthSnapshot{RecoveryStage: smartrouter.RecoveryCooling},
+	}
+	imageAccounts := map[string]*Account{"account:730081/image/shared": &account}
+	probes := ensureSmartRouterModelRecoveryProbes(nil, []SmartRouterHealthState{state}, nil, imageAccounts)
+	require.Equal(t, []smartrouter.CalibrationProbe{{
+		LaneID: "account:730081/image/shared", Capability: state.Capability, Model: "gpt-image-1", Reason: "model_recovery_due",
+	}}, probes)
+	state.LaneID = probes[0].LaneID
+	require.Equal(t, probes, ensureSmartRouterModelRecoveryProbes(nil, []SmartRouterHealthState{state}, nil, imageAccounts), "qualified persisted IDs must be idempotent")
+	state.AccountID = 0
+	require.Empty(t, ensureSmartRouterModelRecoveryProbes(nil, []SmartRouterHealthState{state}, nil, imageAccounts))
+	state.AccountID = 730082
+	require.Empty(t, ensureSmartRouterModelRecoveryProbes(nil, []SmartRouterHealthState{state}, nil, imageAccounts))
+}
+
+func TestSmartRouterDailyCalibrationRecoversExistingNonGPTImageState(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		capability smartrouter.Capability
+		allowEdit  bool
+		disabled   bool
+		wantProbe  bool
+	}{
+		{name: "generation", capability: smartrouter.CapabilityImageGeneration, wantProbe: true},
+		{name: "edit", capability: smartrouter.CapabilityImageEdit, allowEdit: true, wantProbe: true},
+		{name: "old edit after opt out", capability: smartrouter.CapabilityImageEdit},
+		{name: "disabled lane", capability: smartrouter.CapabilityImageGeneration, disabled: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const model = "gemini-2.5-flash-image"
+			account := smartRouterCalibrationTestAccount(730084)
+			account.Credentials["model_mapping"] = map[string]any{model: model}
+			capabilities := []any{"image_generation"}
+			if tc.allowEdit {
+				capabilities = append(capabilities, "image_edit")
+			}
+			account.Extra[smartRouterExtraKey] = map[string]any{
+				"lane_id": "gemini-only", "enabled": !tc.disabled, "capabilities": capabilities,
+			}
+			require.Empty(t, filterSmartRouterAccountsByModel([]Account{account}), "representative discovery must not broaden")
+			require.False(t, smartRouterAutoEnrollmentEligible(&account), "ordinary auto-enrollment remains unchanged")
+			cfg := &config.Config{}
+			cfg.Gateway.SmartRouter.Enabled = true
+			ledger := &smartRouterCalibrationLedgerStub{}
+			runner := &smartRouterCalibrationProbeGatewayStub{}
+			service := &SmartRouterCalibrationService{
+				cfg: cfg, gateway: &OpenAIGatewayService{cfg: cfg}, probeGateway: runner,
+				accountRepo: &smartRouterCalibrationAccountRepoStub{accounts: []Account{account}}, ledger: ledger,
+			}
+			service.runCalibration()
+			require.Empty(t, runner.snapshot(), "an image account without existing recovery evidence must not gain a paid probe")
+			ledger.states = []SmartRouterHealthState{{
+				LaneID: "gemini-only", AccountID: account.ID, Capability: tc.capability, ModelFamily: model,
+				Snapshot: smartrouter.HealthSnapshot{RecoveryStage: smartrouter.RecoveryCooling},
+			}}
+			service.runCalibration()
+			results, _, success := ledger.resultsSnapshot()
+			require.True(t, success)
+			if !tc.wantProbe {
+				require.Empty(t, runner.snapshot())
+				require.Empty(t, results)
+				return
+			}
+			require.Equal(t, []smartRouterCalibrationProbeCall{{capability: tc.capability, model: model}}, runner.snapshot())
+			require.Len(t, results, 1)
+			require.Equal(t, account.ID, results[0].AccountID)
+			require.Equal(t, "account:730084/image/gemini-only", results[0].LaneID)
+			require.Equal(t, model, results[0].ModelFamily)
+			require.Equal(t, "model_recovery_due", results[0].Reason)
+		})
+	}
+}
+
+func TestSmartRouterImageRecoveryCanonicalStateSupersedesLegacyCooling(t *testing.T) {
+	account := smartRouterCalibrationTestAccount(730085)
+	account.Credentials["model_mapping"] = map[string]any{"gpt-image-1": "gpt-image-1"}
+	account.Extra[smartRouterExtraKey] = map[string]any{"capabilities": []any{"image_generation"}}
+	legacy := SmartRouterHealthState{
+		LaneID: "shared", AccountID: account.ID, Capability: smartrouter.CapabilityImageGeneration, ModelFamily: "gpt-image-1",
+		Snapshot: smartrouter.HealthSnapshot{RecoveryStage: smartrouter.RecoveryCooling},
+	}
+	canonical := legacy
+	canonical.LaneID = "account:730085/image/shared"
+	canonical.Snapshot.RecoveryStage = smartrouter.RecoveryNormal
+	imageAccounts := map[string]*Account{canonical.LaneID: &account}
+	for _, states := range [][]SmartRouterHealthState{{legacy, canonical}, {canonical, legacy}} {
+		require.Empty(t, ensureSmartRouterModelRecoveryProbes(nil, states, nil, imageAccounts), "a recovered canonical row must not trigger another legacy recovery probe")
+	}
 }
 
 func TestSmartRouterCompactProbeUsesOfficialCompactionItemRecognition(t *testing.T) {
@@ -586,7 +875,8 @@ func TestSmartRouterAutoEnrollmentRechecksEligibilityAndLaneChanges(t *testing.T
 
 	t.Run("Smart Router switch and lane identity change", func(t *testing.T) {
 		account := smartRouterCalibrationTestAccount(730075)
-		extra := account.Extra[smartRouterExtraKey].(map[string]any)
+		extra, ok := account.Extra[smartRouterExtraKey].(map[string]any)
+		require.True(t, ok)
 		extra["enabled"] = false
 		extra["lane_id"] = "lane-before"
 		repo := &smartRouterCalibrationAccountRepoStub{accounts: []Account{account}}

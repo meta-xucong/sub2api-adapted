@@ -53,7 +53,6 @@ type routePricingReservationEstimator struct {
 	nativePriced   bool
 	routeEstimate  float64
 	decision       service.UnifiedGatewayRoutePricingDecision
-	allowed        bool
 	prepared       bool
 }
 

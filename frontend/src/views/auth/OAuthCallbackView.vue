@@ -146,6 +146,7 @@
 </template>
 
 <script setup lang="ts">
+import { completeLoginRedirect } from '@/router/veyraReturn'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
@@ -166,6 +167,14 @@ import {
 
 const route = useRoute()
 const router = useRouter()
+
+function completeAuthRedirect(path: unknown): Promise<void> {
+  return completeLoginRedirect(
+    path,
+    (value) => router.replace(value),
+    (value) => window.location.replace(value)
+  )
+}
 const { t } = useI18n()
 const { copyToClipboard } = useClipboard()
 const appStore = useAppStore()
@@ -279,7 +288,7 @@ async function finalizeTokenResponse(tokenResponse: OAuthTokenResponse, redirect
   }
   clearAllAffiliateReferralCodes()
   appStore.showSuccess(t('auth.loginSuccess'))
-  await router.replace(sanitizeRedirectPath(redirect))
+  await completeAuthRedirect(sanitizeRedirectPath(redirect))
 }
 
 function hasOAuthTokenResponse(value: Partial<OAuthTokenResponse>): value is OAuthTokenResponse {

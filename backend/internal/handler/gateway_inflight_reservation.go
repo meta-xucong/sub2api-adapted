@@ -82,7 +82,8 @@ func reserveInflightBalanceCtx(
 	reservationEnabled := billing != nil && estimator != nil && billing.InflightReservationEnabled()
 	if apiKey.Group != nil && apiKey.Group.IsSubscriptionType() && subscription != nil {
 		if planner, ok := estimator.(unifiedRoutePricingReservationEstimator); ok {
-			ctx, _, planned := planner.PrepareUnifiedGatewayRoutePricingReservation(ctx, apiKey, req, 0, false)
+			var planned bool
+			ctx, _, planned = planner.PrepareUnifiedGatewayRoutePricingReservation(ctx, apiKey, req, 0, false)
 			if planned {
 				ctx = service.WithUnifiedGatewayRoutePricingDecisionAllowed(ctx, true)
 			}
@@ -140,7 +141,7 @@ func reserveInflightBalanceCtx(
 	}
 	if estimate <= 0 {
 		if routePlanned {
-			canPrice := !(reservationEnabled && decision.Kind == service.UnifiedGatewayRoutePricingToken && !priced)
+			canPrice := !reservationEnabled || decision.Kind != service.UnifiedGatewayRoutePricingToken || priced
 			ctx = service.WithUnifiedGatewayRoutePricingDecisionAllowed(ctx, canPrice)
 		}
 		return ctx, inflightNoop, nil

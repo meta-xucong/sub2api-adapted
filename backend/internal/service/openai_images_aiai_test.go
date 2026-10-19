@@ -90,7 +90,7 @@ func TestPollAIAIImagesAsyncResponse(t *testing.T) {
 	resp, err := svc.pollAIAIImagesAsyncResponse(context.Background(), context.Background(), nil, account, submit, "test-token")
 	require.NoError(t, err)
 	require.NotNil(t, resp)
-	defer resp.Body.Close()
+	defer func() { require.NoError(t, resp.Body.Close()) }()
 	require.Len(t, upstream.requests, 1)
 	require.Equal(t, "https://aiai.ac/api/v1/images/task-123", upstream.requests[0].URL.String())
 	require.Equal(t, "Bearer test-token", upstream.requests[0].Header.Get("Authorization"))

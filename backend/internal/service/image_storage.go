@@ -1,20 +1,36 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"io"
 	"mime"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	sharedhttpclient "github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
+	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
+	_ "golang.org/x/image/webp"
+	"golang.org/x/net/http/httpproxy"
 )
 
-const defaultImageMaxDownloadBytes int64 = 32 << 20 // 32 MiB
+const (
+	defaultImageMaxDownloadBytes int64 = 32 << 20 // 32 MiB
+	imageStorageMaxDimension           = 16384
+	// Gemini 4K non-square outputs exceed 16 Mi pixels (up to 18,874,368).
+	// Keep a bounded envelope covering those documented outputs.
+	imageStorageMaxPixels int64 = 24 * 1024 * 1024
+)
 
 // ImageStorage 把图片字节写入对象存储并返回可访问 URL。
 //
@@ -38,6 +54,10 @@ type ImageResultUploader struct {
 }
 
 // NewImageResultUploader 构造一个 uploader；storage 为 nil 时 Rewrite 直接透传。
+// A nil HTTP client selects the public-IP-pinned production downloader. A supplied
+// client is a trusted dependency override (for example, a local test server);
+// its caller owns destination and redirect policy. Image bytes are always bounded
+// and validated. Production settings intentionally supply nil.
 func NewImageResultUploader(storage ImageStorage, prefix string, maxDownloadBytes int64, httpClient *http.Client) *ImageResultUploader {
 	if httpClient == nil {
 		httpClient = defaultImageDownloadHTTPClient()
@@ -54,7 +74,49 @@ func NewImageResultUploader(storage ImageStorage, prefix string, maxDownloadByte
 }
 
 func defaultImageDownloadHTTPClient() *http.Client {
-	return &http.Client{Timeout: 60 * time.Second}
+	client, err := sharedhttpclient.GetClient(sharedhttpclient.Options{
+		Timeout:                  60 * time.Second,
+		ResponseHeaderTimeout:    10 * time.Second,
+		RequirePinnedDestination: true,
+	})
+	guard := &imageDownloadTransport{initErr: err}
+	if err == nil {
+		guard.base = client.Transport
+	}
+	return &http.Client{Timeout: 60 * time.Second, Transport: guard}
+}
+
+// Validate every request, including redirects, without rewriting the signed URL.
+// The underlying client pins validated DNS answers to the actual socket dial.
+type imageDownloadTransport struct {
+	base    http.RoundTripper
+	initErr error
+}
+
+func (t *imageDownloadTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if t.initErr != nil {
+		return nil, fmt.Errorf("initialize secure image downloader: %w", t.initErr)
+	}
+	if req == nil || req.URL == nil || req.URL.User != nil {
+		return nil, errors.New("image download URL must not contain credentials")
+	}
+	if _, err := urlvalidator.ValidateHTTPURL(req.URL.String(), true, urlvalidator.ValidationOptions{}); err != nil {
+		return nil, fmt.Errorf("image download URL rejected: %w", err)
+	}
+	// The old default client honored environment proxies. Do not silently bypass
+	// them now: strict destination pinning cannot constrain a proxy's resolution.
+	// Re-evaluate NO_PROXY for each redirect target and never expose proxy secrets.
+	proxyURL, err := httpproxy.FromEnvironment().ProxyFunc()(req.URL)
+	if err != nil {
+		return nil, errors.New("image download environment proxy configuration is invalid")
+	}
+	if proxyURL != nil {
+		return nil, errors.New("secure image downloader cannot enforce destination IP validation through an environment proxy")
+	}
+	if t.base == nil {
+		return nil, errors.New("secure image downloader is not configured")
+	}
+	return t.base.RoundTrip(req)
 }
 
 // Rewrite 将 result（上游生图响应 JSON）里的每张图片转存到对象存储，
@@ -115,11 +177,12 @@ func (u *ImageResultUploader) fetchImageBytes(ctx context.Context, item map[stri
 		var b64 string
 		if err := json.Unmarshal(raw, &b64); err == nil {
 			if b64 = strings.TrimSpace(b64); b64 != "" {
-				data, err := base64.StdEncoding.DecodeString(b64)
+				data, err := u.decodeBoundedImageBase64(b64, "b64_json")
 				if err != nil {
-					return nil, "", fmt.Errorf("decode b64_json: %w", err)
+					return nil, "", err
 				}
-				return data, detectImageContentType(data), nil
+				contentType, err := validatedStorageImageContentType(data)
+				return data, contentType, err
 			}
 		}
 	}
@@ -171,24 +234,32 @@ func (u *ImageResultUploader) decodeImageDataURL(rawURL string) ([]byte, string,
 		return nil, "", fmt.Errorf("decode image data URL: media type %q is not an image", declaredType)
 	}
 
-	limit := u.maxDownloadBytes
-	if limit <= 0 {
-		limit = defaultImageMaxDownloadBytes
+	data, err := u.decodeBoundedImageBase64(payload, "image data URL")
+	if err != nil {
+		return nil, "", err
 	}
+	contentType, err := validatedStorageImageContentType(data)
+	return data, contentType, err
+}
+
+func (u *ImageResultUploader) imageByteLimit() int64 {
+	if u.maxDownloadBytes > 0 {
+		return u.maxDownloadBytes
+	}
+	return defaultImageMaxDownloadBytes
+}
+
+func (u *ImageResultUploader) decodeBoundedImageBase64(payload, source string) ([]byte, error) {
+	limit := u.imageByteLimit()
 	decoder := base64.NewDecoder(base64.StdEncoding, strings.NewReader(payload))
 	data, err := io.ReadAll(io.LimitReader(decoder, limit+1))
 	if err != nil {
-		return nil, "", fmt.Errorf("decode image data URL base64 payload: %w", err)
+		return nil, fmt.Errorf("decode %s base64 payload: %w", source, err)
 	}
 	if int64(len(data)) > limit {
-		return nil, "", fmt.Errorf("decoded image data URL exceeds %d bytes", limit)
+		return nil, fmt.Errorf("decoded %s exceeds %d bytes", source, limit)
 	}
-
-	contentType := detectedImageContentType(data)
-	if contentType == "" {
-		contentType = declaredType
-	}
-	return data, contentType, nil
+	return data, nil
 }
 
 func (u *ImageResultUploader) download(ctx context.Context, rawURL string) ([]byte, string, error) {
@@ -204,9 +275,9 @@ func (u *ImageResultUploader) download(ctx context.Context, rawURL string) ([]by
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return nil, "", fmt.Errorf("download image: unexpected status %d", resp.StatusCode)
 	}
-	limit := u.maxDownloadBytes
-	if limit <= 0 {
-		limit = defaultImageMaxDownloadBytes
+	limit := u.imageByteLimit()
+	if resp.ContentLength > limit {
+		return nil, "", fmt.Errorf("downloaded image exceeds %d bytes", limit)
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
@@ -215,22 +286,37 @@ func (u *ImageResultUploader) download(ctx context.Context, rawURL string) ([]by
 	if int64(len(data)) > limit {
 		return nil, "", fmt.Errorf("downloaded image exceeds %d bytes", limit)
 	}
-	contentType := strings.TrimSpace(strings.Split(resp.Header.Get("Content-Type"), ";")[0])
-	if !strings.HasPrefix(contentType, "image/") {
-		contentType = detectImageContentType(data)
-	}
-	return data, contentType, nil
+	// Never trust a remote Content-Type header to turn arbitrary bytes into an image.
+	contentType, err := validatedStorageImageContentType(data)
+	return data, contentType, err
 }
 
 func (u *ImageResultUploader) buildKey(taskID string, index int, contentType string) string {
 	return u.prefix + taskID + "-" + strconv.Itoa(index) + extensionForContentType(contentType)
 }
 
-func detectImageContentType(data []byte) string {
-	if ct := detectedImageContentType(data); ct != "" {
-		return ct
+// DecodeConfig validates the supported image header and geometry without
+// allocating width*height pixels. This uploader stores opaque original bytes;
+// it intentionally does not fully decode every potentially large image.
+func validatedStorageImageContentType(data []byte) (string, error) {
+	config, format, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return "", errors.New("image content is not a supported image")
 	}
-	return "image/png"
+	var contentType string
+	switch format {
+	case "png", "jpeg", "gif", "webp":
+		contentType = "image/" + format
+	default:
+		return "", errors.New("image content is not a supported image")
+	}
+	if detectedImageContentType(data) != contentType {
+		return "", errors.New("image content does not match its format")
+	}
+	if config.Width <= 0 || config.Height <= 0 || config.Width > imageStorageMaxDimension || config.Height > imageStorageMaxDimension || int64(config.Width)*int64(config.Height) > imageStorageMaxPixels {
+		return "", errors.New("image dimensions exceed the supported limit")
+	}
+	return contentType, nil
 }
 
 func detectedImageContentType(data []byte) string {

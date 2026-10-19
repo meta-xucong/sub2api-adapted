@@ -336,6 +336,8 @@ func TestForwardWokeyOversizeImageEditDoesNotCallUpstream(t *testing.T) {
 	result, err := svc.ForwardGrokMedia(context.Background(), c, account, GrokMediaEndpointImagesEdits, "", body, writer.FormDataContentType())
 	require.Nil(t, result)
 	require.ErrorContains(t, err, "must be smaller than 20 MiB")
+	var inputErr *GrokImageEditInputValidationError
+	require.ErrorAs(t, err, &inputErr)
 	require.Empty(t, upstream.requests)
 }
 

@@ -593,14 +593,6 @@ func (s *OpenAIGatewayService) saveResponsesCompatResponse(ctx context.Context, 
 	return saveResponsesCompatSession(ctx, c, s.cache, &s.responsesCompatSessions, state, s.openAIWSResponseStickyTTL())
 }
 
-func (s *OpenAIGatewayService) saveResponsesCompatResponseFromBody(ctx context.Context, c *gin.Context, body []byte, resp *apicompat.ResponsesResponse) error {
-	var req apicompat.ResponsesRequest
-	if err := json.Unmarshal(body, &req); err != nil {
-		return err
-	}
-	return s.saveResponsesCompatResponse(ctx, c, &req, resp)
-}
-
 func (s *GatewayService) prepareResponsesCompatContinuation(ctx context.Context, c *gin.Context, req *apicompat.ResponsesRequest) error {
 	if responsesCompatSessionExcluded(c) {
 		return nil

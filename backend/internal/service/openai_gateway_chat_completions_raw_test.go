@@ -104,6 +104,9 @@ func TestForwardAsRawChatCompletions_ForcesStreamUsageUpstreamAndPassesUsageDown
 		Body:       io.NopCloser(strings.NewReader(upstreamBody)),
 	}}
 
+	observedBody := &rawCCContextObservingBody{ReadCloser: upstream.resp.Body, request: func() *http.Request { return upstream.lastReq }}
+	upstream.resp.Body = observedBody
+
 	svc := &OpenAIGatewayService{
 		cfg:          rawChatCompletionsTestConfig(),
 		httpUpstream: upstream,
@@ -117,7 +120,9 @@ func TestForwardAsRawChatCompletions_ForcesStreamUsageUpstreamAndPassesUsageDown
 	require.Equal(t, 4, result.Usage.OutputTokens)
 	require.Equal(t, 3, result.Usage.CacheReadInputTokens)
 	require.NotNil(t, upstream.lastReq)
-	require.NoError(t, upstream.lastReq.Context().Err())
+	require.True(t, observedBody.observed)
+	require.NoError(t, observedBody.contextErr, "usage drain context must remain live while reading")
+	require.ErrorIs(t, upstream.lastReq.Context().Err(), context.Canceled, "response Close must release its owned context")
 	require.Equal(t, HTTPUpstreamProfileOpenAI, HTTPUpstreamProfileFromContext(upstream.lastReq.Context()))
 	require.True(t, gjson.GetBytes(upstream.lastBody, "stream_options.include_usage").Bool())
 	require.Contains(t, rec.Body.String(), `"usage"`)
@@ -847,7 +852,7 @@ func TestForwardAsRawChatCompletions_StreamReadErrorAfterOutputFailsRequest(t *t
 
 // 边界：缺 [DONE] 但收到了 usage 帧 —— 生成已完整，只是尾巴丢失。必须继续按成功
 // 计费，否则会误伤那些跑完就直接 EOF 的兼容上游并白送 token。
-func TestForwardAsRawChatCompletions_MissingDoneWithUsageStillSucceeds(t *testing.T) {
+func TestForwardAsRawChatCompletions_UsageWithoutTerminalRetainsUsageAndFails(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	body := []byte(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hello"}],"stream":true}`)
@@ -874,7 +879,7 @@ func TestForwardAsRawChatCompletions_MissingDoneWithUsageStillSucceeds(t *testin
 	}
 
 	result, err := svc.forwardAsRawChatCompletions(context.Background(), c, rawChatCompletionsTestAccount(), body, "")
-	require.NoError(t, err)
+	require.Error(t, err)
 	require.NotNil(t, result)
 	require.Equal(t, 11, result.Usage.InputTokens)
 	require.Equal(t, 6, result.Usage.OutputTokens)
@@ -927,40 +932,57 @@ func (w *openAIRawStreamDisconnectedWriter) WriteString(string) (int, error) {
 	return 0, errors.New("write failed: client disconnected")
 }
 
-// 客户端已断开时上游随后截断：两者不可区分，沿用既有语义按已收用量正常收尾计费，
-// 不得把客户端离场记成上游故障。
-func TestForwardAsRawChatCompletions_ClientDisconnectTruncationStillBills(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+// A failed first client write provides no delivery evidence. Only positive
+// upstream usage retained while draining may produce an accounting result.
+func TestForwardAsRawChatCompletions_ClientDisconnectTruncationBillingEvidence(t *testing.T) {
+	for _, metered := range []bool{false, true} {
+		t.Run(map[bool]string{false: "unmetered", true: "metered"}[metered], func(t *testing.T) {
+			gin.SetMode(gin.TestMode)
 
-	body := []byte(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hello"}],"stream":true}`)
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Writer = &openAIRawStreamDisconnectedWriter{ResponseWriter: c.Writer}
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
-	c.Request.Header.Set("Content-Type", "application/json")
+			body := []byte(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Writer = &openAIRawStreamDisconnectedWriter{ResponseWriter: c.Writer}
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+			c.Request.Header.Set("Content-Type", "application/json")
 
-	upstreamBody := strings.Join([]string{
-		`data: {"id":"chatcmpl_gone","object":"chat.completion.chunk","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"content":"ok"}}]}`,
-		"",
-	}, "\n")
-	upstream := &httpUpstreamRecorder{resp: &http.Response{
-		StatusCode: http.StatusOK,
-		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_gone"}},
-		Body:       io.NopCloser(strings.NewReader(upstreamBody)),
-	}}
+			upstreamBody := strings.Join([]string{
+				`data: {"id":"chatcmpl_gone","object":"chat.completion.chunk","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"content":"ok"}}]}`,
+				"",
+			}, "\n")
+			if metered {
+				upstreamBody += "\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3}}\n\n"
+			}
+			upstream := &httpUpstreamRecorder{resp: &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_gone"}},
+				Body:       io.NopCloser(strings.NewReader(upstreamBody)),
+			}}
 
-	svc := &OpenAIGatewayService{
-		cfg:          rawChatCompletionsTestConfig(),
-		httpUpstream: upstream,
+			svc := &OpenAIGatewayService{
+				cfg:          rawChatCompletionsTestConfig(),
+				httpUpstream: upstream,
+			}
+
+			result, err := svc.forwardAsRawChatCompletions(context.Background(), c, rawChatCompletionsTestAccount(), body, "")
+			require.Error(t, err)
+			if metered {
+				require.NotNil(t, result)
+				require.True(t, result.ClientDisconnect)
+				require.Equal(t, 7, result.Usage.InputTokens)
+				require.Equal(t, 3, result.Usage.OutputTokens)
+			} else {
+				require.Nil(t, result)
+				require.True(t, IsOpenAIStreamClientDisconnect(err))
+			}
+			var failover *UpstreamFailoverError
+			require.False(t, errors.As(err, &failover))
+		})
 	}
-
-	result, err := svc.forwardAsRawChatCompletions(context.Background(), c, rawChatCompletionsTestAccount(), body, "")
-	require.NoError(t, err)
-	require.NotNil(t, result)
 }
 
 // 客户端取消会连带取消上游请求，上游读因此报 context.Canceled：同样不判为上游截断。
-func TestForwardAsRawChatCompletions_ClientCancelTruncationStillBills(t *testing.T) {
+func TestForwardAsRawChatCompletions_ClientCancelTruncationRetainsUsageAndFails(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	body := []byte(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hello"}],"stream":true}`)
@@ -984,7 +1006,7 @@ func TestForwardAsRawChatCompletions_ClientCancelTruncationStillBills(t *testing
 	}
 
 	result, err := svc.forwardAsRawChatCompletions(context.Background(), c, rawChatCompletionsTestAccount(), body, "")
-	require.NoError(t, err)
+	require.Error(t, err)
 	require.NotNil(t, result)
 }
 
@@ -1005,10 +1027,10 @@ func TestOpenAIRawStreamTerminalState(t *testing.T) {
 			wantTerminated: true,
 		},
 		{
-			name:           "usage chunk",
-			payloads:       []string{`{"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1}}`},
-			clientStarted:  true,
-			wantTerminated: true,
+			name:          "usage alone is not terminal",
+			payloads:      []string{`{"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1}}`},
+			clientStarted: true,
+			wantTruncated: true,
 		},
 		{
 			name:           "finish reason",
@@ -1047,7 +1069,7 @@ func TestOpenAIRawStreamTerminalState(t *testing.T) {
 			t.Parallel()
 			var state openAIRawStreamTerminalState
 			for _, payload := range tt.payloads {
-				state.ObserveDataLine(payload)
+				require.NoError(t, state.ObserveDataLine(payload))
 			}
 			require.Equal(t, tt.wantTerminated, state.Terminated())
 			require.Equal(t, tt.wantTruncated, state.IsTruncated(tt.clientStarted))
@@ -1117,6 +1139,9 @@ func TestForwardAsRawChatCompletions_UpstreamRequestIgnoresClientCancel(t *testi
 		Body:       io.NopCloser(strings.NewReader(upstreamBody)),
 	}}
 
+	observedBody := &rawCCContextObservingBody{ReadCloser: upstream.resp.Body, request: func() *http.Request { return upstream.lastReq }}
+	upstream.resp.Body = observedBody
+
 	svc := &OpenAIGatewayService{
 		cfg:          rawChatCompletionsTestConfig(),
 		httpUpstream: upstream,
@@ -1127,7 +1152,9 @@ func TestForwardAsRawChatCompletions_UpstreamRequestIgnoresClientCancel(t *testi
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.NotNil(t, upstream.lastReq)
-	require.NoError(t, upstream.lastReq.Context().Err())
+	require.True(t, observedBody.observed)
+	require.NoError(t, observedBody.contextErr, "usage drain context must remain live while reading")
+	require.ErrorIs(t, upstream.lastReq.Context().Err(), context.Canceled, "response Close must release its owned context")
 }
 
 func TestForwardAsChatCompletions_AutoPreservesChatProtocolWithoutProbeFallback(t *testing.T) {
@@ -1271,4 +1298,21 @@ func TestForwardAsRawChatCompletions_RestoresMappedResponseModel(t *testing.T) {
 			}
 		}
 	}
+}
+
+// Observe the context during consumption, rather than after the response owner
+// has correctly canceled it on Close.
+type rawCCContextObservingBody struct {
+	io.ReadCloser
+	request    func() *http.Request
+	observed   bool
+	contextErr error
+}
+
+func (b *rawCCContextObservingBody) Read(p []byte) (int, error) {
+	if !b.observed {
+		b.observed = true
+		b.contextErr = b.request().Context().Err()
+	}
+	return b.ReadCloser.Read(p)
 }

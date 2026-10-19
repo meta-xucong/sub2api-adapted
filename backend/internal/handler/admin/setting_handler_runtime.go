@@ -578,7 +578,8 @@ func (h *SettingHandler) ResetWebSearchUsage(c *gin.Context) {
 // POST /api/v1/admin/settings/web-search-emulation/test
 func (h *SettingHandler) TestWebSearchEmulation(c *gin.Context) {
 	var req struct {
-		Query string `json:"query"`
+		Query        string `json:"query"`
+		ProviderType string `json:"provider_type"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
@@ -588,7 +589,7 @@ func (h *SettingHandler) TestWebSearchEmulation(c *gin.Context) {
 		req.Query = "搜索今年世界大事件"
 	}
 
-	result, err := service.TestWebSearch(c.Request.Context(), req.Query)
+	result, err := service.TestWebSearchProvider(c.Request.Context(), req.Query, req.ProviderType)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return

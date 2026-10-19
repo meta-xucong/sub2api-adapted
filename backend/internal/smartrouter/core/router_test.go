@@ -336,3 +336,119 @@ func TestClassifyFailure(t *testing.T) {
 	require.Equal(t, FailureTimeout, ClassifyFailure(http.StatusGatewayTimeout, CapabilityChat, false))
 	require.Equal(t, FailureCancelled, ClassifyFailure(http.StatusBadGateway, CapabilityChat, true))
 }
+
+func TestOrder_ImageResilienceOrdinaryPassExcludesWholeCoolingPool(t *testing.T) {
+	policy := DefaultPolicy()
+	policy.Enabled = true
+	policy.ImageResilienceEnabled = true
+	policy.ImageHalfOpenEnabled = true
+	for _, model := range []string{"gpt-image-2", "gpt-image-2.5", "gpt-image-1"} {
+		t.Run(model, func(t *testing.T) {
+			plan := Order(RouteRequest{Model: model, Capability: CapabilityImageGeneration, ImageResilience: true, NowUnix: 100}, []LaneSnapshot{
+				{LaneID: "cool-a", Priority: 1, CooldownUntilUnix: 200, RecoveryStage: RecoveryCooling},
+				{LaneID: "cool-b", Priority: 2, CooldownUntilUnix: 300, RecoveryStage: RecoveryNormal},
+			}, policy)
+			require.Empty(t, plan.Candidates)
+			require.Empty(t, plan.OrderedLaneIDs)
+			require.Equal(t, "image_health_cooldown", plan.SkipReasons["cool-a"])
+			require.Equal(t, "image_health_cooldown", plan.SkipReasons["cool-b"])
+		})
+	}
+}
+
+func TestOrder_ImageResilienceAllRecoveringHasOneUniqueFIFOProbe(t *testing.T) {
+	policy := DefaultPolicy()
+	policy.Enabled = true
+	policy.ImageResilienceEnabled = true
+	policy.ImageHalfOpenEnabled = true
+	plan := Order(RouteRequest{Capability: CapabilityImageEdit, ImageResilience: true}, []LaneSnapshot{
+		{LaneID: "later", AccountID: 3, Priority: 32, SourceGroup: "later", RecoveryStage: RecoveryProbeDue},
+		{LaneID: "warming", AccountID: 2, Priority: 31, SourceGroup: "warming", RecoveryStage: RecoveryWarming25},
+		{LaneID: "first", AccountID: 1, Priority: 30, SourceGroup: "first", RecoveryStage: RecoveryWarming5},
+	}, policy)
+	require.Equal(t, []string{"first"}, plan.OrderedLaneIDs)
+	require.Len(t, plan.Candidates, 1)
+}
+
+func TestOrder_ImageResilienceKeepsTextCooldownBehavior(t *testing.T) {
+	policy := DefaultPolicy()
+	policy.Enabled = true
+	policy.ImageResilienceEnabled = true
+	policy.ImageHalfOpenEnabled = true
+	plan := Order(RouteRequest{Capability: CapabilityChat, ImageResilience: true, NowUnix: 100}, []LaneSnapshot{
+		{LaneID: "text", Priority: 1, CooldownUntilUnix: 200, RecoveryStage: RecoveryCooling},
+	}, policy)
+	require.Equal(t, []string{"text"}, plan.OrderedLaneIDs)
+}
+
+func TestOrder_ImageResilienceTopKCannotReplaceHealthyWithHighScoringProbe(t *testing.T) {
+	policy := DefaultPolicy()
+	policy.Enabled = true
+	policy.TopK = 1
+	policy.ImageResilienceEnabled = true
+	policy.ImageHalfOpenEnabled = true
+	plan := Order(RouteRequest{Capability: CapabilityImageGeneration, ImageResilience: true}, []LaneSnapshot{
+		{LaneID: "healthy", AccountID: 1, Priority: 1, SourceGroup: "healthy", BaseWeight: .01, LoadRate: 99},
+		{LaneID: "probe", AccountID: 2, Priority: 30, SourceGroup: "probe", RecoveryStage: RecoveryProbeDue, BaseWeight: 1e6},
+	}, policy)
+	require.Equal(t, []string{"healthy"}, plan.OrderedLaneIDs)
+}
+
+func TestOrder_ImageResilienceLastResortKeepsHealthyFirst(t *testing.T) {
+	policy := DefaultPolicy()
+	policy.Enabled = true
+	policy.ImageResilienceEnabled = true
+	policy.ImageHalfOpenEnabled = true
+	request := RouteRequest{Model: "gpt-image-2", Capability: CapabilityImageGeneration, ImageResilience: true, ImageLastResort: true, NowUnix: 100}
+	lanes := []LaneSnapshot{
+		{LaneID: "cool-a", Priority: 1, CooldownUntilUnix: 200, RecoveryStage: RecoveryCooling},
+		{LaneID: "cool-b", Priority: 2, CooldownUntilUnix: 300, RecoveryStage: RecoveryCooling},
+		{LaneID: "healthy", Priority: 3, MaxConcurrency: 1},
+	}
+	plan := Order(request, lanes, policy)
+	require.Equal(t, []string{"healthy"}, plan.OrderedLaneIDs)
+	require.Equal(t, "image_health_cooldown", plan.SkipReasons["cool-a"])
+
+	// Once the healthy lane is actually unavailable, one previously failed
+	// lane may be tried through the explicit bounded last-resort dispatch API.
+	lanes[2].CurrentConcurrency = 1
+	plan = Order(request, lanes, policy)
+	require.Equal(t, []string{"cool-a"}, plan.OrderedLaneIDs)
+	require.Len(t, plan.Candidates, 1)
+	require.Equal(t, "lane_concurrency_full", plan.SkipReasons["healthy"])
+	require.NotContains(t, plan.SkipReasons, "cool-a")
+
+	// The request's failed-ID exclusion still prevents retrying that lane.
+	request.ExcludedLaneIDs = map[string]struct{}{"cool-a": {}}
+	plan = Order(request, lanes, policy)
+	require.Equal(t, []string{"cool-b"}, plan.OrderedLaneIDs)
+	request.ExcludedLaneIDs["cool-b"] = struct{}{}
+	plan = Order(request, lanes, policy)
+	require.Empty(t, plan.OrderedLaneIDs)
+}
+
+func TestOrder_ImageResilienceLastResortHonorsEligibilityGates(t *testing.T) {
+	policy := DefaultPolicy()
+	policy.Enabled = true
+	policy.ImageResilienceEnabled = true
+	policy.ImageHalfOpenEnabled = true
+	plan := Order(RouteRequest{
+		Model: "gpt-image-2", Capability: CapabilityImageGeneration, ImageSizeTier: "2K",
+		ImageResilience: true, ImageLastResort: true, NowUnix: 100,
+		ExcludedSourceGroups: map[string]struct{}{"excluded": {}},
+	}, []LaneSnapshot{
+		{LaneID: "model", RecoveryStage: RecoveryCooling, CooldownUntilUnix: 200, ModelPatterns: []string{"gpt-image-1"}},
+		{LaneID: "capability", RecoveryStage: RecoveryCooling, CooldownUntilUnix: 200, Capabilities: map[Capability]bool{CapabilityImageEdit: true}},
+		{LaneID: "size", RecoveryStage: RecoveryCooling, CooldownUntilUnix: 200, ImageSizeTiers: []string{"4K"}},
+		{LaneID: "group", RecoveryStage: RecoveryCooling, CooldownUntilUnix: 200, SourceGroup: "excluded"},
+		{LaneID: "full", RecoveryStage: RecoveryCooling, CooldownUntilUnix: 200, MaxConcurrency: 1, CurrentConcurrency: 1},
+		{LaneID: "unavailable", RecoveryStage: RecoveryModelUnavailable, CooldownUntilUnix: 200},
+	}, policy)
+	require.Empty(t, plan.OrderedLaneIDs)
+	require.Equal(t, "model_mismatch", plan.SkipReasons["model"])
+	require.Equal(t, "capability_mismatch", plan.SkipReasons["capability"])
+	require.Equal(t, "image_size_mismatch", plan.SkipReasons["size"])
+	require.Equal(t, "excluded_source_group", plan.SkipReasons["group"])
+	require.Equal(t, "lane_concurrency_full", plan.SkipReasons["full"])
+	require.Equal(t, "model_unavailable_until_calibration", plan.SkipReasons["unavailable"])
+}

@@ -1,0 +1,74 @@
+STREAM TERMINAL / CANCELLATION PATCH PROVENANCE
+Checked 2026-10-17 against official main b0a02a3304a0a78cdd003ddda1dd23ba02c03084.
+Audit base: meta-xucong/sub2api-adapted 2bedb713.
+
+SOURCE COMPARISON
+The fork's restoration commit 6d47306 is not evidence that every restored file is fork-owned. Comparison against the official Git tree establishes:
+- scanCCStream and sendCCUpstreamRequest: function bodies identical at audit base and official main.
+- streamRawChatCompletions and handleCCStreamingFromNativeAnthropic: function bodies identical.
+- FinalizeChatCompletionsResponsesStream: function body identical.
+- openai_raw_stream_truncation.go: whole blob identical, 56a1739fb4031a01a98b0c6e0fcec3b5c8ca8aab.
+- Gateway Anthropic-to-Chat streaming differs in heartbeat output; EOF finalization vulnerability is shared.
+- Chat-to-Responses fallback source differs due to fork continuation persistence, explicit failure serialization, and [DONE]-only guard. Those fork features remain preserved, while finish_reason + clean EOF is accepted safely.
+- Other fork deltas (upstream endpoint tracking and stable output item IDs) are outside the repaired defect and remain intact.
+
+OFFICIAL MERGED WORK / REUSE
+https://github.com/Wei-Shaw/sub2api/pull/7303
+Merged public HTTP response-body lifecycle fix. Cancel the per-request transport context before closing the underlying body, preserving detached usage draining. Current repository already includes that wrapper. Our bounded scanner closes that managed response body and does not replace the shared HTTP transport.
+https://github.com/Wei-Shaw/sub2api/issues/7301
+Closed issue with HTTP/1 concurrent early-close reproduction and connection-reuse tests; explains why body cancellation ownership must remain live until Close.
+https://github.com/Wei-Shaw/sub2api/pull/6473
+Official terminal-event termination work: recognized protocol terminal events should not require transport EOF. Anthropic conversion stops at valid message_stop; raw CC stops at [DONE].
+https://github.com/Wei-Shaw/sub2api/pull/5154
+Observed partial native Anthropic usage contract, already present as ClaudeUsage.hasObservedTokens / partialStreamUsageResult. Applied to adapted Anthropic-to-Chat error results: nonzero metered usage survives failure; no usage produces nil result. A failover does not carry a billable partial result.
+
+PUBLIC GAP REPORTS / UNMERGED CANDIDATES
+https://github.com/Wei-Shaw/sub2api/issues/7274
+Open compatibility report describes Chat-to-Responses terminal mapping, finish_reason EOF compatibility, explicit errors, and length -> response.incomplete.
+https://github.com/Wei-Shaw/sub2api/issues/7876
+Open report pinpoints the length event/status mismatch and Anthropic-to-Chat synthetic completion after read errors/missing terminal events. The report appropriately does not claim an end-to-end provider cause without raw SSE evidence.
+https://github.com/Wei-Shaw/sub2api/pull/7791
+Open, unmerged proposal by contributor SPHINX998; head 086f1bd34eae3a19ad8bfab7988c7ccbc22cf3fb. No reviews or comments at inspection. GitHub check runs test, golangci-lint, backend-security, frontend-security, frontend, shell and release-helpers succeeded. This is public supporting evidence, not a maintainer-approved or released fix.
+Reusable contract: message_stop required; preserve observed usage on incomplete streams; continue usage reading after failed client writes; compatibility handlers must record partial results instead of returning before billing. The Chat handler test is adapted from that candidate, scoped to the repaired Chat handler. We do not import its unrelated Responses path.
+https://github.com/Wei-Shaw/sub2api/pull/7862
+Open, unmerged proposal covers cancellation while blocked, cancellation/EOF race, handler disconnect guards, and existing native line-pump extensions. We reuse its behavioral boundaries and existing local Responses handler pattern for Chat. Its default disconnect drain is a resettable 180-second idle limit, not an absolute bound.
+https://github.com/Wei-Shaw/sub2api/pull/7962
+Open, unmerged broader delivery/consumption redesign. Not imported: it adds outcome schema and changes cancellation policy beyond this scoped repair.
+
+LOCAL ADAPTATION BOUNDARY
+The new bounded synchronous scanner is our narrowly scoped implementation, not an official merged patch. It is limited to the affected Chat conversion/raw readers. It preserves configured idle=0 for connected clients, applies an absolute five-second cancellation/write-failure drain, preserves the caller's deadline, and retains cancellation ownership through the response body. Existing native Responses users and global detachUpstreamContext semantics are unchanged. Extending the shared native line pump would change unrelated callers and still require reader lifecycle work; the synchronous scanner introduces no scanner goroutine and keeps parsing/client writes on the request goroutine.
+
+Terminal evidence is separate from usage. Valid finish_reason plus clean EOF remains accepted. Invalid finish reasons, malformed JSON, explicit JSON or SSE error events, interrupted reads, and unfinished observed raw multi-choice streams cannot synthesize completion. Converted Messages/Responses adapters explicitly reject multi-choice input that their single-response protocol cannot faithfully represent. Raw multi-choice streams remain supported when every observed choice finishes.
+
+Tests use local synthetic bodies, pipes and handler fakes only. No production configuration, deployment, push, credentials, or paid provider requests are involved. Final test results are recorded separately; this provenance record is not a claim that tests have passed.
+
+FORK-OWNED SMART ROUTER CORRECTION
+backend/internal/service/smart_router_runtime.go is absent from official main and was introduced by fork commit ab4fa541c (Restore Phase 2 Smart Router adaptation). Its text reporter ran before handler cancellation guards, so a canceled client with an incomplete stream could reduce provider health and trigger cooldown. The minimal correction passes the request context at the two production text-report call sites and centrally excludes canceled requests / ClientDisconnect results. Real upstream failures for still-connected clients retain existing penalties. No routing algorithm, weights, persistent schema, image/compact reporting, or unrelated native Responses reader changes were made.
+
+VALIDATION RECEIPTS SO FAR
+- Initial combined service run compiled successfully and ran 195 top-level selections. Four stream assertions failed: empty-timeout result expectation, missing message_stop in a compact positive fixture, and two assertions reading upstream request context only after response Close. These were examined and corrected without removing negative tests.
+- The empty timeout now requires nil result (official observed-usage contract), with a new metered message_start followed by a hanging body requiring partial usage plus timeout error.
+- Raw request-context fixtures now explicitly observe a live context during consumption and require canceled context after Close. This verifies drain lifetime and cleanup instead of retaining a context after its owner finishes.
+- The apicompat length-limited tool-call test now requires response.incomplete plus max_output_tokens and rejects response.completed. The complete apicompat package rerun passed.
+- A second focused test command was interrupted by request (exit 130) before results to avoid parallel/redundant compilation. The final full backend unit gate is recorded in the acceptance receipt. No successful final service/handler run is claimed here yet.
+
+FINAL SCOPE / COMPATIBILITY CORRECTIONS (2026-10-17)
+- Removed discretionary duplicate tool-argument accumulators and their stricter final-JSON policy. Existing converters retain their prior validation. The half-tool negative fixture now genuinely lacks message_stop, matching the publicly reported missing-terminal defect.
+- Raw passthrough validation and terminal observation reuse the existing official openAICompatSSEFrameParser from openai_gateway_response_handling.go (also present in official main). Joined data is observed without rewriting the forwarded provider lines; valid multiline JSON remains accepted. Accumulated data-frame bytes are capped by existing MaxLineSize/default, without new configuration. Standalone [DONE] still terminates immediately, including a missing final blank line. Converted adapters' existing line handling is outside this compatibility repair.
+- Added raw multiline success (exact forwarded bytes), multiline explicit-error, frame accumulation limit, and unfinished-multi-choice no-[DONE] assertions.
+- The first full unit run exposed a positive tool-call fixture with incorrectly double-escaped JSON. Corrected its raw-string escaping and added json.Valid assertions; no negative malformed-input case was removed.
+- The Smart Router handler positive control now asserts actual health penalty, failure count, cooldown and health score from its enabled router ledger. The unrelated legacy scheduler was disabled in that fixture, so its zero runtime count was not a valid positive control. Cancellation still requires an empty router ledger, exactly one usage record, and no replay.
+
+RAW FRAME BOUNDARY REVIEW AND FOCUSED GATE
+Independent review found three boundary regressions introduced by the initial frame-parser adaptation; all were corrected before final acceptance:
+- EOF observation now releases eligible buffered content/tool/usage bytes before deciding whether replay is safe, while canceled clients retain usage without writes. Observed metering also prevents a nil-result retryable truncation.
+- Errors close only an actually emitted unfinished SSE frame before the handler appends its terminal error; withheld refusal content is not released for this cleanup.
+- Actual data-line presence is recorded independently, so empty/whitespace data frames cannot use the non-SSE clean-EOF exemption.
+Added EOF/read-error x blank/nonblank x content/tool/usage cases, canceled buffered EOF, empty frames, malformed/error/oversized frame boundaries, successful finish_reason EOF byte preservation, and genuine withheld unmetered/silent-refusal retry compatibility.
+Focused service + handler run completed 2026-10-17 20:32:31 UTC with exit 0: 59 top-level tests / 191 named tests passed, no failures or skips. Receipt: stream-final-focused-tests.log. This includes existing raw CC/refusal/usage tests, Anthropic conversion checks, scanner lifetime, Smart Router cancellation, and partial-usage handler tests. Full-suite and lint gates are recorded separately.
+
+FINAL VALIDATION UPDATE
+Parent's unit-local aggregate gate completed 2026-10-17 20:39:36 UTC with exit 0 and 60 passing packages. Its environment exclusions and existing skips are recorded in the parent's final gate report; this is not an unrestricted CI result.
+The only subsequent stream source edits add the lowercase prefix "upstream " to two Anthropic diagnostic strings flagged by ST1005. No conditions, returned error categories, or protocol behavior changed. Focused Anthropic conversion tests then passed at 20:45:19 UTC: 9 top-level / 41 named cases, zero failures/skips (stream-lint-diagnostic-tests.log). Remaining aggregate lint findings and rerun results are recorded by the parent, not suppressed here.
+Final gateway_bounded_sse.go SHA256: 53d7ca503615c8a5f29e124de2668b907bb806e6cdfbaee16aefa42f552e7d73.
+Independent exact-delta raw review passed; verified raw reader SHA256 798b271c52a53464381a4a33547ea2db933255aa4fe5e4f99f1cca76efeb5af8 and regression-test SHA256 ac247add538f46474bb20c1b01635343664c0225fcccc61f71f59c4a2461ff5a.

@@ -3636,7 +3636,9 @@ func TestExtractOpenAISSEDataLine(t *testing.T) {
 	}{
 		{name: "标准格式", line: `data: {"type":"x"}`, wantData: `{"type":"x"}`, wantOK: true},
 		{name: "无空格格式", line: `data:{"type":"x"}`, wantData: `{"type":"x"}`, wantOK: true},
-		{name: "纯空数据", line: `data:   `, wantData: ``, wantOK: true},
+		{name: "只移除一个空格", line: `data:   `, wantData: `  `, wantOK: true},
+		{name: "无冒号空数据", line: `data`, wantData: ``, wantOK: true},
+		{name: "保留制表符", line: "data:\tvalue", wantData: "\tvalue", wantOK: true},
 		{name: "非 data 行", line: `event: message`, wantData: ``, wantOK: false},
 	}
 
@@ -3865,9 +3867,9 @@ func TestHandlePassthroughSSEToJSON_PreservesProgressiveUsageWhenTerminalIsParti
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.NotNil(t, result.OpenAIUsage)
-	require.Equal(t, 21, result.OpenAIUsage.InputTokens)
-	require.Equal(t, 5, result.OpenAIUsage.OutputTokens)
-	require.Equal(t, 7, result.OpenAIUsage.CacheReadInputTokens)
+	require.Equal(t, 21, result.InputTokens)
+	require.Equal(t, 5, result.OutputTokens)
+	require.Equal(t, 7, result.CacheReadInputTokens)
 }
 
 func TestHandleNonStreamingResponse_APIKeyFallsBackToSSEBodyWhenContentTypeIsWrong(t *testing.T) {

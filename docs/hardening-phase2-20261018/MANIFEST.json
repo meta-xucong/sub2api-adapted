@@ -1,0 +1,22 @@
+{
+  "design_source_commit": "e5b9bfbe91c4939befae1278d57141c6fbbbe6a7",
+  "production_code_commit": "09305f4ff35d3cd25f503ef2813dbcd977874add",
+  "test_cleanup_commit": "57a5c6c78c34e895286f8db1325efbedc7728e7a",
+  "document_review": "PASS-final-content-review",
+  "historical_design_review": "PASS-design-only",
+  "implementation_status": "IMPLEMENTED",
+  "validation_status": "COMPLETED_LOCAL_CHECKS_WITH_KNOWN_LINT_FAILURE_AND_OPEN_EXTERNAL_GATES",
+  "release_status": "HOLD",
+  "files": {
+    "00_DECISION_AND_SCOPE.md": "309832f92491f523b05eabe6c878cab0f7aee38263f49adc4cd1ea489357493c",
+    "01_FINDING_LEDGER.md": "780f27c7bdf7cd6604d978224b1c454b9893ff6d6105140559fc0e751bf4c9fe",
+    "02_MINIMAL_DESIGN.md": "adf4516b33855351b615ae98d34b686d02c8b91cc74fc5872ff5dbdc9ba2861f",
+    "03_TEST_MATRIX.md": "8db23083e930a06eadb8ad927dad531c7792764a85faa880e38c97b562f45ec8",
+    "04_EXECUTION_AND_RELEASE.md": "1eb469c7b87b0b9e16cc4c8c5af674dce53dd490f4781dbbe9bf71e44d56f13a",
+    "05_DECISIONS_AND_REVIEW.md": "f5d5e35499a136f40e3b2e9cf336a18d766dfd4ca164c3a228bc58eea51d6809",
+    "06_IMPLEMENTATION_RECEIPT.md": "7b0fd244e09ae1976e1952e5fc432671b68a4e226c2b55b61e13f453b855181b",
+    "07_OAUTH_DEADLINE_ADDENDUM.md": "908e2e5641bafc8bccc6e3b36a2f0c4233a56ab9cf406e8c6289b78bdedba512",
+    "08_HANDOFF_AND_OPEN_GATES.md": "4d32c2f8a759fc37ff1db7c7ba7fe2d1f0bf1f37add0adfaf3539bdbc559ef33",
+    "F10_MEDIA_PREVIEW_CSP.md": "c1a12b4684d9da4410f1f4c2054f0f44e2e06d4073869c49a3e0f693ffc01136"
+  }
+}

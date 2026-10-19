@@ -61,7 +61,17 @@ func TestAnthropicChatStreamAuthoritativeUsage(t *testing.T) {
 						if adapter == "native" {
 							svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
 							result, err := svc.forwardChatCompletionsViaNativeAnthropic(context.Background(), c, nativeAnthropicTestAccount(), body, "")
-							require.NoError(t, err)
+							if terminal == "eof" {
+								require.Error(t, err, "missing message_stop must not synthesize completion")
+								require.NotContains(t, rec.Body.String(), "[DONE]")
+								if tc.billableInput+tc.output+tc.cached+tc.created == 0 {
+									require.Nil(t, result)
+									return
+								}
+								require.NotNil(t, result)
+							} else {
+								require.NoError(t, err)
+							}
 							require.Equal(t, upstream.lastReq.URL.Path, GetActualOpenAIUpstreamEndpoint(c))
 							require.Equal(t, tc.totalInput, result.Usage.InputTokens)
 							require.Equal(t, tc.output, result.Usage.OutputTokens)
@@ -71,11 +81,24 @@ func TestAnthropicChatStreamAuthoritativeUsage(t *testing.T) {
 							svc := &GatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
 							account := &Account{ID: 1, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Credentials: map[string]any{"api_key": "sk-test"}}
 							result, err := svc.ForwardAsChatCompletions(context.Background(), c, account, body, nil)
-							require.NoError(t, err)
+							if terminal == "eof" {
+								require.Error(t, err, "missing message_stop must not synthesize completion")
+								require.NotContains(t, rec.Body.String(), "[DONE]")
+								if tc.billableInput+tc.output+tc.cached+tc.created == 0 {
+									require.Nil(t, result)
+									return
+								}
+								require.NotNil(t, result)
+							} else {
+								require.NoError(t, err)
+							}
 							require.Equal(t, tc.billableInput, result.Usage.InputTokens)
 							require.Equal(t, tc.output, result.Usage.OutputTokens)
 							require.Equal(t, tc.cached, result.Usage.CacheReadInputTokens)
 							require.Equal(t, tc.created, result.Usage.CacheCreationInputTokens)
+						}
+						if terminal == "eof" {
+							return
 						}
 						count, done := 0, 0
 						var last *apicompat.ChatCompletionsChunk

@@ -38,6 +38,10 @@ func (s *OpenAIGatewayService) ForwardGrokVoice(ctx context.Context, c *gin.Cont
 	if account.Platform != PlatformGrok {
 		return nil, fmt.Errorf("account platform %s is not supported for grok voice", account.Platform)
 	}
+	// Validate the raw custom ID before any endpoint normalization.
+	if strings.HasPrefix(endpoint, "custom-voices/") && !ValidGrokCustomVoiceID(strings.Split(endpoint, "/")[1]) {
+		return nil, ErrGrokVoiceNotFound
+	}
 	endpoint = strings.Trim(strings.TrimSpace(endpoint), "/")
 	parts := strings.Split(endpoint, "/")
 	baseEndpoint := parts[0]
@@ -56,6 +60,9 @@ func (s *OpenAIGatewayService) ForwardGrokVoice(ctx context.Context, c *gin.Cont
 		if part == "" || part == "." || part == ".." || strings.ContainsAny(part, "?#\\") {
 			return nil, fmt.Errorf("invalid grok voice endpoint path")
 		}
+	}
+	if err := s.authorizeGrokVoiceForward(ctx, c, account, endpoint, body); err != nil {
+		return nil, err
 	}
 	token, _, err := s.getRequestCredential(ctx, c, account)
 	if err != nil {
@@ -99,12 +106,24 @@ func (s *OpenAIGatewayService) ForwardGrokVoice(ctx context.Context, c *gin.Cont
 		return nil, s.handleOpenAIUpstreamTransportError(ctx, c, account, err, false)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	// A prior upstream delete may have succeeded while the tombstone write failed.
+	if resp.StatusCode == http.StatusNotFound && method == http.MethodDelete && strings.HasPrefix(endpoint, "custom-voices/") {
+		if err := s.persistGrokVoiceResponse(ctx, c, account, endpoint, nil); err != nil {
+			return nil, err
+		}
+		c.JSON(http.StatusOK, gin.H{"deleted": true})
+		return &OpenAIForwardResult{}, nil
+	}
 	if resp.StatusCode >= 400 {
 		return s.handleGrokMediaErrorResponse(ctx, resp, c, account, resp.Header.Get("x-request-id"), endpoint)
 	}
 	data, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
 	if err != nil {
 		return nil, err
+	}
+	// Ownership is durable before the new identifier becomes visible downstream.
+	if err := s.persistGrokVoiceResponse(ctx, c, account, endpoint, data); err != nil {
+		return nil, fmt.Errorf("custom voice persistence failed")
 	}
 	writeGrokMediaResponse(c, resp, data, s.responseHeaderFilter)
 	audioUsage := estimateGrokVoiceAudioUsage(baseEndpoint, body, contentType, data, time.Since(started))
@@ -138,7 +157,10 @@ func (s *OpenAIGatewayService) ProxyGrokRealtime(ctx context.Context, c *gin.Con
 	return s.ProxyGrokRealtimeConn(ctx, c, client, upstream)
 }
 
-type GrokRealtimeUpstream struct{ conn openAIWSClientConn }
+type GrokRealtimeUpstream struct {
+	conn    openAIWSClientConn
+	account *Account
+}
 
 // GrokRealtimeDialError preserves an HTTP status returned before WebSocket
 // upgrade so handlers can apply the normal Grok account policy.
@@ -186,7 +208,7 @@ func (s *OpenAIGatewayService) OpenGrokRealtime(ctx context.Context, account *Ac
 	if err != nil {
 		return nil, &GrokRealtimeDialError{StatusCode: status, Err: err}
 	}
-	return &GrokRealtimeUpstream{conn: conn}, nil
+	return &GrokRealtimeUpstream{conn: conn, account: account}, nil
 }
 
 // HandleGrokRealtimeUpstreamError applies the shared Grok account policy to a
@@ -238,13 +260,32 @@ func (s *OpenAIGatewayService) ProxyGrokRealtimeConn(ctx context.Context, c *gin
 			if kind != coderws.MessageText && kind != coderws.MessageBinary {
 				continue
 			}
-			if grokRealtimeEventHasAudio(msg) {
-				audioObserved.Store(true)
-			}
 			var raw json.RawMessage
 			if unmarshalErr := json.Unmarshal(msg, &raw); unmarshalErr != nil {
-				errCh <- fmt.Errorf("invalid realtime event: %w", unmarshalErr)
+				if writeErr := writeGrokRealtimeVoiceError(ctx, client); writeErr != nil {
+					errCh <- writeErr
+					return
+				}
+				continue
+			}
+			if upstream.account == nil {
+				errCh <- fmt.Errorf("realtime account identity unavailable")
 				return
+			}
+			// Gin contexts are pooled after the handler returns. Do not retain
+			// the HTTP handshake context or its expired credential budget.
+			if err := s.validateGrokVoiceIDs(ctx, nil, upstream.account, msg); err != nil {
+				// Reject this event without ending an already billable session.
+				if writeErr := writeGrokRealtimeVoiceError(ctx, client); writeErr != nil {
+					errCh <- writeErr
+					return
+				}
+				continue
+			}
+			// Preserve accepted-client-audio semantics, but never observe a
+			// malformed or unauthorized event rejected above.
+			if grokRealtimeEventHasAudio(msg) {
+				audioObserved.Store(true)
 			}
 			if writeErr := conn.WriteJSON(ctx, raw); writeErr != nil {
 				errCh <- writeErr
@@ -399,4 +440,8 @@ func estimateGrokVoiceAudioUsage(endpoint string, reqBody []byte, contentType st
 	default:
 		return nil
 	}
+}
+
+func writeGrokRealtimeVoiceError(ctx context.Context, client *coderws.Conn) error {
+	return client.Write(ctx, coderws.MessageText, []byte(`{"type":"error","error":{"type":"invalid_request_error","code":"voice_not_available","message":"Voice configuration is not available"}}`))
 }

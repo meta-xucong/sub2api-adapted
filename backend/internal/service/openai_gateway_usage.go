@@ -134,7 +134,7 @@ func openAIUsagePricingAt(input *OpenAIRecordUsageInput) time.Time {
 
 func openAIUnifiedGatewayRouteTokenPricingEligible(ctx context.Context, result *OpenAIForwardResult, cost *CostBreakdown, apiKey *APIKey, pricingAt time.Time, accountID int64, billingModel string) bool {
 	if result == nil || cost == nil ||
-		result.ImageCount != 0 || result.VideoCount != 0 || result.WebSearchCalls != 0 ||
+		result.ImageRequest || result.ImageCount != 0 || result.VideoCount != 0 || result.WebSearchCalls != 0 ||
 		result.AudioUsage != nil || result.SearchCount != 0 || !flatUnifiedGatewayServiceTier(result.ServiceTier) ||
 		unifiedGatewayTokenBasePriceHasDynamicGroupPeak(apiKey, pricingAt) ||
 		(result.ReasoningEffort != nil && strings.TrimSpace(*result.ReasoningEffort) != "") {
@@ -298,7 +298,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		input.BillingModelSource,
 		result.UpstreamResponseModel,
 		result.UpstreamResponseModelConflict,
-		result.ImageCount > 0 || result.VideoCount > 0 || result.WebSearchCalls > 0 ||
+		result.ImageRequest || result.ImageCount > 0 || result.VideoCount > 0 || result.WebSearchCalls > 0 ||
 			result.AudioUsage != nil || result.SearchCount > 0,
 	); responseModel != "" && !strings.EqualFold(responseModel, baselineBillingModel) {
 		if identified, responseChannelPriced := s.hasIdentifiedOpenAIResponsePricing(ctx, responseModel, apiKey); identified {
@@ -479,7 +479,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	}
 	if isVideoUsage && (cost == nil || cost.BillingMode != string(BillingModeToken)) {
 		usageLog.RateMultiplier = videoMultiplier
-	} else if result.ImageCount > 0 && (cost == nil || cost.BillingMode != string(BillingModeToken)) {
+	} else if (result.ImageRequest || result.ImageCount > 0) && (cost == nil || cost.BillingMode != string(BillingModeToken)) {
 		usageLog.RateMultiplier = imageMultiplier
 	} else {
 		usageLog.RateMultiplier = multiplier
@@ -504,7 +504,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	} else if isVideoUsage {
 		billingMode := string(BillingModeVideo)
 		usageLog.BillingMode = &billingMode
-	} else if result.ImageCount > 0 {
+	} else if result.ImageRequest || result.ImageCount > 0 {
 		billingMode := string(BillingModeImage)
 		usageLog.BillingMode = &billingMode
 	} else {
@@ -609,27 +609,6 @@ func openAILongContextBillingGate(account *Account) *bool {
 	return &enabled
 }
 
-func (s *OpenAIGatewayService) calculateOpenAIRecordUsageCost(
-	ctx context.Context,
-	result *OpenAIForwardResult,
-	apiKey *APIKey,
-	billingModels []string,
-	multiplier float64,
-	imageMultiplier float64,
-	videoMultiplier float64,
-	webSearchMultiplier float64,
-	tokens UsageTokens,
-	serviceTier string,
-	longContextBillingGate *bool,
-	pricingAt time.Time,
-) (*CostBreakdown, error) {
-	cost, _, err := s.calculateOpenAIRecordUsageCostWithModel(
-		ctx, result, apiKey, billingModels, multiplier, imageMultiplier, videoMultiplier,
-		webSearchMultiplier, tokens, serviceTier, longContextBillingGate, pricingAt,
-	)
-	return cost, err
-}
-
 func (s *OpenAIGatewayService) calculateOpenAIRecordUsageCostWithModel(
 	ctx context.Context,
 	result *OpenAIForwardResult,
@@ -673,7 +652,7 @@ func (s *OpenAIGatewayService) calculateOpenAIRecordUsageCostWithModel(
 		return s.billingService.CalculateAudioCost(result.AudioUsage.Mode, result.AudioUsage.DurationOrUnits, cfg, webSearchMultiplier), billingModel, nil
 	}
 
-	if result != nil && result.ImageCount > 0 {
+	if result != nil && (result.ImageRequest || result.ImageCount > 0) {
 		// 渠道定价为 token 计费时走 token 路径，否则走图片计费
 		if resolved := s.resolveOpenAIChannelPricing(ctx, billingModel, apiKey); resolved == nil || resolved.Mode != BillingModeToken {
 			return s.calculateOpenAIImageCost(ctx, billingModel, apiKey, result, imageMultiplier), billingModel, nil
@@ -821,6 +800,12 @@ func (s *OpenAIGatewayService) calculateOpenAIImageCost(
 	result *OpenAIForwardResult,
 	multiplier float64,
 ) *CostBreakdown {
+	// Unified per-request pricing defaults nonpositive counts to one. Never let
+	// a failed image generation invent a billable delivery. Observed token usage
+	// is still recorded, and explicit token pricing is handled by the caller.
+	if result == nil || result.ImageCount <= 0 {
+		return &CostBreakdown{BillingMode: string(BillingModeImage)}
+	}
 	sizeTier := NormalizeImageBillingTierOrDefault(result.ImageSize)
 	resolved := s.resolveOpenAIChannelPricing(ctx, billingModel, apiKey)
 	if resolved != nil && resolved.Source == PricingSourceGroup &&

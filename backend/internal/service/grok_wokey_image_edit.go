@@ -8,6 +8,7 @@ import (
 	"image"
 	_ "image/jpeg"
 	_ "image/png"
+	"io"
 	"mime"
 	"mime/multipart"
 	"net/textproto"
@@ -54,8 +55,8 @@ func isWokeyGrokImageEdit(account *Account, endpoint GrokMediaEndpoint) bool {
 // Grok image-edit endpoint. Its input must already have passed Sub2API's
 // generic normalization, model mapping, and request sanitization.
 func prepareWokeyGrokImageEditBody(body []byte) ([]byte, string, error) {
-	if !gjson.ValidBytes(body) {
-		return nil, "", wokeyGrokImageEditInputErrorf("Wokey Grok image edit requires a normalized JSON request")
+	if err := validateWokeyGrokImageEditJSON(body); err != nil {
+		return nil, "", err
 	}
 
 	imageURL, err := wokeyGrokImageEditSourceURL(body)
@@ -103,6 +104,68 @@ func prepareWokeyGrokImageEditBody(body []byte) ([]byte, string, error) {
 		return nil, "", fmt.Errorf("finish Wokey Grok image edit multipart body: %w", err)
 	}
 	return output.Bytes(), writer.FormDataContentType(), nil
+}
+
+// validateWokeyGrokImageEditJSON prevents the audit's gjson projection and the
+// multipart adapter's encoding/json projection from choosing different values.
+// It only reads tokens: decoded names are compared within each object, without
+// normalizing case/Unicode or reserializing the request. Completed objects release
+// their key sets; space is bounded by the existing request-body limit.
+func validateWokeyGrokImageEditJSON(body []byte) error {
+	// Valid also preserves encoding/json's syntax and maximum nesting checks;
+	// Decoder.Token alone does not apply the decoder's nested-value depth limit.
+	if !json.Valid(body) {
+		return wokeyGrokImageEditInputErrorf("Wokey Grok image edit requires a valid JSON object")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	first, err := decoder.Token()
+	if err != nil || first != json.Delim('{') {
+		return wokeyGrokImageEditInputErrorf("Wokey Grok image edit requires a JSON object")
+	}
+	type objectFrame struct {
+		keys      map[string]struct{} // nil for arrays
+		expectKey bool
+	}
+	stack := []objectFrame{{keys: make(map[string]struct{}), expectKey: true}}
+	for len(stack) > 0 {
+		token, err := decoder.Token()
+		if err != nil {
+			return wokeyGrokImageEditInputErrorf("Wokey Grok image edit requires a valid JSON object")
+		}
+		frame := &stack[len(stack)-1]
+		if delimiter, ok := token.(json.Delim); ok && (delimiter == '}' || delimiter == ']') {
+			stack[len(stack)-1] = objectFrame{}
+			stack = stack[:len(stack)-1]
+			continue
+		}
+		if frame.keys != nil && frame.expectKey {
+			key, ok := token.(string)
+			if !ok {
+				return wokeyGrokImageEditInputErrorf("Wokey Grok image edit requires a valid JSON object")
+			}
+			if _, duplicate := frame.keys[key]; duplicate {
+				// Keys can contain user data too; do not echo them in the error.
+				return wokeyGrokImageEditInputErrorf("Wokey Grok image edit does not support duplicate JSON object keys")
+			}
+			frame.keys[key] = struct{}{}
+			frame.expectKey = false
+			continue
+		}
+		frame.expectKey = true
+		if delimiter, ok := token.(json.Delim); ok {
+			switch delimiter {
+			case '{':
+				stack = append(stack, objectFrame{keys: make(map[string]struct{}), expectKey: true})
+			case '[':
+				stack = append(stack, objectFrame{})
+			}
+		}
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		return wokeyGrokImageEditInputErrorf("Wokey Grok image edit requires a single JSON object")
+	}
+	return nil
 }
 
 func wokeyGrokImageEditSourceURL(body []byte) (string, error) {
@@ -245,12 +308,12 @@ func isWokeyGrokImageEditFieldName(name string) bool {
 		return false
 	}
 	first := name[0]
-	if !((first >= 'A' && first <= 'Z') || (first >= 'a' && first <= 'z') || first == '_') {
+	if (first < 'A' || first > 'Z') && (first < 'a' || first > 'z') && first != '_' {
 		return false
 	}
 	for _, char := range name[1:] {
-		if !((char >= 'A' && char <= 'Z') || (char >= 'a' && char <= 'z') ||
-			(char >= '0' && char <= '9') || char == '_' || char == '-') {
+		if (char < 'A' || char > 'Z') && (char < 'a' || char > 'z') &&
+			(char < '0' || char > '9') && char != '_' && char != '-' {
 			return false
 		}
 	}

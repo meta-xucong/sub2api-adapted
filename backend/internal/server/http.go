@@ -40,6 +40,7 @@ func ProvideRouter(
 	subscriptionService *service.SubscriptionService,
 	opsService *service.OpsService,
 	settingService *service.SettingService,
+	userService *service.UserService,
 	compositeResolver *service.CompositeRouteResolver,
 	redisClient *redis.Client,
 ) *gin.Engine {
@@ -87,7 +88,7 @@ func ProvideRouter(
 		service.SetWebSearchManager(websearch.NewManager(configs, redisClient))
 	})
 
-	return SetupRouter(r, handlers, jwtAuth, optionalJWTAuth, adminAuth, apiKeyAuth, auditLog, stepUpAuth, apiKeyService, subscriptionService, opsService, settingService, compositeResolver, cfg, redisClient)
+	return SetupRouter(r, handlers, jwtAuth, optionalJWTAuth, adminAuth, apiKeyAuth, auditLog, stepUpAuth, apiKeyService, subscriptionService, opsService, settingService, userService, compositeResolver, cfg, redisClient)
 }
 
 func configureTrustedProxies(r *gin.Engine, cfg config.ServerConfig) {
@@ -136,12 +137,20 @@ func ProvideHTTPServer(cfg *config.Config, router *gin.Engine) *http.Server {
 	// 根据配置决定是否启用 H2C
 	if cfg.Server.H2C.Enabled {
 		h2cConfig := cfg.Server.H2C
+		// Keep the wrapper: Go 1.27 HTTP2Config cannot express an HTTP/2 idle
+		// timeout distinct from server.IdleTimeout (the HTTP/1 policy).
+		//nolint:staticcheck // SA1019: Required to preserve independently configured HTTP/1 and HTTP/2 idle timeouts.
 		if err := http2.ConfigureServer(server, &http2.Server{
-			MaxConcurrentStreams:         h2cConfig.MaxConcurrentStreams,
-			IdleTimeout:                  time.Duration(h2cConfig.IdleTimeout) * time.Second,
-			MaxReadFrameSize:             uint32(h2cConfig.MaxReadFrameSize),
+			//nolint:staticcheck // SA1019: Configuration belongs to the required independent-idle compatibility wrapper.
+			MaxConcurrentStreams: h2cConfig.MaxConcurrentStreams,
+			//nolint:staticcheck // SA1019: Configuration belongs to the required independent-idle compatibility wrapper.
+			IdleTimeout: time.Duration(h2cConfig.IdleTimeout) * time.Second,
+			//nolint:staticcheck // SA1019: Configuration belongs to the required independent-idle compatibility wrapper.
+			MaxReadFrameSize: uint32(h2cConfig.MaxReadFrameSize),
+			//nolint:staticcheck // SA1019: Configuration belongs to the required independent-idle compatibility wrapper.
 			MaxUploadBufferPerConnection: int32(h2cConfig.MaxUploadBufferPerConnection),
-			MaxUploadBufferPerStream:     int32(h2cConfig.MaxUploadBufferPerStream),
+			//nolint:staticcheck // SA1019: Configuration belongs to the required independent-idle compatibility wrapper.
+			MaxUploadBufferPerStream: int32(h2cConfig.MaxUploadBufferPerStream),
 		}); err != nil {
 			log.Printf("Failed to configure HTTP/2 Cleartext (h2c): %v", err)
 		} else {

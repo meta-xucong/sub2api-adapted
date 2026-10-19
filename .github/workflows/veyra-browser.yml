@@ -1,0 +1,102 @@
+name: Veyra browser acceptance
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/veyra-browser.yml'
+      - 'tools/veyra-browser/**'
+      - 'backend/go.mod'
+      - 'backend/go.sum'
+      - 'backend/internal/veyra/**'
+      - 'backend/internal/config/**'
+      - 'backend/internal/server/**'
+      - 'backend/internal/service/**'
+      - 'backend/internal/pkg/redissession/**'
+      - 'frontend/**'
+      - 'extensions/veyra/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: veyra-browser-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  chromium:
+    name: Chromium local-only portal cases
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      GOMAXPROCS: '2'
+      GOFLAGS: -p=1
+      GOMEMLIMIT: 3GiB
+      GOTOOLCHAIN: local
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+    steps:
+      - name: Check out exact PR head without stored credentials
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Set up Go from the repository manifest
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: backend/go.mod
+          check-latest: false
+          cache: true
+          cache-dependency-path: backend/go.sum
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9
+      - name: Set up Node.js using the repository CI baseline
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '20'
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Install pinned browser tooling from PyPI
+        run: >-
+          python -m pip install --require-hashes --only-binary=:all:
+          -r tools/veyra-browser/requirements-ci.txt
+      - name: Install the pinned Playwright browser revision
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/veyra-playwright-browsers
+        run: python -m playwright install --with-deps chromium
+      - name: Download Go dependencies before the offline fixture phase
+        working-directory: backend
+        run: go mod download
+      - name: Install locked frontend dependencies
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+      - name: Build fresh embedded frontend assets
+        working-directory: frontend
+        run: pnpm run build
+      - name: Run 22 source-bound local-only browser cases
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/veyra-playwright-browsers
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+          RECEIPT_DIR: ${{ runner.temp }}/veyra-browser-evidence
+        run: >-
+          python tools/veyra-browser/run.py
+          --expected-sha "$EXPECTED_HEAD"
+          --output "$RECEIPT_DIR"
+      - name: Upload receipts and screenshots even on failure
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: veyra-browser-${{ github.event.pull_request.head.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/veyra-browser-evidence/*.json
+            ${{ runner.temp }}/veyra-browser-evidence/*.log
+            ${{ runner.temp }}/veyra-browser-evidence/*.png
+            ${{ runner.temp }}/veyra-browser-evidence/*.txt
+          if-no-files-found: warn
+          retention-days: 7
