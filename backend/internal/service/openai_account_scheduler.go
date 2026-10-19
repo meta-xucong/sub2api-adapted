@@ -365,6 +365,18 @@ func (b *openAISelectionProbeBudget) wasAttempted(accountID int64) bool {
 	return ok
 }
 
+// Only explicit Smart Router image selections share this budget across native,
+// sticky and last-resort passes. A nil budget preserves other native callers.
+func (s *defaultOpenAIAccountScheduler) imageSelectionProbeBudget(ctx context.Context, req OpenAIAccountScheduleRequest) *openAISelectionProbeBudget {
+	if s == nil || s.service == nil || !s.service.isSmartRouterEnabled() || req.RequiredImageCapability == "" {
+		return nil
+	}
+	if state, ok := ctx.Value(smartRouterImageSelectionKey{}).(*smartRouterImageSelectionState); ok && state != nil {
+		return state.ProbeBudget
+	}
+	return nil
+}
+
 type openAIStickyEscapeConfig struct {
 	enabled   bool
 	ttftMs    float64
@@ -544,6 +556,10 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		clearBinding()
 		return nil, false, nil
 	}
+	budget := s.imageSelectionProbeBudget(ctx, req)
+	if budget != nil && !s.consumeOpenAISelectionDBRecheck(budget) {
+		return nil, false, nil
+	}
 	account = s.service.recheckSelectedOpenAIAccountFromDB(ctx, account, req.GroupID, req.Platform, req.RequestedModel, req.RequireCompact, req.RequiredCapability)
 	if account == nil || !s.service.openAIAccountMatchesSchedulingGroup(account, req.GroupID) || !s.isAccountRequestCompatible(ctx, account, req) || !s.isAccountTransportCompatible(account, req.RequiredTransport) {
 		clearBinding()
@@ -576,7 +592,10 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		)
 		return nil, true, nil
 	}
-	result, acquireErr := s.service.tryAcquireAccountSlot(ctx, accountID, account.Concurrency)
+	result, attempted, acquireErr := s.tryAcquireOpenAIAccountSlot(ctx, accountID, account.Concurrency, budget)
+	if !attempted {
+		return nil, false, nil
+	}
 	if acquireErr != nil && req.DisableStickyEscape {
 		return nil, false, acquireErr
 	}
@@ -1325,7 +1344,7 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAIAccountSlot(
 	maxConcurrency int,
 	budget *openAISelectionProbeBudget,
 ) (*AcquireResult, bool, error) {
-	if s.service.concurrencyService != nil && maxConcurrency > 0 && !budget.recordAcquire(accountID) {
+	if s.service.concurrencyService != nil && maxConcurrency > 0 && budget != nil && !budget.recordAcquire(accountID) {
 		return nil, false, nil
 	}
 	result, err := s.service.tryAcquireAccountSlot(ctx, accountID, maxConcurrency)
@@ -1346,6 +1365,7 @@ func (s *defaultOpenAIAccountScheduler) tryFallbackToWeightedSticky(
 	if !req.StickyWeighted {
 		return nil, nil
 	}
+	budget := s.imageSelectionProbeBudget(ctx, req)
 	for _, accountID := range []int64{req.StickyPreviousAccountID, req.StickyAccountID} {
 		if accountID <= 0 {
 			continue
@@ -1361,6 +1381,9 @@ func (s *defaultOpenAIAccountScheduler) tryFallbackToWeightedSticky(
 		}
 		if !s.isAccountRequestCompatible(ctx, account, req) || !s.isAccountTransportCompatible(account, req.RequiredTransport) {
 			continue
+		}
+		if budget != nil && !s.consumeOpenAISelectionDBRecheck(budget) {
+			return nil, nil
 		}
 		account = s.service.recheckSelectedOpenAIAccountFromDB(ctx, account, req.GroupID, req.Platform, req.RequestedModel, req.RequireCompact, req.RequiredCapability)
 		if account == nil {
@@ -1397,7 +1420,10 @@ func (s *defaultOpenAIAccountScheduler) tryFallbackToWeightedSticky(
 			isGrokModelQuotaBlocked(account.ID, upstreamModel, now) {
 			continue
 		}
-		result, acquireErr := s.service.tryAcquireAccountSlot(ctx, account.ID, account.Concurrency)
+		result, attempted, acquireErr := s.tryAcquireOpenAIAccountSlot(ctx, account.ID, account.Concurrency, budget)
+		if !attempted {
+			return nil, nil
+		}
 		if acquireErr != nil {
 			return nil, acquireErr
 		}
@@ -2275,6 +2301,9 @@ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForImageOperation(
 ) (selection *AccountSelectionResult, decision OpenAIAccountScheduleDecision, err error) {
 	ctx = WithSmartRouterImageRequest(ctx, requestedModel, isEdit)
 	state := &smartRouterImageSelectionState{ProbeBudget: newOpenAISelectionProbeBudget()}
+	if s.isSmartRouterEnabled() {
+		state.ProbeBudget.enableLimit()
+	}
 	ctx = context.WithValue(ctx, smartRouterImageSelectionKey{}, state)
 	defer func() {
 		if (selection == nil || selection.Account == nil) && state.RetryAtUnix > 0 && (err == nil || errors.Is(err, ErrNoAvailableAccounts)) {

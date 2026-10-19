@@ -43,7 +43,7 @@
 4. 先尝试所有满足原生资格的正常候选，包括受管和原生可用的未受管候选、健康overflow及订阅偏好路径。只要能取得健康账号槽位或返回既有有界 `WaitPlan`，就使用该结果，不因为健康账号暂忙而抢先重试冷却线路。
 5. 只有正常容量/有界等待都未给出可用结果，才进入显式、仅图片的最后兜底阶段。`AccountSelectionResult.SmartRouterImageLastResort` 标记本次选出的单账号，handler将标记传给 `AcquireSmartRouterImageAttempt`；`RouteRequest.ImageLastResort` 与 `ImageLastResortAdmission` / `AcquireImageLastResortAdmission` 复用同一 HealthTracker、键和 token/lease，允许 `RecoveryCooling` 在原deadline前尝试。资格判定和取得lease不清除原cooldown、失败计数或stage，待真实结果再更新；这不是新的公开配置、计数器或计时策略。
 6. 最后兜底仍遵守账号启用、认证、group/model、余额/配额、profit、并发等原生过滤、每请求failed account IDs、切换次数和总/尝试预算。`RecoveryModelUnavailable` 在deadline前继续硬阻断；Cooling可能来自多种失败类，当前快照没有持久化最后failure class，故不能声称兜底仅对timeout开放，也不能假造timeout专属判断。
-7. 取得slot后、实际转发前按所选普通/最后兜底路径再次准入。取消或未转发只释放租约，保留健康状态；成功进入既有warming，失败沿现有阶梯升级。该检查不能撤销已发送的并发请求，也不宣称分布式事务原子性。
+7. 取得slot后、实际转发前按所选普通/最后兜底路径再次准入。准入拒绝的账号加入本请求既有failed account IDs并释放资源，不在同一请求中通过LR重新引入；如果这是唯一账号或所有剩余账号均被排除，本请求可以返回503。后续新请求拥有新的排除集，可在正常选项耗尽后显式LR尝试仍在Cooling的账号。取消或未转发只释放租约，保留健康状态；成功进入既有warming，失败沿现有阶梯升级。该检查不能撤销已发送的并发请求，也不宣称分布式事务原子性。
 8. 全冷却本身不是直接返回503的理由；有符合原生条件且可取得lease的Cooling线路时允许有界兜底。没有任何合格候选、租约占用、硬模型阻断或预算已耗尽时仍可按现有协议返回不可用/耗尽，不保证兜底成功。
 
 当前适配决定：advanced 关闭但 SmartRouter 图片恢复启用时使用已有 default scheduler 执行受管图片准入；不翻转全局 advanced 设置，也不改变非图片请求的调度入口。健康overflow/订阅偏好与recovering sticky顺序均须专项回归。纯图片bridge关闭或mixed Responses保持原生排序，不能因请求含图片工具而扩大图片最后兜底范围。

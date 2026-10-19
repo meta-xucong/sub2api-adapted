@@ -120,7 +120,7 @@ func RegisterRoutes(base *gin.RouterGroup, jwtAuth servermiddleware.JWTAuthMiddl
 
 	internal := group.Group("/internal")
 	internal.Use(internalTokenGuard(cfg.InternalToken))
-	internal.POST("/login-ticket/exchange", exchangeLoginTicketHandler(store))
+	internal.POST("/login-ticket/exchange", exchangeLoginTicketHandler(store, users))
 	internal.GET("/users/:user_id/account", accountSummaryHandler(users))
 	var usageReader VideoUsageReader
 	if len(usageReaders) > 0 {
@@ -194,7 +194,7 @@ func issueLoginTicketHandler(cfg RoutesConfig, store TicketStore) gin.HandlerFun
 	}
 }
 
-func exchangeLoginTicketHandler(store TicketStore) gin.HandlerFunc {
+func exchangeLoginTicketHandler(store TicketStore, users SessionUserReader) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if store == nil {
 			response.InternalError(c, "Veyra ticket service is not configured")
@@ -218,6 +218,22 @@ func exchangeLoginTicketHandler(store TicketStore) gin.HandlerFunc {
 		}
 		ticket, err := store.ConsumeAllowed(c.Request.Context(), req.Ticket, []string{PortalIntentAlchemy, PortalIntentVideo}, intent, time.Now().UTC())
 		if err != nil || ticket == nil || (ticket.Intent != PortalIntentAlchemy && ticket.Intent != PortalIntentVideo) {
+			response.Unauthorized(c, "Invalid or expired ticket")
+			return
+		}
+		// A ticket attests identity at issuance, not continuing account access.
+		// Recheck the native account after claiming; a rejected or unavailable
+		// account deliberately burns this one-use ticket and fails closed.
+		if users == nil {
+			response.InternalError(c, "Veyra account service is not configured")
+			return
+		}
+		user, err := users.GetByID(c.Request.Context(), ticket.UserID)
+		if err != nil && !errors.Is(err, service.ErrUserNotFound) {
+			response.InternalError(c, "Failed to verify ticket account")
+			return
+		}
+		if err != nil || user == nil || user.ID != ticket.UserID || !user.IsActive() {
 			response.Unauthorized(c, "Invalid or expired ticket")
 			return
 		}

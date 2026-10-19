@@ -2,6 +2,7 @@ package veyra
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -112,4 +113,87 @@ func TestRedisTicketStoreFailsClosedWithoutRedis(t *testing.T) {
 	store := NewRedisTicketStore(nil, "veyra:test-ticket", time.Minute)
 	_, err := store.Create(context.Background(), 42, "alchemy", time.Minute)
 	require.Error(t, err)
+}
+
+type ticketReadHook struct {
+	afterRead func()
+}
+
+func (h ticketReadHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+
+func (h ticketReadHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return next
+}
+
+func (h ticketReadHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		err := next(ctx, cmd)
+		if err == nil && cmd.Name() == "get" {
+			h.afterRead()
+		}
+		return err
+	}
+}
+
+func TestRedisTicketStoreRejectsLogicalExpiryBetweenReadAndClaim(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
+	t.Cleanup(func() { _ = rdb.Close() })
+	store := NewRedisTicketStore(rdb, "veyra:logical-expiry", time.Minute)
+	ticket, err := store.Create(context.Background(), 42, PortalIntentVideo, 10*time.Second)
+	require.NoError(t, err)
+	mr.SetTime(ticket.CreatedAt)
+	rdb.AddHook(ticketReadHook{afterRead: func() { mr.SetTime(ticket.ExpiresAt) }})
+	// The caller's time is valid, but Redis crosses the deadline after GET.
+	got, err := store.Consume(context.Background(), ticket.Token, PortalIntentVideo, ticket.ExpiresAt.Add(-time.Second))
+	require.ErrorIs(t, err, ErrTicketExpired)
+	require.Nil(t, got)
+	require.True(t, mr.Exists("veyra:logical-expiry:"+ticket.Token))
+	require.False(t, mr.Exists("veyra:logical-expiry:used:"+ticket.Token))
+}
+
+func TestRedisTicketStoreRejectsPayloadReplacementBetweenReadAndClaim(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
+	t.Cleanup(func() { _ = rdb.Close() })
+	store := NewRedisTicketStore(rdb, "veyra:replaced", time.Minute)
+	ticket, err := store.Create(context.Background(), 42, PortalIntentVideo, time.Minute)
+	require.NoError(t, err)
+	rdb.AddHook(ticketReadHook{afterRead: func() {
+		require.NoError(t, rdb.Set(context.Background(), "veyra:replaced:"+ticket.Token, `{"UserID":99}`, time.Minute).Err())
+	}})
+	got, err := store.Consume(context.Background(), ticket.Token, PortalIntentVideo, ticket.CreatedAt)
+	require.ErrorIs(t, err, ErrTicketInvalid)
+	require.Nil(t, got)
+	require.False(t, mr.Exists("veyra:replaced:used:"+ticket.Token))
+}
+
+func TestRedisTicketStoreClaimsOriginalJSONWithoutRemarshalling(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
+	t.Cleanup(func() { _ = rdb.Close() })
+	store := NewRedisTicketStore(rdb, "veyra:raw-json", time.Minute)
+	ticket, err := store.Create(context.Background(), 42, PortalIntentVideo, time.Minute)
+	require.NoError(t, err)
+	// Older/newer writers may use different field order or unknown fields.
+	payload := fmt.Sprintf(`{ "Extra":true, "Token":%q, "UserID":42, "Intent":"video", "ExpiresAt":%q }`,
+		ticket.Token, ticket.ExpiresAt.Format(time.RFC3339Nano))
+	require.NoError(t, rdb.Set(context.Background(), "veyra:raw-json:"+ticket.Token, payload, time.Minute).Err())
+	got, err := store.Consume(context.Background(), ticket.Token, PortalIntentVideo, ticket.CreatedAt)
+	require.NoError(t, err)
+	require.Equal(t, int64(42), got.UserID)
+}
+
+func TestRedisTicketStoreRetainsExplicitNowExpiryCheck(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
+	t.Cleanup(func() { _ = rdb.Close() })
+	store := NewRedisTicketStore(rdb, "veyra:explicit-now", time.Minute)
+	ticket, err := store.Create(context.Background(), 42, PortalIntentVideo, time.Minute)
+	require.NoError(t, err)
+	mr.SetTime(ticket.CreatedAt)
+	got, err := store.Consume(context.Background(), ticket.Token, PortalIntentVideo, ticket.ExpiresAt)
+	require.ErrorIs(t, err, ErrTicketExpired)
+	require.Nil(t, got)
+	require.False(t, mr.Exists("veyra:explicit-now:used:"+ticket.Token))
 }

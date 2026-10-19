@@ -27,7 +27,9 @@ import (
 const (
 	defaultImageMaxDownloadBytes int64 = 32 << 20 // 32 MiB
 	imageStorageMaxDimension           = 16384
-	imageStorageMaxPixels        int64 = 16 * 1024 * 1024
+	// Gemini 4K non-square outputs exceed 16 Mi pixels (up to 18,874,368).
+	// Keep a bounded envelope covering those documented outputs.
+	imageStorageMaxPixels int64 = 24 * 1024 * 1024
 )
 
 // ImageStorage 把图片字节写入对象存储并返回可访问 URL。

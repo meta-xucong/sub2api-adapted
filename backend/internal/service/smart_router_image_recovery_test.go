@@ -418,6 +418,101 @@ func TestSmartRouterImageLastResortSharesSelectionProbeBudget(t *testing.T) {
 	require.Equal(t, openAIAccountSelectionProbeLimit, budget.acquires)
 }
 
+func TestSmartRouterImageSelectionEntrypointSharesStickyProbeBudget(t *testing.T) {
+	for _, advanced := range []bool{false, true} {
+		for _, weighted := range []bool{false, true} {
+			if weighted && !advanced {
+				continue // Weighted sticky is only active with the advanced scheduler.
+			}
+			for _, capability := range []OpenAIImagesCapability{OpenAIImagesCapabilityBasic, OpenAIImagesCapabilityNative} {
+				t.Run(fmt.Sprintf("advanced=%t/weighted=%t/capability=%s", advanced, weighted, capability), func(t *testing.T) {
+					accounts := make([]Account, openAIAccountSelectionProbeLimit+1)
+					denied := make(map[int64]bool, len(accounts))
+					for i := range accounts {
+						accounts[i] = Account{ID: int64(701 + i), Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 2, Priority: i}
+						denied[accounts[i].ID] = false
+					}
+					svc := imageRecoveryTestService(t, advanced, weighted, accounts, nil)
+					svc.cfg.Gateway.Scheduling.FallbackWaitTimeout = time.Second
+					svc.cfg.Gateway.Scheduling.FallbackMaxWaiting = 3
+					var acquired []int64
+					svc.concurrencyService = NewConcurrencyService(schedulerTestConcurrencyCache{acquiredIDs: &acquired, acquireResults: denied})
+
+					selection, _, err := svc.SelectAccountWithSchedulerForImageOperation(context.Background(), nil, "sticky-a", "gpt-image-2", nil, capability, false)
+					require.NoError(t, err)
+					require.NotNil(t, selection)
+					require.False(t, selection.Acquired)
+					require.NotNil(t, selection.WaitPlan, "exhausting fast probes must retain a bounded healthy wait option")
+					require.Equal(t, time.Second, selection.WaitPlan.Timeout)
+					require.Equal(t, 3, selection.WaitPlan.MaxWaiting)
+					require.False(t, selection.SmartRouterImageLastResort)
+					require.Len(t, acquired, openAIAccountSelectionProbeLimit, "sticky escape and weighted fallback cannot add a 65th slot probe")
+				})
+			}
+		}
+	}
+}
+
+func TestSmartRouterImageStickyProbeBudgetPreservesNativePaths(t *testing.T) {
+	for _, smart := range []bool{false, true} {
+		for _, explicitImage := range []bool{false, true} {
+			for _, weighted := range []bool{false, true} {
+				for _, exhausted := range []string{"slot", "database"} {
+					t.Run(fmt.Sprintf("smart=%t/image=%t/weighted=%t/exhausted=%s", smart, explicitImage, weighted, exhausted), func(t *testing.T) {
+						accounts := imageRecoveryAccounts()
+						svc := imageRecoveryTestService(t, true, weighted, accounts, nil)
+						svc.cfg.Gateway.SmartRouter.Enabled = smart
+						byID := map[int64]*Account{accounts[0].ID: &accounts[0]}
+						repo := &upstreamCostCountingAccountRepo{accounts: byID}
+						svc.accountRepo = repo
+						svc.schedulerSnapshot = &SchedulerSnapshotService{cache: &openAISnapshotCacheStub{accountsByID: byID}}
+						var acquired []int64
+						svc.concurrencyService = NewConcurrencyService(schedulerTestConcurrencyCache{acquiredIDs: &acquired})
+						budget := newOpenAISelectionProbeBudget()
+						budget.enableLimit()
+						if exhausted == "slot" {
+							budget.acquires = openAIAccountSelectionProbeLimit
+						} else {
+							budget.rechecks = openAIAccountSelectionProbeLimit
+						}
+						ctx := WithSmartRouterImageRequest(context.Background(), "gpt-image-2", false)
+						ctx = context.WithValue(ctx, smartRouterImageSelectionKey{}, &smartRouterImageSelectionState{ProbeBudget: budget})
+						req := OpenAIAccountScheduleRequest{Platform: PlatformOpenAI, RequestedModel: "gpt-image-2", SessionHash: "sticky-a", StickyAccountID: accounts[0].ID, StickyWeighted: weighted}
+						if explicitImage {
+							req.RequiredImageCapability = OpenAIImagesCapabilityBasic
+							req.SmartRouterCapability = core.CapabilityImageGeneration
+						}
+						scheduler := &defaultOpenAIAccountScheduler{service: svc, stats: newOpenAIAccountRuntimeStats()}
+						var selection *AccountSelectionResult
+						var err error
+						if weighted {
+							selection, err = scheduler.tryFallbackToWeightedSticky(ctx, req)
+						} else {
+							selection, _, err = scheduler.selectBySessionHash(ctx, req)
+						}
+						require.NoError(t, err)
+						if smart && explicitImage {
+							require.Nil(t, selection)
+							require.Empty(t, acquired)
+							if exhausted == "database" {
+								require.Zero(t, repo.calls(), "sticky must not bypass an exhausted shared DB recheck budget")
+							}
+						} else {
+							require.NotNil(t, selection, "other native paths must ignore the image-only budget")
+							require.True(t, selection.Acquired)
+							require.Equal(t, []int64{accounts[0].ID}, acquired)
+							require.Equal(t, 1, repo.calls())
+							selection.ReleaseFunc()
+						}
+						require.LessOrEqual(t, budget.acquires, openAIAccountSelectionProbeLimit)
+						require.LessOrEqual(t, budget.rechecks, openAIAccountSelectionProbeLimit)
+					})
+				}
+			}
+		}
+	}
+}
+
 func TestSmartRouterImageRuntimeBlockRespectsPersistedNativeState(t *testing.T) {
 	for _, smart := range []bool{false, true} {
 		for _, persisted := range []bool{false, true} {

@@ -2,6 +2,8 @@ package veyra
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"strings"
 	"time"
 
@@ -57,13 +59,16 @@ func (s *RedisTicketStore) ConsumeAllowed(ctx context.Context, token string, all
 	if token == "" {
 		return nil, ErrTicketInvalid
 	}
-	var ticket LoginTicket
-	found, err := s.sessions.Get(ctx, token, &ticket)
+	payload, found, err := s.sessions.GetRaw(ctx, token)
 	if err != nil {
 		return nil, err
 	}
 	if !found {
 		return nil, ErrTicketInvalid
+	}
+	var ticket LoginTicket
+	if err := json.Unmarshal(payload, &ticket); err != nil {
+		return nil, err
 	}
 	if now.IsZero() {
 		now = time.Now().UTC()
@@ -78,7 +83,13 @@ func (s *RedisTicketStore) ConsumeAllowed(ctx context.Context, token string, all
 	if len(allowedIntents) > 0 && !portalIntentAllowed(ticket.Intent, allowedIntents) {
 		return nil, ErrTicketIntent
 	}
-	claimed, err := s.sessions.TryConsume(ctx, token)
+	claimed, err := s.sessions.TryConsumeBefore(ctx, token, payload, ticket.ExpiresAt)
+	if errors.Is(err, redissession.ErrExpired) {
+		return nil, ErrTicketExpired
+	}
+	if errors.Is(err, redissession.ErrPayloadChanged) {
+		return nil, ErrTicketInvalid
+	}
 	if err != nil {
 		return nil, err
 	}

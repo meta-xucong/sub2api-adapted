@@ -344,12 +344,80 @@ func TestImageResultUploaderUsesImageBytesInsteadOfMIME(t *testing.T) {
 
 func TestImageResultUploaderRejectsHugeGeometryWithoutPixelDecode(t *testing.T) {
 	for _, dimensions := range [][2]uint32{{32768, 1}, {8192, 8192}} {
-		data := bytes.Clone(pngBytes)
-		binary.BigEndian.PutUint32(data[16:20], dimensions[0])
-		binary.BigEndian.PutUint32(data[20:24], dimensions[1])
-		binary.BigEndian.PutUint32(data[29:33], crc32.ChecksumIEEE(data[12:29]))
+		data := imageStoragePNGHeaderDimensions(dimensions[0], dimensions[1])
 		_, err := validatedStorageImageContentType(data)
 		require.ErrorContains(t, err, "dimensions exceed")
+	}
+}
+
+// These fixtures exercise DecodeConfig's header/geometry contract only. The
+// compressed pixels remain tiny, so no test allocates a full 4K image or claims
+// to validate a complete compressed pixel stream.
+func imageStoragePNGHeaderDimensions(width, height uint32) []byte {
+	data := bytes.Clone(pngBytes)
+	binary.BigEndian.PutUint32(data[16:20], width)
+	binary.BigEndian.PutUint32(data[20:24], height)
+	binary.BigEndian.PutUint32(data[29:33], crc32.ChecksumIEEE(data[12:29]))
+	return data
+}
+
+func TestImageResultUploaderAcceptsDocumentedGemini4KGeometry(t *testing.T) {
+	// Google resolution tables, verified 2026-10-19:
+	// https://ai.google.dev/gemini-api/docs/generate-content/image-generation
+	for _, dimensions := range [][2]uint32{
+		{4096, 4096}, {2048, 8192}, {8192, 2048},
+		{1536, 12288}, {12288, 1536},
+		{3392, 5056}, {5056, 3392}, {3584, 4800}, {4800, 3584},
+		{3712, 4608}, {4608, 3712}, {3072, 5504}, {5504, 3072},
+		{6336, 2688},
+	} {
+		data := imageStoragePNGHeaderDimensions(dimensions[0], dimensions[1])
+		contentType, err := validatedStorageImageContentType(data)
+		require.NoError(t, err, "documented 4K output %dx%d", dimensions[0], dimensions[1])
+		require.Equal(t, "image/png", contentType)
+	}
+}
+
+func TestImageResultUploaderAcceptsGemini4KInEveryEncoding(t *testing.T) {
+	data := imageStoragePNGHeaderDimensions(1536, 12288)
+	b64 := base64.StdEncoding.EncodeToString(data)
+	for _, item := range []map[string]string{{"b64_json": b64}, {"url": "data:image/png;base64," + b64}, {"url": "https://public.invalid/image"}} {
+		storage := &fakeImageStorage{}
+		client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(data)), Request: req}, nil
+		})}
+		uploader := NewImageResultUploader(storage, "images/", 0, client)
+		result, err := json.Marshal(map[string]any{"data": []map[string]string{item}})
+		require.NoError(t, err)
+		out, err := uploader.Rewrite(context.Background(), "gemini4k", result)
+		require.NoError(t, err)
+		require.Len(t, storage.saved, 1)
+		require.Equal(t, data, storage.saved[0].data)
+		require.NotContains(t, string(out), "b64_json")
+	}
+}
+
+func TestImageResultUploaderGeometryBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		width, height uint32
+		allowed       bool
+	}{
+		{"pixel limit", 6144, 4096, true},
+		{"over pixel limit", 6144, 4097, false},
+		{"width limit", 16384, 1, true},
+		{"over width limit", 16385, 1, false},
+		{"height limit", 1, 16384, true},
+		{"over height limit", 1, 16385, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := validatedStorageImageContentType(imageStoragePNGHeaderDimensions(tc.width, tc.height))
+			if tc.allowed {
+				require.NoError(t, err)
+			} else {
+				require.ErrorContains(t, err, "dimensions exceed")
+			}
+		})
 	}
 }
 

@@ -123,7 +123,7 @@ type imageRecoveryHandlerFixture struct {
 	failA    bool
 }
 
-func newImageRecoveryHandlerFixture(t *testing.T, smart, advanced, oauth bool, restored []service.SmartRouterHealthState) *imageRecoveryHandlerFixture {
+func newImageRecoveryHandlerFixture(t *testing.T, smart, advanced, oauth bool, restored []service.SmartRouterHealthState, wrapSlots ...func(*grokMediaSlotsCache) service.ConcurrencyCache) *imageRecoveryHandlerFixture {
 	t.Helper()
 	service.ResetOpenAIImageSchedulerSettingsForUnitTest()
 	t.Cleanup(service.ResetOpenAIImageSchedulerSettingsForUnitTest)
@@ -140,7 +140,11 @@ func newImageRecoveryHandlerFixture(t *testing.T, smart, advanced, oauth bool, r
 	}
 	f.repo = &imagePollTimeoutAccountRepo{openAIImagesFailoverAccountRepo: openAIImagesFailoverAccountRepo{accounts: f.accounts}}
 	f.slots = &grokMediaSlotsCache{accounts: map[string]int64{}, users: map[string]int64{}}
-	concurrency := service.NewConcurrencyService(f.slots)
+	var slotCache service.ConcurrencyCache = f.slots
+	if len(wrapSlots) > 0 {
+		slotCache = wrapSlots[0](f.slots)
+	}
+	concurrency := service.NewConcurrencyService(slotCache)
 	cfg := &config.Config{RunMode: config.RunModeStandard}
 	cfg.Gateway.SmartRouter.Enabled = smart
 	cfg.Gateway.ImageConcurrency.Enabled = true
@@ -348,6 +352,60 @@ func TestImagesSmartRouterAllCoolingAndPostQueueRecheck(t *testing.T) {
 						}
 					})
 				}
+			}
+		}
+	}
+}
+
+// Every account first enters the real handler wait path. The queue callback
+// models another request cooling that exact account before this one dispatches.
+type imageRecoveryQueuedCoolingSlots struct {
+	*grokMediaSlotsCache
+	queued  map[int64]bool
+	onQueue func(int64)
+}
+
+func (s *imageRecoveryQueuedCoolingSlots) AcquireAccountSlot(ctx context.Context, id int64, limit int, request string) (bool, error) {
+	if !s.queued[id] {
+		return false, nil
+	}
+	return s.grokMediaSlotsCache.AcquireAccountSlot(ctx, id, limit, request)
+}
+
+func (s *imageRecoveryQueuedCoolingSlots) IncrementAccountWaitCount(ctx context.Context, id int64, limit int) (bool, error) {
+	allowed, err := s.grokMediaSlotsCache.IncrementAccountWaitCount(ctx, id, limit)
+	if allowed && err == nil {
+		s.queued[id] = true
+		s.onQueue(id)
+	}
+	return allowed, err
+}
+
+func TestImagesSmartRouterQueuedCoolingExclusionsRemainRequestLocal(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, advanced := range []bool{false, true} {
+		for _, edit := range []bool{false, true} {
+			for _, count := range []int{1, 2} {
+				t.Run(fmt.Sprintf("advanced=%t/edit=%t/accounts=%d", advanced, edit, count), func(t *testing.T) {
+					var slots *imageRecoveryQueuedCoolingSlots
+					f := newImageRecoveryHandlerFixture(t, true, advanced, false, nil, func(base *grokMediaSlotsCache) service.ConcurrencyCache {
+						slots = &imageRecoveryQueuedCoolingSlots{grokMediaSlotsCache: base, queued: map[int64]bool{}}
+						return slots
+					})
+					f.accounts = f.accounts[:count]
+					f.repo.accounts = f.accounts
+					f.failA = false
+					slots.onQueue = func(id int64) { f.markCooling(edit, int(id)-1) }
+					r := f.request(t, edit)
+					require.Equal(t, http.StatusServiceUnavailable, r.Code, r.Body.String())
+					require.Len(t, slots.queued, count)
+					require.Empty(t, f.calls, "every admission-denied account remains excluded for this request, including LastResort")
+					require.Len(t, f.ledger.events, count, "queue rejection itself must not create an additional health failure")
+
+					r = f.request(t, edit)
+					require.Equal(t, http.StatusOK, r.Code, r.Body.String())
+					require.Equal(t, []int64{1}, f.calls, "a new request may explicitly LastResort the still-cooling account")
+				})
 			}
 		}
 	}

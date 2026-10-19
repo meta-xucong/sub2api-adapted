@@ -131,3 +131,98 @@ func TestStoreConsumeFailsClosedOnRedisErrors(t *testing.T) {
 	require.Error(t, err)
 	require.False(t, claimed)
 }
+
+func TestStoreConsumeBeforeUsesRedisDeadlineAndExactPayload(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		offset  time.Duration
+		changed bool
+		wantErr error
+	}{
+		{name: "before deadline", offset: -time.Millisecond},
+		{name: "at deadline", wantErr: ErrExpired},
+		{name: "after deadline", offset: time.Second, wantErr: ErrExpired},
+		{name: "changed payload", offset: -time.Second, changed: true, wantErr: ErrPayloadChanged},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mr := miniredis.RunT(t)
+			rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
+			t.Cleanup(func() { _ = rdb.Close() })
+			store := New(rdb, "deadline:test", time.Minute)
+			ctx := context.Background()
+			deadline := time.Date(2026, 10, 19, 12, 0, 30, 0, time.UTC)
+			mr.SetTime(deadline.Add(-time.Second))
+			original := []byte(`{ "extra": "preserved", "state": "original" }`)
+			require.NoError(t, rdb.Set(ctx, store.dataKey("sid"), original, time.Minute).Err())
+			raw, found, err := store.GetRaw(ctx, "sid")
+			require.NoError(t, err)
+			require.True(t, found)
+			require.Equal(t, original, raw)
+			if tc.changed {
+				require.NoError(t, rdb.Set(ctx, store.dataKey("sid"), `{"state":"replacement"}`, time.Minute).Err())
+			}
+			// The payload remains physically live while its logical deadline passes.
+			mr.SetTime(deadline.Add(tc.offset))
+			claimed, err := store.TryConsumeBefore(ctx, "sid", raw, deadline)
+			if tc.wantErr != nil {
+				require.ErrorIs(t, err, tc.wantErr)
+				require.False(t, claimed)
+				require.False(t, mr.Exists(store.usedKey("sid")))
+			} else {
+				require.NoError(t, err)
+				require.True(t, claimed)
+				require.GreaterOrEqual(t, mr.TTL(store.usedKey("sid")), mr.TTL(store.dataKey("sid")))
+				claimed, err = store.TryConsumeBefore(ctx, "sid", raw, deadline)
+				require.NoError(t, err)
+				require.False(t, claimed)
+			}
+			require.True(t, mr.Exists(store.dataKey("sid")), "claim does not remove the payload")
+		})
+	}
+}
+
+func TestStoreConsumeBeforeRoundsDeadlineConservatively(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
+	t.Cleanup(func() { _ = rdb.Close() })
+	store := New(rdb, "deadline:precision", time.Minute)
+	ctx := context.Background()
+	deadline := time.Date(2026, 10, 19, 12, 0, 30, 999999, time.UTC)
+	mr.SetTime(deadline.Truncate(time.Millisecond))
+	require.NoError(t, store.Set(ctx, "sid", "test"))
+	raw, found, err := store.GetRaw(ctx, "sid")
+	require.NoError(t, err)
+	require.True(t, found)
+	claimed, err := store.TryConsumeBefore(ctx, "sid", raw, deadline)
+	require.ErrorIs(t, err, ErrExpired)
+	require.False(t, claimed)
+	require.False(t, mr.Exists(store.usedKey("sid")))
+}
+
+func TestStoreConsumeBeforeRejectsUnavailableOrUnboundedData(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
+	t.Cleanup(func() { _ = rdb.Close() })
+	store := New(rdb, "deadline:invalid", time.Minute)
+	ctx := context.Background()
+	deadline := time.Now().Add(time.Minute)
+	payload := []byte(`"test"`)
+	require.NoError(t, rdb.Set(ctx, store.dataKey("persistent"), payload, 0).Err())
+	for _, id := range []string{"missing", "persistent", " "} {
+		claimed, err := store.TryConsumeBefore(ctx, id, payload, deadline)
+		require.NoError(t, err, id)
+		require.False(t, claimed, id)
+		require.False(t, mr.Exists(store.usedKey(id)), id)
+	}
+	require.NoError(t, store.Set(ctx, "sid", "test"))
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	claimed, err := store.TryConsumeBefore(canceled, "sid", payload, deadline)
+	require.Error(t, err)
+	require.False(t, claimed)
+	require.False(t, mr.Exists(store.usedKey("sid")))
+	mr.Close()
+	claimed, err = store.TryConsumeBefore(ctx, "sid", payload, deadline)
+	require.Error(t, err)
+	require.False(t, claimed)
+}

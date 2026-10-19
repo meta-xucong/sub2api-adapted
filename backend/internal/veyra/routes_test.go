@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -82,9 +83,9 @@ func TestLoginTicketIssueAndExchange(t *testing.T) {
 		PortalEnabled:         true,
 		InternalToken:         "internal-secret",
 		LoginTicketTTLSeconds: 120,
-	}, store, nil, nil)
+	}, store, nil, &balanceAccountStub{user: &service.User{ID: 42, Status: service.StatusActive}})
 
-	issueBody := bytes.NewBufferString(`{"intent":"alchemy"}`)
+	issueBody := bytes.NewBufferString(`{"intent":"alchemy","user_id":999}`)
 	issueRec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/veyra/login-ticket", issueBody)
 	router.ServeHTTP(issueRec, req)
@@ -129,6 +130,57 @@ func TestLoginTicketIssueRejectsNonAlchemyIntent(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
+func TestLoginTicketExchangeRechecksAccountAndBurnsRejectedTicket(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		reader SessionUserReader
+		status int
+	}{
+		{name: "inactive", reader: sessionUserStub{user: &service.User{ID: 42, Status: "disabled"}}, status: http.StatusUnauthorized},
+		{name: "deleted", reader: sessionUserStub{err: service.ErrUserNotFound}, status: http.StatusUnauthorized},
+		{name: "missing", reader: sessionUserStub{}, status: http.StatusUnauthorized},
+		{name: "different user", reader: sessionUserStub{user: &service.User{ID: 99, Status: service.StatusActive}}, status: http.StatusUnauthorized},
+		{name: "lookup failed", reader: sessionUserStub{err: errors.New("synthetic database failure")}, status: http.StatusInternalServerError},
+		{name: "reader unavailable", status: http.StatusInternalServerError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := NewMemoryTicketStore()
+			ticket, err := store.Create(context.Background(), 42, PortalIntentVideo, time.Minute)
+			require.NoError(t, err)
+			router := gin.New()
+			router.POST("/exchange", exchangeLoginTicketHandler(store, tc.reader))
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/exchange", bytes.NewBufferString(`{"ticket":"`+ticket.Token+`"}`)))
+			require.Equal(t, tc.status, rec.Code)
+			require.NotContains(t, rec.Body.String(), "synthetic database failure")
+			_, err = store.Consume(context.Background(), ticket.Token, PortalIntentVideo, time.Now().UTC())
+			require.ErrorIs(t, err, ErrTicketUsed, "an account rejection must not reopen the consumed ticket")
+		})
+	}
+}
+
+func TestLoginTicketExchangeRejectsAccountDisabledAfterIssuance(t *testing.T) {
+	store := NewMemoryTicketStore()
+	accounts := &balanceAccountStub{user: &service.User{ID: 42, Status: service.StatusActive}}
+	router := gin.New()
+	RegisterRoutes(router.Group("/api"), testJWTAuth(), RoutesConfig{
+		Enabled: true, PortalEnabled: true, InternalToken: "internal-secret",
+	}, store, nil, accounts)
+	issue := httptest.NewRecorder()
+	router.ServeHTTP(issue, httptest.NewRequest(http.MethodPost, "/api/veyra/login-ticket", bytes.NewBufferString(`{"intent":"alchemy"}`)))
+	require.Equal(t, http.StatusOK, issue.Code)
+	var issued struct {
+		Data loginTicketResponse `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(issue.Body.Bytes(), &issued))
+	accounts.user.Status = "disabled"
+	exchange := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/veyra/internal/login-ticket/exchange", bytes.NewBufferString(`{"ticket":"`+issued.Data.Ticket+`"}`))
+	req.Header.Set("X-Veyra-Internal-Token", "internal-secret")
+	router.ServeHTTP(exchange, req)
+	require.Equal(t, http.StatusUnauthorized, exchange.Code)
+}
+
 func TestVeyraRoutesUseUnversionedSub2APIPaths(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	store := NewMemoryTicketStore()
@@ -140,7 +192,7 @@ func TestVeyraRoutesUseUnversionedSub2APIPaths(t *testing.T) {
 		InternalToken:         "internal-secret",
 		LoginTicketTTLSeconds: 120,
 	}
-	RegisterRoutes(api, testJWTAuth(), cfg, store, nil, nil)
+	RegisterRoutes(api, testJWTAuth(), cfg, store, nil, &balanceAccountStub{user: &service.User{ID: 42, Status: service.StatusActive}})
 
 	issueRec := httptest.NewRecorder()
 	router.ServeHTTP(issueRec, httptest.NewRequest(http.MethodPost, "/api/veyra/login-ticket", bytes.NewBufferString("{\"intent\":\"alchemy\"}")))
@@ -209,7 +261,7 @@ func TestVideoIntentIsPreservedAndPortalConfigExposesVideoBaseURL(t *testing.T) 
 		VideoBaseURL:          "https://video.aiself.vip/",
 		InternalToken:         "internal-secret",
 		LoginTicketTTLSeconds: 120,
-	}, store, nil, nil)
+	}, store, nil, &balanceAccountStub{user: &service.User{ID: 42, Status: service.StatusActive}})
 
 	issueRec := httptest.NewRecorder()
 	issueReq := httptest.NewRequest(http.MethodPost, "/api/veyra/login-ticket", bytes.NewBufferString(`{"intent":"video"}`))
@@ -224,7 +276,7 @@ func TestVideoIntentIsPreservedAndPortalConfigExposesVideoBaseURL(t *testing.T) 
 
 	exchangeRec := httptest.NewRecorder()
 	// Match the existing Video OS adapter contract: exchange sends only ticket,
-	// and the signed ticket's intent is returned by Sub2API.
+	// and the stored ticket's intent is returned by Sub2API.
 	exchangeReq := httptest.NewRequest(http.MethodPost, "/api/veyra/internal/login-ticket/exchange", bytes.NewBufferString(`{"ticket":"`+issueResp.Data.Ticket+`"}`))
 	exchangeReq.Header.Set("X-Veyra-Internal-Token", "internal-secret")
 	router.ServeHTTP(exchangeRec, exchangeReq)
@@ -252,7 +304,7 @@ func TestVideoTicketExchangeRequiresMatchingIntentWithoutConsumingTicket(t *test
 	require.NoError(t, err)
 	router := gin.New()
 	api := router.Group("/api")
-	RegisterRoutes(api, testJWTAuth(), RoutesConfig{Enabled: true, PortalEnabled: true, InternalToken: "internal-secret"}, store, nil, nil)
+	RegisterRoutes(api, testJWTAuth(), RoutesConfig{Enabled: true, PortalEnabled: true, InternalToken: "internal-secret"}, store, nil, &balanceAccountStub{user: &service.User{ID: 42, Status: service.StatusActive}})
 
 	wrongIntent := httptest.NewRecorder()
 	wrongReq := httptest.NewRequest(http.MethodPost, "/api/veyra/internal/login-ticket/exchange", bytes.NewBufferString(`{"ticket":"`+ticket.Token+`","intent":"alchemy"}`))

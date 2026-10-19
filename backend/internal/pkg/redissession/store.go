@@ -11,7 +11,11 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-var ErrNotConfigured = errors.New("redis session store not configured")
+var (
+	ErrNotConfigured  = errors.New("redis session store not configured")
+	ErrExpired        = errors.New("redis session deadline expired")
+	ErrPayloadChanged = errors.New("redis session payload changed")
+)
 
 // Store persists JSON sessions and single-use markers under one namespace.
 type Store struct {
@@ -56,27 +60,37 @@ func (s *Store) Set(ctx context.Context, id string, value any) error {
 }
 
 func (s *Store) Get(ctx context.Context, id string, dest any) (bool, error) {
+	raw, found, err := s.GetRaw(ctx, id)
+	if err != nil || !found {
+		return found, err
+	}
+	if err := json.Unmarshal(raw, dest); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// GetRaw returns the stored bytes unchanged so a later claim can be bound to
+// the exact payload the caller validated, including unknown JSON fields.
+func (s *Store) GetRaw(ctx context.Context, id string) ([]byte, bool, error) {
 	if s == nil || s.rdb == nil {
-		return false, ErrNotConfigured
+		return nil, false, ErrNotConfigured
 	}
 	id = strings.TrimSpace(id)
 	if id == "" {
-		return false, nil
+		return nil, false, nil
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	raw, err := s.rdb.Get(ctx, s.dataKey(id)).Bytes()
 	if errors.Is(err, redis.Nil) {
-		return false, nil
+		return nil, false, nil
 	}
 	if err != nil {
-		return false, err
+		return nil, false, err
 	}
-	if err := json.Unmarshal(raw, dest); err != nil {
-		return false, err
-	}
-	return true, nil
+	return raw, true, nil
 }
 
 func (s *Store) Delete(ctx context.Context, id string) error {
@@ -124,4 +138,64 @@ func (s *Store) TryConsume(ctx context.Context, id string) (bool, error) {
 	claimed, err := consumeScript.Run(ctx, s.rdb,
 		[]string{s.dataKey(id), s.usedKey(id)}, max(s.ttl.Milliseconds(), 1)).Int64()
 	return err == nil && claimed == 1, err
+}
+
+// Deadline-aware claims are separate from the existing OAuth claim contract.
+// The application validates the JSON; Lua compares its original bytes rather
+// than reparsing timestamps or trusting a payload replaced since that read.
+var consumeBeforeScript = redis.NewScript(`
+local payload = redis.call('GET', KEYS[1])
+if not payload then
+  return 0
+end
+if payload ~= ARGV[1] then
+  return -2
+end
+local remaining = redis.call('PTTL', KEYS[1])
+if remaining <= 0 then
+  return 0
+end
+local now = redis.call('TIME')
+local nowMillis = tonumber(now[1]) * 1000 + math.floor(tonumber(now[2]) / 1000)
+if nowMillis >= tonumber(ARGV[2]) then
+  return -1
+end
+local ttl = math.max(remaining, tonumber(ARGV[3]))
+if redis.call('SET', KEYS[2], '1', 'NX', 'PX', ttl) then
+  return 1
+end
+return 0
+`)
+
+// TryConsumeBefore claims the validated payload only before its logical
+// deadline, using Redis TIME in the same atomic operation as the used marker.
+// Issuers and Redis must have synchronized wall clocks. UnixMilli rounds the
+// deadline down, conservatively rejecting up to one millisecond early.
+func (s *Store) TryConsumeBefore(ctx context.Context, id string, payload []byte, deadline time.Time) (bool, error) {
+	if s == nil || s.rdb == nil {
+		return false, ErrNotConfigured
+	}
+	id = strings.TrimSpace(id)
+	if id == "" || len(payload) == 0 {
+		return false, nil
+	}
+	if deadline.IsZero() {
+		return false, ErrExpired
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	claimed, err := consumeBeforeScript.Run(ctx, s.rdb,
+		[]string{s.dataKey(id), s.usedKey(id)}, payload, deadline.UnixMilli(), max(s.ttl.Milliseconds(), 1)).Int64()
+	if err != nil {
+		return false, err
+	}
+	switch claimed {
+	case -1:
+		return false, ErrExpired
+	case -2:
+		return false, ErrPayloadChanged
+	default:
+		return claimed == 1, nil
+	}
 }
