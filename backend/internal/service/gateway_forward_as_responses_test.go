@@ -5,14 +5,16 @@ package service
 import (
 	"context"
 	"encoding/json"
-	"github.com/Wei-Shaw/sub2api/internal/config"
-	"github.com/tidwall/gjson"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/tidwall/gjson"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/gin-gonic/gin"
@@ -287,6 +289,106 @@ func TestHandleResponsesBufferedStreamingResponse_FailsWithoutAnthropicTerminal(
 	require.Error(t, err)
 	require.Equal(t, http.StatusBadGateway, rec.Code)
 	require.Contains(t, gjson.Get(rec.Body.String(), "error.message").String(), "before completion")
+	require.NotContains(t, rec.Body.String(), `"status":"completed"`)
+}
+
+func emptyAnthropicTurn(stopReason string) string {
+	return strings.Join([]string{
+		`event: message_start`,
+		`data: {"type":"message_start","message":{"id":"msg_empty","type":"message","role":"assistant","model":"claude-fable-5","content":[],"usage":{"input_tokens":58873,"output_tokens":0}}}`,
+		``,
+		`event: message_delta`,
+		`data: {"type":"message_delta","delta":{"stop_reason":"` + stopReason + `"},"usage":{"output_tokens":0}}`,
+		``,
+		`event: message_stop`,
+		`data: {"type":"message_stop"}`,
+		``,
+	}, "\n")
+}
+
+func TestHandleResponsesBufferedStreamingResponse_EmptyEndTurnFailsOver(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{"x-request-id": []string{"req_empty"}}, Body: io.NopCloser(strings.NewReader(emptyAnthropicTurn("end_turn")))}
+
+	result, err := (&GatewayService{}).handleResponsesBufferedStreamingResponse(resp, c, "claude-fable-5", "claude-fable-5", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
+	require.Error(t, err)
+	var failover *UpstreamFailoverError
+	require.ErrorAs(t, err, &failover)
+	require.Equal(t, 58873, result.Usage.InputTokens)
+	require.Equal(t, 0, result.Usage.OutputTokens)
+	require.Empty(t, rec.Body.String(), "buffered adapter must leave the response unwritten for account failover")
+}
+
+func TestHandleResponsesStreamingResponse_EmptyEndTurnEmitsFailure(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	resp := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(emptyAnthropicTurn("end_turn")))}
+
+	result, err := (&GatewayService{}).handleResponsesStreamingResponse(resp, c, "claude-fable-5", "claude-fable-5", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
+	require.Error(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 58873, result.Usage.InputTokens)
+	assertResponsesFailedTerminal(t, rec.Body.String(), "upstream_stream_error")
+	require.NotContains(t, rec.Body.String(), "event: response.completed\n")
+}
+
+func TestHandleResponsesBufferedStreamingResponse_EmptyMaxTokensRemainsIncomplete(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	resp := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(emptyAnthropicTurn("max_tokens")))}
+
+	_, err := (&GatewayService{}).handleResponsesBufferedStreamingResponse(resp, c, "claude-fable-5", "claude-fable-5", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
+	require.NoError(t, err)
+	require.Equal(t, "incomplete", gjson.Get(rec.Body.String(), "status").String())
+	require.Equal(t, "max_output_tokens", gjson.Get(rec.Body.String(), "incomplete_details.reason").String())
+}
+
+func TestHandleResponsesStreamingResponse_EmptyMaxTokensRemainsIncomplete(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	resp := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(emptyAnthropicTurn("max_tokens")))}
+
+	_, err := (&GatewayService{}).handleResponsesStreamingResponse(resp, c, "claude-fable-5", "claude-fable-5", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
+	require.NoError(t, err)
+	require.Contains(t, rec.Body.String(), `"status":"incomplete"`)
+	require.Contains(t, rec.Body.String(), `"reason":"max_output_tokens"`)
+	require.NotContains(t, rec.Body.String(), "event: response.failed\n")
+}
+
+func TestHandleResponsesStreamingResponse_EmptyRefusalEmitsFailure(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	resp := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(emptyAnthropicTurn("refusal")))}
+
+	_, err := (&GatewayService{}).handleResponsesStreamingResponse(resp, c, "claude-fable-5", "claude-fable-5", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
+	require.Error(t, err)
+	assertResponsesFailedTerminal(t, rec.Body.String(), "upstream_stream_error")
+	require.Contains(t, rec.Body.String(), "refused the request")
+	require.NotContains(t, rec.Body.String(), "event: response.completed\n")
+}
+
+func TestHandleResponsesBufferedStreamingResponse_EmptyRefusalDoesNotFailOver(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	resp := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(emptyAnthropicTurn("refusal")))}
+
+	_, err := (&GatewayService{}).handleResponsesBufferedStreamingResponse(resp, c, "claude-fable-5", "claude-fable-5", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
+	require.Error(t, err)
+	var failover *UpstreamFailoverError
+	require.False(t, errors.As(err, &failover), "policy refusal must not rotate accounts")
+	require.Equal(t, http.StatusBadGateway, rec.Code)
+	require.Contains(t, gjson.Get(rec.Body.String(), "error.message").String(), "refused")
 	require.NotContains(t, rec.Body.String(), `"status":"completed"`)
 }
 
