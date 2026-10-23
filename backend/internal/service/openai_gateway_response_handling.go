@@ -1513,29 +1513,100 @@ func openAIUsageNodesFromJSONBytes(body []byte) (gjson.Result, gjson.Result) {
 }
 
 // openAIResponsesCompletedEventIsEmpty reports whether a response.completed /
-// response.done SSE payload carries no usage, no error and no output items.
+// response.done SSE payload has no semantic output, no output-token usage, and
+// no error. Input-only usage does not turn an empty completion into a success.
 // The accumulated usage is consulted too, because OpenAI may deliver usage on
-// an earlier event. An empty terminal event after a stream with no semantic
-// output is treated as a silent upstream refusal (issue #5009).
+// an earlier event (issue #5009 and the input-only-usage follow-up).
 func openAIResponsesCompletedEventIsEmpty(data []byte, usage *OpenAIUsage) bool {
 	if len(data) == 0 || !gjson.ValidBytes(data) {
 		return false
 	}
-	if usage != nil && (usage.InputTokens > 0 || usage.OutputTokens > 0 ||
-		usage.ImageInputTokens > 0 || usage.ImageOutputTokens > 0 ||
-		usage.CacheCreationInputTokens > 0 || usage.CacheReadInputTokens > 0) {
+	status := strings.TrimSpace(gjson.GetBytes(data, "response.status").String())
+	if status != "" && status != "completed" {
 		return false
 	}
-	if gjson.GetBytes(data, "usage").Exists() || gjson.GetBytes(data, "response.usage").Exists() {
+	if usage != nil && (usage.OutputTokens > 0 || usage.ImageOutputTokens > 0) {
+		return false
+	}
+	if openAIResponsesPayloadHasOutputUsage(data) {
 		return false
 	}
 	if gjson.GetBytes(data, "error").Exists() || gjson.GetBytes(data, "response.error").Exists() {
 		return false
 	}
-	if output := gjson.GetBytes(data, "response.output"); output.Exists() && output.IsArray() && len(output.Array()) > 0 {
-		return false
+	output := gjson.GetBytes(data, "response.output")
+	if !output.Exists() {
+		output = gjson.GetBytes(data, "output")
+	}
+	if output.Exists() {
+		if output.Type == gjson.Null {
+			return true
+		}
+		if !output.IsArray() {
+			return false
+		}
+		for _, item := range output.Array() {
+			if openAIResponsesOutputItemHasSemanticContent(item) {
+				return false
+			}
+		}
 	}
 	return true
+}
+
+func openAIResponsesPayloadHasOutputUsage(data []byte) bool {
+	for _, path := range []string{"usage", "response.usage"} {
+		usage := gjson.GetBytes(data, path)
+		if !usage.Exists() || !usage.IsObject() {
+			continue
+		}
+		if usage.Get("output_tokens").Int() > 0 || usage.Get("image_output_tokens").Int() > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// openAIResponsesOutputItemHasSemanticContent treats known empty assistant
+// message shells as empty, while preserving all tool, reasoning, media, and
+// unknown output items conservatively.
+func openAIResponsesOutputItemHasSemanticContent(item gjson.Result) bool {
+	if !item.Exists() || !item.IsObject() {
+		return true
+	}
+	switch strings.TrimSpace(item.Get("type").String()) {
+	case "message":
+		content := item.Get("content")
+		if !content.Exists() || !content.IsArray() {
+			return true
+		}
+		for _, part := range content.Array() {
+			if !part.Exists() || !part.IsObject() {
+				return true
+			}
+			switch strings.TrimSpace(part.Get("type").String()) {
+			case "output_text":
+				if part.Get("text").String() != "" {
+					return true
+				}
+			case "refusal":
+				// Refusal is a policy result even if its text is omitted or empty;
+				// do not rotate accounts in a way that could bypass it.
+				return true
+			default:
+				return true
+			}
+		}
+		return false
+	case "reasoning":
+		// Reasoning output may carry encrypted or future fields that this
+		// classifier does not understand. Preserve every reasoning item.
+		return true
+	default:
+		// Tool calls, images, search results, compaction, and future item kinds
+		// can be meaningful without user-visible text. Never retry them as empty.
+		return true
+	}
 }
 
 const openAIImageGenerationMissingOutputMessage = "Upstream completed image generation without an image result"

@@ -7,9 +7,12 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -82,9 +85,9 @@ func TestOpenAIResponsesEmptyCompletedWithOutputSucceeds(t *testing.T) {
 	require.Equal(t, 5, result.Usage.OutputTokens)
 }
 
-// TestOpenAIResponsesEmptyCompletedWithUsageSucceeds ensures a completed event
-// carrying usage is not mistaken for a silent refusal even without output.
-func TestOpenAIResponsesEmptyCompletedWithUsageSucceeds(t *testing.T) {
+// TestOpenAIResponsesEmptyCompletedWithInputUsageFailsOver verifies that
+// input-only usage cannot turn an empty Responses completion into a success.
+func TestOpenAIResponsesEmptyCompletedWithInputUsageFailsOver(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	upstream := &httpUpstreamRecorder{resp: &http.Response{
@@ -96,7 +99,7 @@ func TestOpenAIResponsesEmptyCompletedWithUsageSucceeds(t *testing.T) {
 		)),
 	}}
 	svc := newOpenAIImageGenerationControlTestService(upstream)
-	c, _ := newOpenAIImageGenerationControlTestContext(true, "codex_cli_rs/0.144.1")
+	c, recorder := newOpenAIImageGenerationControlTestContext(true, "codex_cli_rs/0.144.1")
 	account := newOpenAIImageGenerationControlTestAccount()
 	account.Extra = map[string]any{"openai_passthrough": true}
 
@@ -106,11 +109,97 @@ func TestOpenAIResponsesEmptyCompletedWithUsageSucceeds(t *testing.T) {
 		"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}]
 	}`)
 
-	result, err := svc.Forward(context.Background(), c, account, body)
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	require.NotNil(t, result.Usage)
-	require.Equal(t, 3, result.Usage.InputTokens)
+	_, err := svc.Forward(context.Background(), c, account, body)
+	require.Error(t, err)
+	var failoverErr *UpstreamFailoverError
+	require.True(t, errors.As(err, &failoverErr), "input-only usage with no output must produce UpstreamFailoverError, got: %v", err)
+	require.Empty(t, recorder.Body.String(), "no empty success stream may reach the client")
+}
+
+func TestOpenAIResponsesEmptyCompletedWithInputUsageFailsOverOnNativeAndPassthrough(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, tc := range []struct {
+		name   string
+		output string
+	}{
+		{name: "empty_array", output: "[]"},
+		{name: "null_output", output: "null"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, path := range []struct {
+				name string
+				run  func(*OpenAIGatewayService, *gin.Context, *http.Response, *Account) error
+			}{
+				{
+					name: "native",
+					run: func(svc *OpenAIGatewayService, c *gin.Context, resp *http.Response, account *Account) error {
+						_, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, account, time.Now(), "gpt-5.6-sol", "gpt-5.6-sol")
+						return err
+					},
+				},
+				{
+					name: "passthrough",
+					run: func(svc *OpenAIGatewayService, c *gin.Context, resp *http.Response, account *Account) error {
+						_, err := svc.handleStreamingResponsePassthrough(c.Request.Context(), resp, c, account, time.Now(), "gpt-5.6-sol", "gpt-5.6-sol")
+						return err
+					},
+				},
+			} {
+				t.Run(path.name, func(t *testing.T) {
+					stream := "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_usage\",\"object\":\"response\",\"status\":\"in_progress\"}}\n\n" +
+						"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_usage\",\"object\":\"response\",\"status\":\"completed\",\"output\":" + tc.output + ",\"usage\":{\"input_tokens\":58873,\"output_tokens\":0,\"total_tokens\":58873}}}\n\n"
+					rec := httptest.NewRecorder()
+					c, _ := gin.CreateTestContext(rec)
+					c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+					resp := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(stream))}
+					svc := &OpenAIGatewayService{cfg: &config.Config{}}
+					err := path.run(svc, c, resp, &Account{ID: 11, Platform: PlatformOpenAI, Type: AccountTypeOAuth})
+					var failoverErr *UpstreamFailoverError
+					require.ErrorAs(t, err, &failoverErr)
+					require.False(t, rec.Flushed)
+					require.Empty(t, rec.Body.String(), "empty success output must not be sent before account failover")
+				})
+			}
+		})
+	}
+}
+
+func TestOpenAIResponsesEmptyTerminalAfterMeaningfulDeltaDoesNotReplay(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	stream := "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_partial\",\"object\":\"response\",\"status\":\"in_progress\"}}\n\n" +
+		"data: {\"type\":\"response.output_text.delta\",\"delta\":\"already sent\"}\n\n" +
+		"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_partial\",\"object\":\"response\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":58873,\"output_tokens\":0,\"total_tokens\":58873}}}\n\n"
+	for _, path := range []struct {
+		name string
+		run  func(*OpenAIGatewayService, *gin.Context, *http.Response, *Account) error
+	}{
+		{
+			name: "native",
+			run: func(svc *OpenAIGatewayService, c *gin.Context, resp *http.Response, account *Account) error {
+				_, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, account, time.Now(), "gpt-5.6-sol", "gpt-5.6-sol")
+				return err
+			},
+		},
+		{
+			name: "passthrough",
+			run: func(svc *OpenAIGatewayService, c *gin.Context, resp *http.Response, account *Account) error {
+				_, err := svc.handleStreamingResponsePassthrough(c.Request.Context(), resp, c, account, time.Now(), "gpt-5.6-sol", "gpt-5.6-sol")
+				return err
+			},
+		},
+	} {
+		t.Run(path.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			resp := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(stream))}
+			svc := &OpenAIGatewayService{cfg: &config.Config{}}
+			err := path.run(svc, c, resp, &Account{ID: 11, Platform: PlatformOpenAI, Type: AccountTypeOAuth})
+			require.NoError(t, err, "a stream with prior semantic output must not be failed over")
+			require.Contains(t, rec.Body.String(), "already sent")
+			require.NotContains(t, rec.Body.String(), "upstream_empty_response")
+		})
+	}
 }
 
 func TestOpenAIResponsesCompletedEventIsEmpty(t *testing.T) {
@@ -136,6 +225,41 @@ func TestOpenAIResponsesCompletedEventIsEmpty(t *testing.T) {
 			want: false,
 		},
 		{
+			name: "completed with input-only usage",
+			data: `{"type":"response.completed","response":{"id":"r1","status":"completed","output":[],"usage":{"input_tokens":58873,"output_tokens":0,"total_tokens":58873}}}`,
+			want: true,
+		},
+		{
+			name: "completed with empty assistant message shell",
+			data: `{"type":"response.completed","response":{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":""}]}],"usage":{"input_tokens":5,"output_tokens":0}}}`,
+			want: true,
+		},
+		{
+			name: "completed with refusal",
+			data: `{"type":"response.completed","response":{"status":"completed","output":[{"type":"message","content":[{"type":"refusal","refusal":"I cannot help with that."}]}],"usage":{"input_tokens":5,"output_tokens":0}}}`,
+			want: false,
+		},
+		{
+			name: "completed with empty refusal part remains semantic",
+			data: `{"type":"response.completed","response":{"status":"completed","output":[{"type":"message","content":[{"type":"refusal","refusal":""}]}],"usage":{"input_tokens":5,"output_tokens":0}}}`,
+			want: false,
+		},
+		{
+			name: "completed with empty tool arguments remains semantic",
+			data: `{"type":"response.completed","response":{"status":"completed","output":[{"type":"function_call","name":"lookup","arguments":"{}"}],"usage":{"input_tokens":5,"output_tokens":0}}}`,
+			want: false,
+		},
+		{
+			name: "completed with reasoning item remains semantic",
+			data: `{"type":"response.completed","response":{"status":"completed","output":[{"type":"reasoning","content":[{"type":"reasoning_text","text":"thinking"}]}],"usage":{"input_tokens":5,"output_tokens":0}}}`,
+			want: false,
+		},
+		{
+			name: "incomplete terminal is not treated as empty success",
+			data: `{"type":"response.done","response":{"status":"incomplete","output":[],"usage":{"input_tokens":5,"output_tokens":0}}}`,
+			want: false,
+		},
+		{
 			name: "completed with error",
 			data: `{"type":"response.completed","response":{"id":"r1","status":"completed","error":{"code":"x"}}}`,
 			want: false,
@@ -153,6 +277,12 @@ func TestOpenAIResponsesCompletedEventIsEmpty(t *testing.T) {
 				OutputTokens: 2,
 			},
 			want: false,
+		},
+		{
+			name:  "accumulated input-only usage",
+			data:  `{"type":"response.completed"}`,
+			usage: &OpenAIUsage{InputTokens: 7, CacheReadInputTokens: 3},
+			want:  true,
 		},
 		{
 			name: "invalid json",
