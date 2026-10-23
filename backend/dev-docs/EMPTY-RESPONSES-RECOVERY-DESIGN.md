@@ -48,3 +48,12 @@ The USB10 raw upstream SSE was not retained. Its logged `first_token_ms` is with
 - Linux/amd64 server binary build with CGO disabled: PASS, exit 0; this is the candidate hot-update artifact and avoids a local Docker image rebuild.
 - `git diff --check`: PASS.
 - Full `internal/service` package was run with identical `-json -timeout=5m -tags=unit -count=1` arguments on the patched worktree and baseline `dec44ee42f22`, using the same Go toolchain, Windows environment, and build cache. Both runs exited 1 with the exact same 44 failing test names (`MOD_ONLY=0`, `BASE_ONLY=0`). Failures include localhost listener/connect restrictions (`127.0.0.1 ... socket ... forbidden`) and TypeSafe mock transport tests (`typesafe transport unavailable`). This establishes the full-package failures predate this patch, but the package remains non-green locally and must not be reported as a PASS.
+
+## Runtime update record (2026-10-23)
+
+- The target commits have different histories but identical source tree `a5e63d342c5f8941127cf8e2394822a25c97e806`; the patched worktree source tree is `ef3768e9a1f502f49bbf141d79614557c65bab54`.
+- Built one Linux/amd64, CGO-disabled server binary with version `0.2.12-empty-responses.20261023`; SHA256 `d6aa5f80de5be7756885b16c2b50d5ddb14573cb20258b535384a10d290ed72c`.
+- 404TOKEN (`sub2api:pr13-dec44ee42f22`): original binary SHA256 `67cfa61ae440a6b4483705e520d9fac108bd74814f68ccbf7a96ae9ca9b55d3a`; deployed binary SHA256 matches the build. Rollback copy: `/app/sub2api.rollback-empty-responses-20261023-retry1`.
+- AISELF (`sub2api:aiself-c7a2a2d4-20261020`): original binary SHA256 `574657cbbb94af2f7b47abe79ba6415e8f53aa0d44a70abbc932d681640c9156`; deployed binary SHA256 matches the build. Rollback copy: `/app/sub2api.rollback-empty-responses-20261023`.
+- Both containers restarted without rebuilding their Docker images, returned `running|healthy`, reported the expected version, and passed local and public `/health` checks. Both had zero panic/fatal log matches in the five minutes after deployment.
+- The first 404TOKEN replacement attempt hit a case-sensitive comparison between uppercase and lowercase SHA256 strings; its guard restored the original binary and the subsequent read-only check confirmed the original hash and health. The corrected deployment then succeeded.
