@@ -417,6 +417,79 @@ func syncAnthropicResponsesUsage(state *apicompat.AnthropicEventToResponsesState
 	state.CacheCreationInputTokens = usage.CacheCreationInputTokens
 }
 
+// anthropicResponsesCompletionIsEmpty reports an end-turn/refusal terminal
+// without generated output. Input usage is expected and does not make such a
+// response useful. Other stop reasons and any semantic content remain on the
+// normal conversion path.
+func anthropicResponsesCompletionIsEmpty(stopReason string, outputTokens int, content []apicompat.AnthropicContentBlock) bool {
+	if (stopReason != "end_turn" && stopReason != "refusal") || outputTokens > 0 {
+		return false
+	}
+	for _, block := range content {
+		switch block.Type {
+		case "text":
+			if block.Text != "" {
+				return false
+			}
+		case "thinking":
+			if block.Thinking != "" || block.Signature != "" {
+				return false
+			}
+		case "redacted_thinking":
+			if block.Data != "" || block.Signature != "" {
+				return false
+			}
+		default:
+			// Tools, images, and unknown future content kinds may be meaningful
+			// without text. Preserve them conservatively.
+			return false
+		}
+	}
+	return true
+}
+
+func responsesOutputHasSemanticContent(output apicompat.ResponsesOutput) bool {
+	switch output.Type {
+	case "message":
+		for _, part := range output.Content {
+			if part.Type != "output_text" || part.Text != "" {
+				return true
+			}
+		}
+		return false
+	case "reasoning":
+		// Preserve reasoning items conservatively; encrypted/future fields may
+		// carry content that this adapter does not inspect.
+		return true
+	default:
+		return true
+	}
+}
+
+func responsesStreamStateIsEmptyCompletion(state *apicompat.AnthropicEventToResponsesState) bool {
+	if state == nil || (state.StopReason != "end_turn" && state.StopReason != "refusal") || state.OutputTokens > 0 {
+		return false
+	}
+	for _, output := range state.Outputs {
+		if responsesOutputHasSemanticContent(output) {
+			return false
+		}
+	}
+	switch state.CurrentItemType {
+	case "":
+	case "message":
+		if state.TextAccum != "" || responsesOutputHasSemanticContent(apicompat.ResponsesOutput{Type: "message", Content: state.CurrentContent}) {
+			return false
+		}
+	case "reasoning":
+		return false
+	default:
+		// An open tool or unknown item can carry output without text.
+		return false
+	}
+	return true
+}
+
 func normalizeAnthropicEventUsageForResponses(event *apicompat.AnthropicStreamEvent, usage ClaudeUsage) {
 	normalize := func(dst *apicompat.AnthropicUsage) {
 		if dst == nil {
@@ -581,6 +654,35 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 	if finalResp == nil {
 		writeResponsesError(c, http.StatusBadGateway, "server_error", "Upstream stream ended without a response")
 		return nil, fmt.Errorf("upstream stream ended without response")
+	}
+	stopReason := apicompat.AnthropicStopReasonString(finalResp.StopReason)
+	if anthropicResponsesCompletionIsEmpty(stopReason, usage.OutputTokens, finalResp.Content) {
+		if stopReason == "refusal" {
+			writeResponsesError(c, http.StatusBadGateway, "server_error", "Upstream refused the request without a refusal message")
+			return &ForwardResult{
+				RequestID:       requestID,
+				UpstreamHeaders: resp.Header,
+				Usage:           usage,
+				Model:           originalModel,
+				UpstreamModel:   mappedModel,
+				ReasoningEffort: reasoningEffort,
+				Stream:          false,
+				Duration:        time.Since(startTime),
+			}, errors.New("upstream returned an empty refusal")
+		}
+		return &ForwardResult{
+				RequestID:       requestID,
+				UpstreamHeaders: resp.Header,
+				Usage:           usage,
+				Model:           originalModel,
+				UpstreamModel:   mappedModel,
+				ReasoningEffort: reasoningEffort,
+				Stream:          false,
+				Duration:        time.Since(startTime),
+			}, &UpstreamFailoverError{
+				StatusCode:   http.StatusBadGateway,
+				ResponseBody: []byte("upstream completed an Anthropic message without output"),
+			}
 	}
 	if !sawMessageStop {
 		writeResponsesError(c, http.StatusBadGateway, "server_error", "Upstream stream ended before completion")
@@ -835,6 +937,15 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 		if event.Type == "error" {
 			protocolErr = errors.New("upstream Anthropic stream emitted an error event")
 			break
+		}
+		// message_stop would normally synthesize response.completed. Detect a
+		// normal empty end_turn first and terminate this already-open stream as
+		// failed; retrying after response.created bytes were sent could replay.
+		if event.Type == "message_stop" && responsesStreamStateIsEmptyCompletion(state) {
+			if state.StopReason == "refusal" {
+				return failStream("Upstream refused the request without a refusal message", errors.New("empty Anthropic refusal"))
+			}
+			return failStream("Upstream completed the turn without generating output", errors.New("empty Anthropic Responses completion"))
 		}
 
 		if processEvent(&event) {
