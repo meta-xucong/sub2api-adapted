@@ -62,7 +62,6 @@ When a new YeToken Bailian route is added or a price changes, append/update the 
 4. Calculate YeToken as official × 0.4.
 5. Calculate the current 404token reference as YeToken × the applicable group multiplier. Do not assume 1.25 if group pricing changes.
 6. Mark the row **live verified** only after matching a request's model ID, token usage, route/account and 404token charge. Otherwise keep it **formula-derived**.
-+
 
 ---
 
