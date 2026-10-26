@@ -100,17 +100,22 @@ func (a *Account) UsesResponsesImageBridge() bool {
 	return a != nil && a.ResponsesImageMode() == ResponsesImageModeImagesAPI
 }
 
-// IsResponsesImageBridgeRequest is narrower than the general image-intent
-// classifier. A model name alone must never rewrite a normal Responses request.
+// IsResponsesImageBridgeRequest only bridges requests that unambiguously select
+// image generation. Merely declaring image_generation with tool_choice=auto
+// still allows an ordinary text/tool response and must stay on Responses.
 func IsResponsesImageBridgeRequest(body []byte) bool {
 	if len(body) == 0 || !gjson.ValidBytes(body) {
 		return false
 	}
-	tools := gjson.GetBytes(body, "tools")
-	if !tools.IsArray() {
-		return false
+	if IsGPTImageGenerationModel(strings.TrimSpace(gjson.GetBytes(body, "model").String())) {
+		return true
 	}
-	for _, tool := range tools.Array() {
+	return hasOpenAIResponsesImageGenerationTool(body) &&
+		openAIJSONToolChoiceSelectsExplicitImageGeneration(gjson.GetBytes(body, "tool_choice"))
+}
+
+func hasOpenAIResponsesImageGenerationTool(body []byte) bool {
+	for _, tool := range gjson.GetBytes(body, "tools").Array() {
 		if strings.EqualFold(strings.TrimSpace(tool.Get("type").String()), "image_generation") {
 			return true
 		}
@@ -123,8 +128,9 @@ func IsResponsesImageBridgeRequest(body []byte) bool {
 // /v1/images/edits. The returned parsed request is shared with normal Images
 // routing and billing.
 func BuildOpenAIResponsesImageBridgeRequest(body []byte) ([]byte, *OpenAIImagesRequest, error) {
-	if !IsResponsesImageBridgeRequest(body) {
-		return nil, nil, fmt.Errorf("responses image_generation tool is required")
+	if !IsGPTImageGenerationModel(strings.TrimSpace(gjson.GetBytes(body, "model").String())) &&
+		!hasOpenAIResponsesImageGenerationTool(body) {
+		return nil, nil, fmt.Errorf("a Responses image model or image_generation tool is required")
 	}
 
 	var tool gjson.Result

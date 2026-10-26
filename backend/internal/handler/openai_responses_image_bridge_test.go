@@ -18,11 +18,13 @@ func TestResponsesImageBridgeDispatchAndAccountSelection(t *testing.T) {
 			ApplyToProtocol: "images_api_only",
 		},
 	}}}
-	bridgeBody := []byte(`{"model":"gpt-5.6","input":"draw a lighthouse","tools":[{"type":"image_generation","model":"gpt-image-2"}]}`)
+	bridgeBody := []byte(`{"model":"gpt-5.6","input":"draw a lighthouse","tools":[{"type":"image_generation","model":"gpt-image-2"}],"tool_choice":{"type":"image_generation"}}`)
 	ordinaryImageBody := []byte(`{"model":"gpt-image-2","input":"draw a lighthouse"}`)
+	passiveImageToolBody := []byte(`{"model":"gpt-5.6","input":"write code","tools":[{"type":"image_generation","model":"gpt-image-2"}],"tool_choice":"auto"}`)
 
 	require.True(t, h.responsesImageBridgeEnabled(bridgeBody))
-	require.False(t, h.responsesImageBridgeEnabled(ordinaryImageBody), "model name alone must not select the bridge")
+	require.True(t, h.responsesImageBridgeEnabled(ordinaryImageBody), "an explicit top-level image model must use the image bridge")
+	require.False(t, h.responsesImageBridgeEnabled(passiveImageToolBody), "a passively declared image tool must not turn a text/tool request into image generation")
 
 	_, parsed, err := service.BuildOpenAIResponsesImageBridgeRequest(bridgeBody)
 	require.NoError(t, err)
@@ -67,8 +69,8 @@ func TestResponsesImageBridgeDoesNotAffectOrdinaryImagesOrNativeResponses(t *tes
 		ResponsesImageBridge: config.ResponsesImageBridgeConfig{Enabled: true, ApplyToProtocol: "images_api_only"},
 	}}}
 	// This is the Images endpoint's ordinary request shape; it does not enter the
-	// Responses handler bridge, which requires a Responses image_generation tool.
-	require.False(t, h.responsesImageBridgeEnabled([]byte(`{"model":"gpt-image-2","prompt":"draw"}`)))
+	// A text-model Responses call with no explicit image intent remains native.
+	require.False(t, h.responsesImageBridgeEnabled([]byte(`{"model":"gpt-5.6","prompt":"draw"}`)))
 	require.False(t, h.responsesImageBridgeEnabled([]byte(`{"model":"gpt-5.6","input":"hello"}`)))
 	require.False(t, responsesImageBridgeDispatches(false, &service.Account{Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey}))
 }
