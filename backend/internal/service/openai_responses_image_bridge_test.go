@@ -130,11 +130,24 @@ func TestResponsesImageModeExplicitOverridesAndAutomaticDetection(t *testing.T) 
 	require.False(t, mixedMapping.UsesResponsesImageBridge())
 }
 
-func TestBuildOpenAIResponsesImageBridgeRequestRequiresExplicitTool(t *testing.T) {
-	ordinaryImageModel := []byte(`{"model":"gpt-image-2","input":"draw a lighthouse"}`)
-	require.False(t, IsResponsesImageBridgeRequest(ordinaryImageModel))
-	_, _, err := BuildOpenAIResponsesImageBridgeRequest(ordinaryImageModel)
-	require.ErrorContains(t, err, "image_generation tool is required")
+func TestResponsesImageBridgeRequiresExplicitImageIntent(t *testing.T) {
+	ordinaryText := []byte(`{"model":"gpt-5.6","input":"hello"}`)
+	passiveImageTool := []byte(`{"model":"gpt-5.6","input":"hello","tools":[{"type":"image_generation"}],"tool_choice":"auto"}`)
+	forcedImageTool := []byte(`{"model":"gpt-5.6","input":"draw a lighthouse","tools":[{"type":"image_generation"}],"tool_choice":{"type":"image_generation"}}`)
+	topLevelImageModel := []byte(`{"model":"gpt-image-2.5","input":"draw a lighthouse"}`)
+	grokImageModel := []byte(`{"model":"grok-imagine","input":"draw a lighthouse"}`)
+
+	require.False(t, IsResponsesImageBridgeRequest(ordinaryText))
+	require.False(t, IsResponsesImageBridgeRequest(passiveImageTool), "tool_choice=auto can still produce text and must not force an image request")
+	require.True(t, IsResponsesImageBridgeRequest(forcedImageTool))
+	require.True(t, IsResponsesImageBridgeRequest(topLevelImageModel), "an explicit image model is an unambiguous image request")
+	require.False(t, IsResponsesImageBridgeRequest(grokImageModel), "the OpenAI image bridge must not capture Grok models")
+	_, _, err := BuildOpenAIResponsesImageBridgeRequest(ordinaryText)
+	require.ErrorContains(t, err, "image model or image_generation tool is required")
+
+	_, parsed, err := BuildOpenAIResponsesImageBridgeRequest(topLevelImageModel)
+	require.NoError(t, err)
+	require.Equal(t, "gpt-image-2.5", parsed.Model)
 
 	body := []byte(`{"model":"gpt-5.6","instructions":"from instructions","tools":[{"type":"image_generation","model":"gpt-image-2","size":"1024x1024"}]}`)
 	translated, parsed, err := BuildOpenAIResponsesImageBridgeRequest(body)
