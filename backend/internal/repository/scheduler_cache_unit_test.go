@@ -33,6 +33,25 @@ func newSchedulerCacheUnitWithRedis(t *testing.T) (*schedulerCache, *miniredis.M
 	return cache, mr
 }
 
+func TestSchedulerCacheSnapshotPreservesPriorityScheduling(t *testing.T) {
+	ctx := context.Background()
+	cache := newSchedulerCacheUnit(t)
+	bucket := service.SchedulerBucket{GroupID: 101, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}
+	token, err := cache.CaptureBucketWriteToken(ctx, bucket)
+	require.NoError(t, err)
+	require.NoError(t, cache.SetSnapshot(ctx, bucket, token, []service.Account{
+		{ID: 101, Platform: service.PlatformOpenAI, PriorityScheduling: true},
+		{ID: 102, Platform: service.PlatformOpenAI, PriorityScheduling: false},
+	}))
+
+	accounts, hit, err := cache.GetSnapshot(ctx, bucket)
+	require.NoError(t, err)
+	require.True(t, hit)
+	require.Len(t, accounts, 2)
+	require.True(t, accounts[0].PriorityScheduling, "preferred membership must survive metadata serialization and snapshot readback")
+	require.False(t, accounts[1].PriorityScheduling, "regular accounts must not be promoted by snapshot decoding")
+}
+
 func TestSchedulerCacheWriteAccountIDsSkipsUnencodableTimes(t *testing.T) {
 	ctx := context.Background()
 	cache := newSchedulerCacheUnit(t)

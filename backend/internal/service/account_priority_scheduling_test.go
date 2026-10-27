@@ -166,6 +166,24 @@ func TestGenericNoLoadPriorityPoolTriesPreferredThenAvailableRegularAccount(t *t
 	selection.ReleaseFunc()
 }
 
+func TestGenericNoLoadPriorityPoolSelectsAvailablePreferredAccountFirst(t *testing.T) {
+	preferred := Account{ID: 15, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Priority: 10, PriorityScheduling: true, Concurrency: 1}
+	regular := Account{ID: 16, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Priority: 0, Concurrency: 1}
+	repo := &accountPrioritySchedulingTestRepo{accounts: []Account{regular, preferred}}
+	cache := &prioritySchedulingSlotCache{available: map[int64]bool{preferred.ID: true, regular.ID: true}}
+	service := &GatewayService{
+		accountRepo: repo, concurrencyService: NewConcurrencyService(cache),
+		cfg: &config.Config{},
+	}
+
+	selection, err := service.selectFromPriorityPoolWithoutLoadAwareness(context.Background(), nil, "", "", nil, service.schedulingConfig())
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.Equal(t, preferred.ID, selection.Account.ID)
+	require.Equal(t, []int64{preferred.ID}, cache.acquireOrder)
+	selection.ReleaseFunc()
+}
+
 func TestGenericNoLoadPriorityPoolPropagatesSelectorErrors(t *testing.T) {
 	selectorErr := errors.New("selector query failed")
 	preferred := Account{ID: 13, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, PriorityScheduling: true, Concurrency: 1}
