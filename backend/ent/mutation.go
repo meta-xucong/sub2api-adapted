@@ -2302,6 +2302,7 @@ type AccountMutation struct {
 	addload_factor              *int
 	priority                    *int
 	addpriority                 *int
+	priority_scheduling         *bool
 	rate_multiplier             *float64
 	addrate_multiplier          *float64
 	status                      *string
@@ -3085,6 +3086,42 @@ func (m *AccountMutation) AddedPriority() (r int, exists bool) {
 func (m *AccountMutation) ResetPriority() {
 	m.priority = nil
 	m.addpriority = nil
+}
+
+// SetPriorityScheduling sets the "priority_scheduling" field.
+func (m *AccountMutation) SetPriorityScheduling(b bool) {
+	m.priority_scheduling = &b
+}
+
+// PriorityScheduling returns the value of the "priority_scheduling" field in the mutation.
+func (m *AccountMutation) PriorityScheduling() (r bool, exists bool) {
+	v := m.priority_scheduling
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldPriorityScheduling returns the old "priority_scheduling" field's value of the Account entity.
+// If the Account object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *AccountMutation) OldPriorityScheduling(ctx context.Context) (v bool, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldPriorityScheduling is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldPriorityScheduling requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldPriorityScheduling: %w", err)
+	}
+	return oldValue.PriorityScheduling, nil
+}
+
+// ResetPriorityScheduling resets all changes to the "priority_scheduling" field.
+func (m *AccountMutation) ResetPriorityScheduling() {
+	m.priority_scheduling = nil
 }
 
 // SetRateMultiplier sets the "rate_multiplier" field.
@@ -4138,7 +4175,7 @@ func (m *AccountMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *AccountMutation) Fields() []string {
-	fields := make([]string, 0, 31)
+	fields := make([]string, 0, 32)
 	if m.created_at != nil {
 		fields = append(fields, account.FieldCreatedAt)
 	}
@@ -4180,6 +4217,9 @@ func (m *AccountMutation) Fields() []string {
 	}
 	if m.priority != nil {
 		fields = append(fields, account.FieldPriority)
+	}
+	if m.priority_scheduling != nil {
+		fields = append(fields, account.FieldPriorityScheduling)
 	}
 	if m.rate_multiplier != nil {
 		fields = append(fields, account.FieldRateMultiplier)
@@ -4268,6 +4308,8 @@ func (m *AccountMutation) Field(name string) (ent.Value, bool) {
 		return m.LoadFactor()
 	case account.FieldPriority:
 		return m.Priority()
+	case account.FieldPriorityScheduling:
+		return m.PriorityScheduling()
 	case account.FieldRateMultiplier:
 		return m.RateMultiplier()
 	case account.FieldStatus:
@@ -4339,6 +4381,8 @@ func (m *AccountMutation) OldField(ctx context.Context, name string) (ent.Value,
 		return m.OldLoadFactor(ctx)
 	case account.FieldPriority:
 		return m.OldPriority(ctx)
+	case account.FieldPriorityScheduling:
+		return m.OldPriorityScheduling(ctx)
 	case account.FieldRateMultiplier:
 		return m.OldRateMultiplier(ctx)
 	case account.FieldStatus:
@@ -4479,6 +4523,13 @@ func (m *AccountMutation) SetField(name string, value ent.Value) error {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.SetPriority(v)
+		return nil
+	case account.FieldPriorityScheduling:
+		v, ok := value.(bool)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetPriorityScheduling(v)
 		return nil
 	case account.FieldRateMultiplier:
 		v, ok := value.(float64)
@@ -4857,6 +4908,9 @@ func (m *AccountMutation) ResetField(name string) error {
 		return nil
 	case account.FieldPriority:
 		m.ResetPriority()
+		return nil
+	case account.FieldPriorityScheduling:
+		m.ResetPriorityScheduling()
 		return nil
 	case account.FieldRateMultiplier:
 		m.ResetRateMultiplier()

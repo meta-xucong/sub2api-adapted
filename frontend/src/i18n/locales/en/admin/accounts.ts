@@ -926,6 +926,7 @@ export default {
         }
       },
       autoPauseOnExpired: 'Auto Pause On Expired',
+      priorityScheduling: 'Priority scheduling',
       autoPauseOnExpiredDesc: 'When enabled, the account will auto pause scheduling after it expires',
 	  autoPause5hThreshold: '5h Usage Threshold (%)',
 	  autoPause7dThreshold: '7d Usage Threshold (%)',

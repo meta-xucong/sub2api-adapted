@@ -69,15 +69,16 @@ var openAIAdvancedSchedulerSettingCache atomic.Value // *cachedOpenAIAdvancedSch
 var openAIAdvancedSchedulerSettingSF singleflight.Group
 
 type OpenAIAccountScheduleRequest struct {
-	GroupID                 *int64
-	Platform                string
-	SessionHash             string
-	StickyAccountID         int64
-	GuardianParentAccountID int64
-	StickyPreviousAccountID int64
-	StickyWeighted          bool
-	SubscriptionPriority    bool
-	PreserveStickyBinding   bool
+	GroupID                          *int64
+	Platform                         string
+	SessionHash                      string
+	StickyAccountID                  int64
+	GuardianParentAccountID          int64
+	StickyPreviousAccountID          int64
+	StickyWeighted                   bool
+	SubscriptionPriority             bool
+	AccountPrioritySchedulingEnabled bool
+	PreserveStickyBinding            bool
 	// DisableStickyEscape keeps task-owner lookups on their account even when
 	// generic sticky health or concurrency heuristics would prefer another.
 	DisableStickyEscape     bool
@@ -305,10 +306,12 @@ type defaultOpenAIAccountScheduler struct {
 }
 
 type openAISelectionProbeBudget struct {
-	acquires  int
-	rechecks  int
-	attempted map[int64]struct{}
-	limited   bool
+	acquires     int
+	rechecks     int
+	acquireLimit int
+	recheckLimit int
+	attempted    map[int64]struct{}
+	limited      bool
 }
 
 func newOpenAISelectionProbeBudget() *openAISelectionProbeBudget {
@@ -328,7 +331,7 @@ func (b *openAISelectionProbeBudget) recordAcquire(accountID int64) bool {
 	if !b.limited {
 		return true
 	}
-	if b.acquires >= openAIAccountSelectionProbeLimit {
+	if b.acquires >= b.currentAcquireLimit() {
 		return false
 	}
 	if b.attempted == nil {
@@ -346,7 +349,7 @@ func (b *openAISelectionProbeBudget) recordRecheck() bool {
 	if !b.limited {
 		return true
 	}
-	if b.rechecks >= openAIAccountSelectionProbeLimit {
+	if b.rechecks >= b.currentRecheckLimit() {
 		return false
 	}
 	b.rechecks++
@@ -354,7 +357,33 @@ func (b *openAISelectionProbeBudget) recordRecheck() bool {
 }
 
 func (b *openAISelectionProbeBudget) acquireExhausted() bool {
-	return b != nil && b.limited && b.acquires >= openAIAccountSelectionProbeLimit
+	return b != nil && b.limited && b.acquires >= b.currentAcquireLimit()
+}
+
+func (b *openAISelectionProbeBudget) currentAcquireLimit() int {
+	if b != nil && b.acquireLimit > 0 {
+		return b.acquireLimit
+	}
+	return openAIAccountSelectionProbeLimit
+}
+
+func (b *openAISelectionProbeBudget) currentRecheckLimit() int {
+	if b != nil && b.recheckLimit > 0 {
+		return b.recheckLimit
+	}
+	return openAIAccountSelectionProbeLimit
+}
+
+func reserveOpenAIPriorityPoolProbeBudget(budget *openAISelectionProbeBudget, laterPools int) {
+	if budget == nil {
+		return
+	}
+	limit := openAIAccountSelectionProbeLimit - laterPools
+	if limit < 1 {
+		limit = 1
+	}
+	budget.acquireLimit = limit
+	budget.recheckLimit = limit
 }
 
 func (b *openAISelectionProbeBudget) wasAttempted(accountID int64) bool {
@@ -1601,6 +1630,12 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 			loadMap = batchLoad
 		}
 	}
+	if req.AccountPrioritySchedulingEnabled {
+		preferred, regular := splitPrioritySchedulingAccounts(filtered, true)
+		if len(preferred) > 0 {
+			return s.selectByPrioritySchedulingPools(ctx, req, preferred, regular, loadMap, budget, filterStats)
+		}
+	}
 
 	if req.SubscriptionPriority {
 		subscriptionAccounts, regularAccounts := partitionOpenAIChatGPTSubscriptionAccounts(filtered)
@@ -1663,6 +1698,137 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		return attempt.result, attempt.candidateCount, attempt.topK, attempt.loadSkew, nil
 	}
 	return s.finishLoadBalanceSelectionFallback(ctx, req, attempt, budget, filterStats)
+}
+
+func (s *defaultOpenAIAccountScheduler) selectByPrioritySchedulingPools(
+	ctx context.Context,
+	req OpenAIAccountScheduleRequest,
+	preferred, regular []*Account,
+	loadMap map[int64]*AccountLoadInfo,
+	budget *openAISelectionProbeBudget,
+	filterStats openAISelectionFilterStats,
+) (*AccountSelectionResult, int, int, float64, error) {
+	partition := func(accounts []*Account) ([]*Account, []*Account) {
+		if !req.SubscriptionPriority {
+			return nil, accounts
+		}
+		subscriptions, nonsubscriptions := partitionOpenAIChatGPTSubscriptionAccounts(accounts)
+		if req.RequiredImageCapability != "" && s.service.isSmartRouterEnabled() {
+			healthy := make([]*Account, 0, len(subscriptions))
+			for _, account := range subscriptions {
+				if s.isRecoveringSmartRouterImageAccount(req, account) {
+					nonsubscriptions = append(nonsubscriptions, account)
+				} else {
+					healthy = append(healthy, account)
+				}
+			}
+			subscriptions = healthy
+		}
+		return subscriptions, nonsubscriptions
+	}
+	preferredSubscriptions, preferredRegular := partition(preferred)
+	regularSubscriptions, regularRegular := partition(regular)
+	preferredNative := [][]*Account{preferredSubscriptions, preferredRegular}
+	regularNative := [][]*Account{regularSubscriptions, regularRegular}
+	if !req.SubscriptionPriority {
+		preferredNative = [][]*Account{preferred}
+		regularNative = [][]*Account{regular}
+	}
+
+	type attemptedPool struct {
+		accounts []*Account
+		attempt  openAIAccountLoadSelectionAttempt
+	}
+	attempts := make(map[int64]attemptedPool)
+	var candidateCount, topK int
+	var loadSkew float64
+	pools := append(append([][]*Account{}, preferredNative...), regularNative...)
+	nonEmptyPools := 0
+	for _, pool := range pools {
+		if len(pool) > 0 {
+			nonEmptyPools++
+		}
+	}
+	remainingPools := nonEmptyPools
+	for _, pool := range pools {
+		if len(pool) == 0 {
+			continue
+		}
+		remainingPools--
+		// Keep one shared probe budget, but leave one bounded immediate attempt
+		// for each later native cohort so a large preferred cohort cannot consume
+		// the entire budget before ordinary accounts are considered.
+		reserveOpenAIPriorityPoolProbeBudget(budget, remainingPools)
+		attempt := s.trySelectByLoadBalancePool(ctx, req, pool, loadMap, budget)
+		candidateCount += attempt.candidateCount
+		if attempt.topK > topK {
+			topK = attempt.topK
+		}
+		if attempt.loadSkew > loadSkew {
+			loadSkew = attempt.loadSkew
+		}
+		if attempt.err != nil && !attempt.noCompactCandidates {
+			return nil, candidateCount, topK, loadSkew, attempt.err
+		}
+		if attempt.result != nil {
+			return attempt.result, candidateCount, topK, loadSkew, nil
+		}
+		for _, account := range pool {
+			attempts[account.ID] = attemptedPool{accounts: pool, attempt: attempt}
+		}
+	}
+	if budget != nil {
+		budget.acquireLimit = openAIAccountSelectionProbeLimit
+		budget.recheckLimit = openAIAccountSelectionProbeLimit
+	}
+
+	// Finish native waits for ordinary accounts first, while retaining subscription
+	// ordering inside each account cohort.
+	waitOrder := append(append([][]*Account{}, regularNative...), preferredNative...)
+	var fallbackErr error
+	for _, pool := range waitOrder {
+		if len(pool) == 0 {
+			continue
+		}
+		poolAttempt := attempts[pool[0].ID]
+		poolReq := req
+		poolReq.ExcludedIDs = make(map[int64]struct{}, len(req.ExcludedIDs)+len(preferred)+len(regular))
+		for id := range req.ExcludedIDs {
+			poolReq.ExcludedIDs[id] = struct{}{}
+		}
+		for _, account := range append(append([]*Account{}, preferred...), regular...) {
+			if !containsAccountID(pool, account.ID) {
+				poolReq.ExcludedIDs[account.ID] = struct{}{}
+			}
+		}
+		result, count, candidateTopK, skew, err := s.finishLoadBalanceSelectionFallback(ctx, poolReq, poolAttempt.attempt, budget, filterStats)
+		candidateCount += count
+		if candidateTopK > topK {
+			topK = candidateTopK
+		}
+		if skew > loadSkew {
+			loadSkew = skew
+		}
+		if err == nil && result != nil {
+			return result, candidateCount, topK, loadSkew, nil
+		}
+		if err != nil {
+			fallbackErr = err
+		}
+	}
+	if fallbackErr == nil {
+		fallbackErr = noAvailableOpenAISelectionError(req.RequestedModel, req.RequireCompact, filterStats.summary("priority_pool_exhausted"))
+	}
+	return nil, candidateCount, topK, loadSkew, fallbackErr
+}
+
+func containsAccountID(accounts []*Account, id int64) bool {
+	for _, account := range accounts {
+		if account != nil && account.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *defaultOpenAIAccountScheduler) isRecoveringSmartRouterImageAccount(req OpenAIAccountScheduleRequest, account *Account) bool {
@@ -2659,28 +2825,30 @@ func (s *OpenAIGatewayService) selectAccountWithSchedulerOnce(
 	if stickyWeighted && previousResponseCanMove && strings.TrimSpace(previousResponseID) != "" && platform == PlatformOpenAI {
 		stickyPreviousAccountID = s.ResolveAccountIDByPreviousResponseIDForScheduler(ctx, groupID, previousResponseID, requestedModel, excludedIDs, requiredCapability, requireCompact)
 	}
+	accountPrioritySchedulingEnabled := accountPrioritySchedulingEnabledForService(ctx, s.settingService)
 
 	return scheduler.Select(ctx, OpenAIAccountScheduleRequest{
-		GroupID:                 groupID,
-		Platform:                platform,
-		SessionHash:             sessionHash,
-		StickyAccountID:         stickyAccountID,
-		GuardianParentAccountID: guardianParentAccountID,
-		StickyPreviousAccountID: stickyPreviousAccountID,
-		StickyWeighted:          stickyWeighted,
-		SubscriptionPriority:    subscriptionPriority,
-		PreserveStickyBinding:   preserveGuardianParentBinding,
-		RequirePrivacySet:       s.openAIGroupRequiresPrivacySet(ctx, groupID),
-		PreviousResponseID:      previousResponseID,
-		PreviousResponseCanMove: previousResponseCanMove,
-		UseUpstreamTokenCost:    useUpstreamTokenCost,
-		RequestedModel:          requestedModel,
-		RequiredTransport:       requiredTransport,
-		RequiredCapability:      requiredCapability,
-		RequiredImageCapability: requiredImageCapability,
-		SmartRouterCapability:   smartRouterCapability,
-		RequireCompact:          requireCompact,
-		ExcludedIDs:             excludedIDs,
+		GroupID:                          groupID,
+		Platform:                         platform,
+		SessionHash:                      sessionHash,
+		StickyAccountID:                  stickyAccountID,
+		GuardianParentAccountID:          guardianParentAccountID,
+		StickyPreviousAccountID:          stickyPreviousAccountID,
+		StickyWeighted:                   stickyWeighted,
+		SubscriptionPriority:             subscriptionPriority,
+		AccountPrioritySchedulingEnabled: accountPrioritySchedulingEnabled,
+		PreserveStickyBinding:            preserveGuardianParentBinding,
+		RequirePrivacySet:                s.openAIGroupRequiresPrivacySet(ctx, groupID),
+		PreviousResponseID:               previousResponseID,
+		PreviousResponseCanMove:          previousResponseCanMove,
+		UseUpstreamTokenCost:             useUpstreamTokenCost,
+		RequestedModel:                   requestedModel,
+		RequiredTransport:                requiredTransport,
+		RequiredCapability:               requiredCapability,
+		RequiredImageCapability:          requiredImageCapability,
+		SmartRouterCapability:            smartRouterCapability,
+		RequireCompact:                   requireCompact,
+		ExcludedIDs:                      excludedIDs,
 	})
 }
 

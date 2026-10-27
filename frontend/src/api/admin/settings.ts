@@ -694,6 +694,7 @@ export interface SystemSettings {
   /** null means OAuth accounts use their individual account rates. */
   openai_oauth_scheduling_rate_multiplier?: number | null;
   openai_advanced_scheduler_enabled?: boolean;
+  gateway_account_priority_scheduling_enabled?: boolean;
   openai_advanced_scheduler_sticky_weighted_enabled?: boolean;
   openai_advanced_scheduler_subscription_priority_enabled?: boolean;
   openai_advanced_scheduler_lb_top_k?: string;
@@ -1018,6 +1019,7 @@ export interface UpdateSettingsRequest {
   /** Omit to preserve the override; null clears it; zero is an explicit rate. */
   openai_oauth_scheduling_rate_multiplier?: number | null;
   openai_advanced_scheduler_enabled?: boolean;
+  gateway_account_priority_scheduling_enabled?: boolean;
   openai_advanced_scheduler_sticky_weighted_enabled?: boolean;
   openai_advanced_scheduler_subscription_priority_enabled?: boolean;
   openai_advanced_scheduler_lb_top_k?: string;

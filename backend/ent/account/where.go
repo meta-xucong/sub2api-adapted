@@ -115,6 +115,11 @@ func Priority(v int) predicate.Account {
 	return predicate.Account(sql.FieldEQ(FieldPriority, v))
 }
 
+// PriorityScheduling applies equality check predicate on the "priority_scheduling" field. It's identical to PrioritySchedulingEQ.
+func PriorityScheduling(v bool) predicate.Account {
+	return predicate.Account(sql.FieldEQ(FieldPriorityScheduling, v))
+}
+
 // RateMultiplier applies equality check predicate on the "rate_multiplier" field. It's identical to RateMultiplierEQ.
 func RateMultiplier(v float64) predicate.Account {
 	return predicate.Account(sql.FieldEQ(FieldRateMultiplier, v))
@@ -803,6 +808,16 @@ func PriorityLT(v int) predicate.Account {
 // PriorityLTE applies the LTE predicate on the "priority" field.
 func PriorityLTE(v int) predicate.Account {
 	return predicate.Account(sql.FieldLTE(FieldPriority, v))
+}
+
+// PrioritySchedulingEQ applies the EQ predicate on the "priority_scheduling" field.
+func PrioritySchedulingEQ(v bool) predicate.Account {
+	return predicate.Account(sql.FieldEQ(FieldPriorityScheduling, v))
+}
+
+// PrioritySchedulingNEQ applies the NEQ predicate on the "priority_scheduling" field.
+func PrioritySchedulingNEQ(v bool) predicate.Account {
+	return predicate.Account(sql.FieldNEQ(FieldPriorityScheduling, v))
 }
 
 // RateMultiplierEQ applies the EQ predicate on the "rate_multiplier" field.

@@ -181,6 +181,20 @@ func (_c *AccountCreate) SetNillablePriority(v *int) *AccountCreate {
 	return _c
 }
 
+// SetPriorityScheduling sets the "priority_scheduling" field.
+func (_c *AccountCreate) SetPriorityScheduling(v bool) *AccountCreate {
+	_c.mutation.SetPriorityScheduling(v)
+	return _c
+}
+
+// SetNillablePriorityScheduling sets the "priority_scheduling" field if the given value is not nil.
+func (_c *AccountCreate) SetNillablePriorityScheduling(v *bool) *AccountCreate {
+	if v != nil {
+		_c.SetPriorityScheduling(*v)
+	}
+	return _c
+}
+
 // SetRateMultiplier sets the "rate_multiplier" field.
 func (_c *AccountCreate) SetRateMultiplier(v float64) *AccountCreate {
 	_c.mutation.SetRateMultiplier(v)
@@ -561,6 +575,10 @@ func (_c *AccountCreate) defaults() error {
 		v := account.DefaultPriority
 		_c.mutation.SetPriority(v)
 	}
+	if _, ok := _c.mutation.PriorityScheduling(); !ok {
+		v := account.DefaultPriorityScheduling
+		_c.mutation.SetPriorityScheduling(v)
+	}
 	if _, ok := _c.mutation.RateMultiplier(); !ok {
 		v := account.DefaultRateMultiplier
 		_c.mutation.SetRateMultiplier(v)
@@ -627,6 +645,9 @@ func (_c *AccountCreate) check() error {
 	}
 	if _, ok := _c.mutation.Priority(); !ok {
 		return &ValidationError{Name: "priority", err: errors.New(`ent: missing required field "Account.priority"`)}
+	}
+	if _, ok := _c.mutation.PriorityScheduling(); !ok {
+		return &ValidationError{Name: "priority_scheduling", err: errors.New(`ent: missing required field "Account.priority_scheduling"`)}
 	}
 	if _, ok := _c.mutation.RateMultiplier(); !ok {
 		return &ValidationError{Name: "rate_multiplier", err: errors.New(`ent: missing required field "Account.rate_multiplier"`)}
@@ -736,6 +757,10 @@ func (_c *AccountCreate) createSpec() (*Account, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.Priority(); ok {
 		_spec.SetField(account.FieldPriority, field.TypeInt, value)
 		_node.Priority = value
+	}
+	if value, ok := _c.mutation.PriorityScheduling(); ok {
+		_spec.SetField(account.FieldPriorityScheduling, field.TypeBool, value)
+		_node.PriorityScheduling = value
 	}
 	if value, ok := _c.mutation.RateMultiplier(); ok {
 		_spec.SetField(account.FieldRateMultiplier, field.TypeFloat64, value)
@@ -1146,6 +1171,18 @@ func (u *AccountUpsert) UpdatePriority() *AccountUpsert {
 // AddPriority adds v to the "priority" field.
 func (u *AccountUpsert) AddPriority(v int) *AccountUpsert {
 	u.Add(account.FieldPriority, v)
+	return u
+}
+
+// SetPriorityScheduling sets the "priority_scheduling" field.
+func (u *AccountUpsert) SetPriorityScheduling(v bool) *AccountUpsert {
+	u.Set(account.FieldPriorityScheduling, v)
+	return u
+}
+
+// UpdatePriorityScheduling sets the "priority_scheduling" field to the value that was provided on create.
+func (u *AccountUpsert) UpdatePriorityScheduling() *AccountUpsert {
+	u.SetExcluded(account.FieldPriorityScheduling)
 	return u
 }
 
@@ -1718,6 +1755,20 @@ func (u *AccountUpsertOne) AddPriority(v int) *AccountUpsertOne {
 func (u *AccountUpsertOne) UpdatePriority() *AccountUpsertOne {
 	return u.Update(func(s *AccountUpsert) {
 		s.UpdatePriority()
+	})
+}
+
+// SetPriorityScheduling sets the "priority_scheduling" field.
+func (u *AccountUpsertOne) SetPriorityScheduling(v bool) *AccountUpsertOne {
+	return u.Update(func(s *AccountUpsert) {
+		s.SetPriorityScheduling(v)
+	})
+}
+
+// UpdatePriorityScheduling sets the "priority_scheduling" field to the value that was provided on create.
+func (u *AccountUpsertOne) UpdatePriorityScheduling() *AccountUpsertOne {
+	return u.Update(func(s *AccountUpsert) {
+		s.UpdatePriorityScheduling()
 	})
 }
 
@@ -2503,6 +2554,20 @@ func (u *AccountUpsertBulk) AddPriority(v int) *AccountUpsertBulk {
 func (u *AccountUpsertBulk) UpdatePriority() *AccountUpsertBulk {
 	return u.Update(func(s *AccountUpsert) {
 		s.UpdatePriority()
+	})
+}
+
+// SetPriorityScheduling sets the "priority_scheduling" field.
+func (u *AccountUpsertBulk) SetPriorityScheduling(v bool) *AccountUpsertBulk {
+	return u.Update(func(s *AccountUpsert) {
+		s.SetPriorityScheduling(v)
+	})
+}
+
+// UpdatePriorityScheduling sets the "priority_scheduling" field to the value that was provided on create.
+func (u *AccountUpsertBulk) UpdatePriorityScheduling() *AccountUpsertBulk {
+	return u.Update(func(s *AccountUpsert) {
+		s.UpdatePriorityScheduling()
 	})
 }
 

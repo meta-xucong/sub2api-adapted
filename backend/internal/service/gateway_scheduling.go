@@ -6,6 +6,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	mathrand "math/rand"
@@ -164,6 +165,10 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 	}
 
 	if s.concurrencyService == nil || !cfg.LoadBatchEnabled {
+		if accountPrioritySchedulingEnabledForService(ctx, s.settingService) &&
+			!s.hasUsablePriorityStickyBinding(ctx, group, groupID, stickyAccountID, requestedModel, excludedIDs) {
+			return s.selectFromPriorityPoolWithoutLoadAwareness(ctx, groupID, sessionHash, requestedModel, excludedIDs, cfg)
+		}
 		// 复制排除列表，用于会话限制拒绝时的重试
 		localExcluded := make(map[int64]struct{})
 		for k, v := range excludedIDs {
@@ -747,8 +752,19 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 		// 分层过滤选择：优先级 →（可选）最早重置 → 负载率 → LRU
 		for len(available) > 0 {
 			priorityPool := available
+			if priorityEnabled := accountPrioritySchedulingEnabledForService(ctx, s.settingService); priorityEnabled {
+				preferred := make([]accountWithLoad, 0, len(available))
+				for _, candidate := range available {
+					if candidate.account.PriorityScheduling {
+						preferred = append(preferred, candidate)
+					}
+				}
+				if len(preferred) > 0 {
+					priorityPool = preferred
+				}
+			}
 			if len(routeRanks) > 0 {
-				priorityPool = filterGatewayAccountLoadsByMinRoutePriority(available, routeRanks)
+				priorityPool = filterGatewayAccountLoadsByMinRoutePriority(priorityPool, routeRanks)
 			}
 			// 1. 取优先级最小的集合
 			candidates := filterByMinPriority(priorityPool)
@@ -794,6 +810,10 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 	if len(routeRanks) > 0 {
 		stableSortAccountsByRoutePriority(candidates, routeRanks)
 	}
+	if accountPrioritySchedulingEnabledForService(ctx, s.settingService) {
+		preferred, regular := splitPrioritySchedulingAccounts(candidates, true)
+		candidates = append(regular, preferred...)
+	}
 	for _, acc := range candidates {
 		// 会话数量限制检查（等待计划也需要占用会话配额）
 		if !s.checkAndRegisterSession(ctx, acc, sessionHash) {
@@ -809,11 +829,141 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 	return nil, ErrNoAvailableAccounts
 }
 
+func (s *GatewayService) hasUsablePriorityStickyBinding(ctx context.Context, group *Group, groupID *int64, accountID int64, requestedModel string, excludedIDs map[int64]struct{}) bool {
+	if accountID <= 0 || (s.accountRepo == nil && s.schedulerSnapshot == nil) {
+		return false
+	}
+	if _, excluded := excludedIDs[accountID]; excluded {
+		return false
+	}
+	account, err := s.getSchedulableAccount(ctx, accountID)
+	if err != nil || account == nil || shouldClearStickySession(account, requestedModel) {
+		return false
+	}
+	platform, hasForcePlatform, err := s.resolvePlatform(ctx, groupID, group, requestedModel)
+	if err != nil {
+		return false
+	}
+	useMixed := !hasForcePlatform && (platform == PlatformAnthropic || platform == PlatformGemini)
+	routingAccountIDs := s.routingAccountIDsForRequest(ctx, groupID, requestedModel, platform)
+	platformMatches := account.Platform == platform ||
+		(useMixed && account.Platform == PlatformAntigravity && account.IsMixedSchedulingEnabled())
+	checkUpstreamRestriction := (useMixed && len(routingAccountIDs) == 0) || (!useMixed && len(routingAccountIDs) > 0)
+	if !platformMatches || !s.isAccountInGroup(account, groupID) ||
+		(requestedModel != "" && !s.isModelSupportedByAccountWithContext(ctx, account, requestedModel)) ||
+		!s.isGatewayAccountProfitEligible(ctx, account) ||
+		!s.isAccountSchedulableForModelSelection(ctx, account, requestedModel) || !s.isAccountSchedulableForQuota(account) ||
+		!s.isAccountSchedulableForWindowCost(ctx, account, true) || !s.isAccountSchedulableForRPM(ctx, account, true) ||
+		(checkUpstreamRestriction && s.isStickyAccountUpstreamRestricted(ctx, groupID, account, requestedModel)) {
+		return false
+	}
+	return len(routingAccountIDs) == 0 || containsInt64(routingAccountIDs, accountID)
+}
+
+func (s *GatewayService) selectFromPriorityPoolWithoutLoadAwareness(ctx context.Context, groupID *int64, sessionHash, requestedModel string, excludedIDs map[int64]struct{}, cfg config.GatewaySchedulingConfig) (*AccountSelectionResult, error) {
+	group, resolvedGroupID, err := s.resolveGatewayGroup(ctx, groupID)
+	if err != nil {
+		return nil, err
+	}
+	groupID = resolvedGroupID
+	ctx = s.withGroupContext(ctx, group)
+	platform, hasForcePlatform, err := s.resolvePlatform(ctx, groupID, group, requestedModel)
+	if err != nil {
+		return nil, err
+	}
+	accounts, _, err := s.listSchedulableAccounts(ctx, groupID, platform, hasForcePlatform)
+	if err != nil {
+		return nil, err
+	}
+	preferred, regular := splitPrioritySchedulingAccounts(accountPointers(accounts), true)
+	allAccounts := append(append([]*Account{}, preferred...), regular...)
+	if len(allAccounts) == 0 {
+		return nil, ErrNoAvailableAccounts
+	}
+	var preferredWait, regularWait []*Account
+	selectionErr := ErrNoAvailableAccounts
+	for _, pool := range [][]*Account{preferred, regular} {
+		if len(pool) == 0 {
+			continue
+		}
+		poolIDs := make(map[int64]struct{}, len(pool))
+		for _, account := range pool {
+			poolIDs[account.ID] = struct{}{}
+		}
+		localExcluded := make(map[int64]struct{}, len(excludedIDs)+len(allAccounts)-len(pool))
+		for id := range excludedIDs {
+			localExcluded[id] = struct{}{}
+		}
+		for _, account := range allAccounts {
+			if _, inPool := poolIDs[account.ID]; !inPool {
+				localExcluded[account.ID] = struct{}{}
+			}
+		}
+		for {
+			account, selectErr := s.SelectAccountForModelWithExclusions(ctx, groupID, "", requestedModel, localExcluded)
+			if selectErr != nil {
+				if !errors.Is(selectErr, ErrNoAvailableAccounts) {
+					return nil, selectErr
+				}
+				selectionErr = selectErr
+				break
+			}
+			result, acquireErr := s.tryAcquireAccountSlot(ctx, account.ID, account.Concurrency)
+			if acquireErr == nil && result.Acquired {
+				if !s.checkAndRegisterSession(ctx, account, sessionHash) {
+					result.ReleaseFunc()
+					localExcluded[account.ID] = struct{}{}
+					continue
+				}
+				if sessionHash != "" && s.cache != nil {
+					_ = s.bindGatewayStickySessionDuringSelection(ctx, groupID, sessionHash, account.ID)
+				}
+				return s.newSelectionResult(ctx, account, true, result.ReleaseFunc, nil)
+			}
+			if account.PriorityScheduling {
+				preferredWait = append(preferredWait, account)
+			} else {
+				regularWait = append(regularWait, account)
+			}
+			localExcluded[account.ID] = struct{}{}
+		}
+	}
+
+	// Native fallback waits try unmarked accounts first and then marked accounts.
+	for _, waitCandidates := range [][]*Account{regularWait, preferredWait} {
+		for _, account := range waitCandidates {
+			if !s.checkAndRegisterSession(ctx, account, sessionHash) {
+				continue
+			}
+			if sessionHash != "" && s.cache != nil {
+				_ = s.bindGatewayStickySessionDuringSelection(ctx, groupID, sessionHash, account.ID)
+			}
+			return s.newSelectionResult(ctx, account, false, nil, &AccountWaitPlan{
+				AccountID: account.ID, MaxConcurrency: account.Concurrency,
+				Timeout: cfg.FallbackWaitTimeout, MaxWaiting: cfg.FallbackMaxWaiting,
+			})
+		}
+	}
+	return nil, selectionErr
+}
+
+func accountPointers(accounts []Account) []*Account {
+	pointers := make([]*Account, 0, len(accounts))
+	for i := range accounts {
+		pointers = append(pointers, &accounts[i])
+	}
+	return pointers
+}
+
 func (s *GatewayService) tryAcquireByLegacyOrder(ctx context.Context, candidates []*Account, groupID *int64, sessionHash string, preferOAuth bool) (*AccountSelectionResult, bool, error) {
 	ordered := append([]*Account(nil), candidates...)
 	sortAccountsByPriorityAndLastUsed(ordered, preferOAuth)
 	if ranks := unifiedGatewayRoutePriorityRanks(ctx, ordered, nil, nil); len(ranks) > 0 {
 		stableSortAccountsByRoutePriority(ordered, ranks)
+	}
+	if accountPrioritySchedulingEnabledForService(ctx, s.settingService) {
+		preferred, regular := splitPrioritySchedulingAccounts(ordered, true)
+		ordered = append(preferred, regular...)
 	}
 
 	for _, acc := range ordered {
@@ -2169,8 +2319,11 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 				}
 			}
 		}
+		routedEligible = prioritySchedulingCandidateSubset(routedEligible, accountPrioritySchedulingEnabledForService(ctx, s.settingService))
 		if ranks := unifiedGatewayRoutePriorityRanks(ctx, routedEligible, nil, nil); len(ranks) > 0 {
 			selected = selectGatewayAccountByNativeOrder(routePriorityMinLayerAccounts(routedEligible, ranks), preferOAuth, false)
+		} else {
+			selected = selectGatewayAccountByNativeOrder(routedEligible, preferOAuth, false)
 		}
 
 		if selected != nil {
@@ -2291,8 +2444,11 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 			}
 		}
 	}
+	eligible = prioritySchedulingCandidateSubset(eligible, accountPrioritySchedulingEnabledForService(ctx, s.settingService))
 	if ranks := unifiedGatewayRoutePriorityRanks(ctx, eligible, nil, nil); len(ranks) > 0 {
 		selected = selectGatewayAccountByNativeOrder(routePriorityMinLayerAccounts(eligible, ranks), preferOAuth, false)
+	} else {
+		selected = selectGatewayAccountByNativeOrder(eligible, preferOAuth, false)
 	}
 
 	if selected == nil {
@@ -2569,8 +2725,11 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 			}
 		}
 	}
+	eligible = prioritySchedulingCandidateSubset(eligible, accountPrioritySchedulingEnabledForService(ctx, s.settingService))
 	if ranks := unifiedGatewayRoutePriorityRanks(ctx, eligible, nil, nil); len(ranks) > 0 {
 		selected = selectGatewayAccountByNativeOrder(routePriorityMinLayerAccounts(eligible, ranks), preferOAuth, true)
+	} else {
+		selected = selectGatewayAccountByNativeOrder(eligible, preferOAuth, true)
 	}
 
 	if selected == nil {

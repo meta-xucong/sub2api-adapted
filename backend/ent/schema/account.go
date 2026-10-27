@@ -106,6 +106,8 @@ func (Account) Fields() []ent.Field {
 		// 调度器会优先使用高优先级的账户
 		field.Int("priority").
 			Default(50),
+		field.Bool("priority_scheduling").
+			Default(false),
 
 		// rate_multiplier: 账号计费倍率（>=0，允许 0 表示该账号计费为 0）
 		// 仅影响账号维度计费口径，不影响用户/API Key 扣费（分组倍率）

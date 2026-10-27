@@ -1256,6 +1256,10 @@ export default {
         sourceHint: '启用后必须明确选择一个来源；未配置状态不会对外展示该支付方式。',
         sourceRequiredError: '{title} 已启用，请先选择支付来源。'
       },
+      gatewayAccountPriorityScheduling: {
+        title: '网关账号优先池',
+        description: '开启后，账号设置中勾选“优先调度”的账号先尝试；其他符合条件的账号仍可作为回退。'
+      },
       openaiExperimentalScheduler: {
         title: 'OpenAI 实验调度策略',
         description: '默认关闭。开启后仅影响本网关在 OpenAI 账号间的实验性调度选择逻辑，不代表上游 OpenAI 官方能力。',
