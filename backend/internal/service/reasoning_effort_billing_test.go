@@ -41,7 +41,7 @@ func TestReasoningEffortBillingSupportsAllModelsAndLevels(t *testing.T) {
 				ReasoningEffortMultipliers: map[string]float64{"none": 0.5, "high": 1.5, "max": 3},
 			}}, nil)
 			group := &Group{ID: 100, Platform: PlatformOpenAI}
-			for effort, multiplier := range map[string]float64{"none": 0.5, "high": 1.5, "max": 3, "low": 1, "": 1} {
+			for effort, multiplier := range map[string]float64{"none": 0.5, "high": 1.5, "max": 3, "low": 1, "medium": 1, "": 1} {
 				cost, err := bs.CalculateTokenCostForRequest(TokenCostRequest{
 					Ctx: context.Background(), Model: model, Group: group, Resolver: resolver,
 					Tokens: UsageTokens{InputTokens: 1000, OutputTokens: 200}, RateMultiplier: 0.8,
@@ -50,6 +50,7 @@ func TestReasoningEffortBillingSupportsAllModelsAndLevels(t *testing.T) {
 				require.NoError(t, err)
 				require.InDelta(t, 0.0014*multiplier, cost.TotalCost, 1e-12, effort)
 				require.InDelta(t, cost.TotalCost*0.8, cost.ActualCost, 1e-12, effort)
+				require.Equal(t, multiplier != 1, cost.reasoningEffortBillingApplied, effort)
 			}
 		})
 	}
@@ -89,9 +90,11 @@ func TestReasoningEffortBillingStacksWithContextTierServiceTierAndTimePricing(t 
 			bs := &BillingService{}
 			standard, err := bs.CalculateCostUnified(input)
 			require.NoError(t, err)
+			require.False(t, standard.reasoningEffortBillingApplied)
 			input.ReasoningEffort = "high"
 			adjusted, err := bs.CalculateCostUnified(input)
 			require.NoError(t, err)
+			require.True(t, adjusted.reasoningEffortBillingApplied)
 			for _, costs := range [][2]float64{
 				{standard.InputCost, adjusted.InputCost}, {standard.ImageInputCost, adjusted.ImageInputCost},
 				{standard.OutputCost, adjusted.OutputCost}, {standard.ImageOutputCost, adjusted.ImageOutputCost},
@@ -102,6 +105,22 @@ func TestReasoningEffortBillingStacksWithContextTierServiceTierAndTimePricing(t 
 				require.InDelta(t, costs[0]*1.7, costs[1], 1e-12)
 			}
 			require.Equal(t, standard.LongContextBillingApplied, adjusted.LongContextBillingApplied)
+		})
+	}
+}
+
+func TestUnifiedGatewayReasoningEffortSurchargeRequiresAppliedMultiplier(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cost *CostBreakdown
+		want bool
+	}{
+		{name: "nil cost"},
+		{name: "effort label without a configured surcharge", cost: &CostBreakdown{}, want: false},
+		{name: "actual non-unit multiplier", cost: &CostBreakdown{reasoningEffortBillingApplied: true}, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, unifiedGatewayReasoningEffortMultiplierApplied(tc.cost))
 		})
 	}
 }
@@ -133,6 +152,7 @@ func TestReasoningEffortBillingGroupOverrideAndUnitBilling(t *testing.T) {
 				}
 				require.InDelta(t, base*multiplier, cost.TotalCost, 1e-12)
 				require.InDelta(t, cost.TotalCost*0.8, cost.ActualCost, 1e-12)
+				require.Equal(t, multiplier != 1, cost.reasoningEffortBillingApplied)
 			}
 		})
 	}

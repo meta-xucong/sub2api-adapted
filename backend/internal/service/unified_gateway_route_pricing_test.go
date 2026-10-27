@@ -974,6 +974,37 @@ func TestOpenAILongContextBillingMarkerDoesNotHideExplicitRouteLongContextCard(t
 	require.True(t, cost.LongContextBillingApplied, "the existing native-tier marker remains intact")
 }
 
+func TestOpenAIRouteTokenCardEligibilityUsesAppliedReasoningMultiplier(t *testing.T) {
+	ctx := context.Background()
+	apiKey := &APIKey{GroupID: routePricingInt64Ptr(7)}
+	for _, effort := range []string{"none", "low", "medium", "high", "xhigh", "max", "custom"} {
+		t.Run(effort, func(t *testing.T) {
+			result := &OpenAIForwardResult{ReasoningEffort: routePricingStringPtr(effort)}
+			cost := &CostBreakdown{}
+			require.True(t, openAIUnifiedGatewayRouteTokenPricingEligible(ctx, result, cost, apiKey, time.Time{}, 42, "custom-model"),
+				"the effort label alone must not suppress a route card")
+			cost.reasoningEffortBillingApplied = true
+			require.False(t, openAIUnifiedGatewayRouteTokenPricingEligible(ctx, result, cost, apiKey, time.Time{}, 42, "custom-model"),
+				"a real non-unit reasoning multiplier must preserve native fallback")
+		})
+	}
+}
+
+func TestGatewayRouteTokenCardEligibilityUsesAppliedReasoningMultiplier(t *testing.T) {
+	apiKey := &APIKey{GroupID: routePricingInt64Ptr(7)}
+	for _, effort := range []string{"none", "low", "medium", "high", "xhigh", "max", "custom"} {
+		t.Run(effort, func(t *testing.T) {
+			result := &ForwardResult{ReasoningEffort: routePricingStringPtr(effort)}
+			cost := &CostBreakdown{}
+			require.True(t, gatewayUnifiedGatewayRouteTokenPricingEligible(result, cost, apiKey, time.Time{}),
+				"the effort label alone must not suppress a route card")
+			cost.reasoningEffortBillingApplied = true
+			require.False(t, gatewayUnifiedGatewayRouteTokenPricingEligible(result, cost, apiKey, time.Time{}),
+				"a real non-unit reasoning multiplier must preserve native fallback")
+		})
+	}
+}
+
 func TestApplyUnifiedGatewayBailianBasePriceAndYeTokenLineRate(t *testing.T) {
 	apiKey := &APIKey{GroupID: routePricingInt64Ptr(7)}
 	decision := UnifiedGatewayRoutePricingDecision{

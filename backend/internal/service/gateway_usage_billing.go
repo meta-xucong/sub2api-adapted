@@ -761,6 +761,13 @@ func logResponseModelBillingApplied(component string, account *Account, requestI
 }
 
 // recordUsageCore 是 RecordUsage 的核心实现。
+func gatewayUnifiedGatewayRouteTokenPricingEligible(result *ForwardResult, cost *CostBreakdown, apiKey *APIKey, pricingAt time.Time) bool {
+	return result != nil && result.ImageCount == 0 && result.AudioUsage == nil &&
+		result.SearchCount == 0 && flatUnifiedGatewayServiceTier(result.ServiceTier) &&
+		!unifiedGatewayTokenBasePriceHasDynamicGroupPeak(apiKey, pricingAt) &&
+		cost != nil && !unifiedGatewayReasoningEffortMultiplierApplied(cost) && !cost.LongContextBillingApplied
+}
+
 func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsageCoreInput) error {
 	result := input.Result
 	apiKey := input.APIKey
@@ -856,11 +863,7 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 			}
 		}
 	}
-	routeTokenPricingEligible := result.ImageCount == 0 && result.AudioUsage == nil &&
-		result.SearchCount == 0 && flatUnifiedGatewayServiceTier(result.ServiceTier) &&
-		!unifiedGatewayTokenBasePriceHasDynamicGroupPeak(apiKey, pricingAt) &&
-		(result.ReasoningEffort == nil || strings.TrimSpace(*result.ReasoningEffort) == "") &&
-		cost != nil && !cost.LongContextBillingApplied
+	routeTokenPricingEligible := gatewayUnifiedGatewayRouteTokenPricingEligible(result, cost, apiKey, pricingAt)
 	cost = ApplyUnifiedGatewayRoutePricingWithTokenUsage(
 		ctx, apiKey, account.ID, effectiveBillingModel, result.ImageSize, "", result.ImageSizeBreakdown, 0, 0, "", 0, cost, imageMultiplier, 1,
 		UnifiedGatewayRouteTokenUsage{

@@ -207,9 +207,10 @@ type CostBreakdown struct {
 	CacheReadCost             float64
 	TotalCost                 float64
 	ActualCost                float64 // 应用倍率后的实际费用
-	BillingMode               string  // 计费模式（"token"/"per_request"/"image"），由 CalculateCostUnified 填充
-	LongContextBillingApplied bool
-	routePricingApplied       bool // Marks a matched unified-gateway route tariff for subscription billing classification.
+	BillingMode                     string // 计费模式（"token"/"per_request"/"image"），由 CalculateCostUnified 填充
+	LongContextBillingApplied       bool
+	routePricingApplied             bool // Marks a matched unified-gateway route tariff for subscription billing classification.
+	reasoningEffortBillingApplied   bool // Marks an actually applied non-unit reasoning-effort multiplier.
 }
 
 func applyCostBreakdownMultiplier(cost *CostBreakdown, multiplier float64) {
@@ -252,6 +253,19 @@ func reasoningEffortBillingMultiplier(effort string, multipliers map[string]floa
 		return 1
 	}
 	return multiplier
+}
+
+func applyReasoningEffortBillingMultiplier(cost *CostBreakdown, effort string, multipliers map[string]float64) {
+	multiplier := reasoningEffortBillingMultiplier(effort, multipliers)
+	if cost == nil || multiplier == 1 {
+		return
+	}
+	cost.reasoningEffortBillingApplied = true
+	applyCostBreakdownMultiplier(cost, multiplier)
+}
+
+func unifiedGatewayReasoningEffortMultiplierApplied(cost *CostBreakdown) bool {
+	return cost != nil && cost.reasoningEffortBillingApplied
 }
 
 func resolvedChannelTimeMultiplier(resolved *ResolvedPricing, at time.Time) float64 {
@@ -1493,7 +1507,7 @@ func (s *BillingService) CalculateCostUnified(input CostInput) (*CostBreakdown, 
 			return nil, err
 		}
 		breakdown := s.computeTokenBreakdown(pricing, input.Tokens, input.RateMultiplier, input.ServiceTier, applyLongContextBilling)
-		applyCostBreakdownMultiplier(breakdown, reasoningEffortBillingMultiplier(input.ReasoningEffort, pricing.ReasoningEffortMultipliers))
+		applyReasoningEffortBillingMultiplier(breakdown, input.ReasoningEffort, pricing.ReasoningEffortMultipliers)
 		return breakdown, nil
 	}
 
@@ -1518,7 +1532,7 @@ func (s *BillingService) CalculateCostUnified(input CostInput) (*CostBreakdown, 
 	case BillingModePerRequest, BillingModeImage, BillingModeVideo:
 		breakdown, err = s.calculatePerRequestCost(resolved, input)
 		if err == nil && resolved.channelPricing != nil {
-			applyCostBreakdownMultiplier(breakdown, reasoningEffortBillingMultiplier(input.ReasoningEffort, resolved.channelPricing.ReasoningEffortMultipliers))
+			applyReasoningEffortBillingMultiplier(breakdown, input.ReasoningEffort, resolved.channelPricing.ReasoningEffortMultipliers)
 		}
 	default: // BillingModeToken
 		breakdown, err = s.calculateTokenCost(resolved, input)
@@ -1583,7 +1597,7 @@ func (s *BillingService) calculateTokenCost(resolved *ResolvedPricing, input Cos
 
 	breakdown := s.computeTokenBreakdown(pricing, input.Tokens, input.RateMultiplier, input.ServiceTier, applyLongCtx)
 	applyCostBreakdownMultiplier(breakdown, resolvedChannelTimeMultiplier(resolved, input.PricingAt))
-	applyCostBreakdownMultiplier(breakdown, reasoningEffortBillingMultiplier(input.ReasoningEffort, pricing.ReasoningEffortMultipliers))
+	applyReasoningEffortBillingMultiplier(breakdown, input.ReasoningEffort, pricing.ReasoningEffortMultipliers)
 	return breakdown, nil
 }
 

@@ -137,7 +137,7 @@ func openAIUnifiedGatewayRouteTokenPricingEligible(ctx context.Context, result *
 		result.ImageRequest || result.ImageCount != 0 || result.VideoCount != 0 || result.WebSearchCalls != 0 ||
 		result.AudioUsage != nil || result.SearchCount != 0 || !flatUnifiedGatewayServiceTier(result.ServiceTier) ||
 		unifiedGatewayTokenBasePriceHasDynamicGroupPeak(apiKey, pricingAt) ||
-		(result.ReasoningEffort != nil && strings.TrimSpace(*result.ReasoningEffort) != "") {
+		unifiedGatewayReasoningEffortMultiplierApplied(cost) {
 		return false
 	}
 	return !cost.LongContextBillingApplied || unifiedGatewayLongContextRouteCardAvailable(ctx, accountID, billingModel)
