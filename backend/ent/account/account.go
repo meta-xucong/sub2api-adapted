@@ -44,6 +44,8 @@ const (
 	FieldLoadFactor = "load_factor"
 	// FieldPriority holds the string denoting the priority field in the database.
 	FieldPriority = "priority"
+	// FieldPriorityScheduling holds the string denoting the priority_scheduling field in the database.
+	FieldPriorityScheduling = "priority_scheduling"
 	// FieldRateMultiplier holds the string denoting the rate_multiplier field in the database.
 	FieldRateMultiplier = "rate_multiplier"
 	// FieldStatus holds the string denoting the status field in the database.
@@ -145,6 +147,7 @@ var Columns = []string{
 	FieldConcurrency,
 	FieldLoadFactor,
 	FieldPriority,
+	FieldPriorityScheduling,
 	FieldRateMultiplier,
 	FieldStatus,
 	FieldErrorMessage,
@@ -208,6 +211,8 @@ var (
 	DefaultConcurrency int
 	// DefaultPriority holds the default value on creation for the "priority" field.
 	DefaultPriority int
+	// DefaultPriorityScheduling holds the default value on creation for the "priority_scheduling" field.
+	DefaultPriorityScheduling bool
 	// DefaultRateMultiplier holds the default value on creation for the "rate_multiplier" field.
 	DefaultRateMultiplier float64
 	// DefaultStatus holds the default value on creation for the "status" field.
@@ -314,6 +319,11 @@ func ByLoadFactor(opts ...sql.OrderTermOption) OrderOption {
 // ByPriority orders the results by the priority field.
 func ByPriority(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldPriority, opts...).ToFunc()
+}
+
+// ByPriorityScheduling orders the results by the priority_scheduling field.
+func ByPriorityScheduling(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldPriorityScheduling, opts...).ToFunc()
 }
 
 // ByRateMultiplier orders the results by the rate_multiplier field.

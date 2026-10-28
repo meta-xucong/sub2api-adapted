@@ -1262,6 +1262,10 @@ export default {
         sourceHint: 'Choose an explicit source before enabling the method. Not configured methods are not exposed.',
         sourceRequiredError: 'Select a payment source before enabling {title}.'
       },
+      gatewayAccountPriorityScheduling: {
+        title: 'Gateway account priority pool',
+        description: 'When enabled, accounts marked “Priority scheduling” are tried first; other eligible accounts remain available as fallback.'
+      },
       openaiExperimentalScheduler: {
         title: 'OpenAI experimental scheduler policy',
         description: "Disabled by default. When enabled, this only changes the gateway's experimental account-selection policy for OpenAI traffic; it does not indicate an upstream OpenAI capability.",

@@ -518,6 +518,9 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	if before.OpenAIAdvancedSchedulerEnabled != after.OpenAIAdvancedSchedulerEnabled {
 		changed = append(changed, "openai_advanced_scheduler_enabled")
 	}
+	if before.AccountPrioritySchedulingEnabled != after.AccountPrioritySchedulingEnabled {
+		changed = append(changed, service.SettingKeyAccountPrioritySchedulingEnabled)
+	}
 	if before.OpenAIAdvancedSchedulerStickyWeightedEnabled != after.OpenAIAdvancedSchedulerStickyWeightedEnabled {
 		changed = append(changed, "openai_advanced_scheduler_sticky_weighted_enabled")
 	}

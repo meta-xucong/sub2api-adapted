@@ -187,6 +187,7 @@ type CreateAccountRequest struct {
 	GroupIDs           []int64        `json:"group_ids"`
 	ExpiresAt          *time.Time     `json:"expires_at"`
 	AutoPauseOnExpired *bool          `json:"auto_pause_on_expired"`
+	PriorityScheduling bool           `json:"priority_scheduling"`
 }
 
 // UpdateAccountRequest 更新账号请求
@@ -202,6 +203,7 @@ type UpdateAccountRequest struct {
 	GroupIDs           *[]int64        `json:"group_ids"`
 	ExpiresAt          *time.Time      `json:"expires_at"`
 	AutoPauseOnExpired *bool           `json:"auto_pause_on_expired"`
+	PriorityScheduling *bool           `json:"priority_scheduling"`
 }
 
 // AccountService 账号管理服务
@@ -236,17 +238,18 @@ func (s *AccountService) Create(ctx context.Context, req CreateAccountRequest) (
 
 	// 创建账号
 	account := &Account{
-		Name:        req.Name,
-		Notes:       normalizeAccountNotes(req.Notes),
-		Platform:    req.Platform,
-		Type:        req.Type,
-		Credentials: SanitizeStoredCredentials(req.Platform, req.Credentials),
-		Extra:       prepareCodexFingerprintExtraForCreate(req.Platform, req.Type, req.Extra),
-		ProxyID:     req.ProxyID,
-		Concurrency: req.Concurrency,
-		Priority:    req.Priority,
-		Status:      StatusActive,
-		ExpiresAt:   req.ExpiresAt,
+		Name:               req.Name,
+		Notes:              normalizeAccountNotes(req.Notes),
+		Platform:           req.Platform,
+		Type:               req.Type,
+		Credentials:        SanitizeStoredCredentials(req.Platform, req.Credentials),
+		Extra:              prepareCodexFingerprintExtraForCreate(req.Platform, req.Type, req.Extra),
+		ProxyID:            req.ProxyID,
+		Concurrency:        req.Concurrency,
+		Priority:           req.Priority,
+		PriorityScheduling: req.PriorityScheduling,
+		Status:             StatusActive,
+		ExpiresAt:          req.ExpiresAt,
 	}
 	if req.AutoPauseOnExpired != nil {
 		account.AutoPauseOnExpired = *req.AutoPauseOnExpired
@@ -359,6 +362,9 @@ func (s *AccountService) Update(ctx context.Context, id int64, req UpdateAccount
 
 	if req.Priority != nil {
 		account.Priority = *req.Priority
+	}
+	if req.PriorityScheduling != nil {
+		account.PriorityScheduling = *req.PriorityScheduling
 	}
 
 	if req.Status != nil {

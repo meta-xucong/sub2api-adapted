@@ -6,6 +6,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -1090,6 +1091,7 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 	if len(eligible) == 0 {
 		return nil, compactBlocked, filterStats
 	}
+	priorityEnabled := accountPrioritySchedulingEnabledForService(ctx, s.settingService)
 	rateOrder := openAILegacyUpstreamRateOrder{}
 	if preferLowUpstreamRate {
 		rateOrder = newOpenAILegacyUpstreamRateOrder(eligible, time.Now(), s.openAIOAuthSchedulingRateMultiplier(ctx))
@@ -1098,6 +1100,9 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 	routeRanks := s.openAIRoutePriorityRanksForRequest(ctx, priorityRequest, eligible)
 	sort.SliceStable(eligible, func(i, j int) bool {
 		a, b := eligible[i], eligible[j]
+		if priorityEnabled && a.PriorityScheduling != b.PriorityScheduling {
+			return a.PriorityScheduling
+		}
 		if requireCompact && compactTiers[a.ID] != compactTiers[b.ID] {
 			return compactTiers[a.ID] > compactTiers[b.ID]
 		}
@@ -1178,9 +1183,22 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 		}
 	}
 	if s.concurrencyService == nil || !cfg.LoadBatchEnabled {
-		account, stickyHit, err := s.selectAccountForModelWithExclusionsStickyHit(ctx, groupID, platform, sessionHash, requestedModel, excludedIDs, requireCompact, stickyAccountID, requiredCapability, preferLowUpstreamRate)
-		if err != nil {
-			return nil, err
+		var priorityStickyAccount *Account
+		if accountPrioritySchedulingEnabledForService(ctx, s.settingService) {
+			if stickyAccountID > 0 {
+				priorityStickyAccount = s.tryStickySessionHit(ctx, groupID, platform, sessionHash, requestedModel, excludedIDs, requireCompact, stickyAccountID, requiredCapability)
+			}
+			if priorityStickyAccount == nil {
+				return s.selectOpenAIFromPriorityPoolWithoutLoadAwareness(ctx, groupID, platform, sessionHash, requestedModel, excludedIDs, requireCompact, requiredCapability, preferLowUpstreamRate, cfg)
+			}
+		}
+		account, stickyHit := priorityStickyAccount, priorityStickyAccount != nil
+		if account == nil {
+			var err error
+			account, stickyHit, err = s.selectAccountForModelWithExclusionsStickyHit(ctx, groupID, platform, sessionHash, requestedModel, excludedIDs, requireCompact, stickyAccountID, requiredCapability, preferLowUpstreamRate)
+			if err != nil {
+				return nil, err
+			}
 		}
 		result, err := s.tryAcquireAccountSlot(ctx, account.ID, account.Concurrency)
 		if err == nil && result != nil && result.Acquired {
@@ -1409,6 +1427,18 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 		} else {
 			selectionOrder = append(selectionOrder, available...)
 		}
+		if accountPrioritySchedulingEnabledForService(ctx, s.settingService) {
+			preferred := make([]accountWithLoad, 0, len(selectionOrder))
+			regular := make([]accountWithLoad, 0, len(selectionOrder))
+			for _, item := range selectionOrder {
+				if item.account.PriorityScheduling {
+					preferred = append(preferred, item)
+				} else {
+					regular = append(regular, item)
+				}
+			}
+			selectionOrder = append(preferred, regular...)
+		}
 
 		for _, item := range selectionOrder {
 			fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, item.account, platform, requestedModel, false, requiredCapability)
@@ -1448,6 +1478,10 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 		}
 		if requireCompact {
 			ordered = prioritizeOpenAICompactAccounts(ordered)
+		}
+		if accountPrioritySchedulingEnabledForService(ctx, s.settingService) {
+			preferred, regular := splitPrioritySchedulingAccounts(ordered, true)
+			ordered = append(preferred, regular...)
 		}
 		for _, acc := range ordered {
 			fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, acc, platform, requestedModel, false, requiredCapability)
@@ -1499,6 +1533,10 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 	if requireCompact {
 		candidates = prioritizeOpenAICompactAccounts(candidates)
 	}
+	if accountPrioritySchedulingEnabledForService(ctx, s.settingService) {
+		preferred, regular := splitPrioritySchedulingAccounts(candidates, true)
+		candidates = append(regular, preferred...)
+	}
 	for _, acc := range candidates {
 		fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, acc, platform, requestedModel, false, requiredCapability)
 		if fresh == nil {
@@ -1523,6 +1561,85 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 		return nil, ErrNoAvailableCompactAccounts
 	}
 	return nil, ErrNoAvailableAccounts
+}
+
+func (s *OpenAIGatewayService) selectOpenAIFromPriorityPoolWithoutLoadAwareness(ctx context.Context, groupID *int64, platform, sessionHash, requestedModel string, excludedIDs map[int64]struct{}, requireCompact bool, requiredCapability OpenAIEndpointCapability, preferLowUpstreamRate bool, cfg config.GatewaySchedulingConfig) (*AccountSelectionResult, error) {
+	accounts, err := s.listSchedulableAccounts(ctx, groupID, platform)
+	if err != nil {
+		return nil, err
+	}
+	accountList := make([]*Account, 0, len(accounts))
+	for i := range accounts {
+		accountList = append(accountList, &accounts[i])
+	}
+	preferred, regular := splitPrioritySchedulingAccounts(accountList, true)
+	allAccounts := append(append([]*Account{}, preferred...), regular...)
+	if len(allAccounts) == 0 {
+		return nil, noAvailableOpenAISelectionError(requestedModel, requireCompact, openAISelectionFilterStats{}.summary(""))
+	}
+	localExcludedBase := make(map[int64]struct{}, len(excludedIDs))
+	for id := range excludedIDs {
+		localExcludedBase[id] = struct{}{}
+	}
+	var preferredWait, regularWait []*Account
+	var selectionErr error = ErrNoAvailableAccounts
+	for _, pool := range [][]*Account{preferred, regular} {
+		if len(pool) == 0 {
+			continue
+		}
+		poolIDs := make(map[int64]struct{}, len(pool))
+		for _, account := range pool {
+			poolIDs[account.ID] = struct{}{}
+		}
+		localExcluded := make(map[int64]struct{}, len(localExcludedBase)+len(allAccounts)-len(pool))
+		for id := range localExcludedBase {
+			localExcluded[id] = struct{}{}
+		}
+		for _, account := range allAccounts {
+			if _, inPool := poolIDs[account.ID]; !inPool {
+				localExcluded[account.ID] = struct{}{}
+			}
+		}
+		for {
+			account, _, selectErr := s.selectAccountForModelWithExclusionsStickyHit(ctx, groupID, platform, "", requestedModel, localExcluded, requireCompact, 0, requiredCapability, preferLowUpstreamRate)
+			if selectErr != nil {
+				if !errors.Is(selectErr, ErrNoAvailableAccounts) && !errors.Is(selectErr, ErrNoAvailableCompactAccounts) {
+					return nil, selectErr
+				}
+				selectionErr = selectErr
+				break
+			}
+			result, acquireErr := s.tryAcquireAccountSlot(ctx, account.ID, account.Concurrency)
+			if acquireErr == nil && result != nil && result.Acquired {
+				selection, resultErr := s.newAcquiredSelectionResult(ctx, account, result.ReleaseFunc)
+				if resultErr != nil {
+					return nil, resultErr
+				}
+				if sessionHash != "" && !gatewayProfitControlGateActive(ctx) {
+					_ = s.setStickySessionAccountID(ctx, groupID, sessionHash, account.ID, openaiStickySessionTTL)
+				}
+				return selection, nil
+			}
+			if account.PriorityScheduling {
+				preferredWait = append(preferredWait, account)
+			} else {
+				regularWait = append(regularWait, account)
+			}
+			localExcluded[account.ID] = struct{}{}
+		}
+	}
+	for _, waitCandidates := range [][]*Account{regularWait, preferredWait} {
+		for _, account := range waitCandidates {
+			if sessionHash != "" && !gatewayProfitControlGateActive(ctx) {
+				_ = s.setStickySessionAccountID(ctx, groupID, sessionHash, account.ID, openaiStickySessionTTL)
+			}
+			return s.newSelectionResult(ctx, account, false, nil, &AccountWaitPlan{
+				AccountID: account.ID, MaxConcurrency: account.Concurrency,
+				Timeout: cfg.FallbackWaitTimeout, MaxWaiting: cfg.FallbackMaxWaiting,
+			})
+		}
+	}
+	return nil, selectionErr
 }
 
 func (s *OpenAIGatewayService) listSchedulableAccounts(ctx context.Context, groupID *int64, platform string) ([]Account, error) {

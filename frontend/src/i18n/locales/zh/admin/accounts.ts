@@ -1030,6 +1030,7 @@ export default {
         }
       },
       autoPauseOnExpired: '过期自动暂停调度',
+      priorityScheduling: '优先调度',
       autoPauseOnExpiredDesc: '启用后，账号过期将自动暂停调度',
 	  autoPause5hThreshold: '5h 用量阈值(%)',
 	  autoPause7dThreshold: '7d 用量阈值(%)',

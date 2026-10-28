@@ -308,6 +308,7 @@ func (s *adminServiceImpl) DuplicateAccount(ctx context.Context, id int64, actor
 		ProxyID:               cloneAccountValuePointer(proxyID),
 		Concurrency:           source.Concurrency,
 		Priority:              source.Priority,
+		PriorityScheduling:    source.PriorityScheduling,
 		RateMultiplier:        cloneAccountValuePointer(source.RateMultiplier),
 		LoadFactor:            cloneAccountValuePointer(source.LoadFactor),
 		GroupIDs:              groupIDs,
@@ -425,17 +426,18 @@ func buildAccountForCreate(input *CreateAccountInput, accountExtra map[string]an
 	delete(accountExtra, OpenCodeGoUsageSnapshotExtraKey)
 	accountExtra = prepareCodexFingerprintExtraForCreate(input.Platform, input.Type, accountExtra)
 	account := &Account{
-		Name:        input.Name,
-		Notes:       normalizeAccountNotes(input.Notes),
-		Platform:    input.Platform,
-		Type:        input.Type,
-		Credentials: input.Credentials,
-		Extra:       accountExtra,
-		ProxyID:     input.ProxyID,
-		Concurrency: normalizeAccountConcurrency(input.Platform, input.Type, input.Concurrency),
-		Priority:    input.Priority,
-		Status:      StatusActive,
-		Schedulable: true,
+		Name:               input.Name,
+		Notes:              normalizeAccountNotes(input.Notes),
+		Platform:           input.Platform,
+		Type:               input.Type,
+		Credentials:        input.Credentials,
+		Extra:              accountExtra,
+		ProxyID:            input.ProxyID,
+		Concurrency:        normalizeAccountConcurrency(input.Platform, input.Type, input.Concurrency),
+		Priority:           input.Priority,
+		PriorityScheduling: input.PriorityScheduling,
+		Status:             StatusActive,
+		Schedulable:        true,
 	}
 	if input.ProbeEnabled != nil && *input.ProbeEnabled {
 		if !isUpstreamBillingProbeAccount(account) {
@@ -806,6 +808,9 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	// 只在指针非 nil 时更新 Priority（支持设置为 0）
 	if input.Priority != nil {
 		account.Priority = *input.Priority
+	}
+	if input.PriorityScheduling != nil {
+		account.PriorityScheduling = *input.PriorityScheduling
 	}
 	if input.RateMultiplier != nil {
 		if *input.RateMultiplier < 0 {

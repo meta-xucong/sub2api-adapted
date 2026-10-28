@@ -1681,6 +1681,10 @@
           />
           <p class="input-hint">{{ t('admin.accounts.priorityHint') }}</p>
         </div>
+        <div class="flex items-center gap-2 pt-6">
+          <input v-model="form.priority_scheduling" type="checkbox" class="h-4 w-4 rounded border-gray-300 text-primary-500 focus:ring-primary-500 dark:border-dark-500" />
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.accounts.priorityScheduling') }}</span>
+        </div>
         <div>
           <label class="input-label">{{ t('admin.accounts.billingRateMultiplier') }}</label>
           <input
@@ -4049,6 +4053,7 @@ const form = reactive({
   concurrency: 1,
   load_factor: null as number | null,
   priority: 1,
+  priority_scheduling: false,
   rate_multiplier: 1,
   status: 'active' as 'active' | 'inactive' | 'error',
   group_ids: [] as number[],
@@ -4157,6 +4162,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   form.concurrency = newAccount.concurrency
   form.load_factor = newAccount.load_factor ?? null
   form.priority = newAccount.priority
+  form.priority_scheduling = newAccount.priority_scheduling === true
   form.rate_multiplier = newAccount.rate_multiplier ?? 1
   form.status = (newAccount.status === 'active' || newAccount.status === 'inactive' || newAccount.status === 'error')
     ? newAccount.status
@@ -5189,6 +5195,7 @@ const handleSubmit = async () => {
       updatePayload.load_factor = 0
     }
     updatePayload.auto_pause_on_expired = autoPauseOnExpired.value
+    updatePayload.priority_scheduling = form.priority_scheduling
     if (props.account.type === 'apikey') {
       updatePayload.upstream_billing_probe_enabled = upstreamBillingAutoProbeEnabled.value
       updatePayload.upstream_billing_rate_sync_enabled = upstreamBillingRateSyncEnabled.value

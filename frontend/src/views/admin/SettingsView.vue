@@ -5165,6 +5165,14 @@
                 />
               </div>
 
+              <div class="flex items-center justify-between border-t border-gray-100 pt-5 dark:border-dark-700">
+                <div>
+                  <label class="text-sm font-medium text-gray-700 dark:text-gray-300">{{ t("admin.settings.gatewayAccountPriorityScheduling.title") }}</label>
+                  <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">{{ t("admin.settings.gatewayAccountPriorityScheduling.description") }}</p>
+                </div>
+                <Toggle v-model="form.gateway_account_priority_scheduling_enabled" />
+              </div>
+
               <div
                 v-if="form.openai_advanced_scheduler_enabled"
                 class="flex items-center justify-between border-t border-gray-100 pt-5 dark:border-dark-700"
@@ -9745,6 +9753,7 @@ type SettingsForm = Omit<
   openai_low_upstream_rate_priority_enabled: boolean;
   openai_oauth_scheduling_rate_multiplier: number | "" | null;
   openai_advanced_scheduler_enabled: boolean;
+  gateway_account_priority_scheduling_enabled: boolean;
   openai_advanced_scheduler_sticky_weighted_enabled: boolean;
   openai_advanced_scheduler_subscription_priority_enabled: boolean;
   openai_advanced_scheduler_lb_top_k: string;
@@ -9996,6 +10005,7 @@ const form = reactive<SettingsForm>({
   openai_low_upstream_rate_priority_enabled: false,
   openai_oauth_scheduling_rate_multiplier: 1,
   openai_advanced_scheduler_enabled: false,
+  gateway_account_priority_scheduling_enabled: false,
   openai_advanced_scheduler_sticky_weighted_enabled: false,
   openai_advanced_scheduler_subscription_priority_enabled: false,
   openai_advanced_scheduler_lb_top_k: "",
@@ -11751,6 +11761,7 @@ async function saveSettings() {
       openai_oauth_scheduling_rate_multiplier:
         oauthSchedulingRate === "" ? null : oauthSchedulingRate,
       openai_advanced_scheduler_enabled: form.openai_advanced_scheduler_enabled,
+      gateway_account_priority_scheduling_enabled: form.gateway_account_priority_scheduling_enabled,
       openai_advanced_scheduler_sticky_weighted_enabled:
         form.openai_advanced_scheduler_sticky_weighted_enabled,
       openai_advanced_scheduler_subscription_priority_enabled:
