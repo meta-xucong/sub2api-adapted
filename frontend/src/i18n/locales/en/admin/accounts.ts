@@ -786,6 +786,8 @@ export default {
         noResponseBody: 'No response body from server'
       },
       anthropic: {
+        responsesCompactionScheduling: 'Use for Responses compaction',
+        responsesCompactionSchedulingDesc: 'Only Responses compaction requests and follow-up requests carrying compacted state use accounts in this pool; ordinary request routing is unchanged.',
         apiKeyPassthrough: 'Auto passthrough (auth only)',
         apiKeyPassthroughDesc:
           'Only applies to Anthropic API Key accounts. When enabled, messages/count_tokens are forwarded in passthrough mode with auth replacement only, while billing/concurrency/audit and safety filtering are preserved. Disable to roll back immediately.',

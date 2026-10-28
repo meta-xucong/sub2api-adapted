@@ -1163,6 +1163,22 @@ func TestBuildSchedulerMetadataAccount_KeepsOpenAIPassthroughForModelGate(t *tes
 	}
 }
 
+func TestBuildSchedulerMetadataAccount_KeepsResponsesCompactionSchedulingFlag(t *testing.T) {
+	account := service.Account{
+		ID:       384,
+		Platform: service.PlatformAnthropic,
+		Extra:    map[string]any{service.ResponsesCompactionEnabledExtraKey: true},
+	}
+
+	meta := buildSchedulerMetadataAccount(account)
+
+	payload, err := json.Marshal(meta)
+	require.NoError(t, err)
+	var restored service.Account
+	require.NoError(t, json.Unmarshal(payload, &restored))
+	require.Equal(t, true, restored.Extra[service.ResponsesCompactionEnabledExtraKey])
+}
+
 // 调度投影必须保留账号的 RPM 配置。
 //
 // 候选过滤走 ListSchedulableAccounts，读的是 buildSchedulerMetadataAccount 产出的精简投影；

@@ -894,6 +894,8 @@ export default {
         noResponseBody: '服务器未返回响应体'
       },
       anthropic: {
+        responsesCompactionScheduling: '加入 Responses 压缩调度池',
+        responsesCompactionSchedulingDesc: '加入的账号只参与 Responses 压缩请求及携带压缩状态的后续请求；普通请求调度不变。',
         apiKeyPassthrough: '自动透传（仅替换认证）',
         apiKeyPassthroughDesc:
           '仅对 Anthropic API Key 生效。开启后，messages/count_tokens 请求将透传上游并仅替换认证，保留计费/并发/审计及必要安全过滤；关闭即可回滚到现有兼容链路。',

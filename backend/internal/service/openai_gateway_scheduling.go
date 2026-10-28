@@ -392,6 +392,12 @@ func openAICompatibleAccountEligibilityFailureReasonBeforeProfit(ctx context.Con
 	if account == nil {
 		return "account_nil"
 	}
+	if IsResponsesCompactionScheduling(ctx) {
+		compactEligible, _ := account.Extra[ResponsesCompactionEnabledExtraKey].(bool)
+		if !compactEligible {
+			return "responses_compaction_pool"
+		}
+	}
 	// account_model composite routes publish an alias that only accounts with an
 	// explicit model mapping own. Both scheduler modes (advanced and legacy) must
 	// enforce ownership before any priority/sticky/transport consideration; a
