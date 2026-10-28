@@ -180,6 +180,8 @@ func responsesItemWire(item *ResponsesOutput) map[string]any {
 		if item.EncryptedContent != "" {
 			m["encrypted_content"] = item.EncryptedContent
 		}
+	case "compaction":
+		m["encrypted_content"] = item.EncryptedContent
 	case "function_call":
 		m["call_id"] = item.CallID
 		m["name"] = item.Name

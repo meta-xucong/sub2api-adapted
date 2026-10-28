@@ -63,6 +63,8 @@ func (s *OpenAIGatewayService) forwardResponsesViaNativeAnthropic(
 		return nil, fmt.Errorf("missing model in request")
 	}
 	clientStream := responsesReq.Stream
+	nativeCompaction := clientStream && apicompat.ResponsesHasCompactionTrigger(responsesReq.Input)
+	continuingCompaction := apicompat.ResponsesHasAnthropicCompactionState(responsesReq.Input)
 
 	// 3. Convert Responses → Anthropic
 	// Resolve the mapped model before choosing its thinking/tool protocol.
@@ -73,7 +75,12 @@ func (s *OpenAIGatewayService) forwardResponsesViaNativeAnthropic(
 		return nil, err
 	}
 	responsesReq.Model = upstreamModel
-	anthropicReq, err := apicompat.ResponsesToAnthropicRequest(&responsesReq)
+	var anthropicReq *apicompat.AnthropicRequest
+	if nativeCompaction || continuingCompaction {
+		anthropicReq, err = apicompat.ResponsesToAnthropicRequestWithCompactionBridge(&responsesReq)
+	} else {
+		anthropicReq, err = apicompat.ResponsesToAnthropicRequest(&responsesReq)
+	}
 	if err != nil {
 		writeResponsesError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return nil, fmt.Errorf("convert responses to anthropic: %w", err)
@@ -122,6 +129,9 @@ func (s *OpenAIGatewayService) forwardResponsesViaNativeAnthropic(
 	if err != nil {
 		return nil, fmt.Errorf("build upstream request: %w", err)
 	}
+	if nativeCompaction || continuingCompaction {
+		addAnthropicCompactionBeta(upstreamReq)
+	}
 	// Bill the Anthropic effort actually sent upstream (for example xhigh → max).
 	reasoningEffort := NormalizeClaudeOutputEffort(gjson.GetBytes(forwardedBody, "output_config.effort").String())
 	reasoningEffort = ApplyThinkingEnabledFallback(reasoningEffort, forwardedBody, upstreamModel)
@@ -142,6 +152,28 @@ func (s *OpenAIGatewayService) forwardResponsesViaNativeAnthropic(
 	}
 
 	if clientStream {
+		if nativeCompaction {
+			maxLineSize := defaultMaxLineSize
+			if s.cfg != nil && s.cfg.Gateway.MaxLineSize > 0 {
+				maxLineSize = s.cfg.Gateway.MaxLineSize
+			}
+			result, handleErr := handleResponsesAnthropicCompactionStream(resp, c, originalModel, startTime, maxLineSize)
+			if handleErr != nil {
+				return nil, handleErr
+			}
+			return &OpenAIForwardResult{
+				RequestID:        result.RequestID,
+				UpstreamHeaders:  result.UpstreamHeaders,
+				Usage:            claudeUsageToOpenAIUsage(&result.Usage),
+				Model:            originalModel,
+				BillingModel:     billingModel,
+				UpstreamModel:    upstreamModel,
+				UpstreamEndpoint: "/v1/messages",
+				ReasoningEffort:  reasoningEffort,
+				Stream:           true,
+				Duration:         result.Duration,
+			}, nil
+		}
 		return s.handleResponsesStreamingFromNativeAnthropic(resp, c, originalModel, billingModel, upstreamModel, reasoningEffort, startTime, clientToolMapping)
 	}
 	return s.handleResponsesBufferedFromNativeAnthropic(resp, c, originalModel, billingModel, upstreamModel, reasoningEffort, startTime, clientToolMapping)

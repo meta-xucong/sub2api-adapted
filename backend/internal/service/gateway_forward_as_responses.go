@@ -130,6 +130,8 @@ func (s *GatewayService) ForwardAsResponses(
 	}
 	originalModel := responsesReq.Model
 	clientStream := responsesReq.Stream
+	nativeCompaction := clientStream && apicompat.ResponsesHasCompactionTrigger(responsesReq.Input)
+	continuingCompaction := apicompat.ResponsesHasAnthropicCompactionState(responsesReq.Input)
 
 	// 3. Convert Responses → Anthropic
 	// Resolve the final upstream model before model-specific conversion.
@@ -153,7 +155,12 @@ func (s *GatewayService) ForwardAsResponses(
 		return nil, err
 	}
 	responsesReq.Model = mappedModel
-	anthropicReq, err := apicompat.ResponsesToAnthropicRequest(&responsesReq)
+	var anthropicReq *apicompat.AnthropicRequest
+	if nativeCompaction || continuingCompaction {
+		anthropicReq, err = apicompat.ResponsesToAnthropicRequestWithCompactionBridge(&responsesReq)
+	} else {
+		anthropicReq, err = apicompat.ResponsesToAnthropicRequest(&responsesReq)
+	}
 	if err != nil {
 		if isClaude55SignedThinkingModel(mappedModel) {
 			writeResponsesError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
@@ -189,6 +196,11 @@ func (s *GatewayService) ForwardAsResponses(
 	if shouldMimicClaudeCode {
 		anthropicBody = s.applyClaudeCodeOAuthMimicryToBody(ctx, c, account, anthropicBody, anthropicReq.System, mappedModel)
 	}
+	if nativeCompaction {
+		if body, changed := deleteJSONPathBytes(anthropicBody, "context_management"); changed {
+			anthropicBody = body
+		}
+	}
 
 	// 7. Enforce cache_control block limit
 	anthropicBody = enforceCacheControlLimit(anthropicBody)
@@ -211,6 +223,9 @@ func (s *GatewayService) ForwardAsResponses(
 	releaseUpstreamCtx()
 	if err != nil {
 		return nil, fmt.Errorf("build upstream request: %w", err)
+	}
+	if nativeCompaction || continuingCompaction {
+		addAnthropicCompactionBeta(upstreamReq)
 	}
 	// Bill the final Anthropic effort after conversion and account normalization.
 	// For example, OpenAI xhigh is forwarded as output_config.effort=max.
@@ -270,7 +285,11 @@ func (s *GatewayService) ForwardAsResponses(
 	var result *ForwardResult
 	var handleErr error
 	if clientStream {
-		result, handleErr = s.handleResponsesStreamingResponse(resp, c, originalModel, mappedModel, reasoningEffort, startTime, clientToolMapping)
+		if nativeCompaction {
+			result, handleErr = s.handleResponsesAnthropicCompactionStream(resp, c, originalModel, startTime)
+		} else {
+			result, handleErr = s.handleResponsesStreamingResponse(resp, c, originalModel, mappedModel, reasoningEffort, startTime, clientToolMapping)
+		}
 	} else {
 		result, handleErr = s.handleResponsesBufferedStreamingResponse(resp, c, originalModel, mappedModel, reasoningEffort, startTime, clientToolMapping)
 	}

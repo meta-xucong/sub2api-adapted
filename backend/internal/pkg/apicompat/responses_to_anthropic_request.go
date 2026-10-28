@@ -14,9 +14,19 @@ import (
 // enables Anthropic platform groups to accept OpenAI Responses API requests
 // by converting them to the native /v1/messages format before forwarding upstream.
 func ResponsesToAnthropicRequest(req *ResponsesRequest) (*AnthropicRequest, error) {
+	return responsesToAnthropicRequest(req, false)
+}
+
+// ResponsesToAnthropicRequestWithCompactionBridge enables the private
+// Anthropic compaction state bridge for the Anthropic Responses gateway path.
+func ResponsesToAnthropicRequestWithCompactionBridge(req *ResponsesRequest) (*AnthropicRequest, error) {
+	return responsesToAnthropicRequest(req, true)
+}
+
+func responsesToAnthropicRequest(req *ResponsesRequest, allowCompactionBridge bool) (*AnthropicRequest, error) {
 	isOpus55 := claude.IsOpus55(req.Model)
 	isSonnet55 := claude.IsSonnet55(req.Model)
-	system, messages, err := convertResponsesInputToAnthropic(req.Instructions, req.Input, isOpus55 || isSonnet55)
+	system, messages, err := convertResponsesInputToAnthropicWithCompactionBridge(req.Instructions, req.Input, isOpus55 || isSonnet55, allowCompactionBridge)
 	if err != nil {
 		return nil, err
 	}
@@ -27,6 +37,9 @@ func ResponsesToAnthropicRequest(req *ResponsesRequest) (*AnthropicRequest, erro
 		Temperature: req.Temperature,
 		TopP:        req.TopP,
 		Stream:      req.Stream,
+	}
+	if allowCompactionBridge && req.Stream && ResponsesHasCompactionTrigger(req.Input) {
+		out.Compaction = json.RawMessage(`{"type":"summarize"}`)
 	}
 
 	if len(system) > 0 {
@@ -156,6 +169,10 @@ func mapResponsesEffortToAnthropic(effort string) string {
 // a Responses API instructions + input array. Returns the system as raw JSON
 // (for Anthropic's polymorphic system field) and a list of Anthropic messages.
 func convertResponsesInputToAnthropic(instructions string, inputRaw json.RawMessage, preserveThinking bool) (json.RawMessage, []AnthropicMessage, error) {
+	return convertResponsesInputToAnthropicWithCompactionBridge(instructions, inputRaw, preserveThinking, false)
+}
+
+func convertResponsesInputToAnthropicWithCompactionBridge(instructions string, inputRaw json.RawMessage, preserveThinking, allowCompactionBridge bool) (json.RawMessage, []AnthropicMessage, error) {
 	var systemParts []string
 	if strings.TrimSpace(instructions) != "" {
 		systemParts = append(systemParts, strings.TrimSpace(instructions))
@@ -224,6 +241,20 @@ func convertResponsesInputToAnthropic(instructions string, inputRaw json.RawMess
 			})
 
 		case item.Type == "compaction" || item.Type == "compaction_summary":
+			if allowCompactionBridge && strings.HasPrefix(item.EncryptedContent, anthropicCompactionEnvelopePrefix) {
+				block, err := decodeAnthropicCompactionEnvelope(item.EncryptedContent)
+				if err != nil {
+					return nil, nil, fmt.Errorf("decode Anthropic compaction state: %w", err)
+				}
+				content, err := json.Marshal([]json.RawMessage{block})
+				if err != nil {
+					return nil, nil, err
+				}
+				messages = nil
+				// The signed block replaces the history before it; preserve later items.
+				messages = append(messages, AnthropicMessage{Role: "assistant", Content: content})
+				continue
+			}
 			// Provider-native encrypted compaction state is not portable to
 			// Anthropic. Replay only the visible summary and fail closed when
 			// the item is opaque-only instead of silently losing history.
