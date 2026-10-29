@@ -30,6 +30,12 @@ func TestIsResponsesCompactionSchedulingRequest(t *testing.T) {
 	}
 }
 
+func TestIsAnthropicCompactionSchedulingRequest(t *testing.T) {
+	require.True(t, IsAnthropicCompactionSchedulingRequest([]byte(`{"model":"claude-sonnet-5-5","stream":true,"compaction":{"type":"summarize"},"messages":[]}`)))
+	require.False(t, IsAnthropicCompactionSchedulingRequest([]byte(`{"model":"claude-sonnet-5-5","stream":true,"messages":[]}`)))
+	require.False(t, IsAnthropicCompactionSchedulingRequest([]byte(`{"compaction":{"type":"other"}}`)))
+}
+
 func TestCompactionSchedulingAccountGateOnlyAffectsCompactionRequests(t *testing.T) {
 	svc := &GatewayService{}
 	marked := &Account{Platform: PlatformAnthropic, Extra: map[string]any{ResponsesCompactionEnabledExtraKey: true}}

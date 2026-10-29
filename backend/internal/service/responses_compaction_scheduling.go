@@ -31,3 +31,7 @@ func IsResponsesCompactionSchedulingRequest(body []byte, stream bool) bool {
 	input := gjson.GetBytes(body, "input")
 	return apicompat.ResponsesHasAnthropicCompactionState(json.RawMessage(input.Raw))
 }
+
+func IsAnthropicCompactionSchedulingRequest(body []byte) bool {
+	return gjson.GetBytes(body, "compaction.type").String() == "summarize"
+}
