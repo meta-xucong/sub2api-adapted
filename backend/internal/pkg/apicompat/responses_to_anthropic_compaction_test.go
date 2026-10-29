@@ -80,6 +80,50 @@ func TestResponsesToAnthropicRequest_CompactionTriggerAndSignedStateRoundTrip(t 
 	require.JSONEq(t, string(block), string(blocks[0]))
 }
 
+func TestResponsesToAnthropicRequest_CompactionDisablesToolsOnlyForCompactionCall(t *testing.T) {
+	input := json.RawMessage(`[{"type":"message","role":"user","content":"long task"},{"type":"compaction_trigger"}]`)
+	tools := []ResponsesTool{{
+		Type:       "function",
+		Name:       "lookup_reference",
+		Parameters: json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"}}}`),
+	}}
+
+	compaction, err := ResponsesToAnthropicRequestWithCompactionBridge(&ResponsesRequest{
+		Model:      "claude-sonnet-5-5",
+		Stream:     true,
+		Input:      input,
+		Tools:      tools,
+		ToolChoice: json.RawMessage(`{"type":"auto"}`),
+	})
+	require.NoError(t, err)
+	require.Len(t, compaction.Tools, 1)
+	require.JSONEq(t, `{"type":"none"}`, string(compaction.ToolChoice))
+	require.JSONEq(t, `{"type":"summarize"}`, string(compaction.Compaction))
+
+	ordinary, err := ResponsesToAnthropicRequest(&ResponsesRequest{
+		Model:      "claude-sonnet-5-5",
+		Stream:     true,
+		Input:      json.RawMessage(`[{"type":"message","role":"user","content":"long task"}]`),
+		Tools:      tools,
+		ToolChoice: json.RawMessage(`{"type":"auto"}`),
+	})
+	require.NoError(t, err)
+	require.JSONEq(t, `{"type":"auto"}`, string(ordinary.ToolChoice))
+	require.Empty(t, ordinary.Compaction)
+}
+
+func TestResponsesToAnthropicRequest_CompactionOverridesForcedToolChoice(t *testing.T) {
+	compaction, err := ResponsesToAnthropicRequestWithCompactionBridge(&ResponsesRequest{
+		Model:      "claude-sonnet-5-5",
+		Stream:     true,
+		Input:      json.RawMessage(`[{"type":"message","role":"user","content":"long task"},{"type":"compaction_trigger"}]`),
+		Tools:      []ResponsesTool{{Type: "function", Name: "lookup_reference", Parameters: json.RawMessage(`{"type":"object"}`)}},
+		ToolChoice: json.RawMessage(`{"type":"tool","name":"lookup_reference"}`),
+	})
+	require.NoError(t, err)
+	require.JSONEq(t, `{"type":"none"}`, string(compaction.ToolChoice))
+}
+
 func TestResponsesToAnthropicRequestDoesNotDecodePrivateCompactionState(t *testing.T) {
 	ordinary, err := ResponsesToAnthropicRequest(&ResponsesRequest{
 		Model:  "claude-sonnet-5-5",

@@ -26,6 +26,7 @@ func ResponsesToAnthropicRequestWithCompactionBridge(req *ResponsesRequest) (*An
 func responsesToAnthropicRequest(req *ResponsesRequest, allowCompactionBridge bool) (*AnthropicRequest, error) {
 	isOpus55 := claude.IsOpus55(req.Model)
 	isSonnet55 := claude.IsSonnet55(req.Model)
+	isNativeCompactionRequest := allowCompactionBridge && req.Stream && ResponsesHasCompactionTrigger(req.Input)
 	system, messages, err := convertResponsesInputToAnthropicWithCompactionBridge(req.Instructions, req.Input, isOpus55 || isSonnet55, allowCompactionBridge)
 	if err != nil {
 		return nil, err
@@ -38,7 +39,7 @@ func responsesToAnthropicRequest(req *ResponsesRequest, allowCompactionBridge bo
 		TopP:        req.TopP,
 		Stream:      req.Stream,
 	}
-	if allowCompactionBridge && req.Stream && ResponsesHasCompactionTrigger(req.Input) {
+	if isNativeCompactionRequest {
 		out.Compaction = json.RawMessage(`{"type":"summarize"}`)
 	}
 
@@ -67,6 +68,10 @@ func responsesToAnthropicRequest(req *ResponsesRequest, allowCompactionBridge bo
 			return nil, fmt.Errorf("convert tool_choice: %w", err)
 		}
 		out.ToolChoice = tc
+	}
+	if isNativeCompactionRequest && len(out.Tools) > 0 {
+		// Compaction must return a summary block, not run one of the conversation tools.
+		out.ToolChoice = json.RawMessage(`{"type":"none"}`)
 	}
 
 	// The 5.5 models reject manual thinking and forced tool use. Sonnet 5.5
