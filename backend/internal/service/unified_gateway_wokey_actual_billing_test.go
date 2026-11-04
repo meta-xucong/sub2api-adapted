@@ -214,7 +214,7 @@ func TestWokeyActualBillingClient_ScopeRejectsNonWokeyAccounts(t *testing.T) {
 	for _, account := range []*Account{
 		{Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{"base_url": "https://api.wokey.ai"}},
 		{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"api_key": "test", "base_url": "https://not-wokey.example"}},
-		{Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Credentials: map[string]any{"api_key": "test", "base_url": "https://api.wokey.ai"}},
+		{Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Credentials: map[string]any{"api_key": "test", "base_url": "https://api.anthropic.com"}},
 	} {
 		_, err := client.LookupActualAmount(context.Background(), account, "wanted")
 		require.EqualError(t, err, "wokey_actual_scope_invalid")

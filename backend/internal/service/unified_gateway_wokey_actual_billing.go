@@ -69,6 +69,8 @@ func isWokeyAPIKeyAccount(account *Account) bool {
 		baseURL = account.GetOpenAIBaseURL()
 	case PlatformGrok:
 		baseURL = account.GetGrokBaseURL()
+	case PlatformAnthropic:
+		baseURL = account.GetBaseURL()
 	default:
 		return false
 	}

@@ -63,8 +63,10 @@ func TestUpstreamRequestIDFromHeaders_AutoCapturesWokeyOnlyWhenUnconfigured(t *t
 	h.Set("x-wokey-request-id", "  wk_123  ")
 	wokeyOpenAI := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://api.wokey.ai/v1"}}
 	wokeyGrok := &Account{Platform: PlatformGrok, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://api.wokey.ai"}}
+	wokeyAnthropic := &Account{Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://api.wokey.ai"}}
 	require.Equal(t, "wk_123", UpstreamRequestIDFromHeaders(wokeyOpenAI, h))
 	require.Equal(t, "wk_123", UpstreamRequestIDFromHeaders(wokeyGrok, h))
+	require.Equal(t, "wk_123", UpstreamRequestIDFromHeaders(wokeyAnthropic, h))
 
 	configured := &Account{
 		Platform:    PlatformOpenAI,
@@ -78,7 +80,7 @@ func TestUpstreamRequestIDFromHeaders_AutoCapturesWokeyOnlyWhenUnconfigured(t *t
 	for _, account := range []*Account{
 		{Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{"base_url": "https://api.wokey.ai"}},
 		{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://other.example"}},
-		{Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://api.wokey.ai"}},
+		{Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://api.anthropic.com"}},
 	} {
 		require.Empty(t, UpstreamRequestIDFromHeaders(account, h))
 		require.Nil(t, usageUpstreamRequestIDPtr(account, h, true), "WS usage has no response header snapshot")
