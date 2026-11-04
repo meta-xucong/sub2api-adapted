@@ -881,6 +881,9 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 	applyUnifiedGatewayWokeyActualBillingCost(
 		ctx, s.wokeyActualBillingLookup, result.RequestID, result.UpstreamHeaders, apiKey, account, effectiveBillingModel, cost, routeTokenPricingEligible, routeBaseMultiplier,
 	)
+	applyUnifiedGatewayYeTokenActualBillingCost(
+		ctx, s.yeTokenActualBillingLookup, result.RequestID, result.UpstreamHeaders, apiKey, account, effectiveBillingModel, cost, routeTokenPricingEligible, routeBaseMultiplier,
+	)
 
 	// 判断计费方式：订阅模式 vs 余额模式
 	isSubscriptionBilling := subscription != nil && apiKey.Group != nil && apiKey.Group.IsSubscriptionType()

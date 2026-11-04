@@ -375,6 +375,9 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	applyUnifiedGatewayWokeyActualBillingCost(
 		ctx, s.wokeyActualBillingLookup, result.RequestID, result.UpstreamHeaders, apiKey, account, effectiveBillingModel, cost, routeTokenPricingEligible, baseMultiplier,
 	)
+	applyUnifiedGatewayYeTokenActualBillingCost(
+		ctx, s.yeTokenActualBillingLookup, result.RequestID, result.UpstreamHeaders, apiKey, account, effectiveBillingModel, cost, routeTokenPricingEligible, baseMultiplier,
+	)
 
 	// Determine billing type
 	isSubscriptionBilling := subscription != nil && apiKey.Group != nil && apiKey.Group.IsSubscriptionType()
