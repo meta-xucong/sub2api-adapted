@@ -828,16 +828,17 @@ var ErrUnifiedGatewayRoutePricingRevisionConflict = infraerrors.Conflict("ROUTE_
 var ErrUnifiedGatewayWokeyTimeOfDayManualizeUnsupported = infraerrors.Conflict("WOKEY_TIME_OF_DAY_MANUALIZE_UNSUPPORTED", "time-of-day Wokey price cards cannot be converted to a static manual card")
 
 type UnifiedGatewayRoutePricingDecision struct {
-	Allowed              bool                              `json:"allowed"`
-	Revision             int64                             `json:"revision"`
-	GroupID              int64                             `json:"group_id"`
-	Model                string                            `json:"model"`
-	Kind                 UnifiedGatewayRoutePricingKind    `json:"kind"`
-	ImageSize            string                            `json:"image_size,omitempty"`
-	ImageQuality         string                            `json:"image_quality,omitempty"`
-	VideoResolution      string                            `json:"video_resolution,omitempty"`
-	VideoDurationSeconds int                               `json:"video_duration_seconds,omitempty"`
-	Entries              []UnifiedGatewayRoutePricingEntry `json:"entries"`
+	ResponsesImage       *UnifiedGatewayRoutePricingDecision `json:"responses_image,omitempty"`
+	Allowed              bool                                `json:"allowed"`
+	Revision             int64                               `json:"revision"`
+	GroupID              int64                               `json:"group_id"`
+	Model                string                              `json:"model"`
+	Kind                 UnifiedGatewayRoutePricingKind      `json:"kind"`
+	ImageSize            string                              `json:"image_size,omitempty"`
+	ImageQuality         string                              `json:"image_quality,omitempty"`
+	VideoResolution      string                              `json:"video_resolution,omitempty"`
+	VideoDurationSeconds int                                 `json:"video_duration_seconds,omitempty"`
+	Entries              []UnifiedGatewayRoutePricingEntry   `json:"entries"`
 }
 
 func (d UnifiedGatewayRoutePricingDecision) HasTokenBasePrice() bool {
@@ -970,6 +971,24 @@ func unifiedGatewayRoutePricingMaxEntries(snapshot *unifiedGatewayRoutePricingSn
 }
 
 func (s *SettingService) prepareUnifiedGatewayRoutePricingDecision(ctx context.Context, apiKey *APIKey, req InflightEstimateRequest, nativeEstimate float64, nativePriced bool, baseMultiplier float64) (context.Context, float64, bool) {
+	tokenCtx, estimate, planned := s.prepareSingleUnifiedGatewayRoutePricingDecision(ctx, apiKey, req, nativeEstimate, nativePriced, baseMultiplier)
+	if req.ResponsesImage == nil {
+		return tokenCtx, estimate, planned
+	}
+	imageCtx, imageEstimate, imagePlanned := s.prepareSingleUnifiedGatewayRoutePricingDecision(ctx, apiKey, *req.ResponsesImage, 0, false, baseMultiplier)
+	if !imagePlanned {
+		return tokenCtx, estimate, planned
+	}
+	if !planned {
+		return imageCtx, imageEstimate, true
+	}
+	decision, _ := UnifiedGatewayRoutePricingDecisionFromContext(tokenCtx)
+	imageDecision, _ := UnifiedGatewayRoutePricingDecisionFromContext(imageCtx)
+	decision.ResponsesImage = &imageDecision
+	return WithUnifiedGatewayRoutePricingDecision(tokenCtx, decision), math.Max(estimate, imageEstimate), true
+}
+
+func (s *SettingService) prepareSingleUnifiedGatewayRoutePricingDecision(ctx context.Context, apiKey *APIKey, req InflightEstimateRequest, nativeEstimate float64, nativePriced bool, baseMultiplier float64) (context.Context, float64, bool) {
 	if s == nil || apiKey == nil || apiKey.GroupID == nil || apiKey.Group == nil || apiKey.Group.Platform != PlatformComposite {
 		return ctx, 0, false
 	}
@@ -1136,6 +1155,11 @@ func applyUnifiedGatewayRoutePricing(ctx context.Context, apiKey *APIKey, accoun
 	decision, ok := UnifiedGatewayRoutePricingDecisionFromContext(ctx)
 	if !ok || !decision.Allowed || apiKey == nil || apiKey.GroupID == nil || *apiKey.GroupID != decision.GroupID || accountID <= 0 {
 		return cost
+	}
+	if imageCount > 0 && decision.ResponsesImage != nil {
+		imageDecision := *decision.ResponsesImage
+		imageDecision.Allowed = decision.Allowed
+		decision = imageDecision
 	}
 	billingModel = strings.TrimSpace(billingModel)
 	if billingModel == "" || billingModel != decision.Model {

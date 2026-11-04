@@ -20,7 +20,7 @@ func TestImageOutputAccountingForwardingAndBilling(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	png := completeAccountingPNG(t)
 	for _, route := range []string{"native_json", "native_stream", "native_sse_buffered", "passthrough_json", "passthrough_stream", "passthrough_sse_buffered", "images_bridge_buffered", "images_bridge_stream", "responses_images_bridge"} {
-		for _, mode := range []string{"image", "token"} {
+		for _, mode := range []string{"image", "token", "route_flat", "route_spec"} {
 			t.Run(route+"/"+mode, func(t *testing.T) {
 				stream := strings.HasSuffix(route, "stream")
 				item := map[string]any{"id": "ig_partial_image", "type": "image_generation_call", "status": "completed", "result": png, "revised_prompt": "render the literal label partial_image", "size": "1024x1024", "output_format": "png"}
@@ -50,7 +50,7 @@ func TestImageOutputAccountingForwardingAndBilling(t *testing.T) {
 				var result *OpenAIForwardResult
 				var err error
 				if strings.HasPrefix(route, "images_bridge_") {
-					request := []byte(fmt.Sprintf(`{"model":"gpt-image-2","prompt":"partial_image","n":3,"size":"1024x1024","stream":%t,"response_format":"b64_json"}`, stream))
+					request := []byte(fmt.Sprintf(`{"model":"gpt-image-2","prompt":"partial_image","n":3,"size":"1024x1024","quality":"high","stream":%t,"response_format":"b64_json"}`, stream))
 					c, rec := newOpenAIImagesTestContext(t, request)
 					svc := newOpenAIImagesTestService(upstream)
 					parsed, parseErr := svc.ParseOpenAIImagesRequest(c, request)
@@ -65,7 +65,7 @@ func TestImageOutputAccountingForwardingAndBilling(t *testing.T) {
 					require.Equal(t, http.StatusOK, rec.Code)
 					require.Contains(t, rec.Body.String(), png)
 				} else {
-					request := []byte(fmt.Sprintf(`{"model":"gpt-5.4","stream":%t,"tools":[{"type":"image_generation","model":"gpt-image-2","size":"1024x1024"}],"input":"draw partial_image"}`, stream))
+					request := []byte(fmt.Sprintf(`{"model":"gpt-5.4","stream":%t,"tools":[{"type":"image_generation","model":"gpt-image-2","size":"1024x1024","quality":"high"}],"input":"draw partial_image"}`, stream))
 					c, rec := newOpenAIImageGenerationControlTestContext(true, "curl/8.0")
 					svc := newOpenAIImageGenerationControlTestService(upstream)
 					if route == "responses_images_bridge" {
@@ -89,6 +89,7 @@ func TestImageOutputAccountingForwardingAndBilling(t *testing.T) {
 				require.Equal(t, 1, result.ImageCount, "count delivered PNGs, never requested n or repeated terminal representations")
 				require.Equal(t, "1K", result.ImageSize)
 				require.Equal(t, "1024x1024", result.ImageInputSize)
+				require.Equal(t, "high", result.ImageQuality)
 				wantOutputSize := "1024x1024"
 				if strings.HasPrefix(route, "images_bridge_") {
 					// The Images compatibility bridge reconciles output size from
@@ -114,13 +115,37 @@ func assertImageAccountingBill(t *testing.T, result *OpenAIForwardResult, accoun
 	groupID := int64(12)
 	apiKey := &APIKey{ID: 1007, GroupID: &groupID, Group: &Group{ID: groupID, RateMultiplier: 1}}
 	wantCost := 0.25
+	wantTotal := wantCost
+	ctx := context.Background()
 	if mode == "token" {
 		svc.resolver = newOpenAITokenImageChannelPricingResolverForTest(t, groupID, "gpt-image-2")
 		wantCost = 100*3e-6 + 50*15e-6
+		wantTotal = wantCost
 	} else {
 		svc.resolver = newOpenAIImageChannelPricingResolverForTest(t, groupID, "gpt-image-2", wantCost)
 	}
-	require.NoError(t, svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
+	if strings.HasPrefix(mode, "route_") {
+		apiKey.Group.Platform = PlatformComposite
+		apiKey.Group.RateMultiplier = 1.25
+		card := UnifiedGatewayRoutePricingEntry{AccountID: account.ID, Model: "gpt-image-2", Kind: UnifiedGatewayRoutePricingImage, UnitPrice: routePricingFloat(.069)}
+		if mode == "route_flat" {
+			card.ImagePricingMode = UnifiedGatewayImagePricingFlatPerImage
+		} else {
+			card.ImageSize, card.ImageQuality = "1K", "high"
+		}
+		snapshot, err := buildUnifiedGatewayRoutePricingSnapshot(UnifiedGatewayRoutePricingConfig{TargetGroupID: groupID, Revision: 1, Entries: []UnifiedGatewayRoutePricingEntry{card}})
+		require.NoError(t, err)
+		settings := &SettingService{}
+		settings.routePricingSnapshot.Store(snapshot)
+		request := []byte(`{"model":"gpt-5.4","tools":[{"type":"image_generation","model":"gpt-image-2","size":"1024x1024","quality":"high"}]}`)
+		var planned bool
+		ctx, _, planned = settings.prepareUnifiedGatewayRoutePricingDecision(ctx, apiKey, InflightEstimateRequest{Model: "gpt-5.4", Kind: InflightEstimateToken, ResponsesImage: OpenAIResponsesImageInflightEstimate("gpt-5.4", request)}, .25, true, 1.25)
+		require.True(t, planned)
+		ctx = WithUnifiedGatewayRoutePricingDecisionAllowed(ctx, true)
+		wantCost = .08625
+		mode = "image"
+	}
+	require.NoError(t, svc.RecordUsage(ctx, &OpenAIRecordUsageInput{
 		Result: result, APIKey: apiKey, User: &User{ID: 2007}, Account: account,
 	}))
 	require.Equal(t, 1, usageRepo.calls)
@@ -130,7 +155,8 @@ func assertImageAccountingBill(t *testing.T, result *OpenAIForwardResult, accoun
 	require.Equal(t, result.Model, usageRepo.lastLog.Model, "usage display model remains the requested model")
 	require.Equal(t, 1, billingRepo.lastCmd.ImageCount)
 	require.Equal(t, mode, *usageRepo.lastLog.BillingMode)
-	require.InDelta(t, wantCost, usageRepo.lastLog.TotalCost, 1e-12)
+	require.InDelta(t, wantTotal, usageRepo.lastLog.TotalCost, 1e-12)
+	require.InDelta(t, wantCost, usageRepo.lastLog.ActualCost, 1e-12)
 	require.InDelta(t, wantCost, billingRepo.lastCmd.BalanceCost, 1e-12)
 	require.Zero(t, userRepo.deductCalls, "atomic billing command must not also invoke the legacy balance deduction")
 }

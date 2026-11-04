@@ -317,12 +317,14 @@ const (
 
 // InflightEstimateRequest 单请求估算输入。
 type InflightEstimateRequest struct {
-	Model        string
-	BodyBytes    int
-	MaxTokens    int
-	Kind         InflightEstimateKind
-	ImageSize    string
-	ImageQuality string
+	// Responses may return either text or images from the same request.
+	ResponsesImage *InflightEstimateRequest
+	Model          string
+	BodyBytes      int
+	MaxTokens      int
+	Kind           InflightEstimateKind
+	ImageSize      string
+	ImageQuality   string
 	// Units 按次/按张数量（<=0 视为 1）。
 	Units int
 	// SearchCalls 叠加的搜索次数（按分组 search_price_per_1k 计）。
