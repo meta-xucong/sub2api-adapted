@@ -807,6 +807,7 @@ type GatewayService struct {
 	balanceNotifyService     *BalanceNotifyService
 	userPlatformQuotaRepo    UserPlatformQuotaRepository
 	wokeyActualBillingLookup unifiedGatewayWokeyActualBillingLookup
+	yeTokenActualBillingLookup unifiedGatewayYeTokenActualBillingLookup
 }
 
 // NewGatewayService creates a new GatewayService
@@ -877,6 +878,7 @@ func NewGatewayService(
 		balanceNotifyService:     balanceNotifyService,
 		userPlatformQuotaRepo:    userPlatformQuotaRepo,
 		wokeyActualBillingLookup: newUnifiedGatewayWokeyActualBillingClient(),
+		yeTokenActualBillingLookup: newUnifiedGatewayYeTokenActualBillingClient(),
 	}
 	if compositeResolver != nil {
 		compositeResolver.SetModelOwnershipResolver(svc.resolveCompositeModelOwnership)

@@ -480,6 +480,7 @@ type OpenAIGatewayService struct {
 	settingService           *SettingService
 	userPlatformQuotaRepo    UserPlatformQuotaRepository
 	wokeyActualBillingLookup unifiedGatewayWokeyActualBillingLookup
+	yeTokenActualBillingLookup unifiedGatewayYeTokenActualBillingLookup
 	liveAttestation          liveattestation.Provider
 	liveAttestationCipher    SecretEncryptor
 
@@ -588,6 +589,7 @@ func NewOpenAIGatewayService(
 		settingService:           settingService,
 		userPlatformQuotaRepo:    userPlatformQuotaRepo,
 		wokeyActualBillingLookup: newUnifiedGatewayWokeyActualBillingClient(),
+		yeTokenActualBillingLookup: newUnifiedGatewayYeTokenActualBillingClient(),
 		liveAttestation:          liveattestation.NewProvider(),
 		liveAttestationCipher:    newLiveAttestationCipher(cfg),
 		responseHeaderFilter:     compileResponseHeaderFilter(cfg),
