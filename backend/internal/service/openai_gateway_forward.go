@@ -759,6 +759,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	imageBillingModel := ""
 	imageSizeTier := ""
 	imageInputSize := ""
+	imageQuality := ""
 	if imageIntent {
 		var imageCfg OpenAIResponsesImageBillingConfig
 		var imageCfgErr error
@@ -775,6 +776,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		imageBillingModel = imageCfg.Model
 		imageSizeTier = imageCfg.SizeTier
 		imageInputSize = imageCfg.InputSize
+		imageQuality = imageCfg.Quality
 	}
 	// Get access token
 	token, _, err := s.GetAccessToken(ctx, account)
@@ -1010,6 +1012,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			if wsResult.ImageCount > 0 {
 				wsResult.ImageSize = imageSizeTier
 				wsResult.ImageInputSize = imageInputSize
+				wsResult.ImageQuality = imageQuality
 				wsResult.BillingModel = imageBillingModel
 			}
 			return wsResult, nil
@@ -1336,6 +1339,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			forwardResult.ImageCount = imageCount
 			forwardResult.ImageSize = imageSizeTier
 			forwardResult.ImageInputSize = imageInputSize
+			forwardResult.ImageQuality = imageQuality
 			forwardResult.ImageOutputSizes = imageOutputSizes
 			forwardResult.BillingModel = imageBillingModel
 		}
