@@ -5,6 +5,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -155,10 +156,52 @@ func TestNormalizeWokeyVideoForwardBodyDoesNotPreflightRelayDNS(t *testing.T) {
 	}
 }
 
-func TestNormalizeWokeyVideoForwardBodyRejectsDataURLWithoutDNSPreflight(t *testing.T) {
-	body := []byte(`{"model":"grok-imagine-video-1.5","reference_images":[{"url":"data:image/png;base64,AA=="}]}`)
-	_, _, err := normalizeWokeyVideoForwardBody(body, "application/json", ParseGrokMediaRequest("application/json", body))
-	if err == nil || !strings.Contains(err.Error(), "does not accept Data URLs") {
-		t.Fatalf("expected Data URL rejection, got %v", err)
+func TestWokeyVideoReferenceDataURLsBecomeMultipartImages(t *testing.T) {
+	images := [][]byte{[]byte("\x89PNG\r\n\x1a\nfirst"), []byte("\x89PNG\r\n\x1a\nsecond")}
+	body := []byte(`{"model":"grok-imagine-video-1.5","prompt":"p","resolution":"720p","reference_images":[{"url":"data:image/png;base64,` + base64.StdEncoding.EncodeToString(images[0]) + `"},{"url":"data:image/png;base64,` + base64.StdEncoding.EncodeToString(images[1]) + `"}]}`)
+	normalized, contentType, err := normalizeWokeyVideoForwardBody(body, "application/json", ParseGrokMediaRequest("application/json", body))
+	if err != nil {
+		t.Fatalf("normalize reference Data URLs: %v", err)
+	}
+	got, contentType, err := prepareWokeyVideoImageMultipartBody(context.Background(), normalized, contentType, ParseGrokMediaRequest(contentType, normalized))
+	if err != nil {
+		t.Fatalf("prepare reference Data URLs: %v", err)
+	}
+	mediaType, params, err := mime.ParseMediaType(contentType)
+	if err != nil || mediaType != "multipart/form-data" {
+		t.Fatalf("multipart content type = %q, err=%v", contentType, err)
+	}
+	reader := multipart.NewReader(bytes.NewReader(got), params["boundary"])
+	var uploaded [][]byte
+	fields := map[string]string{}
+	for {
+		part, err := reader.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("read multipart: %v", err)
+		}
+		value, err := io.ReadAll(part)
+		if err != nil {
+			t.Fatalf("read part: %v", err)
+		}
+		if part.FormName() == "image[]" {
+			if part.Header.Get("Content-Type") != "image/png" {
+				t.Fatalf("unexpected image content type: %q", part.Header.Get("Content-Type"))
+			}
+			uploaded = append(uploaded, value)
+		} else {
+			fields[part.FormName()] = string(value)
+		}
+	}
+	if len(uploaded) != 2 || !bytes.Equal(uploaded[0], images[0]) || !bytes.Equal(uploaded[1], images[1]) {
+		t.Fatal("reference image bytes or order changed")
+	}
+	if fields["mode"] != "multimodal_reference" || fields["model"] != "grok-imagine-video-1.5" || fields["prompt"] != "p" || fields["video_resolution"] != "720p" {
+		t.Fatalf("unexpected multipart fields: %#v", fields)
+	}
+	if _, exists := fields["reference_images"]; exists {
+		t.Fatal("reference Data URLs must be replaced by image file parts")
 	}
 }
