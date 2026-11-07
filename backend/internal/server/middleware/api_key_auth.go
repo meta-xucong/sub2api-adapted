@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/nativeharness"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -170,6 +171,9 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 		// authenticated key and must remain available after the completed
 		// generation consumes the key's remaining balance.
 		skipBilling := c.Request.URL.Path == "/v1/usage" || billingInfoRequest || isAsyncImageTaskRead(c.Request.Method, c.Request.URL.Path)
+		// Synthetic native pilot has no billing path; only its explicit key may use it.
+		nativePilot := cfg != nil && cfg.Gateway.NativeHarness.Enabled && c.Request.Method == http.MethodPost && c.Request.URL.Path == nativeharness.Path && apiKey.UserID == cfg.Gateway.NativeHarness.AllowedUserID && apiKey.ID == cfg.Gateway.NativeHarness.AllowedAPIKeyID
+		skipBilling = skipBilling || nativePilot
 
 		// ── 4. SimpleMode → early return ─────────────────────────────
 

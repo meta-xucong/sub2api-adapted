@@ -1073,6 +1073,7 @@ type GatewayUnifiedRoutePriorityConfig struct {
 
 // GatewayConfig API网关相关配置
 type GatewayConfig struct {
+	NativeHarness NativeHarnessConfig `mapstructure:"native_harness"`
 	// UnifiedRoutePriority is an independent, default-off Unified Gateway
 	// selection adapter. It does not alter native eligibility or billing.
 	UnifiedRoutePriority GatewayUnifiedRoutePriorityConfig `mapstructure:"unified_route_priority"`
@@ -2545,6 +2546,10 @@ func setDefaults() {
 	viper.SetDefault("veyra.login_ticket_ttl_seconds", 120)
 
 	// Gateway
+	viper.SetDefault("gateway.native_harness.enabled", false)
+	viper.SetDefault("gateway.native_harness.accepting_new", false)
+	viper.SetDefault("gateway.native_harness.allowed_user_id", int64(0))
+	viper.SetDefault("gateway.native_harness.allowed_api_key_id", int64(0))
 	viper.SetDefault("gateway.response_header_timeout", 600) // 600秒(10分钟)等待上游响应头，LLM高负载时可能排队较久
 	viper.SetDefault("gateway.openai_response_header_timeout", 0)
 	viper.SetDefault("gateway.grok_response_header_timeout", 120)
