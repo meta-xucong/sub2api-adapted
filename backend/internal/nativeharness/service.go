@@ -77,7 +77,8 @@ func ValidRoute(alias string, r config.NativeHarnessRoute) bool {
 	if err != nil || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
 		return false
 	}
-	if u.Scheme != "https" && !(u.Scheme == "http" && (u.Hostname() == "127.0.0.1" || u.Hostname() == "::1" || u.Hostname() == "localhost")) {
+	loopback := u.Hostname() == "127.0.0.1" || u.Hostname() == "::1" || u.Hostname() == "localhost"
+	if u.Scheme != "https" && (u.Scheme != "http" || !loopback) {
 		return false
 	}
 	if r.Revision < 1 || alias != r.ModelAlias || !strings.HasPrefix(alias, "synthetic-") || !strings.HasPrefix(r.NativeModel, "fake-") || !envName.MatchString(r.CredentialEnv) {
@@ -243,6 +244,10 @@ func (s *Service) Invoke(ctx context.Context, userID, keyID int64, clientKey str
 	if err != nil {
 		return nil, err
 	}
+	alias, ok := req["model"].(string)
+	if !ok {
+		return nil, fail("INVALID_REQUEST", 400)
+	}
 	body := canonical(req)
 	digest := hash(body)
 	if s.Store == nil {
@@ -253,7 +258,6 @@ func (s *Service) Invoke(ctx context.Context, userID, keyID int64, clientKey str
 		if !cfg.AcceptingNew || !canExecute {
 			return nil, fail("NEW_ADMISSION_DISABLED", 403)
 		}
-		alias := req["model"].(string)
 		route, ok := cfg.Routes[alias]
 		if !ok || !ValidRoute(alias, route) {
 			return nil, fail("MODEL_NOT_AVAILABLE", 400)
@@ -273,7 +277,7 @@ func (s *Service) Invoke(ctx context.Context, userID, keyID int64, clientKey str
 	if op.Digest != digest {
 		return nil, fail("IDEMPOTENCY_CONFLICT", 409)
 	}
-	if !ValidRoute(req["model"].(string), op.Route) {
+	if !ValidRoute(alias, op.Route) {
 		return nil, fail("ROUTE_INTEGRITY_ERROR", 503)
 	}
 	token := s.Getenv(op.Route.CredentialEnv)
@@ -304,7 +308,7 @@ func (s *Service) Invoke(ctx context.Context, userID, keyID int64, clientKey str
 	if err != nil {
 		return nil, fail("NATIVE_RECEIPT_UNKNOWN", 502)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	lengths := response.Header.Values("Content-Length")
 	if len(lengths) != 1 {
 		return nil, fail("NATIVE_RECEIPT_UNKNOWN", 502)
@@ -470,5 +474,9 @@ func RequestModel(raw []byte) (string, error) {
 	if e != nil {
 		return "", e
 	}
-	return m["model"].(string), nil
+	model, ok := m["model"].(string)
+	if !ok {
+		return "", fail("INVALID_REQUEST", 400)
+	}
+	return model, nil
 }

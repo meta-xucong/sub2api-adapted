@@ -23,7 +23,7 @@ func TestSQLStorePostgres(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	ctx := context.Background()
 	store := &SQLStore{DB: db}
 	key := fmt.Sprintf("postgres-%d", time.Now().UnixNano())
@@ -57,7 +57,7 @@ func TestSQLStorePostgres(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	defer db2.Close()
+	defer func() { _ = db2.Close() }()
 	op, e := (&SQLStore{DB: db2}).Lookup(ctx, 7, 9, key)
 	if e != nil || !ids[op.ID] || op.Route != route {
 		t.Fatal("frozen route lost", e)

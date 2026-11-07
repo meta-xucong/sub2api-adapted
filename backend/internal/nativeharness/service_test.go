@@ -206,7 +206,7 @@ func TestTruncatedSocketNoRetry(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 	var hits atomic.Int32
 	done := make(chan struct{})
 	go func() {
@@ -215,7 +215,7 @@ func TestTruncatedSocketNoRetry(t *testing.T) {
 		if e != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		hits.Add(1)
 		buf := make([]byte, 4096)
 		_, _ = conn.Read(buf)
@@ -371,8 +371,18 @@ func TestCompletionDTOHTTPContract(t *testing.T) {
 			if e != nil {
 				t.Fatal(e)
 			}
-			choice := value["choices"].([]any)[0].(map[string]any)
-			message := choice["message"].(map[string]any)
+			choices, ok := value["choices"].([]any)
+			if !ok || len(choices) != 1 {
+				t.Fatal("invalid completion fixture choices")
+			}
+			choice, ok := choices[0].(map[string]any)
+			if !ok {
+				t.Fatal("invalid completion fixture choice")
+			}
+			message, ok := choice["message"].(map[string]any)
+			if !ok {
+				t.Fatal("invalid completion fixture message")
+			}
 			tc.mutate(value, choice, message)
 			raw := canonical(value)
 			var hits atomic.Int32

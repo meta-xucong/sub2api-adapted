@@ -16,7 +16,7 @@ func TestSQLStoreStatementContract(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	store := &SQLStore{DB: db}
 	ctx := context.Background()
 	route := configured("http://127.0.0.1:1234").Routes["synthetic-test"]
