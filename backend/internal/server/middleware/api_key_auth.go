@@ -171,8 +171,9 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 		// authenticated key and must remain available after the completed
 		// generation consumes the key's remaining balance.
 		skipBilling := c.Request.URL.Path == "/v1/usage" || billingInfoRequest || isAsyncImageTaskRead(c.Request.Method, c.Request.URL.Path)
-		// Synthetic native pilot has no billing path; only its explicit key may use it.
-		nativePilot := cfg != nil && cfg.Gateway.NativeHarness.Enabled && c.Request.Method == http.MethodPost && c.Request.URL.Path == nativeharness.Path && apiKey.UserID == cfg.Gateway.NativeHarness.AllowedUserID && apiKey.ID == cfg.Gateway.NativeHarness.AllowedAPIKeyID
+		// Native pilot has no billing path; only its explicit key may use it.
+		nativeModelsRequest := c.Request.Method == http.MethodGet && c.Request.URL.Path == nativeharness.ModelsPath
+		nativePilot := cfg != nil && cfg.Gateway.NativeHarness.Enabled && ((c.Request.Method == http.MethodPost && c.Request.URL.Path == nativeharness.Path) || nativeModelsRequest) && apiKey.UserID == cfg.Gateway.NativeHarness.AllowedUserID && apiKey.ID == cfg.Gateway.NativeHarness.AllowedAPIKeyID
 		skipBilling = skipBilling || nativePilot
 
 		// ── 4. SimpleMode → early return ─────────────────────────────
@@ -185,7 +186,7 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 			})
 			c.Set(string(ContextKeyUserRole), apiKey.User.Role)
 			setGroupContext(c, apiKey.Group)
-			if !billingInfoRequest {
+			if !billingInfoRequest && !nativeModelsRequest {
 				_ = apiKeyService.TouchLastUsed(c.Request.Context(), apiKey.ID)
 			}
 			c.Next()
@@ -283,7 +284,7 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 		})
 		c.Set(string(ContextKeyUserRole), apiKey.User.Role)
 		setGroupContext(c, apiKey.Group)
-		if !billingInfoRequest {
+		if !billingInfoRequest && !nativeModelsRequest {
 			_ = apiKeyService.TouchLastUsed(c.Request.Context(), apiKey.ID)
 		}
 

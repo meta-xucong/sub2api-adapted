@@ -32,6 +32,7 @@ func RegisterGatewayRoutes(
 ) {
 	// Separate opt-in native path: authenticates real keys, never ordinary providers.
 	r.POST(nativeharness.Path, middleware.RequestBodyLimit(nativeharness.MaxRequest), gin.HandlerFunc(apiKeyAuth), h.OpenAIGateway.NativeHarnessChat)
+	r.GET(nativeharness.ModelsPath, gin.HandlerFunc(apiKeyAuth), h.OpenAIGateway.NativeHarnessModels)
 	bodyLimit := middleware.RequestBodyLimit(cfg.Gateway.MaxBodySize)
 	textBodyLimit := middleware.RequestBodyLimit(cfg.Gateway.TextMaxBodySize)
 	clientRequestID := middleware.ClientRequestID()

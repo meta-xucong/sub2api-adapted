@@ -90,3 +90,34 @@ func TestNativeHarnessAuthPreservesGroupAndIPRestrictions(t *testing.T) {
 		})
 	}
 }
+
+func TestNativeModelsBillingExceptionExactMethodAndPath(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, tc := range []struct {
+		method, path string
+		want         int
+	}{
+		{http.MethodGet, nativeharness.ModelsPath, 200},
+		{http.MethodPost, nativeharness.ModelsPath, 403},
+		{http.MethodGet, nativeharness.Path, 403},
+		{http.MethodGet, "/v1/native-harness/other", 403},
+	} {
+		t.Run(tc.method+tc.path, func(t *testing.T) {
+			cfg := &config.Config{RunMode: config.RunModeStandard}
+			cfg.Gateway.NativeHarness = config.NativeHarnessConfig{Enabled: true, AllowedUserID: 7, AllowedAPIKeyID: 9}
+			repo := &stubApiKeyRepo{getByKey: func(context.Context, string) (*service.APIKey, error) {
+				return &service.APIKey{ID: 9, UserID: 7, Status: service.StatusActive, User: &service.User{ID: 7, Status: service.StatusActive, Balance: 0}}, nil
+			}}
+			auth := service.NewAPIKeyService(repo, nil, nil, nil, nil, nil, cfg)
+			r := gin.New()
+			r.Handle(tc.method, tc.path, gin.HandlerFunc(NewAPIKeyAuthMiddleware(auth, nil, cfg)), func(c *gin.Context) { c.Status(200) })
+			req := httptest.NewRequest(tc.method, tc.path, nil)
+			req.Header.Set("Authorization", "Bearer fixture-key")
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+			if w.Code != tc.want {
+				t.Fatalf("%d %s", w.Code, w.Body.String())
+			}
+		})
+	}
+}
