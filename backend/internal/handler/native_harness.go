@@ -59,7 +59,12 @@ func (h *OpenAIGatewayHandler) NativeHarnessChat(c *gin.Context) {
 		model, err := nativeharness.RequestModel(raw)
 		canExecute = canExecute && err == nil && key.Group.ModelAllowlist.Allows(model)
 	}
-	result, err := h.nativeHarness.Invoke(c.Request.Context(), subject.UserID, key.ID, keys[0], canExecute, raw)
+	var result *nativeharness.Response
+	if c.Request.URL.Path == nativeharness.StandardChatPath && h.nativeHarness.Config.StandardAPI {
+		result, err = h.nativeHarness.InvokeStandard(c.Request.Context(), subject.UserID, key.ID, keys[0], canExecute, raw)
+	} else {
+		result, err = h.nativeHarness.Invoke(c.Request.Context(), subject.UserID, key.ID, keys[0], canExecute, raw)
+	}
 	if err != nil {
 		var e *nativeharness.Error
 		if errors.As(err, &e) {

@@ -5,12 +5,15 @@ package config
 type NativeHarnessConfig struct {
 	// StandardAPI reserves /v1/chat/completions and /v1/models for the dedicated
 	// allowlisted key. Default false; not an ordinary billed provider.
-	StandardAPI     bool                          `mapstructure:"standard_api"`
-	Enabled         bool                          `mapstructure:"enabled"`
-	AcceptingNew    bool                          `mapstructure:"accepting_new"`
-	AllowedUserID   int64                         `mapstructure:"allowed_user_id"`
-	AllowedAPIKeyID int64                         `mapstructure:"allowed_api_key_id"`
-	Routes          map[string]NativeHarnessRoute `mapstructure:"routes"`
+	StandardAPI bool `mapstructure:"standard_api"`
+	// StandardWaitSeconds bounds standard-path observation of one accepted task.
+	// Zero disables observation; no later call may grant new execution.
+	StandardWaitSeconds int                           `mapstructure:"standard_wait_seconds"`
+	Enabled             bool                          `mapstructure:"enabled"`
+	AcceptingNew        bool                          `mapstructure:"accepting_new"`
+	AllowedUserID       int64                         `mapstructure:"allowed_user_id"`
+	AllowedAPIKeyID     int64                         `mapstructure:"allowed_api_key_id"`
+	Routes              map[string]NativeHarnessRoute `mapstructure:"routes"`
 }
 
 type NativeHarnessRoute struct {

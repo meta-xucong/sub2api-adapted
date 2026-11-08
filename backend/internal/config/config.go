@@ -2547,6 +2547,7 @@ func setDefaults() {
 
 	// Gateway
 	viper.SetDefault("gateway.native_harness.standard_api", false)
+	viper.SetDefault("gateway.native_harness.standard_wait_seconds", 180)
 	viper.SetDefault("gateway.native_harness.enabled", false)
 	viper.SetDefault("gateway.native_harness.accepting_new", false)
 	viper.SetDefault("gateway.native_harness.allowed_user_id", int64(0))

@@ -28,6 +28,7 @@ native 服务区分。认证仍检查 Key、用户、IP、组；模型白名单�
 gateway:
   native_harness:
     standard_api: true
+    standard_wait_seconds: 180
     # enabled、accepting_new、allowed_user_id、allowed_api_key_id、routes
     # 仍使用完整部署生成器输出，不能只复制这个片段替换整份配置。
 ```
@@ -42,6 +43,19 @@ gateway:
 
 此开关不改变 `/chat/completions`（无 v1）、`/responses`、`/messages`、Codex
 专属接口或其他模型路由。它们不是 native 接缝入口，不代表提供相同能力。
+
+## 有界等待同一任务
+
+标准路径在一次请求内最多等待 `standard_wait_seconds`（默认180秒，允许0–300，
+0为不追加观察）。首次 Invoke 使用当前新准入权限；仅当返回明确的
+`TASK_WAIT_TIMEOUT` 后，才用 **canExecute=false** 恢复同一冻结操作。后续调用
+不能创建缺失的任务/路由、不能切模型/Key，也不允许普通provider fallback。
+其他错误（未知receipt、审批、未知执行、终态失败等）立即返回，不循环重派。
+
+总deadline和客户端断连都只停止观察，不表示取消了原生任务；收到
+`NATIVE_OBSERVATION_TIMEOUT` 仍须按原正文/Key/Idempotency-Key恢复。不把超时
+变成安全重试或新幂等键。反向代理、Sub2API服务器及客户端超时须覆盖所配置等待
+时间与网络余量；否则仍会提前断连，不能因此重复生成。此等待不是实时SSE。
 
 ## 实际协议限制
 
