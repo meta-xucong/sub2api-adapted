@@ -671,18 +671,18 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 			}, errors.New("upstream returned an empty refusal")
 		}
 		return &ForwardResult{
-				RequestID:       requestID,
-				UpstreamHeaders: resp.Header,
-				Usage:           usage,
-				Model:           originalModel,
-				UpstreamModel:   mappedModel,
-				ReasoningEffort: reasoningEffort,
-				Stream:          false,
-				Duration:        time.Since(startTime),
-			}, &UpstreamFailoverError{
-				StatusCode:   http.StatusBadGateway,
-				ResponseBody: []byte("upstream completed an Anthropic message without output"),
-			}
+			RequestID:       requestID,
+			UpstreamHeaders: resp.Header,
+			Usage:           usage,
+			Model:           originalModel,
+			UpstreamModel:   mappedModel,
+			ReasoningEffort: reasoningEffort,
+			Stream:          false,
+			Duration:        time.Since(startTime),
+		}, &UpstreamFailoverError{
+			StatusCode:   http.StatusBadGateway,
+			ResponseBody: []byte("upstream completed an Anthropic message without output"),
+		}
 	}
 	if !sawMessageStop {
 		writeResponsesError(c, http.StatusBadGateway, "server_error", "Upstream stream ended before completion")
