@@ -26,7 +26,8 @@ import (
 )
 
 const Path = "/v1/native-harness/chat/completions"
-const MaxBody = 262144
+const MaxResultText = 262144
+const MaxResponseBody = 6*MaxResultText + 4096
 const MaxRequest = 65536
 
 var identifier = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$`)
@@ -112,7 +113,11 @@ func canonical(v any) []byte {
 // decode forbids duplicate keys throughout the bounded JSON object. The normal
 // gateway's lenient/gjson parser is deliberately not used for this contract.
 func decode(raw []byte) (map[string]any, error) {
-	if len(raw) > MaxBody || !json.Valid(raw) || !validUnicode(raw) {
+	return decodeBounded(raw, MaxRequest)
+}
+
+func decodeBounded(raw []byte, maximum int) (map[string]any, error) {
+	if len(raw) > maximum || !json.Valid(raw) || !validUnicode(raw) {
 		return nil, fail("INVALID_REQUEST", 400)
 	}
 	d := json.NewDecoder(bytes.NewReader(raw))
@@ -325,14 +330,14 @@ func (s *Service) Invoke(ctx context.Context, userID, keyID int64, clientKey str
 	if len(lengths) != 1 {
 		return nil, fail("NATIVE_RECEIPT_UNKNOWN", 502)
 	}
-	if response.ContentLength < 0 || response.ContentLength > MaxBody || len(response.TransferEncoding) != 0 {
+	if response.ContentLength < 0 || response.ContentLength > MaxResponseBody || len(response.TransferEncoding) != 0 {
 		return nil, fail("NATIVE_RECEIPT_UNKNOWN", 502)
 	}
-	result, err := io.ReadAll(io.LimitReader(response.Body, MaxBody+1))
+	result, err := io.ReadAll(io.LimitReader(response.Body, MaxResponseBody+1))
 	if err != nil || int64(len(result)) != response.ContentLength {
 		return nil, fail("NATIVE_RECEIPT_UNKNOWN", 502)
 	}
-	decoded, err := decode(result)
+	decoded, err := decodeBounded(result, MaxResponseBody)
 	if err != nil {
 		return nil, fail("NATIVE_RECEIPT_UNKNOWN", 502)
 	}
@@ -431,6 +436,11 @@ func validCompletion(value map[string]any, alias string) bool {
 		if !ok || strings.TrimSpace(refusal) == "" {
 			return false
 		}
+	}
+	// Logical output is measured after JSON decoding, in UTF-8 bytes. Wire
+	// escaping/metadata have a separate finite allowance.
+	if len(content)+len(refusal) > MaxResultText {
+		return false
 	}
 	return strings.TrimSpace(content) != "" || strings.TrimSpace(refusal) != ""
 }
