@@ -55,7 +55,7 @@ jobs:
       - name: Set up Node.js using the repository CI baseline
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: '20'
+          node-version: '22'
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
       - name: Set up Python
