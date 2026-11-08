@@ -1,7 +1,5 @@
 package nativeharness
 
-import "bytes"
-
 // PrepareBufferedStream changes transport only, never the native prompt or task.
 // Both encodings normalize to the same ledger digest. Unknown fields, duplicate
 // keys and unsupported request semantics still fail through the strict parser.
@@ -45,11 +43,9 @@ func BufferedCompletionSSE(raw []byte) ([]byte, error) {
 		return canonical(map[string]any{"id": m["id"], "object": "chat.completion.chunk", "created": m["created"], "model": alias,
 			"choices": []any{map[string]any{"index": 0, "delta": delta, "finish_reason": reason}}})
 	}
-	var out bytes.Buffer
-	out.WriteString("data: ")
-	out.Write(chunk(message, nil))
-	out.WriteString("\n\ndata: ")
-	out.Write(chunk(map[string]any{}, "stop"))
-	out.WriteString("\n\ndata: [DONE]\n\n")
-	return out.Bytes(), nil
+	out := append([]byte("data: "), chunk(message, nil)...)
+	out = append(out, []byte("\n\ndata: ")...)
+	out = append(out, chunk(map[string]any{}, "stop")...)
+	out = append(out, []byte("\n\ndata: [DONE]\n\n")...)
+	return out, nil
 }
