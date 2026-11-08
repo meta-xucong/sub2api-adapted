@@ -60,17 +60,31 @@ gateway:
 ## 实际协议限制
 
 - `workbuddy_local_trial` 原生执行仍只接受单条 user 纯文本、`n=1`。
-  标准路径 `stream:true` 现输出真实 **native-events-v1 named SSE**，不再是 buffered-final。
-  `text_snapshot` 是权威替换（可缩短/更正），`native_status`/`task_status` 如实反映任务；
-  只有 Bridge 确认终态并验证结果后才有完整 `completion` 或 `task_error`。
-  客户端必须认识此原生事件协议，不能当作 OpenAI token delta。未知 usage 不造假。
-  每个持久事件有 `id: seq`；以相同 Key、正文、Idempotency-Key 及 `Last-Event-ID`
-  恢复，后续只读。无 id 的 `observation_error` 仅表示本次观察中断，不能换键重生成。
-  `observation_end` 表示已到终态游标；从最终 id 恢复不重复发送 completion。
-  `: observing` 只是保活，不伪称原生产出。普通 EOF 不等于完成。
-  模式切换仍共享规范摘要与唯一任务；每次连接首次调用之后及带 Last-Event-ID 的恢复均禁止准入。
-  丢失游标时也应携带 Last-Event-ID:0；不带此头的重新请求会重新检查准入，
-  仍依赖原幂等键与 Bridge 唯一任务约束，不可把它当作只读恢复。
+  标准路径 `stream:true` 缺省为 **openai-append-v1**：普通 `data:` SSE、
+  `chat.completion.chunk` / `choices.delta`，可追加快照仅发送真实新增后缀。
+  只有已验证最终结果与已发内容一致时才发送结束帧和 `[DONE]`。
+  缩短、改写或最终结果不一致时返回 `NATIVE_STREAM_REWRITE_REQUIRED` 错误并关闭，
+  不追加另一份“修正答案”、不伪成功、不重新执行。客户端仍可能留着已显示的临时文本；
+  错误后不能把它当最终正确答案，须原键 `stream:false` 获取权威最终结果。
+- 要正确展示原生快照更正及任务状态，显式发送
+  `X-Native-Stream-Protocol: native-events-v1`，输出命名事件：
+  `text_snapshot` 替换全部文本（可缩短/更正），`native_status` / `task_status`
+  如实反映任务；只有 Bridge 确认终态并验证结果后才有完整 `completion` 或 `task_error`。
+  普通 OpenAI SDK 无法自动展示这些事件，不应在普通 SDK 上选择此模式。
+- 标准流的原生状态仅为 SSE 注释，不混入 assistant 文本。普通 SDK 通常忽略注释，
+  所以不能声称它能显示审批/unknown等任务状态。未知 usage 不造假；stream 的
+  `created` 是本次 HTTP 流创建时间，不是原生推理起始时间。`delta.refusal` 仅在
+  没有已发冲突文本且终态拒答已验证时发送，客户端的拒答显示能力各异。
+- 标准流恢复必须从头，以原 Key/正文/Idempotency-Key 及 `Last-Event-ID:0`
+  只读重放；正游标会在准入前返回 `STANDARD_STREAM_CURSOR_UNSUPPORTED`。
+  原生流每个持久事件有 `id: seq`，可用正 `Last-Event-ID` 从已确认事件后恢复。
+  不带该头的新HTTP请求会重新检查准入，仍由原操作键与Bridge唯一任务去重，
+  不能把它称为只读恢复。每次连接首次调用之后与带此头的恢复均禁止准入。
+  模式切换共享同一规范摘要，不产生第二个任务，不能自动换Key/模型/操作键。
+- 原生流的 `observation_error` 不带 id，仅表示本次观察中断；`observation_end`
+  表示终态游标到达，从最终 id 恢复不重复发送 completion。标准流错误采用
+  `data: {"error": ...}` 并关闭，无成功终止帧。两种流中普通 EOF 都不等于成功。
+  `: observing` 只是连接保活，不伪称原生产出。
   stream预算须1–300秒，单次写≤5秒且受总deadline限制；不支持有界写的transport拒绝。
   `stream_options` 尚不支持。专用 native-harness 路径仍拒绝 `stream:true`。
 - tools、tool_choice、functions、tool-role、图片、Responses 等均未通过此接缝实现。
@@ -91,3 +105,32 @@ gateway:
 
 本次测试只覆盖标准路径选择、真实认证边界、普通路由不被误触发及现有 native
 ledger 契约；不执行用户登录、真实推理、部署或商业收费。
+
+## 普通 Python SDK 示例（仍需本渠道幂等头）
+
+```python
+import os
+from openai import OpenAI
+
+client = OpenAI(base_url=os.environ["SUB2_BASE_URL"],
+                api_key=os.environ["SUB2_API_KEY"], max_retries=0, timeout=200)
+headers = {"Idempotency-Key": "a-stable-key-for-this-one-operation"}
+request = {"model": "workbuddy-your-configured-alias",
+           "messages": [{"role": "user", "content": "你的请求"}]}
+completed = False
+for chunk in client.chat.completions.create(**request, stream=True, extra_headers=headers):
+    if chunk.choices:
+        part = chunk.choices[0]
+        if part.delta.content:
+            print(part.delta.content, end="", flush=True)  # 完成前均为临时文本
+        if part.finish_reason == "stop":
+            completed = True
+if not completed:
+    raise RuntimeError("流未确认完成，请按原操作身份恢复")
+# 改写/观察错误由 SDK 抛出。需要恢复权威最终结果时显式使用同一个 request/headers：
+# final = client.chat.completions.create(**request, stream=False, extra_headers=headers)
+```
+
+这证明受限文本流可被实际 SDK 消费，不表示无需幂等头、不受限完整 API、
+工具调用兼容或普通客户端能够自动撤销已显示的文本。每个新业务请求用新的操作键，
+但同一任务的恢复始终保留原键。不得自动把出错请求当作新业务请求重生。

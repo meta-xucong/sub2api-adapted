@@ -51,6 +51,7 @@ func TestNativeEventsFlushBeforeFinalAndResumeReadOnly(t *testing.T) {
 	client := &http.Client{Timeout: 5 * time.Second}
 	ctx, cancel := context.WithCancel(context.Background())
 	req, _ := http.NewRequestWithContext(ctx, "POST", server.URL+"/events", nil)
+	req.Header.Set("X-Native-Stream-Protocol", nativeharness.EventsSchema)
 	response, err := client.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -76,6 +77,7 @@ func TestNativeEventsFlushBeforeFinalAndResumeReadOnly(t *testing.T) {
 	close(released)
 	req, _ = http.NewRequest("POST", server.URL+"/events", nil)
 	req.Header.Set("Last-Event-ID", "1")
+	req.Header.Set("X-Native-Stream-Protocol", nativeharness.EventsSchema)
 	response, err = client.Do(req)
 	if err != nil {
 		t.Fatal(err)

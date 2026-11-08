@@ -42,9 +42,16 @@ func TestNativeStandardSameLedgerAndStrictContract(t *testing.T) {
 	for _, path := range []string{nativeharness.Path, nativeharness.StandardChatPath} {
 		r.POST(path, gin.HandlerFunc(middleware2.NewAPIKeyAuthMiddleware(auth, nil, cfg)), h.NativeHarnessChat)
 	}
-	invoke := func(path, body, id string) *httptest.ResponseRecorder {
+	invoke := func(path, body, id string, protocols ...string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest("POST", path, strings.NewReader(body))
 		req.Header.Set("Authorization", "Bearer native-key")
+		if len(protocols) > 0 {
+			for _, protocol := range protocols {
+				req.Header.Add("X-Native-Stream-Protocol", protocol)
+			}
+		} else if strings.Contains(body, `"stream":true`) {
+			req.Header.Set("X-Native-Stream-Protocol", nativeharness.EventsSchema)
+		}
 		if id != "" {
 			req.Header.Set("Idempotency-Key", id)
 		}
@@ -60,6 +67,11 @@ func TestNativeStandardSameLedgerAndStrictContract(t *testing.T) {
 	}
 	if w := invoke(nativeharness.StandardChatPath, nativeRequest, ""); w.Code != 400 || hits != 0 {
 		t.Fatalf("missing idempotency %d", w.Code)
+	}
+	for _, protocols := range [][]string{{nativeharness.EventsSchema}, {"unknown"}, {nativeharness.EventsSchema, nativeharness.StandardStreamProtocol}} {
+		if w := invoke(nativeharness.StandardChatPath, nativeRequest, "bad-protocol", protocols...); w.Code != 400 || hits != 0 {
+			t.Fatalf("nonstream protocol admitted %d hits%d", w.Code, hits)
+		}
 	}
 	if w := invoke(nativeharness.StandardChatPath, nativeRequest, "same-operation"); w.Code != 200 || hits != 1 {
 		t.Fatalf("standard status%d %s", w.Code, w.Body.String())

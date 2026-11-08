@@ -52,6 +52,15 @@ func (h *OpenAIGatewayHandler) NativeHarnessChat(c *gin.Context) {
 			return
 		}
 	}
+	if _, err := nativeharness.StreamProtocol(c.Request.Header.Values("X-Native-Stream-Protocol"), nativeStream); err != nil {
+		var e *nativeharness.Error
+		if errors.As(err, &e) {
+			nativeHarnessError(c, e.Status, e.Code, "Invalid stream negotiation")
+		} else {
+			nativeHarnessError(c, 400, "INVALID_STREAM_PROTOCOL", "Invalid stream negotiation")
+		}
+		return
+	}
 	// Expired/quota-exhausted keys may read an already accepted result, but cannot
 	// cause new execution. Disabled keys/users remain rejected by auth middleware.
 	canExecute := key.IsActive() && !key.IsExpired() && !key.IsQuotaExhausted()
