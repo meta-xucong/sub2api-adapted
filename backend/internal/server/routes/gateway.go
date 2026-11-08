@@ -7,6 +7,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler"
+	"github.com/Wei-Shaw/sub2api/internal/nativeharness"
 	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/requestmodel"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
@@ -29,6 +30,9 @@ func RegisterGatewayRoutes(
 	compositeResolver *service.CompositeRouteResolver,
 	cfg *config.Config,
 ) {
+	// Separate opt-in native path: authenticates real keys, never ordinary providers.
+	r.POST(nativeharness.Path, middleware.RequestBodyLimit(nativeharness.MaxRequest), gin.HandlerFunc(apiKeyAuth), h.OpenAIGateway.NativeHarnessChat)
+	r.GET(nativeharness.ModelsPath, gin.HandlerFunc(apiKeyAuth), h.OpenAIGateway.NativeHarnessModels)
 	bodyLimit := middleware.RequestBodyLimit(cfg.Gateway.MaxBodySize)
 	textBodyLimit := middleware.RequestBodyLimit(cfg.Gateway.TextMaxBodySize)
 	clientRequestID := middleware.ClientRequestID()
@@ -189,6 +193,7 @@ func RegisterGatewayRoutes(
 	gateway.Use(opsErrorLogger)
 	gateway.Use(endpointNorm)
 	gateway.Use(gin.HandlerFunc(apiKeyAuth))
+	gateway.Use(nativeStandardDispatch(cfg, h.OpenAIGateway.NativeHarnessChat, h.OpenAIGateway.NativeHarnessModels))
 	gateway.GET("/sub2api/billing", h.Gateway.KeyBillingInfo)
 	gateway.Use(groupModelAllowlist)
 	gateway.Use(compositeTarget)
