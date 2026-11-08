@@ -60,7 +60,11 @@ func TestLocalTrialAdmissionReplayAndFrozenMode(t *testing.T) {
 	bad := []byte(strings.Replace(string(raw), `[{"role":"user"`, `[{"role":"assistant","content":"old"},{"role":"user"`, 1))
 	_, err := s.Invoke(context.Background(), 7, 9, "bad", true, bad)
 	requireCode(t, err, "LOCAL_TRIAL_SINGLE_USER_MESSAGE_REQUIRED")
-	if len(s.Store.(*memoryStore).rows) != 0 || calls.Load() != 0 {
+	store, ok := s.Store.(*memoryStore)
+	if !ok {
+		t.Fatal("unexpected store fixture")
+	}
+	if len(store.rows) != 0 || calls.Load() != 0 {
 		t.Fatal("bad prompt admitted")
 	}
 	_, err = s.Invoke(context.Background(), 8, 9, "op", true, raw)
@@ -72,8 +76,14 @@ func TestLocalTrialAdmissionReplayAndFrozenMode(t *testing.T) {
 	if lastAdmission.Load() != "true" {
 		t.Fatal("new admission")
 	}
-	op, _ := s.Store.Lookup(context.Background(), 7, 9, "op")
-	encoded, _ := json.Marshal(op.Route)
+	op, lookupErr := s.Store.Lookup(context.Background(), 7, 9, "op")
+	if lookupErr != nil || op == nil {
+		t.Fatalf("lookup: %v", lookupErr)
+	}
+	encoded, marshalErr := json.Marshal(op.Route)
+	if marshalErr != nil {
+		t.Fatal(marshalErr)
+	}
 	if !strings.Contains(string(encoded), `"execution_mode":"workbuddy_local_trial"`) {
 		t.Fatal("mode not durably frozen")
 	}
