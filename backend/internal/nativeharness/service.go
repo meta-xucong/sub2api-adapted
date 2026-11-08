@@ -244,83 +244,10 @@ type Response struct {
 }
 
 func (s *Service) Invoke(ctx context.Context, userID, keyID int64, clientKey string, canExecute bool, raw []byte) (*Response, error) {
-	cfg := s.Config
-	if !cfg.Enabled {
-		return nil, fail("NATIVE_DISABLED", 503)
-	}
-	if userID <= 0 || keyID <= 0 || userID != cfg.AllowedUserID || keyID != cfg.AllowedAPIKeyID {
-		return nil, fail("NATIVE_FORBIDDEN", 403)
-	}
-	if !identifier.MatchString(clientKey) {
-		return nil, fail("IDEMPOTENCY_KEY_REQUIRED", 400)
-	}
-	req, err := normalize(raw)
+	r, op, err := s.prepareRequest(ctx, userID, keyID, clientKey, canExecute, raw, "/v1/chat/completions")
 	if err != nil {
 		return nil, err
 	}
-	alias, ok := req["model"].(string)
-	if !ok {
-		return nil, fail("INVALID_REQUEST", 400)
-	}
-	body := canonical(req)
-	digest := hash(body)
-	if s.Store == nil {
-		return nil, fail("ROUTE_STORE_UNAVAILABLE", 503)
-	}
-	op, err := s.Store.Lookup(ctx, userID, keyID, clientKey)
-	if errors.Is(err, ErrNotFound) {
-		if !cfg.AcceptingNew || !canExecute {
-			return nil, fail("NEW_ADMISSION_DISABLED", 403)
-		}
-		route, ok := cfg.Routes[alias]
-		if !ok || !ValidRoute(alias, route) {
-			return nil, fail("MODEL_NOT_AVAILABLE", 400)
-		}
-		if route.ExecutionMode == "workbuddy_local_trial" && !singleUserMessage(req) {
-			return nil, fail("LOCAL_TRIAL_SINGLE_USER_MESSAGE_REQUIRED", 400)
-		}
-		id := make([]byte, 16)
-		if _, err = rand.Read(id); err != nil {
-			return nil, fail("ROUTE_STORE_UNAVAILABLE", 503)
-		}
-		op, err = s.Store.Freeze(ctx, Operation{userID, keyID, clientKey, digest, "op_" + hex.EncodeToString(id), route})
-	}
-	if err != nil || op == nil {
-		return nil, fail("ROUTE_STORE_UNAVAILABLE", 503)
-	}
-	if op.UserID != userID || op.APIKeyID != keyID || op.ClientKey != clientKey || !identifier.MatchString(op.ID) {
-		return nil, fail("ROUTE_INTEGRITY_ERROR", 503)
-	}
-	if op.Digest != digest {
-		return nil, fail("IDEMPOTENCY_CONFLICT", 409)
-	}
-	if !ValidRoute(alias, op.Route) {
-		return nil, fail("ROUTE_INTEGRITY_ERROR", 503)
-	}
-	token := s.Getenv(op.Route.CredentialEnv)
-	if len(token) < 16 || strings.ContainsAny(token, "\r\n") {
-		return nil, fail("ROUTE_CREDENTIAL_UNAVAILABLE", 503)
-	}
-	r, err := http.NewRequestWithContext(ctx, http.MethodPost, op.Route.Origin+"/v1/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return nil, fail("ROUTE_INTEGRITY_ERROR", 503)
-	}
-	// Prevent net/http from treating a body as safely replayable on a transport error.
-	r.GetBody = nil
-	r.Header.Set("Content-Type", "application/json")
-	r.Header.Set("Authorization", "Bearer "+token)
-	r.Header.Set("X-Native-Tenant", fmt.Sprintf("user-%d", userID))
-	r.Header.Set("X-Native-Principal", fmt.Sprintf("key-%d", keyID))
-	r.Header.Set("X-Native-Operation", op.ID)
-	r.Header.Set("X-Native-Source", op.Route.Source)
-	r.Header.Set("X-Native-Ledger", op.Route.LedgerInstance)
-	binding := map[string]any{"binding_id": op.Route.BindingID, "revision": op.Route.Revision, "model_alias": op.Route.ModelAlias, "native_model": op.Route.NativeModel}
-	r.Header.Set("X-Native-Binding-Digest", hash(canonical(binding)))
-	// Re-check current permission even if the earlier receipt is unknown. A false
-	// flag only allows Facade lookup/replay; it can never create missing work.
-	currentRoute, currentlyConfigured := cfg.Routes[op.Route.ModelAlias]
-	admission := cfg.AcceptingNew && canExecute && currentlyConfigured && currentRoute == op.Route
-	r.Header.Set("X-Native-Admission-Allowed", strconv.FormatBool(admission))
 	response, err := s.client.Do(r)
 	if err != nil {
 		return nil, fail("NATIVE_RECEIPT_UNKNOWN", 502)
@@ -515,4 +442,88 @@ func singleUserMessage(req map[string]any) bool {
 	}
 	message, ok := messages[0].(map[string]any)
 	return ok && message["role"] == "user"
+}
+
+// prepareRequest shares authentication, immutable route/digest and admission
+// checks between final-result and event observation transports. It does not
+// dispatch work; only the caller sends the resulting request.
+func (s *Service) prepareRequest(ctx context.Context, userID, keyID int64, clientKey string, canExecute bool, raw []byte, path string) (*http.Request, *Operation, error) {
+	cfg := s.Config
+	if !cfg.Enabled {
+		return nil, nil, fail("NATIVE_DISABLED", 503)
+	}
+	if userID <= 0 || keyID <= 0 || userID != cfg.AllowedUserID || keyID != cfg.AllowedAPIKeyID {
+		return nil, nil, fail("NATIVE_FORBIDDEN", 403)
+	}
+	if !identifier.MatchString(clientKey) {
+		return nil, nil, fail("IDEMPOTENCY_KEY_REQUIRED", 400)
+	}
+	req, err := normalize(raw)
+	if err != nil {
+		return nil, nil, err
+	}
+	alias, ok := req["model"].(string)
+	if !ok {
+		return nil, nil, fail("INVALID_REQUEST", 400)
+	}
+	body := canonical(req)
+	digest := hash(body)
+	if s.Store == nil {
+		return nil, nil, fail("ROUTE_STORE_UNAVAILABLE", 503)
+	}
+	op, err := s.Store.Lookup(ctx, userID, keyID, clientKey)
+	if errors.Is(err, ErrNotFound) {
+		if !cfg.AcceptingNew || !canExecute {
+			return nil, nil, fail("NEW_ADMISSION_DISABLED", 403)
+		}
+		route, ok := cfg.Routes[alias]
+		if !ok || !ValidRoute(alias, route) {
+			return nil, nil, fail("MODEL_NOT_AVAILABLE", 400)
+		}
+		if route.ExecutionMode == "workbuddy_local_trial" && !singleUserMessage(req) {
+			return nil, nil, fail("LOCAL_TRIAL_SINGLE_USER_MESSAGE_REQUIRED", 400)
+		}
+		id := make([]byte, 16)
+		if _, err = rand.Read(id); err != nil {
+			return nil, nil, fail("ROUTE_STORE_UNAVAILABLE", 503)
+		}
+		op, err = s.Store.Freeze(ctx, Operation{userID, keyID, clientKey, digest, "op_" + hex.EncodeToString(id), route})
+	}
+	if err != nil || op == nil {
+		return nil, nil, fail("ROUTE_STORE_UNAVAILABLE", 503)
+	}
+	if op.UserID != userID || op.APIKeyID != keyID || op.ClientKey != clientKey || !identifier.MatchString(op.ID) {
+		return nil, nil, fail("ROUTE_INTEGRITY_ERROR", 503)
+	}
+	if op.Digest != digest {
+		return nil, nil, fail("IDEMPOTENCY_CONFLICT", 409)
+	}
+	if !ValidRoute(alias, op.Route) {
+		return nil, nil, fail("ROUTE_INTEGRITY_ERROR", 503)
+	}
+	token := s.Getenv(op.Route.CredentialEnv)
+	if len(token) < 16 || strings.ContainsAny(token, "\r\n") {
+		return nil, nil, fail("ROUTE_CREDENTIAL_UNAVAILABLE", 503)
+	}
+	r, err := http.NewRequestWithContext(ctx, http.MethodPost, op.Route.Origin+path, bytes.NewReader(body))
+	if err != nil {
+		return nil, nil, fail("ROUTE_INTEGRITY_ERROR", 503)
+	}
+	// Prevent net/http from treating a body as safely replayable on a transport error.
+	r.GetBody = nil
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Authorization", "Bearer "+token)
+	r.Header.Set("X-Native-Tenant", fmt.Sprintf("user-%d", userID))
+	r.Header.Set("X-Native-Principal", fmt.Sprintf("key-%d", keyID))
+	r.Header.Set("X-Native-Operation", op.ID)
+	r.Header.Set("X-Native-Source", op.Route.Source)
+	r.Header.Set("X-Native-Ledger", op.Route.LedgerInstance)
+	binding := map[string]any{"binding_id": op.Route.BindingID, "revision": op.Route.Revision, "model_alias": op.Route.ModelAlias, "native_model": op.Route.NativeModel}
+	r.Header.Set("X-Native-Binding-Digest", hash(canonical(binding)))
+	// Re-check current permission even if the earlier receipt is unknown. A false
+	// flag only allows Facade lookup/replay; it can never create missing work.
+	currentRoute, currentlyConfigured := cfg.Routes[op.Route.ModelAlias]
+	admission := cfg.AcceptingNew && canExecute && currentlyConfigured && currentRoute == op.Route
+	r.Header.Set("X-Native-Admission-Allowed", strconv.FormatBool(admission))
+	return r, op, nil
 }

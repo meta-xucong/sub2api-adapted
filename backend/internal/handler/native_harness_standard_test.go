@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/nativeharness"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
@@ -21,12 +22,17 @@ func TestNativeStandardSameLedgerAndStrictContract(t *testing.T) {
 	status := 200
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits++
+		if r.URL.Path == "/v1/native-harness/events" && status == 200 {
+			fmt.Fprint(w, `{"schema_version":"native-events-v1","remote_task_id":"task-1","events":[{"seq":1,"type":"completion","data":{"id":"chatcmpl-test","created":1,"object":"chat.completion","model":"synthetic-test","choices":[{"index":0,"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}}],"next_cursor":1,"has_more":false,"terminal_seq":1}`)
+			return
+		}
 		w.WriteHeader(status)
 		fmt.Fprint(w, `{"id":"chatcmpl-test","created":1,"object":"chat.completion","model":"synthetic-test","choices":[{"index":0,"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}`)
 	}))
 	defer upstream.Close()
 	cfg := nativeConfig(upstream.URL)
 	cfg.Gateway.NativeHarness.StandardAPI = true
+	cfg.Gateway.NativeHarness.StandardWaitSeconds = 2
 	svc := nativeharness.New(cfg.Gateway.NativeHarness, &nativeTestStore{})
 	svc.Getenv = func(string) string { return "synthetic-test-service-token" }
 	h := &OpenAIGatewayHandler{cfg: cfg, nativeHarness: svc}
@@ -43,7 +49,7 @@ func TestNativeStandardSameLedgerAndStrictContract(t *testing.T) {
 			req.Header.Set("Idempotency-Key", id)
 		}
 		w := httptest.NewRecorder()
-		r.ServeHTTP(w, req)
+		r.ServeHTTP(&nativeStreamRecorder{w}, req)
 		return w
 	}
 	for _, body := range []string{`{"model":"synthetic-test","stream":1,"messages":[{"role":"user","content":"hi"}]}`, `{"model":"synthetic-test","tools":[],"messages":[{"role":"user","content":"hi"}]}`} {
@@ -59,8 +65,8 @@ func TestNativeStandardSameLedgerAndStrictContract(t *testing.T) {
 		t.Fatalf("standard status%d %s", w.Code, w.Body.String())
 	}
 	streamRequest := strings.TrimSuffix(nativeRequest, "}") + `,"stream":true}`
-	if w := invoke(nativeharness.StandardChatPath, streamRequest, "same-operation"); w.Code != 200 || hits != 2 || w.Header().Get("X-Native-Stream-Mode") != "buffered-final" || !strings.Contains(w.Body.String(), "data: [DONE]") {
-		t.Fatalf("buffered same-ledger %d %s", w.Code, w.Body.String())
+	if w := invoke(nativeharness.StandardChatPath, streamRequest, "same-operation"); w.Code != 200 || hits != 2 || w.Header().Get("X-Native-Stream-Mode") != "native-events-v1" || !strings.Contains(w.Body.String(), "event: completion") {
+		t.Fatalf("live same-ledger %d %s", w.Code, w.Body.String())
 	}
 	if w := invoke(nativeharness.Path, streamRequest, "same-operation"); w.Code != 400 || hits != 2 {
 		t.Fatalf("dedicated nonstream unchanged %d %s", w.Code, w.Body.String())
@@ -76,3 +82,8 @@ func TestNativeStandardSameLedgerAndStrictContract(t *testing.T) {
 		t.Fatalf("same ledger replay %d %s", w.Code, w.Body.String())
 	}
 }
+
+// Explicit test transport fixture. Real server connections own actual deadlines.
+type nativeStreamRecorder struct{ *httptest.ResponseRecorder }
+
+func (w *nativeStreamRecorder) SetWriteDeadline(time.Time) error { return nil }

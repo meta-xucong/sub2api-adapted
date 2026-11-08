@@ -55,20 +55,27 @@ gateway:
 总deadline和客户端断连都只停止观察，不表示取消了原生任务；收到
 `NATIVE_OBSERVATION_TIMEOUT` 仍须按原正文/Key/Idempotency-Key恢复。不把超时
 变成安全重试或新幂等键。反向代理、Sub2API服务器及客户端超时须覆盖所配置等待
-时间与网络余量；否则仍会提前断连，不能因此重复生成。此等待不是实时SSE。
+时间与网络余量；否则仍会提前断连，不能因此重复生成。此段说明非流式等待；实时事件模式见下。
 
 ## 实际协议限制
 
-- `workbuddy_local_trial` 原生执行仍只接受单条 user 纯文本、`n=1`，原生派发非流式。
-  标准路径可指定 `stream:true`，这是 **buffered-final SSE**，不是实时 token 流：
-  等已验证终态结果后，才发送一个完整内容 delta、结束帧和 `[DONE]`。
-  `X-Native-Stream-Mode: buffered-final` 明示此模式，不伪造逐 token 增量或 usage。
-  模型内容、原生派发和账本摘要与 `stream:false` 相同，同一幂等键只恢复同任务。
-  在结果前没有 SSE 成功事件或 heartbeat；超时/待完成/错误仍返回普通 JSON 错误，
-  不发送 `[DONE]`。`stream_options` 尚不支持。专用 native-harness 路径仍拒绝 `stream:true`。
+- `workbuddy_local_trial` 原生执行仍只接受单条 user 纯文本、`n=1`。
+  标准路径 `stream:true` 现输出真实 **native-events-v1 named SSE**，不再是 buffered-final。
+  `text_snapshot` 是权威替换（可缩短/更正），`native_status`/`task_status` 如实反映任务；
+  只有 Bridge 确认终态并验证结果后才有完整 `completion` 或 `task_error`。
+  客户端必须认识此原生事件协议，不能当作 OpenAI token delta。未知 usage 不造假。
+  每个持久事件有 `id: seq`；以相同 Key、正文、Idempotency-Key 及 `Last-Event-ID`
+  恢复，后续只读。无 id 的 `observation_error` 仅表示本次观察中断，不能换键重生成。
+  `observation_end` 表示已到终态游标；从最终 id 恢复不重复发送 completion。
+  `: observing` 只是保活，不伪称原生产出。普通 EOF 不等于完成。
+  模式切换仍共享规范摘要与唯一任务；每次连接首次调用之后及带 Last-Event-ID 的恢复均禁止准入。
+  丢失游标时也应携带 Last-Event-ID:0；不带此头的重新请求会重新检查准入，
+  仍依赖原幂等键与 Bridge 唯一任务约束，不可把它当作只读恢复。
+  stream预算须1–300秒，单次写≤5秒且受总deadline限制；不支持有界写的transport拒绝。
+  `stream_options` 尚不支持。专用 native-harness 路径仍拒绝 `stream:true`。
 - tools、tool_choice、functions、tool-role、图片、Responses 等均未通过此接缝实现。
-- 厂商已执行的工具事件不会被伪造成下游待执行 `tool_calls`；需要交互审批时保守停止。
-- 只返回已验证完成的 HTTP 200；上游待完成/非完成响应或超时会保守返回错误，
+- 厂商已执行的工具事件不会被伪造成下游待执行 `tool_calls`；审批等待通过状态事件呈现，不代为批准。
+- 非流式只返回已验证完成的 HTTP 200；上游待完成/非完成响应或超时会保守返回错误，
   不伪造成完成响应。错误不证明任务没开始：客户端须以原 Key、原正文、
   原 `Idempotency-Key` 恢复同一任务。普通 SDK 不可换键自动重生。
 - usage 未知不造零；非收费。超时、断网、节点忙或未知执行结果均不能安全重生成。

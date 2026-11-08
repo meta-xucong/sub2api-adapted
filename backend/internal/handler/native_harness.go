@@ -38,10 +38,10 @@ func (h *OpenAIGatewayHandler) NativeHarnessChat(c *gin.Context) {
 		nativeHarnessError(c, http.StatusRequestEntityTooLarge, "INVALID_REQUEST", "Invalid native request")
 		return
 	}
-	bufferedStream := false
+	nativeStream := false
 	if c.Request.URL.Path == nativeharness.StandardChatPath && h.nativeHarness.Config.StandardAPI {
 		var prepareErr error
-		raw, bufferedStream, prepareErr = nativeharness.PrepareBufferedStream(raw)
+		raw, nativeStream, prepareErr = nativeharness.PrepareNativeStream(raw)
 		if prepareErr != nil {
 			var e *nativeharness.Error
 			if errors.As(prepareErr, &e) {
@@ -58,6 +58,10 @@ func (h *OpenAIGatewayHandler) NativeHarnessChat(c *gin.Context) {
 	if key.Group != nil && key.Group.ModelAllowlistEnabled() {
 		model, err := nativeharness.RequestModel(raw)
 		canExecute = canExecute && err == nil && key.Group.ModelAllowlist.Allows(model)
+	}
+	if nativeStream {
+		h.nativeHarnessEvents(c, subject.UserID, key.ID, keys[0], canExecute, raw)
+		return
 	}
 	var result *nativeharness.Response
 	if c.Request.URL.Path == nativeharness.StandardChatPath && h.nativeHarness.Config.StandardAPI {
@@ -79,16 +83,6 @@ func (h *OpenAIGatewayHandler) NativeHarnessChat(c *gin.Context) {
 	c.Header("X-Native-Billing", result.Billing)
 	if result.Replay == "true" || result.Replay == "false" {
 		c.Header("X-Native-Replay", result.Replay)
-	}
-	if bufferedStream {
-		data, encodeErr := nativeharness.BufferedCompletionSSE(result.Body)
-		if encodeErr != nil {
-			nativeHarnessError(c, 502, "NATIVE_INVALID_COMPLETION", "Native request could not be completed")
-			return
-		}
-		c.Header("X-Native-Stream-Mode", "buffered-final")
-		c.Data(result.Status, "text/event-stream; charset=utf-8", data)
-		return
 	}
 	c.Data(result.Status, "application/json", result.Body)
 }
