@@ -3,6 +3,9 @@ package config
 // NativeHarnessConfig is an opt-in, non-billing synthetic integration pilot.
 // No ordinary provider/account selection or fallback is performed by this route.
 type NativeHarnessConfig struct {
+	// StandardAPI reserves /v1/chat/completions and /v1/models for the dedicated
+	// allowlisted key. Default false; not an ordinary billed provider.
+	StandardAPI     bool                          `mapstructure:"standard_api"`
 	Enabled         bool                          `mapstructure:"enabled"`
 	AcceptingNew    bool                          `mapstructure:"accepting_new"`
 	AllowedUserID   int64                         `mapstructure:"allowed_user_id"`

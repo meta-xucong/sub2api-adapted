@@ -193,6 +193,7 @@ func RegisterGatewayRoutes(
 	gateway.Use(opsErrorLogger)
 	gateway.Use(endpointNorm)
 	gateway.Use(gin.HandlerFunc(apiKeyAuth))
+	gateway.Use(nativeStandardDispatch(cfg, h.OpenAIGateway.NativeHarnessChat, h.OpenAIGateway.NativeHarnessModels))
 	gateway.GET("/sub2api/billing", h.Gateway.KeyBillingInfo)
 	gateway.Use(groupModelAllowlist)
 	gateway.Use(compositeTarget)

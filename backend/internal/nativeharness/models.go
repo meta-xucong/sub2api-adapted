@@ -2,6 +2,9 @@ package nativeharness
 
 import "sort"
 
+const StandardChatPath = "/v1/chat/completions"
+const StandardModelsPath = "/v1/models"
+
 const ModelsPath = "/v1/native-harness/models"
 
 // ModelList is a configuration-only view. It never proves native readiness.

@@ -121,3 +121,40 @@ func TestNativeModelsBillingExceptionExactMethodAndPath(t *testing.T) {
 		})
 	}
 }
+
+func TestNativeStandardBillingExceptionExactScope(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, tc := range []struct {
+		name, method, path, status string
+		standard                   bool
+		keyID                      int64
+		want                       int
+	}{
+		{"chat", "POST", nativeharness.StandardChatPath, "active", true, 9, 200},
+		{"models", "GET", nativeharness.StandardModelsPath, "active", true, 9, 200},
+		{"replay exhausted", "POST", nativeharness.StandardChatPath, "quota_exhausted", true, 9, 200},
+		{"off", "POST", nativeharness.StandardChatPath, "active", false, 9, 403},
+		{"different key", "POST", nativeharness.StandardChatPath, "active", true, 10, 403},
+		{"wrong method", "POST", nativeharness.StandardModelsPath, "active", true, 9, 403},
+		{"other endpoint", "POST", "/v1/responses", "active", true, 9, 403},
+		{"disabled key", "POST", nativeharness.StandardChatPath, "disabled", true, 9, 401},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &config.Config{RunMode: config.RunModeStandard}
+			cfg.Gateway.NativeHarness = config.NativeHarnessConfig{Enabled: true, StandardAPI: tc.standard, AllowedUserID: 7, AllowedAPIKeyID: 9}
+			repo := &stubApiKeyRepo{getByKey: func(context.Context, string) (*service.APIKey, error) {
+				return &service.APIKey{ID: tc.keyID, UserID: 7, Status: tc.status, User: &service.User{ID: 7, Status: service.StatusActive}}, nil
+			}}
+			svc := service.NewAPIKeyService(repo, nil, nil, nil, nil, nil, cfg)
+			r := gin.New()
+			r.Handle(tc.method, tc.path, gin.HandlerFunc(NewAPIKeyAuthMiddleware(svc, nil, cfg)), func(c *gin.Context) { c.Status(200) })
+			req := httptest.NewRequest(tc.method, tc.path, nil)
+			req.Header.Set("Authorization", "Bearer native-fixture")
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+			if w.Code != tc.want {
+				t.Fatalf("got %d %s", w.Code, w.Body.String())
+			}
+		})
+	}
+}
