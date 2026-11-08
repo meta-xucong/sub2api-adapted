@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -174,18 +175,49 @@ func TestNativeHarnessExternalBridgeMemoryRoute(t *testing.T) {
 		t.Skip("explicit real Bridge/Facade/synthetic Node fixture required")
 	}
 	cfg := nativeConfig(origin)
+	alias := os.Getenv("NATIVE_HARNESS_TEST_ALIAS")
+	body := nativeRequest
+	billing := "disabled-synthetic-pilot"
+	if alias != "" {
+		route := cfg.Gateway.NativeHarness.Routes["synthetic-test"]
+		route.ModelAlias, route.NativeModel, route.ExecutionMode = alias, "fixture-text", "harness_local_trial"
+		cfg.Gateway.NativeHarness.Routes = map[string]config.NativeHarnessRoute{alias: route}
+		body = strings.ReplaceAll(body, "synthetic-test", alias)
+		billing = "disabled-local-trial"
+	}
 	store := &nativeTestStore{}
 	r := nativeRouter(cfg, store)
+	server := httptest.NewServer(r)
+	defer server.Close()
+	send := func(url, key string) (int, string, http.Header) {
+		req, err := http.NewRequest(http.MethodPost, url+nativeharness.Path, strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer synthetic-test-user-key")
+		req.Header.Set("Idempotency-Key", key)
+		req.Header.Set("Content-Type", "application/json")
+		response, err := server.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		data, err := io.ReadAll(response.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return response.StatusCode, string(data), response.Header
+	}
 	key := fmt.Sprintf("memory-integration-%d", time.Now().UnixNano())
 	var first string
 	for i := 0; i < 100; i++ {
-		w := performNative(r, "synthetic-test-user-key", key)
-		if w.Code == 200 {
-			first = w.Body.String()
+		status, data, _ := send(server.URL, key)
+		if status == 200 {
+			first = data
 			break
 		}
-		if w.Code != 504 && w.Code != 503 && w.Code != 429 {
-			t.Fatalf("%d %s", w.Code, w.Body.String())
+		if status != 504 && status != 503 && status != 429 {
+			t.Fatalf("%d %s", status, data)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
@@ -194,12 +226,13 @@ func TestNativeHarnessExternalBridgeMemoryRoute(t *testing.T) {
 	}
 	cfg.Gateway.NativeHarness.AcceptingNew = false
 	cfg.Gateway.NativeHarness.Routes = nil
-	replay := nativeRouter(cfg, store)
-	w := performNative(replay, "synthetic-test-user-key", key)
-	if w.Code != 200 || w.Body.String() != first {
-		t.Fatalf("replay: %d %s", w.Code, w.Body.String())
+	replay := httptest.NewServer(nativeRouter(cfg, store))
+	defer replay.Close()
+	status, data, headers := send(replay.URL, key)
+	if status != 200 || data != first {
+		t.Fatalf("replay: %d %s", status, data)
 	}
-	if w.Header().Get("X-Native-Billing") != "disabled-synthetic-pilot" || strings.Contains(first, `"usage"`) {
+	if headers.Get("X-Native-Billing") != billing || strings.Contains(first, `"usage"`) {
 		t.Fatal("unknown usage/free pilot contract")
 	}
 	t.Log("three-repository HTTP path passed with credential-lookup and operation-route test doubles; PostgreSQL migration/concurrency/recovery NOT_RUN")

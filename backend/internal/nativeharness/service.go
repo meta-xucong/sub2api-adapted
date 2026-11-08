@@ -73,6 +73,10 @@ func New(cfg config.NativeHarnessConfig, store Store) *Service {
 		Timeout: 40 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 }
 
+func localTrial(mode string) bool {
+	return mode == "workbuddy_local_trial" || mode == "harness_local_trial"
+}
+
 func ValidRoute(alias string, r config.NativeHarnessRoute) bool {
 	u, err := url.Parse(r.Origin)
 	if err != nil || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
@@ -82,13 +86,13 @@ func ValidRoute(alias string, r config.NativeHarnessRoute) bool {
 	if u.Scheme != "https" && (u.Scheme != "http" || !loopback) {
 		return false
 	}
-	trial := r.ExecutionMode == "workbuddy_local_trial"
+	trial := localTrial(r.ExecutionMode)
 	if r.ExecutionMode != "" && r.ExecutionMode != "synthetic" && !trial {
 		return false
 	}
 	modelOK := strings.HasPrefix(alias, "synthetic-") && strings.HasPrefix(r.NativeModel, "fake-")
 	if trial {
-		modelOK = strings.HasPrefix(alias, "workbuddy-") && !strings.HasPrefix(r.NativeModel, "fake-")
+		modelOK = (strings.HasPrefix(alias, "workbuddy-") || (r.ExecutionMode == "harness_local_trial" && strings.HasPrefix(alias, "codex-"))) && !strings.HasPrefix(r.NativeModel, "fake-")
 	}
 	if r.Revision < 1 || alias != r.ModelAlias || !modelOK || !envName.MatchString(r.CredentialEnv) {
 		return false
@@ -199,7 +203,7 @@ func normalize(raw []byte) (map[string]any, error) {
 		}
 	}
 	model, ok := m["model"].(string)
-	if !ok || !identifier.MatchString(model) || (!strings.HasPrefix(model, "synthetic-") && !strings.HasPrefix(model, "workbuddy-")) {
+	if !ok || !identifier.MatchString(model) || (!strings.HasPrefix(model, "synthetic-") && !strings.HasPrefix(model, "workbuddy-") && !strings.HasPrefix(model, "codex-")) {
 		return nil, fail("MODEL_NOT_AVAILABLE", 400)
 	}
 	if n, ok := m["n"]; ok && n != json.Number("1") {
@@ -287,7 +291,7 @@ func (s *Service) Invoke(ctx context.Context, userID, keyID int64, clientKey str
 	}
 
 	billing := "disabled-synthetic-pilot"
-	if op.Route.ExecutionMode == "workbuddy_local_trial" {
+	if localTrial(op.Route.ExecutionMode) {
 		billing = "disabled-local-trial"
 	}
 	return &Response{Status: 200, Body: result, Replay: response.Header.Get("X-Native-Replay"), Billing: billing}, nil
@@ -480,7 +484,7 @@ func (s *Service) prepareRequest(ctx context.Context, userID, keyID int64, clien
 		if !ok || !ValidRoute(alias, route) {
 			return nil, nil, fail("MODEL_NOT_AVAILABLE", 400)
 		}
-		if route.ExecutionMode == "workbuddy_local_trial" && !singleUserMessage(req) {
+		if localTrial(route.ExecutionMode) && !singleUserMessage(req) {
 			return nil, nil, fail("LOCAL_TRIAL_SINGLE_USER_MESSAGE_REQUIRED", 400)
 		}
 		id := make([]byte, 16)

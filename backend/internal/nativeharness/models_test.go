@@ -25,11 +25,15 @@ func TestNativeModelsConfigurationOnly(t *testing.T) {
 	trial.ModelAlias = "workbuddy-test"
 	trial.NativeModel = "private-native-id"
 	s.Config.Routes[trial.ModelAlias] = trial
+	codex := trial
+	codex.ExecutionMode = "harness_local_trial"
+	codex.ModelAlias = "codex-test"
+	s.Config.Routes[codex.ModelAlias] = codex
 	bad := trial
 	bad.ExecutionMode = "production"
 	s.Config.Routes["invalid"] = bad
 	result, err := s.ConfiguredModels(7, 9, true)
-	if err != nil || len(result.Data) != 2 || result.Data[0].ID != "synthetic-test" || result.Data[1].ID != "workbuddy-test" || !result.NativeHarness.AcceptingNew || result.NativeHarness.LiveReadinessChecked {
+	if err != nil || len(result.Data) != 3 || result.Data[0].ID != "codex-test" || result.Data[1].ID != "synthetic-test" || result.Data[2].ID != "workbuddy-test" || !result.NativeHarness.AcceptingNew || result.NativeHarness.LiveReadinessChecked {
 		t.Fatalf("%+v %v", result, err)
 	}
 	raw, err := json.Marshal(result)
