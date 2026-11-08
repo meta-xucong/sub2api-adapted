@@ -18,8 +18,10 @@ import (
 func TestNativeStandardSameLedgerAndStrictContract(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	hits := 0
+	status := 200
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits++
+		w.WriteHeader(status)
 		fmt.Fprint(w, `{"id":"chatcmpl-test","created":1,"object":"chat.completion","model":"synthetic-test","choices":[{"index":0,"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}`)
 	}))
 	defer upstream.Close()
@@ -44,7 +46,7 @@ func TestNativeStandardSameLedgerAndStrictContract(t *testing.T) {
 		r.ServeHTTP(w, req)
 		return w
 	}
-	for _, body := range []string{`{"model":"synthetic-test","stream":true,"messages":[{"role":"user","content":"hi"}]}`, `{"model":"synthetic-test","tools":[],"messages":[{"role":"user","content":"hi"}]}`} {
+	for _, body := range []string{`{"model":"synthetic-test","stream":1,"messages":[{"role":"user","content":"hi"}]}`, `{"model":"synthetic-test","tools":[],"messages":[{"role":"user","content":"hi"}]}`} {
 		w := invoke(nativeharness.StandardChatPath, body, "invalid")
 		if w.Code != 400 || hits != 0 {
 			t.Fatalf("unsupported %d hits%d %s", w.Code, hits, w.Body.String())
@@ -56,9 +58,21 @@ func TestNativeStandardSameLedgerAndStrictContract(t *testing.T) {
 	if w := invoke(nativeharness.StandardChatPath, nativeRequest, "same-operation"); w.Code != 200 || hits != 1 {
 		t.Fatalf("standard status%d %s", w.Code, w.Body.String())
 	}
+	streamRequest := strings.TrimSuffix(nativeRequest, "}") + `,"stream":true}`
+	if w := invoke(nativeharness.StandardChatPath, streamRequest, "same-operation"); w.Code != 200 || hits != 2 || w.Header().Get("X-Native-Stream-Mode") != "buffered-final" || !strings.Contains(w.Body.String(), "data: [DONE]") {
+		t.Fatalf("buffered same-ledger %d %s", w.Code, w.Body.String())
+	}
+	if w := invoke(nativeharness.Path, streamRequest, "same-operation"); w.Code != 400 || hits != 2 {
+		t.Fatalf("dedicated nonstream unchanged %d %s", w.Code, w.Body.String())
+	}
+	status = 202
+	if w := invoke(nativeharness.StandardChatPath, streamRequest, "same-operation"); w.Code != 502 || hits != 3 || strings.Contains(w.Header().Get("Content-Type"), "event-stream") || strings.Contains(w.Body.String(), "[DONE]") {
+		t.Fatalf("pending must not emit success SSE: %d %s", w.Code, w.Body.String())
+	}
+	status = 200
 	svc.Config.Routes = nil
 	svc.Config.AcceptingNew = false
-	if w := invoke(nativeharness.Path, nativeRequest, "same-operation"); w.Code != 200 || hits != 2 {
+	if w := invoke(nativeharness.Path, nativeRequest, "same-operation"); w.Code != 200 || hits != 4 {
 		t.Fatalf("same ledger replay %d %s", w.Code, w.Body.String())
 	}
 }

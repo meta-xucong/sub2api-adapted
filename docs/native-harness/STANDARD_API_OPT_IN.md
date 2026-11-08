@@ -45,11 +45,18 @@ gateway:
 
 ## 实际协议限制
 
-- `workbuddy_local_trial` 只接受单条 user 纯文本、`n=1`、非流式。
+- `workbuddy_local_trial` 原生执行仍只接受单条 user 纯文本、`n=1`，原生派发非流式。
+  标准路径可指定 `stream:true`，这是 **buffered-final SSE**，不是实时 token 流：
+  等已验证终态结果后，才发送一个完整内容 delta、结束帧和 `[DONE]`。
+  `X-Native-Stream-Mode: buffered-final` 明示此模式，不伪造逐 token 增量或 usage。
+  模型内容、原生派发和账本摘要与 `stream:false` 相同，同一幂等键只恢复同任务。
+  在结果前没有 SSE 成功事件或 heartbeat；超时/待完成/错误仍返回普通 JSON 错误，
+  不发送 `[DONE]`。`stream_options` 尚不支持。专用 native-harness 路径仍拒绝 `stream:true`。
 - tools、tool_choice、functions、tool-role、图片、Responses 等均未通过此接缝实现。
 - 厂商已执行的工具事件不会被伪造成下游待执行 `tool_calls`；需要交互审批时保守停止。
-- HTTP 202 仍可能表示已受理/待完成，不伪造成完成响应；客户端须以原 Key、原正文、
-  原 `Idempotency-Key` 恢复同一任务。普通只期待一次 200 的 OpenAI SDK 需适配。
+- 只返回已验证完成的 HTTP 200；上游待完成/非完成响应或超时会保守返回错误，
+  不伪造成完成响应。错误不证明任务没开始：客户端须以原 Key、原正文、
+  原 `Idempotency-Key` 恢复同一任务。普通 SDK 不可换键自动重生。
 - usage 未知不造零；非收费。超时、断网、节点忙或未知执行结果均不能安全重生成。
 - 目录配置不等于模型实时可用，更不等于真实 WorkBuddy 账号、模型调用已验收。
 
