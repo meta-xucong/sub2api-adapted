@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -12,9 +13,17 @@ import (
 	_ "github.com/lib/pq"
 )
 
-// This deliberately does not auto-create schema or accept a production DSN.
-// The test operator supplies a disposable DB with migration 248 applied.
+// This deliberately does not auto-create schema. The test operator must supply
+// a disposable DB with migration 248 applied; the DSN is not automatically classified.
 func TestSQLStorePostgres(t *testing.T) {
+	testSQLStorePostgres(t, false)
+}
+
+func TestSQLStorePostgresLocalTrial(t *testing.T) {
+	testSQLStorePostgres(t, true)
+}
+
+func testSQLStorePostgres(t *testing.T, trial bool) {
 	dsn := os.Getenv("NATIVE_HARNESS_TEST_DSN")
 	if dsn == "" {
 		t.Skip("explicit disposable PostgreSQL required")
@@ -28,6 +37,12 @@ func TestSQLStorePostgres(t *testing.T) {
 	store := &SQLStore{DB: db}
 	key := fmt.Sprintf("postgres-%d", time.Now().UnixNano())
 	route := configured("http://127.0.0.1:1234").Routes["synthetic-test"]
+	if trial {
+		route.ExecutionMode = "workbuddy_local_trial"
+		route.ModelAlias = "workbuddy-test"
+		route.NativeModel = "test-model"
+	}
+	requestDigest := strings.Repeat("a", 64)
 	if _, e = store.Lookup(ctx, 7, 9, key); e != ErrNotFound {
 		t.Fatal(e)
 	}
@@ -38,7 +53,7 @@ func TestSQLStorePostgres(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			op, e := store.Freeze(ctx, Operation{7, 9, key, "digest", fmt.Sprintf("op%d_%s", i, key), route})
+			op, e := store.Freeze(ctx, Operation{7, 9, key, requestDigest, fmt.Sprintf("op%d_%s", i, key), route})
 			if e != nil {
 				t.Error(e)
 				return
@@ -68,8 +83,8 @@ func TestSQLStorePostgres(t *testing.T) {
 	// A conflicting contender cannot replace either digest or route.
 	changed := route
 	changed.Origin = "http://127.0.0.1:5678"
-	got, e := store.Freeze(ctx, Operation{7, 9, key, "different", "different-op-" + key, changed})
-	if e != nil || got.Digest != "digest" || got.Route != route {
+	got, e := store.Freeze(ctx, Operation{7, 9, key, strings.Repeat("b", 64), "different-op-" + key, changed})
+	if e != nil || got.Digest != requestDigest || got.Route != route {
 		t.Fatal("overwrite", e)
 	}
 	t.Log("100 concurrent real PostgreSQL inserts freeze one operation; new handle and key-scope checks pass")

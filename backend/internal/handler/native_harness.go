@@ -57,7 +57,7 @@ func (h *OpenAIGatewayHandler) NativeHarnessChat(c *gin.Context) {
 	}
 	c.Header("Cache-Control", "no-store")
 	c.Header("X-Native-Usage-State", "unknown")
-	c.Header("X-Native-Billing", "disabled-synthetic-pilot")
+	c.Header("X-Native-Billing", result.Billing)
 	if result.Replay == "true" || result.Replay == "false" {
 		c.Header("X-Native-Replay", result.Replay)
 	}

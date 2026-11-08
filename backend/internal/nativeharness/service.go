@@ -81,7 +81,15 @@ func ValidRoute(alias string, r config.NativeHarnessRoute) bool {
 	if u.Scheme != "https" && (u.Scheme != "http" || !loopback) {
 		return false
 	}
-	if r.Revision < 1 || alias != r.ModelAlias || !strings.HasPrefix(alias, "synthetic-") || !strings.HasPrefix(r.NativeModel, "fake-") || !envName.MatchString(r.CredentialEnv) {
+	trial := r.ExecutionMode == "workbuddy_local_trial"
+	if r.ExecutionMode != "" && r.ExecutionMode != "synthetic" && !trial {
+		return false
+	}
+	modelOK := strings.HasPrefix(alias, "synthetic-") && strings.HasPrefix(r.NativeModel, "fake-")
+	if trial {
+		modelOK = strings.HasPrefix(alias, "workbuddy-") && !strings.HasPrefix(r.NativeModel, "fake-")
+	}
+	if r.Revision < 1 || alias != r.ModelAlias || !modelOK || !envName.MatchString(r.CredentialEnv) {
 		return false
 	}
 	for _, v := range []string{r.Source, r.LedgerInstance, r.BindingID, r.ModelAlias, r.NativeModel} {
@@ -186,7 +194,7 @@ func normalize(raw []byte) (map[string]any, error) {
 		}
 	}
 	model, ok := m["model"].(string)
-	if !ok || !identifier.MatchString(model) || !strings.HasPrefix(model, "synthetic-") {
+	if !ok || !identifier.MatchString(model) || (!strings.HasPrefix(model, "synthetic-") && !strings.HasPrefix(model, "workbuddy-")) {
 		return nil, fail("MODEL_NOT_AVAILABLE", 400)
 	}
 	if n, ok := m["n"]; ok && n != json.Number("1") {
@@ -224,9 +232,10 @@ func normalize(raw []byte) (map[string]any, error) {
 }
 
 type Response struct {
-	Status int
-	Body   []byte
-	Replay string
+	Status  int
+	Body    []byte
+	Replay  string
+	Billing string
 }
 
 func (s *Service) Invoke(ctx context.Context, userID, keyID int64, clientKey string, canExecute bool, raw []byte) (*Response, error) {
@@ -261,6 +270,9 @@ func (s *Service) Invoke(ctx context.Context, userID, keyID int64, clientKey str
 		route, ok := cfg.Routes[alias]
 		if !ok || !ValidRoute(alias, route) {
 			return nil, fail("MODEL_NOT_AVAILABLE", 400)
+		}
+		if route.ExecutionMode == "workbuddy_local_trial" && !singleUserMessage(req) {
+			return nil, fail("LOCAL_TRIAL_SINGLE_USER_MESSAGE_REQUIRED", 400)
 		}
 		id := make([]byte, 16)
 		if _, err = rand.Read(id); err != nil {
@@ -342,7 +354,11 @@ func (s *Service) Invoke(ctx context.Context, userID, keyID int64, clientKey str
 		return nil, fail("NATIVE_INVALID_COMPLETION", 502)
 	}
 
-	return &Response{200, result, response.Header.Get("X-Native-Replay")}, nil
+	billing := "disabled-synthetic-pilot"
+	if op.Route.ExecutionMode == "workbuddy_local_trial" {
+		billing = "disabled-local-trial"
+	}
+	return &Response{Status: 200, Body: result, Replay: response.Header.Get("X-Native-Replay"), Billing: billing}, nil
 }
 
 // Exact allowlists reject unsupported capabilities even when their values are
@@ -479,4 +495,14 @@ func RequestModel(raw []byte) (string, error) {
 		return "", fail("INVALID_REQUEST", 400)
 	}
 	return model, nil
+}
+
+// Only one fresh user prompt has native semantics in the initial local trial.
+func singleUserMessage(req map[string]any) bool {
+	messages, ok := req["messages"].([]any)
+	if !ok || len(messages) != 1 {
+		return false
+	}
+	message, ok := messages[0].(map[string]any)
+	return ok && message["role"] == "user"
 }

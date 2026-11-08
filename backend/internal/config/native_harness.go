@@ -11,6 +11,8 @@ type NativeHarnessConfig struct {
 }
 
 type NativeHarnessRoute struct {
+	// Empty preserves the historical synthetic-only route. Frozen with the operation.
+	ExecutionMode  string `mapstructure:"execution_mode" json:"execution_mode,omitempty"`
 	Origin         string `mapstructure:"origin" json:"origin"`
 	CredentialEnv  string `mapstructure:"credential_env" json:"credential_env"`
 	Source         string `mapstructure:"source" json:"source"`
