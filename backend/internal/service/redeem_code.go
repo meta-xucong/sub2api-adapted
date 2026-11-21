@@ -23,6 +23,8 @@ type RedeemCode struct {
 
 	User  *User
 	Group *Group
+
+	BalanceAfter *string
 }
 
 func (r *RedeemCode) IsUsed() bool {

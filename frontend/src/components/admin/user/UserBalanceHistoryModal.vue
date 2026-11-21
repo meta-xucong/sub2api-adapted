@@ -94,7 +94,7 @@
       <div v-else class="max-h-[28rem] space-y-3 overflow-y-auto">
         <div
           v-for="item in history"
-          :key="item.id"
+          :key="`${item.type}:${item.id}`"
           class="rounded-xl border border-gray-200 bg-white p-4 dark:border-dark-600 dark:bg-dark-800"
         >
           <div class="flex items-start justify-between">
@@ -123,6 +123,9 @@
                 <p class="mt-0.5 text-xs text-gray-400 dark:text-dark-500">
                   {{ formatDateTime(item.used_at || item.created_at) }}
                 </p>
+                <p v-if="item.type === 'node_reward'" class="mt-0.5 font-mono text-xs text-gray-500 dark:text-dark-400">
+                  {{ item.code }}
+                </p>
               </div>
             </div>
             <!-- Right: value -->
@@ -135,6 +138,12 @@
                 class="text-xs text-gray-400 dark:text-dark-500"
               >
                 {{ t('redeem.adminAdjustment') }}
+              </p>
+              <p
+                v-else-if="item.type === 'node_reward' && item.balance_after != null"
+                class="text-xs text-gray-500 dark:text-dark-400"
+              >
+                {{ t('admin.users.nodeRewardBalanceAfter', { balance: item.balance_after }) }}
               </p>
               <p
                 v-else
@@ -203,6 +212,7 @@ const typeOptions = computed(() => [
   { value: '', label: t('admin.users.allTypes') },
   { value: 'balance', label: t('admin.users.typeBalance') },
   { value: 'affiliate_balance', label: t('admin.users.typeAffiliateBalance') },
+  { value: 'node_reward', label: t('admin.users.typeNodeReward') },
   { value: 'admin_balance', label: t('admin.users.typeAdminBalance') },
   { value: 'concurrency', label: t('admin.users.typeConcurrency') },
   { value: 'admin_concurrency', label: t('admin.users.typeAdminConcurrency') },
@@ -246,7 +256,8 @@ const loadHistory = async (page: number) => {
 const isAdminType = (type: string) => type === 'admin_balance' || type === 'admin_concurrency'
 
 // Helper: check if balance type (includes admin_balance)
-const isBalanceType = (type: string) => type === 'balance' || type === 'admin_balance' || type === 'affiliate_balance'
+const isBalanceType = (type: string) =>
+  type === 'balance' || type === 'admin_balance' || type === 'affiliate_balance' || type === 'node_reward'
 
 // Helper: check if subscription type
 const isSubscriptionType = (type: string) => type === 'subscription'
@@ -304,6 +315,8 @@ const getItemTitle = (item: BalanceHistoryItem) => {
       return t('redeem.balanceAddedRedeem')
     case 'affiliate_balance':
       return t('redeem.balanceAddedAffiliate')
+    case 'node_reward':
+      return t('admin.users.typeNodeReward')
     case 'admin_balance':
       return item.value >= 0 ? t('redeem.balanceAddedAdmin') : t('redeem.balanceDeductedAdmin')
     case 'concurrency':

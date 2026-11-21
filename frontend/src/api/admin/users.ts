@@ -258,6 +258,7 @@ export interface BalanceHistoryItem {
   code: string
   type: string
   value: number
+  balance_after?: string
   status: string
   used_by: number | null
   used_at: string | null

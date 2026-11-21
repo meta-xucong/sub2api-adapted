@@ -6,7 +6,9 @@ import UserBalanceHistoryModal from '../UserBalanceHistoryModal.vue'
 const mocks = vi.hoisted(() => ({ getUserBalanceHistory: vi.fn() }))
 vi.mock('@/api/admin', () => ({ adminAPI: { users: mocks } }))
 vi.mock('@/utils/format', () => ({ formatDateTime: () => 'date' }))
-vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
+vi.mock('vue-i18n', () => ({
+  useI18n: () => ({ t: (key: string, params?: { balance: string }) => params ? `${key} ${params.balance}` : key })
+}))
 enableAutoUnmount(afterEach)
 beforeEach(() => { vi.clearAllMocks(); vi.spyOn(console, 'error').mockImplementation(() => {}) })
 afterEach(() => vi.restoreAllMocks())
@@ -79,4 +81,27 @@ describe('UserBalanceHistoryModal request ordering', () => {
     expect(console.error).toHaveBeenCalledWith('Failed to load balance history:', error)
     expect(wrapper.find('svg.animate-spin').exists()).toBe(false)
   })
+})
+
+it('shows the node reward amount, receipt, and exact balance and supports filtering by reward', async () => {
+  const reward = {
+    id: 44, type: 'node_reward', code: 'NODE-REWARD-44', value: 0.88, balance_after: '900719925474.99000001'
+  }
+  mocks.getUserBalanceHistory
+    .mockResolvedValueOnce({ items: [...result(44).items, reward], total: 2, total_recharged: 44 })
+    .mockResolvedValueOnce({ items: [reward], total: 1, total_recharged: 44 })
+  const wrapper = await openDialog()
+  await flushPromises()
+  expect(wrapper.text()).toContain('History 44')
+  expect(wrapper.text()).toContain('admin.users.typeNodeReward')
+  expect(wrapper.text()).toContain('NODE-REWARD-44')
+  expect(wrapper.text()).toContain('+⭐️0.88')
+  expect(wrapper.text()).toContain('900719925474.99000001')
+
+  const select = wrapper.findComponent({ name: 'Select' })
+  select.vm.$emit('update:modelValue', 'node_reward')
+  select.vm.$emit('change', 'node_reward')
+  await flushPromises()
+  expect(mocks.getUserBalanceHistory).toHaveBeenLastCalledWith(1, 1, expect.any(Number), 'node_reward')
+  expect(wrapper.text()).not.toContain('History 44')
 })

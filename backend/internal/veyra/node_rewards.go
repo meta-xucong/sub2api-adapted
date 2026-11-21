@@ -15,6 +15,7 @@ import (
 type nodeRewardAccounts interface {
 	GetNodeRewardSettlement(context.Context, int64) (*service.VeyraNodeRewardResult, error)
 	SettleNodeRewards(context.Context, int64, int64) (*service.VeyraNodeRewardResult, error)
+	ListNodeRewardReceipts(context.Context, int64, int64, int) (*service.VeyraNodeRewardReceiptPage, error)
 }
 
 func registerNodeRewardRoutes(internal *gin.RouterGroup, users BalanceAccountService, cfg RoutesConfig) {
@@ -36,6 +37,7 @@ func registerNodeRewardRoutes(internal *gin.RouterGroup, users BalanceAccountSer
 	})
 	rewards.GET("", nodeRewardHandler(accounts, false))
 	rewards.POST("", nodeRewardHandler(accounts, true))
+	rewards.GET("/receipts", nodeRewardReceiptHandler(accounts))
 }
 
 func nodeRewardHandler(accounts nodeRewardAccounts, redeem bool) gin.HandlerFunc {
@@ -60,17 +62,64 @@ func nodeRewardHandler(accounts nodeRewardAccounts, redeem bool) gin.HandlerFunc
 		} else {
 			result, err = accounts.GetNodeRewardSettlement(ctx, userID)
 		}
-		switch {
-		case errors.Is(err, service.ErrVeyraNodeRewardInvalid):
-			response.BadRequest(c, "Invalid node reward request")
-		case errors.Is(err, service.ErrUserNotFound):
-			response.NotFound(c, "User not found")
-		case errors.Is(err, service.ErrVeyraNodeRewardInactive):
-			response.Forbidden(c, "User is not active")
-		case err != nil || result == nil:
-			response.InternalError(c, "Node reward settlement unavailable")
-		default:
-			response.Success(c, result)
+		if err != nil || result == nil {
+			nodeRewardErrorResponse(c, err)
+			return
 		}
+		response.Success(c, result)
+	}
+}
+
+func nodeRewardReceiptHandler(accounts nodeRewardAccounts) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		userID, err := strconv.ParseInt(c.Param("user_id"), 10, 64)
+		if err != nil || userID <= 0 {
+			response.BadRequest(c, "Invalid account")
+			return
+		}
+		query := c.Request.URL.Query()
+		before, err := optionalPositiveReceiptInteger(query["before_redeemed_images"], 0)
+		if err != nil {
+			response.BadRequest(c, "Invalid node reward receipt cursor")
+			return
+		}
+		limit, err := optionalPositiveReceiptInteger(query["limit"], service.DefaultVeyraNodeRewardReceiptLimit)
+		if err != nil || limit > service.MaxVeyraNodeRewardReceiptLimit {
+			response.BadRequest(c, "Invalid node reward receipt limit")
+			return
+		}
+		page, err := accounts.ListNodeRewardReceipts(c.Request.Context(), userID, before, int(limit))
+		if err != nil || page == nil {
+			nodeRewardErrorResponse(c, err)
+			return
+		}
+		response.Success(c, page)
+	}
+}
+
+func optionalPositiveReceiptInteger(values []string, fallback int64) (int64, error) {
+	if len(values) == 0 {
+		return fallback, nil
+	}
+	if len(values) != 1 {
+		return 0, service.ErrVeyraNodeRewardInvalid
+	}
+	value, err := strconv.ParseInt(values[0], 10, 64)
+	if err != nil || value <= 0 {
+		return 0, service.ErrVeyraNodeRewardInvalid
+	}
+	return value, nil
+}
+
+func nodeRewardErrorResponse(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, service.ErrVeyraNodeRewardInvalid):
+		response.BadRequest(c, "Invalid node reward request")
+	case errors.Is(err, service.ErrUserNotFound):
+		response.NotFound(c, "User not found")
+	case errors.Is(err, service.ErrVeyraNodeRewardInactive):
+		response.Forbidden(c, "User is not active")
+	default:
+		response.InternalError(c, "Node reward settlement unavailable")
 	}
 }

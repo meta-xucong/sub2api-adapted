@@ -734,6 +734,8 @@ export default {
       allTypes: '全部类型',
       typeBalance: '余额（兑换码）',
       typeAffiliateBalance: '余额（返利转入）',
+      typeNodeReward: '节点奖励转入',
+      nodeRewardBalanceAfter: '入账后余额 {balance}',
       typeAdminBalance: '余额（管理员调整）',
       typeConcurrency: '并发（兑换码）',
       typeAdminConcurrency: '并发（管理员调整）',

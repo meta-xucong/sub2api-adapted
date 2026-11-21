@@ -79,6 +79,101 @@ func (r *userRepository) SettleNodeRewards(ctx context.Context, userID, eligible
 	return result, nil
 }
 
+func (r *userRepository) ListNodeRewardReceipts(ctx context.Context, userID, before int64, limit int) ([]service.VeyraNodeRewardReceipt, error) {
+	rows, err := r.sql.QueryContext(ctx, `
+		SELECT u.status, h.redeemed_images, h.credited_images, (h.credited_images * 0.02::numeric)::text,
+		       h.balance_after::text, h.created_at
+		FROM users u
+		LEFT JOIN LATERAL (
+			SELECT redeemed_images, credited_images, balance_after, created_at
+			FROM veyra_node_reward_redemptions
+			WHERE user_id = u.id AND ($2::bigint = 0 OR redeemed_images < $2)
+			ORDER BY redeemed_images DESC
+			LIMIT $3
+		) h ON u.status = 'active'
+		WHERE u.id = $1 AND u.deleted_at IS NULL
+		ORDER BY h.redeemed_images DESC
+	`, userID, before, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	items := make([]service.VeyraNodeRewardReceipt, 0)
+	var status string
+	for rows.Next() {
+		receipt, err := scanNodeRewardReceipt(rows, &status)
+		if err := rewardAccountError(err, status); err != nil {
+			return nil, err
+		}
+		if receipt != nil {
+			items = append(items, *receipt)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if status == "" {
+		return nil, service.ErrUserNotFound
+	}
+	return items, nil
+}
+
+func (r *userRepository) ListNodeRewardBalanceHistory(ctx context.Context, userID int64, offset, limit int) ([]service.VeyraNodeRewardReceipt, int64, error) {
+	rows, err := r.sql.QueryContext(ctx, `
+		SELECT totals.total, h.redeemed_images, h.credited_images, (h.credited_images * 0.02::numeric)::text,
+		       h.balance_after::text, h.created_at
+		FROM (SELECT COUNT(*) AS total FROM veyra_node_reward_redemptions WHERE user_id = $1) totals
+		LEFT JOIN LATERAL (
+			SELECT redeemed_images, credited_images, balance_after, created_at
+			FROM veyra_node_reward_redemptions
+			WHERE user_id = $1
+			ORDER BY created_at DESC, redeemed_images DESC
+			OFFSET $2 LIMIT $3
+		) h ON true
+		ORDER BY h.created_at DESC, h.redeemed_images DESC
+	`, userID, offset, limit)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	items := make([]service.VeyraNodeRewardReceipt, 0)
+	var total int64
+	for rows.Next() {
+		receipt, err := scanNodeRewardReceipt(rows, &total)
+		if err != nil {
+			return nil, 0, err
+		}
+		if receipt != nil {
+			items = append(items, *receipt)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	return items, total, nil
+}
+
+func scanNodeRewardReceipt(rows *sql.Rows, prefix any) (*service.VeyraNodeRewardReceipt, error) {
+	var redeemed, credited sql.NullInt64
+	var amount, balanceAfter sql.NullString
+	var createdAt sql.NullTime
+	if err := rows.Scan(prefix, &redeemed, &credited, &amount, &balanceAfter, &createdAt); err != nil {
+		return nil, err
+	}
+	if !redeemed.Valid {
+		return nil, nil
+	}
+	return &service.VeyraNodeRewardReceipt{
+		RedeemedImages: redeemed.Int64,
+		CreditedImages: credited.Int64,
+		Amount:         amount.String,
+		BalanceAfter:   balanceAfter.String,
+		CreatedAt:      createdAt.Time.UTC(),
+	}, nil
+}
+
 func rewardAccountError(err error, status string) error {
 	if errors.Is(err, sql.ErrNoRows) {
 		return service.ErrUserNotFound
