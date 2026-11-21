@@ -2,7 +2,7 @@ name: Veyra browser acceptance
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, 'fix/*-aiself-*']
     paths:
       - '.github/workflows/veyra-browser.yml'
       - 'tools/veyra-browser/**'
