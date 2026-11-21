@@ -38,7 +38,7 @@ func (r *userRepository) SettleNodeRewards(ctx context.Context, userID, eligible
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	result := &service.VeyraNodeRewardResult{UserID: userID}
 	var status string
