@@ -451,38 +451,38 @@ var ErrNoAvailableCompactAccounts = errors.New("no available accounts support /r
 
 // OpenAIGatewayService handles OpenAI API gateway operations
 type OpenAIGatewayService struct {
-	grokVoiceCatalogue       grokVoiceCatalogueCache
-	accountRepo              AccountRepository
-	usageLogRepo             UsageLogRepository
-	usageBillingRepo         UsageBillingRepository
-	userRepo                 UserRepository
-	userSubRepo              UserSubscriptionRepository
-	cache                    GatewayCache
-	responsesCompatSessions  sync.Map
-	cfg                      *config.Config
-	codexDetector            CodexClientRestrictionDetector
-	schedulerSnapshot        *SchedulerSnapshotService
-	concurrencyService       *ConcurrencyService
-	billingService           *BillingService
-	rateLimitService         *RateLimitService
-	billingCacheService      *BillingCacheService
-	userGroupRateResolver    *userGroupRateResolver
-	httpUpstream             HTTPUpstream
-	pluginManager            *PluginManager
-	deferredService          *DeferredService
-	openAITokenProvider      *OpenAITokenProvider
-	grokTokenProvider        *GrokTokenProvider
-	toolCorrector            *CodexToolCorrector
-	openaiWSResolver         OpenAIWSProtocolResolver
-	resolver                 *ModelPricingResolver
-	channelService           *ChannelService
-	balanceNotifyService     *BalanceNotifyService
-	settingService           *SettingService
-	userPlatformQuotaRepo    UserPlatformQuotaRepository
-	wokeyActualBillingLookup unifiedGatewayWokeyActualBillingLookup
+	grokVoiceCatalogue         grokVoiceCatalogueCache
+	accountRepo                AccountRepository
+	usageLogRepo               UsageLogRepository
+	usageBillingRepo           UsageBillingRepository
+	userRepo                   UserRepository
+	userSubRepo                UserSubscriptionRepository
+	cache                      GatewayCache
+	responsesCompatSessions    sync.Map
+	cfg                        *config.Config
+	codexDetector              CodexClientRestrictionDetector
+	schedulerSnapshot          *SchedulerSnapshotService
+	concurrencyService         *ConcurrencyService
+	billingService             *BillingService
+	rateLimitService           *RateLimitService
+	billingCacheService        *BillingCacheService
+	userGroupRateResolver      *userGroupRateResolver
+	httpUpstream               HTTPUpstream
+	pluginManager              *PluginManager
+	deferredService            *DeferredService
+	openAITokenProvider        *OpenAITokenProvider
+	grokTokenProvider          *GrokTokenProvider
+	toolCorrector              *CodexToolCorrector
+	openaiWSResolver           OpenAIWSProtocolResolver
+	resolver                   *ModelPricingResolver
+	channelService             *ChannelService
+	balanceNotifyService       *BalanceNotifyService
+	settingService             *SettingService
+	userPlatformQuotaRepo      UserPlatformQuotaRepository
+	wokeyActualBillingLookup   unifiedGatewayWokeyActualBillingLookup
 	yeTokenActualBillingLookup unifiedGatewayYeTokenActualBillingLookup
-	liveAttestation          liveattestation.Provider
-	liveAttestationCipher    SecretEncryptor
+	liveAttestation            liveattestation.Provider
+	liveAttestationCipher      SecretEncryptor
 
 	openaiWSPoolOnce               sync.Once
 	openaiWSStateStoreOnce         sync.Once
@@ -577,24 +577,24 @@ func NewOpenAIGatewayService(
 			nil,
 			"service.openai_gateway",
 		),
-		httpUpstream:             httpUpstream,
-		deferredService:          deferredService,
-		openAITokenProvider:      openAITokenProvider,
-		grokTokenProvider:        grokTokenProvider,
-		toolCorrector:            NewCodexToolCorrector(),
-		openaiWSResolver:         NewOpenAIWSProtocolResolver(cfg),
-		resolver:                 resolver,
-		channelService:           channelService,
-		balanceNotifyService:     balanceNotifyService,
-		settingService:           settingService,
-		userPlatformQuotaRepo:    userPlatformQuotaRepo,
-		wokeyActualBillingLookup: newUnifiedGatewayWokeyActualBillingClient(),
+		httpUpstream:               httpUpstream,
+		deferredService:            deferredService,
+		openAITokenProvider:        openAITokenProvider,
+		grokTokenProvider:          grokTokenProvider,
+		toolCorrector:              NewCodexToolCorrector(),
+		openaiWSResolver:           NewOpenAIWSProtocolResolver(cfg),
+		resolver:                   resolver,
+		channelService:             channelService,
+		balanceNotifyService:       balanceNotifyService,
+		settingService:             settingService,
+		userPlatformQuotaRepo:      userPlatformQuotaRepo,
+		wokeyActualBillingLookup:   newUnifiedGatewayWokeyActualBillingClient(),
 		yeTokenActualBillingLookup: newUnifiedGatewayYeTokenActualBillingClient(),
-		liveAttestation:          liveattestation.NewProvider(),
-		liveAttestationCipher:    newLiveAttestationCipher(cfg),
-		responseHeaderFilter:     compileResponseHeaderFilter(cfg),
-		codexSnapshotThrottle:    newAccountWriteThrottle(openAICodexSnapshotPersistMinInterval),
-		openaiModelTransient:     newOpenAIAccountModelTransientState(openAIModelTransientDefaultMax),
+		liveAttestation:            liveattestation.NewProvider(),
+		liveAttestationCipher:      newLiveAttestationCipher(cfg),
+		responseHeaderFilter:       compileResponseHeaderFilter(cfg),
+		codexSnapshotThrottle:      newAccountWriteThrottle(openAICodexSnapshotPersistMinInterval),
+		openaiModelTransient:       newOpenAIAccountModelTransientState(openAIModelTransientDefaultMax),
 	}
 	if rateLimitService != nil {
 		rateLimitService.SetAccountRuntimeBlocker(svc)

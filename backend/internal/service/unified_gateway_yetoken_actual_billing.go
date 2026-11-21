@@ -58,7 +58,7 @@ func (c *unifiedGatewayYeTokenActualBillingClient) LookupActualAmount(ctx contex
 	if err != nil {
 		return decimal.Zero, errors.New("yetoken_actual_api_unavailable")
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return decimal.Zero, errors.New("yetoken_actual_api_status")
 	}

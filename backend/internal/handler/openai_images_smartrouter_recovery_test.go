@@ -537,7 +537,7 @@ func TestImagesSmartRouterParsedNativeResponsesBoundary(t *testing.T) {
 						return &http.Response{StatusCode: http.StatusBadRequest, Header: http.Header{"Content-Type": {"application/json"}},
 							Body: io.NopCloser(strings.NewReader(`{"error":{"code":"image_poll_timeout","message":"poll timed out"}}`))}, nil
 					}
-					body := []byte(`{"model":"gpt-5.5","input":"draw","tools":[{"type":"image_generation","model":"gpt-image-2"}]}`)
+					body := []byte(`{"model":"gpt-5.5","input":"draw","tools":[{"type":"image_generation","model":"gpt-image-2"}],"tool_choice":{"type":"image_generation"}}`)
 					recorder := httptest.NewRecorder()
 					c, _ := gin.CreateTestContext(recorder)
 					c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(string(body)))
@@ -611,7 +611,7 @@ func TestImagesSmartRouterPostQueueRequestDeadline(t *testing.T) {
 					path, body := "/v1/images/generations", `{"model":"gpt-image-2","prompt":"draw"}`
 					responses := strings.HasPrefix(scenario, "responses_")
 					if responses {
-						path, body = "/v1/responses", `{"model":"gpt-5.5","input":"draw","tools":[{"type":"image_generation","model":"gpt-image-2"}]}`
+						path, body = "/v1/responses", `{"model":"gpt-5.5","input":"draw","tools":[{"type":"image_generation","model":"gpt-image-2"}],"tool_choice":{"type":"image_generation"}}`
 						f.h.cfg.Gateway.ResponsesImageBridge = config.ResponsesImageBridgeConfig{Enabled: true, ApplyToProtocol: "images_api_only"}
 						for i := range f.repo.accounts {
 							f.repo.accounts[i].Extra = map[string]any{"responses_image_mode": "native"}

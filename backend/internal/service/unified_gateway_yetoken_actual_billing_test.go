@@ -32,14 +32,21 @@ func TestYeTokenActualBillingClientReadsGzipExactRecordAndClosesEarly(t *testing
 		gz := gzip.NewWriter(w)
 		_, _ = io.WriteString(gz, `{"data":[{"request_id":"wanted","type":1,"quota":999},{"request_id":"other","type":2,"quota":888},{"request_id":"wanted","type":2,"quota":46}`)
 		_ = gz.Flush()
-		w.(http.Flusher).Flush()
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Error("test server cannot flush its gzip stream")
+			return
+		}
+		flusher.Flush()
 		// The rest of the historical page never arrives. Finding the exact
 		// record must finish the lookup and close this request immediately.
 		<-r.Context().Done()
 		close(closed)
 	}))
 	defer server.Close()
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+	defaultTransport, ok := http.DefaultTransport.(*http.Transport)
+	require.True(t, ok)
+	transport := defaultTransport.Clone()
 	defer transport.CloseIdleConnections()
 	client := newUnifiedGatewayYeTokenActualBillingClient()
 	client.client.Transport = wokeyActualRoundTripFunc(func(req *http.Request) (*http.Response, error) {

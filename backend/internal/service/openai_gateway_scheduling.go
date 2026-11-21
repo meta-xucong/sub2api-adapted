@@ -1582,7 +1582,7 @@ func (s *OpenAIGatewayService) selectOpenAIFromPriorityPoolWithoutLoadAwareness(
 		localExcludedBase[id] = struct{}{}
 	}
 	var preferredWait, regularWait []*Account
-	var selectionErr error = ErrNoAvailableAccounts
+	selectionErr := ErrNoAvailableAccounts
 	for _, pool := range [][]*Account{preferred, regular} {
 		if len(pool) == 0 {
 			continue
@@ -1629,15 +1629,17 @@ func (s *OpenAIGatewayService) selectOpenAIFromPriorityPoolWithoutLoadAwareness(
 		}
 	}
 	for _, waitCandidates := range [][]*Account{regularWait, preferredWait} {
-		for _, account := range waitCandidates {
-			if sessionHash != "" && !gatewayProfitControlGateActive(ctx) {
-				_ = s.setStickySessionAccountID(ctx, groupID, sessionHash, account.ID, openaiStickySessionTTL)
-			}
-			return s.newSelectionResult(ctx, account, false, nil, &AccountWaitPlan{
-				AccountID: account.ID, MaxConcurrency: account.Concurrency,
-				Timeout: cfg.FallbackWaitTimeout, MaxWaiting: cfg.FallbackMaxWaiting,
-			})
+		if len(waitCandidates) == 0 {
+			continue
 		}
+		account := waitCandidates[0]
+		if sessionHash != "" && !gatewayProfitControlGateActive(ctx) {
+			_ = s.setStickySessionAccountID(ctx, groupID, sessionHash, account.ID, openaiStickySessionTTL)
+		}
+		return s.newSelectionResult(ctx, account, false, nil, &AccountWaitPlan{
+			AccountID: account.ID, MaxConcurrency: account.Concurrency,
+			Timeout: cfg.FallbackWaitTimeout, MaxWaiting: cfg.FallbackMaxWaiting,
+		})
 	}
 	return nil, selectionErr
 }

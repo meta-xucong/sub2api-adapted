@@ -199,18 +199,18 @@ type UsageTokens struct {
 
 // CostBreakdown 费用明细
 type CostBreakdown struct {
-	InputCost                 float64 // 文本输入费用（不含图片输入，图片输入单独记入 ImageInputCost）
-	ImageInputCost            float64 // 图片输入 token 费用（如 gpt-image-2 图片编辑）
-	OutputCost                float64
-	ImageOutputCost           float64
-	CacheCreationCost         float64
-	CacheReadCost             float64
-	TotalCost                 float64
-	ActualCost                float64 // 应用倍率后的实际费用
-	BillingMode                     string // 计费模式（"token"/"per_request"/"image"），由 CalculateCostUnified 填充
-	LongContextBillingApplied       bool
-	routePricingApplied             bool // Marks a matched unified-gateway route tariff for subscription billing classification.
-	reasoningEffortBillingApplied   bool // Marks an actually applied non-unit reasoning-effort multiplier.
+	InputCost                     float64 // 文本输入费用（不含图片输入，图片输入单独记入 ImageInputCost）
+	ImageInputCost                float64 // 图片输入 token 费用（如 gpt-image-2 图片编辑）
+	OutputCost                    float64
+	ImageOutputCost               float64
+	CacheCreationCost             float64
+	CacheReadCost                 float64
+	TotalCost                     float64
+	ActualCost                    float64 // 应用倍率后的实际费用
+	BillingMode                   string  // 计费模式（"token"/"per_request"/"image"），由 CalculateCostUnified 填充
+	LongContextBillingApplied     bool
+	routePricingApplied           bool // Marks a matched unified-gateway route tariff for subscription billing classification.
+	reasoningEffortBillingApplied bool // Marks an actually applied non-unit reasoning-effort multiplier.
 }
 
 func applyCostBreakdownMultiplier(cost *CostBreakdown, multiplier float64) {
