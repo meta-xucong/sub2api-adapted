@@ -894,6 +894,8 @@ veyra:
   video_base_url: "https://video.aiself.vip"
   # Shared only with the attached Aiself applications.
   internal_token: ""
+  # Separate secret shared only with Alchemy's node reward settlement client.
+  node_reward_credit_token: ""
   login_ticket_ttl_seconds: 120
 
 # =============================================================================

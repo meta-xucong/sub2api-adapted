@@ -23,6 +23,7 @@ type RoutesConfig struct {
 	AlchemyBaseURL        string
 	VideoBaseURL          string
 	InternalToken         string
+	NodeRewardCreditToken string
 	LoginTicketTTLSeconds int
 }
 
@@ -102,6 +103,7 @@ func RoutesConfigFromConfig(cfg *config.Config) RoutesConfig {
 		AlchemyBaseURL:        cfg.Veyra.AlchemyBaseURL,
 		VideoBaseURL:          cfg.Veyra.VideoBaseURL,
 		InternalToken:         cfg.Veyra.InternalToken,
+		NodeRewardCreditToken: cfg.Veyra.NodeRewardCreditToken,
 		LoginTicketTTLSeconds: cfg.Veyra.LoginTicketTTLSeconds,
 	}
 }
@@ -128,6 +130,7 @@ func RegisterRoutes(base *gin.RouterGroup, jwtAuth servermiddleware.JWTAuthMiddl
 	}
 	internal.GET("/users/:user_id/usage/:request_id", videoUsageHandler(usageReader))
 	internal.POST("/billing/debit", debitHandler(users, ledger))
+	registerNodeRewardRoutes(internal, users, cfg)
 }
 
 func portalConfigHandler(cfg RoutesConfig) gin.HandlerFunc {
