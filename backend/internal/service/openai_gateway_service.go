@@ -95,6 +95,7 @@ var openaiPassthroughAllowedHeaders = map[string]bool{
 	"accept":                  true,
 	"accept-language":         true,
 	"content-type":            true,
+	"idempotency-key":         true,
 	"conversation_id":         true,
 	"openai-beta":             true,
 	"user-agent":              true,
