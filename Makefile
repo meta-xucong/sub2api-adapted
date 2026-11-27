@@ -2,6 +2,8 @@
 
 FRONTEND_CRITICAL_VITEST := \
 	src/i18n/__tests__/localeKeyCompleteness.spec.ts \
+	src/i18n/__tests__/localesMessageCompile.spec.ts \
+	src/i18n/__tests__/runtimeCompatibility.spec.ts \
 	src/utils/__tests__/dependencySecurity.spec.ts \
 	src/api/__tests__/client.spec.ts \
 	src/api/__tests__/tokenRefresh.spec.ts \
