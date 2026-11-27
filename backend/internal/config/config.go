@@ -126,6 +126,7 @@ type VeyraConfig struct {
 	AlchemyBaseURL        string `mapstructure:"alchemy_base_url"`
 	VideoBaseURL          string `mapstructure:"video_base_url"`
 	InternalToken         string `mapstructure:"internal_token"`
+	NodeRewardCreditToken string `mapstructure:"node_reward_credit_token"`
 	LoginTicketTTLSeconds int    `mapstructure:"login_ticket_ttl_seconds"`
 }
 
@@ -2542,6 +2543,7 @@ func setDefaults() {
 	viper.SetDefault("veyra.alchemy_base_url", "https://alchemy.aiself.vip")
 	viper.SetDefault("veyra.video_base_url", "https://video.aiself.vip")
 	viper.SetDefault("veyra.internal_token", "")
+	viper.SetDefault("veyra.node_reward_credit_token", "")
 	viper.SetDefault("veyra.login_ticket_ttl_seconds", 120)
 
 	// Gateway

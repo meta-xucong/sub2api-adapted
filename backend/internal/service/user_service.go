@@ -1224,8 +1224,13 @@ func (s *UserService) DebitBalanceIfSufficient(ctx context.Context, input UserBa
 	if err != nil {
 		return nil, err
 	}
+	s.invalidateBalanceCaches(ctx, result.UserID)
+	return result, nil
+}
+
+func (s *UserService) invalidateBalanceCaches(ctx context.Context, userID int64) {
 	if s.authCacheInvalidator != nil {
-		s.authCacheInvalidator.InvalidateAuthCacheByUserID(ctx, result.UserID)
+		s.authCacheInvalidator.InvalidateAuthCacheByUserID(ctx, userID)
 	}
 	if s.billingCache != nil {
 		go func(userID int64) {
@@ -1234,9 +1239,8 @@ func (s *UserService) DebitBalanceIfSufficient(ctx context.Context, input UserBa
 			if err := s.billingCache.InvalidateUserBalance(cacheCtx, userID); err != nil {
 				slog.Error("invalidate user balance cache failed", "user_id", userID, "error", err)
 			}
-		}(result.UserID)
+		}(userID)
 	}
-	return result, nil
 }
 
 // UpdateConcurrency 更新用户并发数（管理员功能）
