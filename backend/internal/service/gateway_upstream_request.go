@@ -222,6 +222,7 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 		logClaudeMimicDebug(req, body, account, tokenType, mimicClaudeCode)
 	}
 
+	logAlchemyBrainSchemaForward(c, body)
 	return req, body, nil
 }
 
